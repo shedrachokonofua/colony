@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@colony/db": ["./packages/db/src/index.ts"],
+      "@colony/domain": ["./packages/domain/src/index.ts"],
+      "@colony/policy": ["./packages/policy/src/index.ts"],
+      "@colony/provider": ["./packages/provider/src/index.ts"],
+      "@colony/schemas": ["./packages/schemas/src/index.ts"],
+      "@colony/testing": ["./packages/testing/src/index.ts"]
+    }
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}
