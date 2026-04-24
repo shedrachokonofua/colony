@@ -10,7 +10,7 @@ The source of truth is Colony’s Task Graph and audit log; Git providers are th
 | ------------------------ | ------------------------------------------------------------------------------------------ |
 | [`seed.md`](seed.md)     | Original architecture seed: roles, HITL policy, reconciliation, packets, deployment sketch |
 | [`design.md`](design.md) | Technical design: components, domain model, APIs, security, rollout                        |
-| [`tasks.md`](tasks.md)   | Dependency-aware implementation plan (Phase 0–4)                                           |
+| [`tasks.md`](tasks.md)   | Dependency-aware implementation plan (Phase 0–4), with per-task progress checkboxes        |
 
 ## Repository layout
 

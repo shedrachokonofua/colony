@@ -1,9 +1,10 @@
 # Colony Implementation Tasks
 
-This task plan is derived from `design.md`. It is organized as dependency-aware implementation work, not a generic checklist.
+This task plan is derived from `design.md`. It is organized as dependency-aware implementation work: ordering and **Depends on** still matter, and each task has a **progress** checkbox to tick when its **Acceptance** criteria are fully met.
 
 ## Task Format
 
+- **Progress** — `- [ ]` / `- [x]` on the line under the task title; check only when **Acceptance** is satisfied.
 - **ID** — stable task identifier.
 - **Depends on** — task IDs that should land first.
 - **Deliverables** — concrete files, services, schemas, behavior, or docs to produce.
@@ -14,6 +15,8 @@ This task plan is derived from `design.md`. It is organized as dependency-aware 
 Goal: establish the TypeScript monorepo, persistence, core state model, audit, basic Temporal workflow, and read-only Web UI shell.
 
 ### COL-0.1 — Create TypeScript Monorepo Skeleton
+
+- [x]
 
 **Depends on:** none
 
@@ -42,6 +45,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.2 — Choose Framework And Tooling ADRs
 
+- [ ]
+
 **Depends on:** COL-0.1
 
 **Deliverables**
@@ -58,6 +63,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Decisions align with `design.md`: TypeScript/Node, HTTP + JSON/OpenAPI, TypeBox schemas, Postgres, Temporal, Nix dev shell, GitLab CI, `kind` local development, and Aether-hosted deployment.
 
 ### COL-0.3 — Nix Local Development Environment
+
+- [ ]
 
 **Depends on:** COL-0.1, COL-0.2
 
@@ -76,6 +83,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.3a — GitLab CI Baseline
 
+- [ ]
+
 **Depends on:** COL-0.1, COL-0.2, COL-0.3
 
 **Deliverables**
@@ -91,6 +100,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.3b — Aether Deployment Integration Plan
 
+- [ ]
+
 **Depends on:** COL-0.2
 
 **Deliverables**
@@ -104,6 +115,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.4 — Core Domain Types And State Machines
 
+- [ ]
+
 **Depends on:** COL-0.1
 
 **Deliverables**
@@ -116,6 +129,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Invalid transitions produce structured errors with code, message, details, and retriable flag.
 
 ### COL-0.5 — Envelope And Packet Schemas
+
+- [ ]
 
 **Depends on:** COL-0.1, COL-0.4
 
@@ -140,6 +155,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Schema examples from `design.md` validate.
 
 ### COL-0.6 — Initial Postgres Schema
+
+- [ ]
 
 **Depends on:** COL-0.2, COL-0.4
 
@@ -170,6 +187,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.7 — Task Graph Repository Layer
 
+- [ ]
+
 **Depends on:** COL-0.4, COL-0.6
 
 **Deliverables**
@@ -187,6 +206,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.8 — Minimal Policy Engine
 
+- [ ]
+
 **Depends on:** COL-0.4, COL-0.6
 
 **Deliverables**
@@ -202,6 +223,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Policy decisions are auditable.
 
 ### COL-0.9 — Task Graph API
+
+- [ ]
 
 **Depends on:** COL-0.5, COL-0.7, COL-0.8
 
@@ -226,6 +249,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.10 — Temporal Skeleton Scope Workflow
 
+- [ ]
+
 **Depends on:** COL-0.3, COL-0.7
 
 **Deliverables**
@@ -240,6 +265,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Workflow history stores pointers/normalized data only, not large payloads.
 
 ### COL-0.11 — Webhook Dispatcher Skeleton
+
+- [ ]
 
 **Depends on:** COL-0.3, COL-0.10
 
@@ -257,6 +284,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.12 — Read-Only Web UI Shell
 
+- [ ]
+
 **Depends on:** COL-0.9
 
 **Deliverables**
@@ -271,6 +300,8 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - UI shows task state, dependencies, current assignment, and recent audit records.
 
 ### COL-0.13 — Phase 0 End-To-End Acceptance
+
+- [ ]
 
 **Depends on:** COL-0.7, COL-0.9, COL-0.10, COL-0.11, COL-0.12, COL-0.3a
 
@@ -290,6 +321,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1 — Provider Adapter Interface
 
+- [ ]
+
 **Depends on:** COL-0.2, COL-0.4
 
 **Deliverables**
@@ -302,6 +335,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - Adapter methods return stable provider IDs and normalized metadata.
 
 ### COL-1.2 — GitLab Adapter: Issues, Comments, Labels
+
+- [ ]
 
 **Depends on:** COL-1.1
 
@@ -318,6 +353,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.3 — Scope And Task Mirror
 
+- [ ]
+
 **Depends on:** COL-0.7, COL-1.2
 
 **Deliverables**
@@ -332,6 +369,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - Projection drift can be detected from stored version metadata.
 
 ### COL-1.4 — Provider Command Parser
+
+- [ ]
 
 **Depends on:** COL-0.8, COL-1.1
 
@@ -353,6 +392,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.5 — Webhook Classification
 
+- [ ]
+
 **Depends on:** COL-1.4, COL-0.11
 
 **Deliverables**
@@ -364,6 +405,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - Classification is audit-recorded.
 
 ### COL-1.6 — Supervisor Ready/Claim/Assign Loop
+
+- [ ]
 
 **Depends on:** COL-0.10, COL-1.3, COL-1.5
 
@@ -380,6 +423,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.7 — Web UI Provider Sync Views
 
+- [ ]
+
 **Depends on:** COL-1.3, COL-1.6
 
 **Deliverables**
@@ -393,6 +438,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.8 — Phase 1 End-To-End Acceptance
 
+- [ ]
+
 **Depends on:** COL-1.2, COL-1.6, COL-1.7
 
 **Deliverables**
@@ -404,6 +451,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - Supervisor claims a task and mirrors assignment/provider label.
 
 ### COL-1.9 — Aether Preview Deployment
+
+- [ ]
 
 **Depends on:** COL-0.3b, COL-1.8
 
@@ -423,6 +472,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.1 — Minimum Sandbox Egress Enforcement
 
+- [ ]
+
 **Depends on:** COL-0.3, COL-0.8
 
 **Deliverables**
@@ -439,6 +490,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.2 — Tool Gateway Git And Package Proxy
 
+- [ ]
+
 **Depends on:** COL-0.8, COL-2.1
 
 **Deliverables**
@@ -454,6 +507,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Secrets are not present in logs.
 
 ### COL-2.3 — Agent Runtime Adapter
+
+- [ ]
 
 **Depends on:** COL-0.5, COL-2.1
 
@@ -472,6 +527,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.4 — Task And Review Packet Generation
 
+- [ ]
+
 **Depends on:** COL-0.5, COL-1.6
 
 **Deliverables**
@@ -486,6 +543,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Provider comments are quoted/provenance-linked and cannot become system instructions.
 
 ### COL-2.5 — Developer Execution Flow
+
+- [ ]
 
 **Depends on:** COL-2.2, COL-2.3, COL-2.4
 
@@ -502,6 +561,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.6 — GitLab Adapter: MR/PR, Commits, Pipelines
 
+- [ ]
+
 **Depends on:** COL-1.2
 
 **Deliverables**
@@ -514,6 +575,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Integration test covers MR creation, pipeline status ingestion, and approval status normalization.
 
 ### COL-2.7 — Reviewer Execution Flow
+
+- [ ]
 
 **Depends on:** COL-2.3, COL-2.4, COL-2.6
 
@@ -531,6 +594,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.8 — HITL Gate Enforcement
 
+- [ ]
+
 **Depends on:** COL-0.8, COL-1.4, COL-2.7
 
 **Deliverables**
@@ -546,6 +611,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.9 — Merge And Close Flow
 
+- [ ]
+
 **Depends on:** COL-2.6, COL-2.8
 
 **Deliverables**
@@ -559,6 +626,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Task does not close until provider issue and MR state reconcile.
 
 ### COL-2.10 — Phase 2 End-To-End Acceptance
+
+- [ ]
 
 **Depends on:** COL-1.9, COL-2.5, COL-2.7, COL-2.8, COL-2.9
 
@@ -576,6 +645,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 ### COL-3.1 — Reconciliation Engine
 
+- [ ]
+
 **Depends on:** COL-2.9
 
 **Deliverables**
@@ -590,6 +661,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 ### COL-3.2 — Periodic Reconciliation Timer
 
+- [ ]
+
 **Depends on:** COL-3.1
 
 **Deliverables**
@@ -601,6 +674,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - Repeated reconcile with no drift is a no-op.
 
 ### COL-3.3 — Provider Outage And Pending Sync
+
+- [ ]
 
 **Depends on:** COL-3.1
 
@@ -618,6 +693,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 ### COL-3.4 — Conflict State And Resolution
 
+- [ ]
+
 **Depends on:** COL-3.1
 
 **Deliverables**
@@ -632,6 +709,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - Auto-resolvable label drift is corrected and audited.
 
 ### COL-3.5 — Operator Override Flow
+
+- [ ]
 
 **Depends on:** COL-3.4, COL-1.4
 
@@ -648,6 +727,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 ### COL-3.6 — Web UI Conflict Operations
 
+- [ ]
+
 **Depends on:** COL-3.4, COL-3.5
 
 **Deliverables**
@@ -663,6 +744,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - UI writes are capability checked and audited.
 
 ### COL-3.7 — Phase 3 End-To-End Acceptance
+
+- [ ]
 
 **Depends on:** COL-3.3, COL-3.4, COL-3.6
 
@@ -681,6 +764,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 ### COL-4.1 — Memory Tables And Candidate Flow
 
+- [ ]
+
 **Depends on:** COL-0.6, COL-2.4
 
 **Deliverables**
@@ -696,6 +781,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 ### COL-4.2 — Memory Retrieval Into Packets
 
+- [ ]
+
 **Depends on:** COL-4.1
 
 **Deliverables**
@@ -709,6 +796,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 ### COL-4.3 — Decision Records
 
+- [ ]
+
 **Depends on:** COL-4.1
 
 **Deliverables**
@@ -721,6 +810,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 - Decision can be superseded or expired.
 
 ### COL-4.4 — Policy Hardening
+
+- [ ]
 
 **Depends on:** COL-2.8, COL-3.5
 
@@ -738,6 +829,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 ### COL-4.5 — Discovered Work Workflow
 
+- [ ]
+
 **Depends on:** COL-4.4
 
 **Deliverables**
@@ -754,6 +847,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 ### COL-4.6 — Integrator / Release Role
 
+- [ ]
+
 **Depends on:** COL-3.1, COL-4.4
 
 **Deliverables**
@@ -769,6 +864,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 ### COL-4.7 — Richer Web UI Views
 
+- [ ]
+
 **Depends on:** COL-4.2, COL-4.3, COL-4.4
 
 **Deliverables**
@@ -783,6 +880,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 ### COL-4.8 — GitHub Adapter
 
+- [ ]
+
 **Depends on:** COL-1.1, COL-3.1
 
 **Deliverables**
@@ -794,6 +893,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 - Gaps are documented as adapter capability differences.
 
 ### COL-4.9 — Phase 4 End-To-End Acceptance
+
+- [ ]
 
 **Depends on:** COL-4.2, COL-4.5, COL-4.6, COL-4.8
 
@@ -814,6 +915,8 @@ These tasks run alongside phases when their dependencies are available.
 
 ### COL-X.1 — Observability Baseline
 
+- [ ]
+
 **Depends on:** COL-0.3
 
 **Deliverables**
@@ -825,6 +928,8 @@ These tasks run alongside phases when their dependencies are available.
 - A synthetic scope can be followed across API, workflow, worker activity, and audit via trace IDs.
 
 ### COL-X.1a — GitLab CI Hardening
+
+- [ ]
 
 **Depends on:** COL-0.3a, COL-2.10
 
@@ -841,6 +946,8 @@ These tasks run alongside phases when their dependencies are available.
 
 ### COL-X.2 — Audit Integrity And Retention Baseline
 
+- [ ]
+
 **Depends on:** COL-0.6
 
 **Deliverables**
@@ -854,6 +961,8 @@ These tasks run alongside phases when their dependencies are available.
 
 ### COL-X.3 — Threat Model Worksheet
 
+- [ ]
+
 **Depends on:** COL-0.4, COL-2.1
 
 **Deliverables**
@@ -864,6 +973,8 @@ These tasks run alongside phases when their dependencies are available.
 - Every threat in `design.md` maps to at least one mitigation or explicit accepted risk.
 
 ### COL-X.4 — Runbooks
+
+- [ ]
 
 **Depends on:** COL-3.1
 
