@@ -2,7 +2,7 @@
   description = "Colony dev shell (Node, Temporal, Postgres, Kubernetes, GitLab CLI)";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -19,8 +19,8 @@
           name = "colony";
 
           packages = with pkgs; [
-            # Node / JS
-            nodejs_22
+            # Node / JS — active LTS
+            nodejs_24
 
             # Temporal
             temporal-cli
@@ -28,9 +28,9 @@
             # Datastores / SQL
             postgresql_16
 
-            # Kubernetes local + remote
+            # Kubernetes client tooling for Aether interaction
+            # (no local cluster — Kubernetes validation happens on Aether, see ADR-004)
             kubectl
-            kind
             kubernetes-helm
             k9s
 
@@ -44,12 +44,19 @@
             # Container tooling (matches CI / Aether runner assumptions)
             buildah
             podman
+            # Compose v2 (standalone binary; `docker compose` / `docker-compose` both work)
+            docker-compose
 
             git
           ];
 
           shellHook = ''
             echo "Colony dev shell: node $(node --version), npm $(npm --version)"
+            if ! command -v docker >/dev/null 2>&1 && ! command -v podman >/dev/null 2>&1; then
+              echo ""
+              echo "WARN: neither docker nor podman is on PATH. The dev stack expects one of them"
+              echo "      to run docker-compose.yml (Temporal + Postgres). See docs/dev-loop.md."
+            fi
           '';
         };
 

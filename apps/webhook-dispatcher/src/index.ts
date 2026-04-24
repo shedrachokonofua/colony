@@ -1,3 +1,1 @@
-export function webhookDispatcherStub(): string {
-  return "@colony/webhook-dispatcher";
-}
+export { buildApp } from "./app.js";

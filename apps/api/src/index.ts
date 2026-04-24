@@ -1,5 +1,1 @@
-import { domainHello } from "@colony/domain";
-
-export function apiBootMessage(): string {
-  return `api:${domainHello()}`;
-}
+export { buildApp } from "./app.js";

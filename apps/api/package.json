@@ -3,7 +3,25 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "main": "src/server.ts",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
   "dependencies": {
-    "@colony/domain": "*"
+    "@colony/config": "*",
+    "@colony/domain": "*",
+    "@hono/node-server": "^1.13.7",
+    "@hono/zod-openapi": "^1.2.2",
+    "@scalar/hono-api-reference": "^0.10.0",
+    "hono": "^4.12.5",
+    "pg": "^8.13.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2"
   }
 }

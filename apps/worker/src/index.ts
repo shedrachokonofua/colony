@@ -1,5 +1,1 @@
-import { domainHello } from "@colony/domain";
-
-export function workerBootMessage(): string {
-  return `worker:${domainHello()}`;
-}
+export * from "./workflows.js";

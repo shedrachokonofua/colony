@@ -1,5 +1,6 @@
 node_modules/
 dist/
+build/
 *.tsbuildinfo
 .env
 .env.*
@@ -7,3 +8,4 @@ dist/
 .DS_Store
 coverage/
 .nix-result
+.svelte-kit/

@@ -3,7 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "main": "src/worker.ts",
+  "scripts": {
+    "dev": "tsx watch src/worker.ts",
+    "start": "tsx src/worker.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
   "dependencies": {
-    "@colony/domain": "*"
+    "@colony/config": "*",
+    "@colony/domain": "*",
+    "@temporalio/activity": "^1.11.0",
+    "@temporalio/client": "^1.11.0",
+    "@temporalio/worker": "^1.11.0",
+    "@temporalio/workflow": "^1.11.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
   }
 }

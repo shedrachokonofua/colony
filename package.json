@@ -7,10 +7,16 @@
     "packages/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "run-p -l -n --aggregate-output dev:*",
+    "dev:api": "npm --workspace @colony/api run dev",
+    "dev:worker": "npm --workspace @colony/worker run dev",
+    "dev:webhook-dispatcher": "npm --workspace @colony/webhook-dispatcher run dev",
+    "dev:tool-gateway": "npm --workspace @colony/tool-gateway run dev",
+    "dev:web": "npm --workspace @colony/web run dev",
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm --workspace @colony/web run typecheck",
     "test": "vitest run",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -19,6 +25,7 @@
   "devDependencies": {
     "@eslint/js": "^9.17.0",
     "eslint": "^9.17.0",
+    "npm-run-all2": "^7.0.2",
     "prettier": "^3.4.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.2",

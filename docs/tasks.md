@@ -28,12 +28,17 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
   - `apps/webhook-dispatcher`
   - `apps/tool-gateway`
   - `apps/web`
+  - `packages/agent-runtime`
+  - `packages/config`
   - `packages/db`
   - `packages/domain`
+  - `packages/observability`
   - `packages/policy`
   - `packages/provider`
+  - `packages/provider-gitlab`
   - `packages/schemas`
   - `packages/testing`
+  - `packages/workflows`
 - Shared lint, test, typecheck, and formatting commands.
 - Nix flake dev shell with Node.js LTS, npm, Temporal tooling, Postgres client tools, Kubernetes tooling, GitLab CLI, formatting/linting tools, and CI generators.
 - npm workspace package layout.
@@ -42,10 +47,11 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - `nix develop` enters a shell with the project toolchain.
 - `npm install`, `npm run typecheck`, and `npm test` run from repo root inside the dev shell.
 - A trivial import from `packages/domain` works in `apps/api` and `apps/worker`.
+- `packages/workflows` is documented as workflow-safe and kept separate from activities, DB, provider clients, Tool Gateway, Pi integration, process/env access, randomness, and wall-clock reads.
 
 ### COL-0.2 — Choose Framework And Tooling ADRs
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.1
 
@@ -60,26 +66,27 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 **Acceptance**
 - ADRs document decision, alternatives, rationale, consequences, and revisit triggers.
-- Decisions align with `design.md`: TypeScript/Node, HTTP + JSON/OpenAPI, TypeBox schemas, Postgres, Temporal, Nix dev shell, GitLab CI, `kind` local development, and Aether-hosted deployment.
+- Decisions align with `design.md`: TypeScript/Node, Hono + `@hono/zod-openapi` + `@scalar/hono-api-reference` for APIs, SvelteKit (Svelte 5, `@sveltejs/adapter-node`) for the Web UI, HTTP + JSON/OpenAPI, Zod schemas end-to-end, Postgres, Temporal, Nix dev shell, GitLab CI, Docker Compose for local infra with apps via `npm run dev`, Helm chart packaging, and Aether-hosted deployment via Tofu `helm_release` into a `colony-dev` namespace first.
 
 ### COL-0.3 — Nix Local Development Environment
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.1, COL-0.2
 
 **Deliverables**
 - `flake.nix` and lockfile for the Colony dev shell.
-- Dev manifests for local Temporal, Postgres, API, worker, webhook dispatcher, tool gateway, and Web UI.
-- Postgres initialization for `temporal`, `temporal_visibility`, and `colony`.
-- Local configuration for fake provider adapter.
-- Developer docs for booting the stack.
+- `docker-compose.yml` for local Temporal and Postgres, with `temporal`, `temporal_visibility`, and `colony` databases initialized.
+- Per-app `npm run dev` scripts so API, worker, webhook dispatcher, tool gateway, and Web UI run as native watch processes against the Compose infra.
+- Local configuration pointing the provider adapter at the home-lab GitLab over the LAN (dedicated Colony dev group/project, separate bot token, webhook URL pointing at the laptop's LAN address). The fake provider adapter from COL-1.1 remains a test-only fixture, not the `npm run dev` default.
+- Developer docs for booting the stack (`docker compose up` + `npm run dev`), with Aether `colony-dev` called out as the k8s validation target (not a local k8s cluster).
 
 **Acceptance**
-- A new developer can enter `nix develop` and start the local control plane from documented commands.
+- A new developer can enter `nix develop`, run `docker compose up`, and start the control plane apps with `npm run dev` from documented commands.
 - API can connect to Postgres.
 - Worker can connect to Temporal.
 - Web UI can call the API health endpoint.
+- A test issue created in the home-lab GitLab dev project fires a webhook to the local webhook dispatcher over the LAN and lands as a Task Graph event.
 
 ### COL-0.3a — GitLab CI Baseline
 
@@ -135,7 +142,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.1, COL-0.4
 
 **Deliverables**
-- TypeBox schemas for:
+- Zod schemas (shared between agent envelope validation and the Hono HTTP boundary via `@hono/zod-openapi`) for:
   - task packet
   - review packet
   - scope review packet
@@ -255,7 +262,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 **Deliverables**
 - Temporal worker package.
-- `supervisor-<scope_id>` workflow skeleton.
+- `supervisor-<scope_id>` workflow skeleton in `packages/workflows`.
 - Activities for reading scope/task state and recording workflow events.
 - Signal handlers for provider event, approval, changes requested, pipeline update, and operator override.
 
@@ -263,6 +270,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Local Temporal can start a scope workflow.
 - Signals are recorded as Task Graph events.
 - Workflow history stores pointers/normalized data only, not large payloads.
+- Workflow code does not import DB, provider adapter, Tool Gateway, config, observability setup, or agent runtime packages directly.
 
 ### COL-0.11 — Webhook Dispatcher Skeleton
 
@@ -326,13 +334,32 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.2, COL-0.4
 
 **Deliverables**
-- TypeScript `ProviderAdapter` interface for issues, epics/parent issues, comments, labels, assignees, MRs/PRs, approvals, branches, commits, pipelines, users, webhooks.
+- TypeScript `ProviderAdapter` interface for issues, epics/parent issues, comments, labels, assignees, MRs/PRs, approvals, branches, commits, pipelines, users, webhooks, and **bootstrap (provision groups, projects, bot users, bot PATs, OAuth Application, webhook from a request-scoped admin credential)**.
 - Provider domain types separate from Colony domain types.
 - Fake provider adapter for tests.
 
 **Acceptance**
-- Fake adapter supports create/update/comment/label flows.
+- Fake adapter supports create/update/comment/label flows and an in-memory bootstrap that returns deterministic IDs.
 - Adapter methods return stable provider IDs and normalized metadata.
+
+### COL-1.1a — Provider Bootstrap Operation
+
+- [ ]
+
+**Depends on:** COL-0.8, COL-0.9, COL-1.1
+
+**Deliverables**
+- `ProviderAdapter.bootstrap(spec)` GitLab implementation: idempotent provisioning of group, project, bot users (`colony-engine`, `colony-reviewer`) marked `bot=true`, per-bot PATs with role-scoped permissions, instance-wide OAuth Application for Web UI sign-in, and the project webhook (URL + secret).
+- API endpoint on `apps/api`: `POST /admin/provider/bootstrap` taking a request-scoped admin credential and returning a structured result + redacted `.env` snippet.
+- Capability `provider.admin.bootstrap` granted only to a human admin actor; never to agents.
+- Audit event written for every bootstrap action with actor, redacted result, and a hash of the admin credential.
+- Re-running the operation rotates tokens and corrects drift idempotently.
+
+**Acceptance**
+- Running bootstrap against a clean home-lab GitLab project creates all resources and returns IDs.
+- Re-running is a no-op (or rotates tokens when configured) and writes a second audit event.
+- Admin credential is never persisted; capability check denies non-admin actors.
+- Two-environment workflow (dev + prod) works by invoking with two different specs.
 
 ### COL-1.2 — GitLab Adapter: Issues, Comments, Labels
 
@@ -348,8 +375,9 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - User identity lookup.
 
 **Acceptance**
-- Integration test against mock or local GitLab covers issue mirror lifecycle.
+- Integration test against the home-lab GitLab covers issue mirror lifecycle.
 - Provider IDs are stored only in `provider_mirrors`.
+- GitLab-specific dependencies live in `packages/provider-gitlab`, not `packages/provider`.
 
 ### COL-1.3 — Scope And Task Mirror
 
@@ -443,7 +471,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-1.2, COL-1.6, COL-1.7
 
 **Deliverables**
-- Scripted GitLab or fake-provider demo.
+- Scripted demo against the home-lab GitLab dev project.
 
 **Acceptance**
 - Open provider parent issue -> scope mirror appears.
@@ -457,13 +485,15 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.3b, COL-1.8
 
 **Deliverables**
-- Kubernetes manifests or Helm/Kustomize structure for API, worker, webhook dispatcher, tool gateway, Web UI, and required service accounts.
-- GitLab CI deploy job targeting the Aether Kubernetes environment.
+- Helm chart at `charts/colony/` covering API, worker, webhook dispatcher, tool gateway, Web UI, `SandboxTemplate`s, ServiceAccounts, NetworkPolicies, and HTTPRoutes. Platform prerequisites (Temporal, Postgres, cert-manager, Gateway API, agent-sandbox controller, Cilium) are Aether-owned and not installed by the chart.
+- Tofu `helm_release.colony` wired into `~/projects/aether/tofu/home/kubernetes/colony.tf`, following the `headlamp.tf` / `cert_manager.tf` pattern (values via `yamlencode({ ... })`, secrets via `var.secrets["..."]`, HTTPRoute via `kubernetes_manifest`, StepIssuer-backed TLS).
+- First target namespace: `colony-dev` with its own release name and `*-dev.apps.home.shdr.ch` hostnames. Prod namespaces (`colony-system`, `colony-sandboxes`) land later.
+- GitLab CI deploy job targeting the Aether Kubernetes environment, publishing the chart to the GitLab OCI registry and triggering the Tofu apply.
 - Aether MR/task list for ingress, secrets, registry access, observability, and namespace setup.
 
 **Acceptance**
-- Preview deployment runs in Aether with fake provider mode.
-- Web UI is reachable through the Aether ingress path.
+- Preview deployment runs in the Aether `colony-dev` namespace pointed at the home-lab GitLab dev project (separate bot account from prod).
+- Web UI is reachable through the Aether ingress path at its `*-dev` hostname.
 - Logs/traces/metrics flow into Aether observability where available.
 
 ## Phase 2 — Developer, Reviewer, And Merge Flow
@@ -524,6 +554,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Fake agent run can return a valid envelope.
 - Malformed envelope is rejected.
 - Run metadata stores sandbox ID, packet hash, output envelope hash.
+- Pi-specific integration lives in `packages/agent-runtime`, not in workflow code.
 
 ### COL-2.4 — Task And Review Packet Generation
 
@@ -926,6 +957,7 @@ These tasks run alongside phases when their dependencies are available.
 
 **Acceptance**
 - A synthetic scope can be followed across API, workflow, worker activity, and audit via trace IDs.
+- Shared observability setup lives in `packages/observability` and is imported by apps, not workflow definitions.
 
 ### COL-X.1a — GitLab CI Hardening
 

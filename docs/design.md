@@ -109,6 +109,7 @@ Roles describe **intent** (what the actor is for). Capabilities authorize **spec
 | `tool.call` | — | W (allowlist) | — | W (allowlist) | W (allowlist) | W (allowlist) | — |
 | `release.deploy` | W | — | — | — | — | G | — |
 | `policy.override` | W (policy) | — | — | — | — | — | — |
+| `provider.admin.bootstrap` | W (admin) | — | — | — | — | — | — |
 
 Human actions are **first-class workflow events**, not trusted out-of-band mutations. They go through the webhook dispatcher, classification, and capability check just like agent actions. A casual comment becomes context; only policy-valid commands advance state.
 
@@ -172,7 +173,7 @@ First-class, not afterthoughts:
 
 - **Task Graph API vs. Web UI/API.** MVP answer: **one backend service** exposing both internal (command) and external (query) endpoints, separated by route prefix and auth middleware. Split into two services if/when contention or ownership diverges.
 - **Provider sync as Temporal activity vs. separate worker.** MVP answer: **Temporal activity**, so retries and idempotency are uniform. The webhook dispatcher is the only non-Temporal provider-touching component, and it only signals — it does not write provider state.
-- **First deployment target.** Aether-hosted Kubernetes from the start (production-shaped), managed from `~/projects/aether`. Local development uses the Colony Nix dev shell plus `kind`/dev manifests so Temporal workers, Postgres, provider adapter behavior, and sandbox launch assumptions are exercised locally.
+- **First deployment target.** Aether-hosted Kubernetes from the start (production-shaped), managed from `~/projects/aether`. Local development uses the Colony Nix dev shell plus Docker Compose for Temporal and Postgres, with the Node apps running as `npm run dev` watch processes — no local Kubernetes cluster. Kubernetes validation happens on Aether in a `colony-dev` namespace via Tofu `helm_release`, so the Helm chart is the unit of deploy everywhere.
 
 ## 6. Key Technical Decisions
 
@@ -232,8 +233,10 @@ Each decision: **Decision / Rationale / Consequence / Revisit when**.
 - **Why TypeScript:** Temporal's TypeScript SDK is official and supports workers, workflows, activities, testing, and OTel interceptors. Pi is also TypeScript/Node (`@mariozechner/pi-coding-agent` and related packages), so the Supervisor can integrate the agent runtime through a native SDK boundary instead of wrapping a JS CLI from another backend language. Shared packet/envelope/policy types can be reused across workers, APIs, and the Web UI.
 - **Rust position:** Rust is not used for MVP Temporal workflow code because Temporal's Rust SDK is still prerelease/prototype. Rust remains a good future option for isolated high-assurance helpers, CLIs, sandbox-side utilities, or performance-sensitive libraries after the workflow boundary is stable.
 - **Go position:** Go is a credible alternative because Temporal's Go SDK is mature and stable, but it is not the MVP choice. The Pi integration cost and cross-language type/API duplication outweigh Go's operational simplicity for the first production slice.
-- **Envelope schemas:** TypeBox schemas, stored in `/schemas/envelopes/`, with generated JSON Schema artifacts for validation, documentation, and cross-language compatibility if Rust/Go helpers are added later.
+- **Envelope schemas:** Zod schemas, stored in `/schemas/envelopes/`, with generated JSON Schema artifacts for validation, documentation, and cross-language compatibility if Rust/Go helpers are added later. The same Zod schemas serve the HTTP boundary (via `@hono/zod-openapi`), agent envelope validation, and DB JSON column validation — one schema library end-to-end.
 - **API transport:** HTTP + JSON with OpenAPI for the MVP. gRPC is deferred until payload size, streaming, or latency proves HTTP is the bottleneck.
+- **API framework:** Hono with `@hono/zod-openapi` (zod-native OpenAPI generation) and `@scalar/hono-api-reference` for the docs UI, mirroring the `~/projects/seven30/foundry` pattern. Runs standalone on `@hono/node-server` for `apps/api`, `apps/webhook-dispatcher`, and `apps/tool-gateway`.
+- **Web framework:** SvelteKit (Svelte 5, `@sveltejs/adapter-node`) for `apps/web`. The web app is a pure frontend calling `apps/api` over HTTP; it does not host backend routes.
 
 ## 7. Domain Model And Data Ownership
 
@@ -437,6 +440,8 @@ Temporal `patched(...)` for in-place workflow changes; major state-machine chang
 
 ```
 ProviderAdapter {
+  bootstrap:    provision_environment (idempotent: groups, projects, bot users, bot PATs,
+                                       OAuth app, webhook — admin-credentialed)
   issues:       create, update, close, reopen, add_label, remove_label, comment
   epics:        create, update, close (GitLab Premium; fallback parent-issue)
   mr:           open, update, approve, unapprove, merge, close, comment, add_review_thread
@@ -452,7 +457,23 @@ ProviderAdapter {
 
 - **Tier.** GitLab Premium/Ultimate for epics and MR approval rules.
 - **Fallback (if Premium unavailable).** Parent issues instead of epics. Approvals via `/approve` comment + Supervisor-enforced merge readiness. Protected-branch rules still required.
-- **Bot accounts.** One per agent role (`colony-architect`, `colony-developer`, `colony-reviewer`, `colony-integrator`) with scoped project access tokens. Tokens rotated every 24h.
+- **Bot accounts.** Two: `colony-engine` (Architect, Supervisor, Developer, Integrator personas — opens issues/branches/MRs, comments, merges) and `colony-reviewer` (only reviews/approves). The split is forced by GitLab's MR self-approval rule; finer-grained per-role attribution is not worth the operational cost. Per-role attribution lives in Colony's audit log, not GitLab's username column. Bot tokens are scoped per role and rotated every 24h. The bot users, their PATs, and the Web UI OAuth Application are created by the Provider Bootstrap operation (below) — no manual user creation in the GitLab UI.
+
+### Provider Bootstrap
+
+Provisioning a new provider environment (groups, projects, bot users, bot PATs, OAuth Application, project webhook) is a first-class **provider adapter operation**, not a one-off shell script. Every adapter exposes:
+
+```
+ProviderAdapter.bootstrap(spec): Promise<BootstrapResult>
+```
+
+- **Input:** a request-scoped admin credential (e.g. GitLab admin PAT) plus a config (group/project names, bot names, redirect URIs, webhook URL, scopes per role).
+- **Behavior:** idempotent — checks existing resources by name and creates only what's missing; rotates tokens when policy says.
+- **Output:** structured result listing created/existing resource IDs and a redacted `.env` snippet for the operator.
+- **Surface:** invoked by the operator via the Web UI ("Set up provider") or a capability-gated API endpoint on `apps/api`. The admin credential is request-scoped — it is never stored at rest in Colony.
+- **Capability:** `provider.admin.bootstrap` (granted only to a human admin actor; never to agents). Every bootstrap action writes a Task Graph audit event with the actor, the redacted result, and a hash of the admin credential used.
+- **GitLab implementation** uses `POST /api/v4/users` (with `bot=true`, `skip_confirmation=true`), `POST /api/v4/users/:id/personal_access_tokens`, `POST /api/v4/groups`, `POST /api/v4/projects`, `POST /api/v4/applications`, and `POST /api/v4/projects/:id/hooks`. One admin PAT is the only human-touched credential; everything else is created over the API.
+- **Re-running** the operation is the rotation/drift-correction path. Two environments (dev and prod) are two invocations against two GitLab projects.
 
 ### Webhook handling
 
@@ -615,7 +636,7 @@ Every envelope includes:
 
 ### Validation
 
-- **Schema validation.** Versioned TypeBox schemas stored in the TypeScript schema package, with generated JSON Schema artifacts checked into `/schemas/envelopes/<role>.v<N>.json`.
+- **Schema validation.** Versioned Zod schemas stored in the TypeScript schema package, with generated JSON Schema artifacts checked into `/schemas/envelopes/<role>.v<N>.json`.
 - **Capability check.** Does this actor, in this scope/task state, have the capabilities implied by `next_action`?
 - **Freshness check.** Does the envelope's `freshness` match current state within tolerance?
 
@@ -761,7 +782,7 @@ Default-deny egress. Allowlist:
 ### Secrets
 
 - **External Secrets Operator + Vault.**
-- **Short-lived provider tokens:** per agent bot account, scoped to project, 24h rotation.
+- **Short-lived provider tokens:** scoped per bot (`colony-engine`, `colony-reviewer`), 24h rotation. Initial provisioning and subsequent rotation go through the Provider Bootstrap operation (§10).
 - **LLM API keys:** held only by Tool Gateway; never injected into agent sandbox.
 - **Per-run secrets:** scoped to sandbox lifetime, revoked on run completion.
 
@@ -1015,6 +1036,14 @@ Per the diagram in `seed.md` §Deployment:
 - **Observability** Grafana stack.
 - **External Secrets Operator + Vault.**
 
+### Packaging and deployment wiring
+
+- **Helm chart at `charts/colony/`** is the unit of deploy. It ships Colony's own services (Webhook Dispatcher, Supervisor Workers, Task Graph API / Web UI, Tool Gateway, Memory Consolidator), per-role `SandboxTemplate`s, ServiceAccounts, NetworkPolicies, and the HTTPRoutes that front Colony.
+- **Platform prerequisites stay Aether-owned** and are not installed by the Colony chart: Temporal, Postgres (CNPG), cert-manager + step-issuer, Cilium, Gateway API, the kubernetes-sigs agent-sandbox controller + CRDs, OpenBao/SOPS, and observability. The chart assumes they are present; Aether is where they are installed.
+- **Tofu drives the apply.** Aether holds `tofu/home/kubernetes/colony.tf` with a `helm_release.colony` resource, values rendered via `yamlencode({ ... })`, secrets via `var.secrets["..."]`, and HTTPRoute/StepIssuer resources alongside, matching Aether's existing per-app pattern (`headlamp.tf`, `cert_manager.tf`).
+- **Chart distribution.** The chart is published to the GitLab OCI registry in CI; Tofu pulls it by version. During early iteration, `helm_release` may reference a local path for fast iteration against `colony-dev`.
+- **Environment progression.** `colony-dev` namespace first (isolated release name, `*-dev.apps.home.shdr.ch` hostnames, separate bot tokens, shares cluster-scoped CRDs/controllers with prod). Prod lands in `colony-system` + `colony-sandboxes` once the dev loop is stable.
+
 ### Namespace strategy
 
 - `colony-system` — control plane (dispatcher, Temporal, Supervisor workers, API, UI, gateway).
@@ -1036,11 +1065,14 @@ Split into a dedicated Postgres when contention shows in `pg_stat_activity`, whe
 ### Implementation stack
 
 - **Language/runtime:** TypeScript on Node.js.
-- **Package shape:** one TypeScript monorepo for Supervisor workers, Task Graph API, Web UI/API, Tool Gateway, Webhook Dispatcher, Provider Adapter, Policy Engine, Memory API, packet/envelope schemas, and tests.
+- **Package shape:** one TypeScript monorepo for Supervisor workers, Task Graph API, Web UI/API, Tool Gateway, Webhook Dispatcher, Provider Adapter, Policy Engine, Memory API, packet/envelope schemas, workflow-safe code, agent runtime integration, shared config, shared observability, and tests.
+- **Workflow boundary:** Temporal workflow definitions live in a deterministic workflow-safe package. Activities, DB access, provider clients, Tool Gateway calls, Pi integration, wall-clock reads, random values, and process/env access stay outside workflow code.
 - **Temporal SDK:** `@temporalio/worker`, `@temporalio/workflow`, `@temporalio/activity`, `@temporalio/client`, `@temporalio/testing`, and OTel interceptors.
-- **Agent runtime:** pi-mono / pi-coding-agent packages, pinned by deployment. Developer runs still execute in sandboxes, but the control plane talks to Pi through TypeScript SDK boundaries where practical.
-- **Schemas:** TypeBox as the source for packet/envelope schemas, with JSON Schema output checked into `/schemas/` for validation and interoperability.
-- **API contracts:** HTTP + JSON with OpenAPI generated from the TypeScript API/schema layer.
+- **Agent runtime:** pi-mono / pi-coding-agent packages, pinned by deployment and isolated behind an agent-runtime package. Developer runs still execute in sandboxes, but the control plane talks to Pi through TypeScript SDK boundaries where practical.
+- **Schemas:** Zod as the source for packet/envelope schemas, with JSON Schema output checked into `/schemas/` for validation and interoperability. The same Zod schemas are reused at the HTTP boundary via `@hono/zod-openapi`.
+- **API framework:** Hono on `@hono/node-server` for `apps/api`, `apps/webhook-dispatcher`, and `apps/tool-gateway`, with `@hono/zod-openapi` generating OpenAPI from Zod and `@scalar/hono-api-reference` serving docs under `/docs`. Matches the `~/projects/seven30/foundry` pattern.
+- **Web framework:** SvelteKit (Svelte 5) with `@sveltejs/adapter-node` for `apps/web`. Talks to `apps/api` over HTTP.
+- **API contracts:** HTTP + JSON with OpenAPI generated from the Hono + Zod layer.
 - **Migrations:** TypeScript-friendly Postgres migration tooling selected in Phase 0, with migrations checked into the repo and run before service rollout.
 - **Developer environment:** Nix flake dev shell is the source of truth for Node.js, npm, Temporal tooling, Postgres client tools, Kubernetes tools, GitLab CLI, formatting, linting, and CI parity.
 - **CI/CD:** GitLab CI is the project CI system. Pipelines run Nix-backed checks, typecheck, tests, schema generation checks, migration checks, container builds, and deployment jobs.
@@ -1053,9 +1085,9 @@ Rust is explicitly deferred for MVP Temporal workflow code because Temporal's Ru
 
 Local development uses `nix develop` as the entry point. The dev shell provides Node.js LTS, npm, Temporal tooling, Postgres client tools, Kubernetes tooling, GitLab CLI, formatting/linting tools, and any generators used by CI. npm workspaces remain the TypeScript package layout, but Nix owns toolchain versions.
 
-Local integration uses `kind` + dev manifests, local Temporal, and a local Postgres instance with the three databases provisioned. Unit tests use mocked provider adapters; integration tests run against local Temporal/Postgres and, when needed, a local GitLab or fake provider.
+Local integration uses Docker Compose for Temporal and Postgres (with the three databases provisioned), and the Node apps run as `npm run dev` watch processes directly — not inside containers, not inside a local k8s cluster. Unit tests use the in-memory fake provider adapter; integration and `npm run dev` flows point at the home-lab GitLab over the LAN against a dedicated Colony dev project with a separate bot token, so the real provider is always the default once past unit tests. Kubernetes behavior is validated on Aether, not locally.
 
-The production-like environment is Aether: the private-cloud infrastructure repo at `~/projects/aether`. Colony deployment manifests, secrets wiring, GitLab runner assumptions, DNS/ingress, and observability integration should be compatible with Aether's Talos Kubernetes cluster, GitLab, OpenBao/SOPS secret flow, and Grafana stack.
+The production-like environment is Aether: the private-cloud infrastructure repo at `~/projects/aether`. The Colony Helm chart (`charts/colony/`), its Tofu `helm_release` wiring, secrets (OpenBao/SOPS), GitLab runner assumptions, DNS/ingress (Gateway API + cert-manager + step-ca), and observability integration are designed against Aether's Talos Kubernetes cluster, GitLab, and Grafana stack. Early iteration targets a `colony-dev` namespace before prod `colony-system` / `colony-sandboxes`.
 
 ### Migrations
 
@@ -1076,9 +1108,9 @@ The production-like environment is Aether: the private-cloud infrastructure repo
 
 ### Open Questions
 
-- **Local dev tooling.** Decided: Nix dev shell + npm workspaces + `kind` dev manifests + local Temporal/Postgres. Requirement: preserve production-relevant seams without making local setup painful.
+- **Local dev tooling.** Decided: Nix dev shell + npm workspaces + Docker Compose for Temporal/Postgres + `npm run dev` for app processes. No local k8s cluster; Kubernetes validation happens on Aether in `colony-dev`. Requirement: preserve production-relevant seams without making local setup painful.
 - **CI/CD.** Decided: GitLab CI with Nix-backed jobs.
-- **First production-like environment.** Aether-hosted Kubernetes with the full stack; one bot account set; one GitLab project.
+- **First production-like environment.** Aether-hosted Kubernetes with the full stack; bot users and tokens provisioned via the Provider Bootstrap operation (§10); one GitLab project to start (`colony-dev`), prod project provisioned by re-running bootstrap.
 - **Backup RPO/RTO.** 5 min / 1 hour for Task Graph + audit. Refine with pilot SLOs.
 
 ## 20. Rollout Plan And Milestones
@@ -1264,7 +1296,7 @@ See §14. Full STRIDE-style worksheet during Phase 0.
 From outline + design decisions still open:
 
 - Exact shape of the TypeScript `ProviderAdapter` interface.
-- TypeScript framework selection for Task Graph API / Web UI API.
+- ~~TypeScript framework selection for Task Graph API / Web UI API.~~ Resolved: Hono + `@hono/zod-openapi` for APIs; SvelteKit for `apps/web`.
 - TypeScript Postgres migration library.
 - Per-scope namespace policy thresholds (what flags a scope as "high-risk").
 - Discovered-work auto-accept classes (if any) per policy.

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { workerBootMessage } from "./index.js";
+import { healthCheckWorkflow } from "./workflows.js";
 
 describe("@colony/worker", () => {
-  it("resolves @colony/domain via the workspace graph", () => {
-    expect(workerBootMessage()).toBe("worker:colony-domain");
+  it("exposes the placeholder health workflow", async () => {
+    await expect(healthCheckWorkflow()).resolves.toBe("ok");
   });
 });

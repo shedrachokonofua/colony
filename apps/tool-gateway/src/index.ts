@@ -1,3 +1,1 @@
-export function toolGatewayStub(): string {
-  return "@colony/tool-gateway";
-}
+export { buildApp } from "./app.js";
