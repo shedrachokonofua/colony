@@ -63,3 +63,18 @@ export function env(): Env {
 export function resetEnvCache(): void {
   cached = undefined;
 }
+
+export {
+  AGENT_ROLES,
+  ColonyConfigError,
+  PI_API_KINDS,
+  colonyConfigFileSchema,
+  loadColonyConfig,
+  type AgentRole,
+  type ColonyConfig,
+  type ColonyConfigFile,
+  type LoadColonyConfigOptions,
+  type PiApiKind,
+  type ResolvedAgentConfig,
+  type ResolvedAuth,
+} from "./colony-config.js";

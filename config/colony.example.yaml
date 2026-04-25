@@ -1,0 +1,84 @@
+# Colony agent runtime configuration. Single file, YAML.
+#
+# Default search path: `config/colony.yaml`. Override via the
+# `COLONY_CONFIG_PATH` env var (set by the worker bootstrap).
+#
+# Routing here is non-secret. If you put literal `api_key: "sk-..."` values
+# in the file, set `allow_literal_keys: true` AND encrypt the file with
+# SOPS. The simpler pattern is `api_key: ENV_VAR_NAME` and let dotenv /
+# Kubernetes Secret supply the value.
+#
+# OAuth providers (Codex, Claude Pro) keep no token material here — tokens
+# live in the `provider_oauth_connections` Postgres table and are managed
+# from the Colony Web UI (admin → providers).
+
+agent_runtime: pi
+allow_literal_keys: false
+
+providers:
+  # ── API-key providers ────────────────────────────────────────────────
+  anthropic:
+    api: anthropic-messages
+    auth:
+      kind: api_key
+      value: ANTHROPIC_API_KEY
+    models:
+      - id: claude-sonnet-4-20250514
+        name: sonnet-4
+        reasoning: true
+        context_window: 200000
+        max_tokens: 16384
+        cost: { input: 3, output: 15, cache_read: 0.30, cache_write: 3.75 }
+      - id: claude-haiku-4-5-20251001
+        name: haiku-4-5
+        cost: { input: 1, output: 5 }
+
+  openai:
+    api: openai-responses
+    auth:
+      kind: api_key
+      value: OPENAI_API_KEY
+    models:
+      - id: gpt-5
+        name: gpt-5
+
+  # ── OAuth providers (subscription-backed; tokens in Postgres) ────────
+  openai_codex:
+    api: openai-codex-responses
+    auth:
+      kind: oauth
+      subscription: chatgpt_plus
+    models:
+      - id: gpt-5-codex
+        name: gpt-5-codex
+      - id: gpt-5-codex-mini
+        name: gpt-5-codex-mini
+
+  anthropic_pro:
+    api: anthropic-messages
+    auth:
+      kind: oauth
+      subscription: claude_pro
+    models:
+      - id: claude-sonnet-4-20250514
+        name: sonnet-4-via-pro
+
+agents:
+  developer:
+    provider: openai_codex
+    model: gpt-5-codex
+    timeout_ms: 900000
+    max_turns: 60
+    max_usd_per_run: 10
+  reviewer:
+    provider: anthropic
+    model: sonnet-4
+    timeout_ms: 600000
+    max_turns: 20
+    max_usd_per_run: 3
+  architect:
+    provider: anthropic
+    model: sonnet-4
+  memory_consolidator:
+    provider: anthropic
+    model: haiku-4-5
