@@ -70,7 +70,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Acceptance**
 
 - ADRs document decision, alternatives, rationale, consequences, and revisit triggers.
-- Decisions align with `design.md`: TypeScript/Node, Hono + `@hono/zod-openapi` + `@scalar/hono-api-reference` for APIs, SvelteKit (Svelte 5, `@sveltejs/adapter-node`) for the Web UI, HTTP + JSON/OpenAPI, Zod schemas end-to-end, Postgres, Temporal, Nix dev shell, GitLab CI, Docker Compose for local infra with apps via `npm run dev`, Helm chart packaging, and Aether-hosted deployment via Tofu `helm_release` into a `colony-dev` namespace first.
+- Decisions align with `design.md`: TypeScript/Node, Hono + `@hono/zod-openapi` + `@scalar/hono-api-reference` for APIs, SvelteKit (Svelte 5, `@sveltejs/adapter-node`) for the Web UI, HTTP + JSON/OpenAPI, Zod schemas end-to-end, Postgres, Temporal, Nix dev shell, GitLab CI, Docker Compose for local infra with apps via `npm run dev`, and Aether-hosted deployment via in-repo OpenTofu Kubernetes resources into a `colony-dev` namespace first.
 
 ### COL-0.3 — Nix Local Development Environment
 
@@ -656,24 +656,26 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.9 — Aether Preview Deployment
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.3b, COL-1.8
 
 **Deliverables**
 
-- In-repo Tofu module at `tofu/` deploying Colony directly to the Aether host cluster (not into the seven30 vcluster) from Colony's CI. Apply authority is Colony, per ADR-007. Resources written via `kubernetes_*` providers — no Helm chart for Colony's own services. Covers API, worker, webhook dispatcher, tool gateway, Web UI, ServiceAccounts, NetworkPolicies, HTTPRoutes attached to Aether's main Gateway, plus a preview in-namespace **Postgres** StatefulSet. The first preview reuses Aether's existing Dokku Temporal deployment through `grpc.temporal.home.shdr.ch:443` rather than installing Temporal in `colony-dev`; `SandboxTemplate` CRs land alongside agent-sandbox controller availability (Phase 2).
-- `tofu/main.tf` with `backend "http"` against `gitlab.home.shdr.ch/api/v4/projects/so%2Fcolony/terraform/state/colony`, `kubernetes` / `vault` providers. Reads OpenBao via `data "vault_kv_secret_v2"` and writes `kubernetes_secret_v1` directly (no ESO on host).
+- In-repo Tofu module at `tofu/` deploying Colony directly to the Aether host cluster (not into the seven30 vcluster). Apply authority is Colony, per ADR-007. Resources are written via `kubernetes_*` providers — no Helm chart for Colony's own services. Covers API, worker, webhook dispatcher, tool gateway, Web UI, ServiceAccounts, HTTPRoutes attached to Aether's main Gateway, plus a preview in-namespace **Postgres** StatefulSet and Postgres ingress NetworkPolicy. The first preview reuses Aether's existing Dokku Temporal deployment through `grpc.temporal.home.shdr.ch:443` rather than installing Temporal in `colony-dev`; `SandboxTemplate` CRs land alongside agent-sandbox controller availability (Phase 2).
+- `tofu/main.tf` with `backend "http"` against `gitlab.home.shdr.ch/api/v4/projects/49/terraform/state/colony`, `kubernetes` / `vault` providers, and explicit kubeconfig path support for local and CI runs. Reads OpenBao via `data "vault_kv_secret_v2"` and writes `kubernetes_secret_v1` directly (no ESO on host).
 - Namespaces created from the module: `colony-dev` first, with `*-dev.apps.home.shdr.ch` hostnames. `colony` (prod control plane) and `colony-sandboxes` (Phase 2 agent pods) land in later iterations.
 - GitLab CI `plan` and `apply` jobs (already declared in `.gitlab-ci.yml`) flip on once `tofu/main.tf` exists. Apply is `when: manual` on `main`.
-- The Aether MR for the `jwt-gitlab-colony` OpenBao mount + `colony-ci` role + policy (see `docs/aether-handoff.md`) merged before the first apply. Initial `kv/colony/*` paths populated with placeholder values.
+- Runtime images use Debian slim plus CA roots so Temporal's native bridge can load glibc and validate `grpc.temporal.home.shdr.ch:443`.
+- `kv/colony/gitlab` is populated in OpenBao for the dev deployment. `GITLAB_DEV_PROJECT_ID` / `GITLAB_PROJECT_ID` point at the Colony GitLab project for the current dogfood preview.
 
 **Acceptance**
 
-- Preview deployment runs in the Aether host cluster's `colony-dev` namespace pointed at the home-lab GitLab dev project (separate bot account from prod).
-- Web UI is reachable at its `*-dev.apps.home.shdr.ch` hostname through Aether's existing main Gateway.
-- `apply` job in Colony's pipeline successfully reconciles the cluster state on `main`.
-- Logs/traces/metrics flow into Aether observability where available.
+- Preview deployment runs in the Aether host cluster's `colony-dev` namespace pointed at the home-lab GitLab dev project.
+- Web UI is reachable at `https://colony-dev.apps.home.shdr.ch/` through Aether's existing main Gateway.
+- API, tool gateway, and webhook dispatcher health endpoints return `200` through their public `*-dev.apps.home.shdr.ch` hostnames.
+- The worker starts, connects to Temporal at `grpc.temporal.home.shdr.ch:443`, and polls `colony-supervisor`.
+- Tofu local apply reconciles the cluster state cleanly; CI plan/apply wiring is committed for main/manual reconciliation.
 
 ## Phase 2 — Developer, Reviewer, And Merge Flow
 
