@@ -69,17 +69,43 @@ export function assertValidRunExtensions(
     extensions.cliTools.map((tool) => tool.name),
     "CLI tool",
   );
+  assertUnique(
+    extensions.cliTools.map((tool) => tool.executable),
+    "CLI executable",
+  );
   for (const tool of extensions.cliTools) {
+    if (!tool.name.trim()) {
+      throw new Error("CLI tool name is required");
+    }
     if (!tool.executable.trim()) {
       throw new Error(`CLI tool executable is required: ${tool.name}`);
+    }
+    if (!tool.requiredCapabilities.includes("tool.cli.execute")) {
+      throw new Error(
+        `CLI tool must require tool.cli.execute capability: ${tool.name}`,
+      );
+    }
+    if (tool.packageRef && tool.packageRef.trim() !== tool.packageRef) {
+      throw new Error(`CLI tool package ref must be normalized: ${tool.name}`);
     }
   }
 
   if (extensions.nixProfile) {
+    if (
+      !extensions.nixProfile.profileHash &&
+      extensions.nixProfile.packages.length === 0
+    ) {
+      throw new Error("Nix profile requires packages or a resolved hash");
+    }
     assertUnique(
       extensions.nixProfile.packages.map((pkg) => pkg.name),
       "Nix package",
     );
+    for (const pkg of extensions.nixProfile.packages) {
+      if (!pkg.name.trim() || !pkg.ref.trim()) {
+        throw new Error("Nix package name and ref are required");
+      }
+    }
   }
 }
 

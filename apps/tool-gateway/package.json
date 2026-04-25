@@ -8,7 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run --root ../.. apps/tool-gateway/src/app.test.ts"
   },
   "dependencies": {
     "@colony/config": "*",

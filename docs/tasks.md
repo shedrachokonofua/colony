@@ -703,7 +703,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.2 — Tool Gateway Credentials And Egress
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.8, COL-2.1
 
@@ -723,7 +723,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.3 — Agent Skill Bundle Registry
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.1
 
@@ -743,7 +743,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.4 — Generic CLI Tool Manifests
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.1, COL-2.3
 
@@ -762,7 +762,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.5 — Nix-Backed Sandbox Tool Materialization
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.4
 
@@ -781,7 +781,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.6 — Deployer Runtime Bindings
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.4, COL-2.5
 
@@ -800,7 +800,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.7 — Agent Runtime Adapter
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.5, COL-2.1, COL-2.3, COL-2.4, COL-2.5, COL-2.6
 
@@ -822,7 +822,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.8 — Task And Review Packet Generation
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.5, COL-1.6
 

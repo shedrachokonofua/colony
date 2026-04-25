@@ -2,6 +2,10 @@ output "namespace" {
   value = local.namespace
 }
 
+output "sandbox_namespace" {
+  value = local.sandbox_namespace
+}
+
 output "web_url" {
   value = "https://${var.hosts.web}"
 }

@@ -39,12 +39,40 @@ const providerCredentialResponse = z.object({
   token: z.string(),
 });
 
+const packageAccessRequest = z.object({
+  actor: z.string().min(1),
+  registry: z.string().min(1),
+  package_name: z.string().min(1),
+});
+
+const packageAccessResponse = z.object({
+  allowed: z.boolean(),
+  registry: z.string(),
+  package_name: z.string(),
+});
+
+export interface ToolGatewayAuditRecord {
+  readonly actor: ActorId;
+  readonly action: string;
+  readonly capability?: Capability;
+  readonly allowed: boolean;
+  readonly reason?: string;
+  readonly evidence: Readonly<Record<string, unknown>>;
+}
+
+export interface PackageRegistryAllowlist {
+  readonly registry: string;
+  readonly packagePatterns: readonly string[];
+}
+
 export interface ToolGatewayDeps {
   readonly resolveIdentity: (
     actor: ActorId,
     provider: string,
   ) => Promise<ProviderIdentity | null>;
   readonly tokenForRole: (role: string) => string | undefined;
+  readonly packageAllowlist?: readonly PackageRegistryAllowlist[];
+  readonly audit?: (record: ToolGatewayAuditRecord) => Promise<void> | void;
 }
 
 export function buildApp(deps?: ToolGatewayDeps): OpenAPIHono {
@@ -95,6 +123,14 @@ export function buildApp(deps?: ToolGatewayDeps): OpenAPIHono {
       projectPath: input.project?.path,
       tokenForRole: deps.tokenForRole,
     });
+    await deps.audit?.(
+      auditProviderCredentialDecision({
+        actor: input.actor as ActorId,
+        capability: input.capability as Capability,
+        projectPath: input.project?.path,
+        resolved,
+      }),
+    );
     if (!resolved.allowed) {
       return c.json(
         { error: { code: resolved.reason, message: resolved.reason } },
@@ -105,6 +141,61 @@ export function buildApp(deps?: ToolGatewayDeps): OpenAPIHono {
       );
     }
     return c.json(resolved.credential, 200);
+  });
+
+  const packageRoute = createRoute({
+    method: "post",
+    path: "/internal/package/access",
+    summary: "Check whether a package registry request is allowlisted",
+    request: {
+      body: {
+        content: { "application/json": { schema: packageAccessRequest } },
+      },
+    },
+    responses: {
+      200: {
+        description: "Package access is allowlisted.",
+        content: { "application/json": { schema: packageAccessResponse } },
+      },
+      403: {
+        description: "Package access denied.",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+    },
+  });
+
+  app.openapi(packageRoute, async (c) => {
+    const input = c.req.valid("json");
+    const resolved = resolvePackageAccess({
+      allowlist: deps?.packageAllowlist ?? [],
+      registry: input.registry,
+      packageName: input.package_name,
+    });
+    await deps?.audit?.({
+      actor: input.actor as ActorId,
+      action: "tool.package.access",
+      capability: "tool.call",
+      allowed: resolved.allowed,
+      reason: resolved.allowed ? undefined : resolved.reason,
+      evidence: {
+        registry: input.registry,
+        package_name: input.package_name,
+      },
+    });
+    if (!resolved.allowed) {
+      return c.json(
+        { error: { code: resolved.reason, message: resolved.reason } },
+        403,
+      );
+    }
+    return c.json(
+      {
+        allowed: true,
+        registry: input.registry,
+        package_name: input.package_name,
+      },
+      200,
+    );
   });
 
   app.doc("/openapi.json", {
@@ -177,6 +268,74 @@ export function resolveProviderCredential(input: {
       token,
     },
   };
+}
+
+export type PackageAccessResolution =
+  | { readonly allowed: true }
+  | {
+      readonly allowed: false;
+      readonly reason: "registry_denied" | "package_denied";
+    };
+
+export function resolvePackageAccess(input: {
+  readonly allowlist: readonly PackageRegistryAllowlist[];
+  readonly registry: string;
+  readonly packageName: string;
+}): PackageAccessResolution {
+  const registry = input.allowlist.find(
+    (candidate) => candidate.registry === input.registry,
+  );
+  if (!registry) {
+    return { allowed: false, reason: "registry_denied" };
+  }
+  if (
+    !registry.packagePatterns.some((pattern) =>
+      matchesPackagePattern(input.packageName, pattern),
+    )
+  ) {
+    return { allowed: false, reason: "package_denied" };
+  }
+  return { allowed: true };
+}
+
+export function auditProviderCredentialDecision(input: {
+  readonly actor: ActorId;
+  readonly capability: Capability;
+  readonly projectPath?: string;
+  readonly resolved: ProviderCredentialResolution;
+}): ToolGatewayAuditRecord {
+  const evidence =
+    input.resolved.allowed === true
+      ? {
+          provider: input.resolved.credential.provider,
+          bot_actor: input.resolved.credential.bot_actor,
+          provider_user_id: input.resolved.credential.provider_user_id,
+          provider_username: input.resolved.credential.provider_username,
+          project_path: input.projectPath,
+          token: "<redacted>",
+        }
+      : {
+          project_path: input.projectPath,
+        };
+  return {
+    actor: input.actor,
+    action: "tool.provider.credential",
+    capability: input.capability,
+    allowed: input.resolved.allowed,
+    reason: input.resolved.allowed ? undefined : input.resolved.reason,
+    evidence,
+  };
+}
+
+function matchesPackagePattern(packageName: string, pattern: string): boolean {
+  if (pattern === "*") return true;
+  if (pattern.endsWith("/*")) {
+    return packageName.startsWith(pattern.slice(0, -1));
+  }
+  if (pattern.endsWith("*")) {
+    return packageName.startsWith(pattern.slice(0, -1));
+  }
+  return packageName === pattern;
 }
 
 function roleAllowsCapability(role: string, capability: Capability): boolean {

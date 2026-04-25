@@ -10,6 +10,12 @@ variable "namespace" {
   default     = "colony-dev"
 }
 
+variable "sandbox_namespace" {
+  description = "Kubernetes namespace for agent sandbox pods (Developer, Reviewer)."
+  type        = string
+  default     = "colony-sandboxes-dev"
+}
+
 variable "image_registry" {
   description = "Base image registry path containing per-app images."
   type        = string

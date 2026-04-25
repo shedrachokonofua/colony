@@ -7,9 +7,10 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run --root ../.. packages/agent-runtime/src/sandbox-profile.test.ts"
+    "test": "vitest run --root ../.. src/*.test.ts"
   },
   "dependencies": {
-    "@colony/domain": "*"
+    "@colony/domain": "*",
+    "@colony/schemas": "*"
   }
 }
