@@ -18,6 +18,8 @@
     "dev:web": "npm --workspace @colony/web run dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && npm --workspace @colony/web run typecheck",
     "test": "vitest run",
+    "schemas:generate": "node scripts/schemas-generate.mjs",
+    "schemas:check": "node scripts/schemas-generate.mjs && git diff --exit-code -- schemas",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

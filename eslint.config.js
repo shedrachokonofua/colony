@@ -19,6 +19,7 @@ export default tseslint.config(
       "coverage/**",
       "eslint.config.js",
       "prettier.config.js",
+      "scripts/**",
     ],
   },
 );
