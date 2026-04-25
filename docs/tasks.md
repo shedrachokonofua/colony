@@ -841,7 +841,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.9 — Developer Execution Flow
 
-- [x]
+- [ ]
 
 **Depends on:** COL-2.2, COL-2.7, COL-2.8
 
@@ -877,7 +877,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.11 — Reviewer Execution Flow
 
-- [x]
+- [ ]
 
 **Depends on:** COL-2.7, COL-2.8, COL-2.10
 
@@ -934,19 +934,97 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.14 — Phase 2 End-To-End Acceptance
 
-- [x]
+- [ ]
 
-**Depends on:** COL-1.9, COL-2.9, COL-2.11, COL-2.12, COL-2.13
+**Depends on:** COL-1.9, COL-2.9, COL-2.11, COL-2.12, COL-2.13, COL-2.15, COL-2.16, COL-2.17, COL-2.18
 
 **Deliverables**
 
-- CSV-export example task through real MR.
+- CSV-export example task through real MR, executed by **real pi agents** end-to-end.
 
 **Acceptance**
 
 - Task goes `ready -> claimed -> in_progress -> review_requested -> merge_ready -> merged -> closed`.
 - Reviewer approval, green pipeline, and human `/approve` are required.
 - Audit trail links provider event, workflow action, envelope hash, and resulting state version.
+- Developer envelope is produced by `pi-coding-agent`; reviewer envelope is produced by `pi-mono`. The fake adapter is reserved for CI determinism.
+
+### COL-2.15 — Pi Runner Implementation
+
+- [ ]
+
+**Depends on:** COL-2.7
+
+**Deliverables**
+
+- Concrete `PiRunner` implementations behind `PiAgentRuntimeAdapter`:
+  - `PiCodingAgentRunner` for the Developer role — drives `pi-coding-agent` over the prepared sandbox, captures stdout/stderr, normalizes its output into a `developer_completion` envelope.
+  - `PiMonoRunner` for the Reviewer role — drives `pi-mono` in print/JSON mode and normalizes its output into a `reviewer_review` envelope.
+- Process supervision: timeout, cancel, structured logging redacting LLM/provider secrets.
+- Sandbox plumbing for the packet (stdin/file), tool profile (`PATH`), credentials (broker), and writable scratch dir.
+- Round-trip schema validation so an unparseable runner output marks the run `envelope_rejected` rather than crashing the activity.
+
+**Acceptance**
+
+- A unit/integration test launches the real `pi-coding-agent` binary against a synthetic packet and gets back a schema-valid `developer_completion` envelope.
+- A unit/integration test launches the real `pi-mono` binary in print/JSON mode against a synthetic review packet and gets back a schema-valid `reviewer_review` envelope.
+- Cancel during run returns `canceled` and leaves no orphan child processes.
+
+### COL-2.16 — Runtime Selection And Wiring
+
+- [ ]
+
+**Depends on:** COL-2.15
+
+**Deliverables**
+
+- `AGENT_RUNTIME` config (`fake` | `pi`) read by `apps/worker` (and any other adapter consumer) at startup.
+- Default to `fake` in tests, `pi` in pilot/prod; explicit ADR-style note in `packages/agent-runtime` README.
+- Worker constructs the appropriate `AgentRuntimeAdapter` from config, with role-specific runner selection (`developer -> pi-coding-agent`, `reviewer -> pi-mono`).
+- `developer-run.ts` / `reviewer-run.ts` no longer hard-code `FakeAgentRuntimeAdapter` defaults at activity-instance level; wiring flows from the worker bootstrap.
+
+**Acceptance**
+
+- `AGENT_RUNTIME=fake npm test` runs deterministic CI tests with the fake adapter.
+- `AGENT_RUNTIME=pi` makes the worker dial the real pi binaries, verified by a smoke test that startRun → succeeded against a trivial packet.
+- Misconfiguration (missing binaries, missing LLM secret) fails fast at worker boot with a structured error, not at first envelope.
+
+### COL-2.17 — Pi Secrets Through The Existing Secrets Path
+
+- [ ]
+
+**Depends on:** COL-2.16
+
+**Deliverables**
+
+- LLM provider keys, pi config, and any model-routing settings flow through `secrets/dev.yaml` (SOPS) and OpenBao `kv/colony/*` for Aether — never hand-edited `.env` files.
+- Tool Gateway / runtime binding model treats LLM credentials as a credential binding with a capability (e.g. `agent.llm.invoke`) and broker, mirroring the existing provider-credential pattern.
+- Documented rotation flow (`task secrets:rotate llm` or equivalent) and audit row on rotation.
+- Worker process never reads LLM keys from the host environment directly — they arrive via the broker on a per-run basis.
+
+**Acceptance**
+
+- Booting the worker with no LLM secret in OpenBao/SOPS fails with a clear "missing capability binding" error.
+- A secret rotation in OpenBao causes the next run to use the rotated key without a worker restart.
+- `git grep` confirms no committed `.env` carries an LLM key, and `secrets/dev.yaml` decrypts to a populated map.
+
+### COL-2.18 — Live Pi Acceptance Target
+
+- [ ]
+
+**Depends on:** COL-2.15, COL-2.16, COL-2.17
+
+**Deliverables**
+
+- `task acceptance:phase2:live` (or `npm run acceptance:phase2:live`) target that runs the same Phase 2 flow as the fake-runtime acceptance, but with `AGENT_RUNTIME=pi` against the home-lab GitLab.
+- CI keeps the fake-runtime acceptance for determinism; the live target is operator-triggered.
+- Documented prerequisites (binaries, OpenBao login, GitLab project) and tear-down behaviour.
+
+**Acceptance**
+
+- A live run produces a real MR opened by `pi-coding-agent`'s envelope, a real review comment from `pi-mono`'s envelope, a green pipeline, a human `/approve`, and a merge — all on the home-lab GitLab.
+- Audit trail in Colony shows the real pi run IDs, sandbox IDs, packet hashes, and envelope hashes (no `fake-` prefixes).
+- Failure modes (binary not found, envelope schema fail, LLM rate-limit) are observable in Colony's UI, not just stderr.
 
 ## Phase 3 — Reconciliation, Conflicts, And Pending Sync
 
