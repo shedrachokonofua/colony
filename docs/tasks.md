@@ -683,7 +683,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.1 — Minimum Sandbox Egress Enforcement
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.3, COL-0.8
 
@@ -693,15 +693,15 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Default-deny egress.
 - No direct Task Graph API access from agent sandboxes.
 - Provider API access through Provider Adapter only.
-- Git/package/LLM access through Tool Gateway allowlists.
+- Repo/package/LLM access only through deployer-approved egress, scoped credentials, or Tool Gateway allowlists.
 
 **Acceptance**
 
 - Agent sandbox cannot reach Task Graph API.
-- Agent sandbox can access allowed git/package endpoints through Tool Gateway.
+- Agent sandbox can access only approved repo/package/LLM endpoints for the selected run environment.
 - Denied egress is logged.
 
-### COL-2.2 — Tool Gateway Git And Package Proxy
+### COL-2.2 — Tool Gateway Credentials And Egress
 
 - [ ]
 
@@ -710,26 +710,103 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Deliverables**
 
 - Tool Gateway capability checks.
-- Git proxy path for branch fetch/push.
-- Package registry allowlist.
+- Scoped provider bot credential resolution for prepared sandbox environments.
+- Package registry and external-service allowlists.
 - Per-run credential handling and redaction.
 - Tool call audit records.
 
 **Acceptance**
 
-- Developer can push a branch only with `provider.branch.push`.
-- Unauthorized git/package calls fail and are audited.
+- Developer can push a branch with normal `git` only when the run has a scoped credential and `provider.branches.push`.
+- Unauthorized credential or package access fails and is audited.
 - Secrets are not present in logs.
 
-### COL-2.3 — Agent Runtime Adapter
+### COL-2.3 — Agent Skill Bundle Registry
 
 - [ ]
 
-**Depends on:** COL-0.5, COL-2.1
+**Depends on:** COL-2.1
 
 **Deliverables**
 
-- `start_run(packet, runtime_profile)`.
+- Skill bundle manifest type for read-only agent instructions and references.
+- Configured skill source paths scanned for `SKILL.md` entries.
+- Per-skill metadata: name, description, source, content hash, and mount path.
+- Run manifest section recording selected skills and hashes.
+- Validation that skill mounts are read-only and live under Colony-owned sandbox paths.
+
+**Acceptance**
+
+- Agent run setup can select a subset of registered skills without mounting the whole source repository.
+- Duplicate skill names or mount paths are rejected.
+- Run metadata records the exact skill names and hashes used.
+
+### COL-2.4 — Generic CLI Tool Manifests
+
+- [ ]
+
+**Depends on:** COL-2.1, COL-2.3
+
+**Deliverables**
+
+- Generic CLI tool manifest type with name, executable, resolver, package reference, env allowlist, args policy label, and required capabilities.
+- `tool.cli.execute` capability for prepared-environment CLI execution.
+- Runtime validation that CLI tool presence does not automatically grant capabilities.
+- Run manifest section recording selected CLI tools and their resolver/package references.
+
+**Acceptance**
+
+- A sandbox profile can declare ordinary CLI tools without Colony knowing the target system behind them.
+- Adding a CLI tool to the prepared environment does not add its required capability to the actor.
+- Provider credential resolution does not treat generic CLI execution as provider API authority.
+
+### COL-2.5 — Nix-Backed Sandbox Tool Materialization
+
+- [ ]
+
+**Depends on:** COL-2.4
+
+**Deliverables**
+
+- Nix profile manifest with flake reference, package refs, and resolved profile hash.
+- Sandbox preparation step that materializes declared CLI tools onto the agent `PATH`.
+- Audit/run metadata for resolved tool versions or profile hash.
+- Fallback resolver contract for deployers that satisfy tools through images or platform templates instead of Nix.
+
+**Acceptance**
+
+- A run can receive a prepared environment with normal CLI binaries available on `PATH`.
+- The resolved Nix/tool profile is pinned or hash-recorded in run metadata.
+- No secrets or credentials are introduced by installing CLI packages alone.
+
+### COL-2.6 — Deployer Runtime Bindings
+
+- [ ]
+
+**Depends on:** COL-2.4, COL-2.5
+
+**Deliverables**
+
+- Deployer-owned binding model for env vars, read-only config mounts, credentials, egress, and service account/RBAC choices.
+- Runtime binding input accepted by `start_run` without hard-coding specific external systems.
+- Documentation that skills and CLI tools are requests/inputs, while deployer bindings provide actual environment authority.
+- Local/dev and pilot/prod guidance for permissive vs. restrictive network posture.
+
+**Acceptance**
+
+- The same CLI tool manifest can be bound differently by different deployments.
+- Credentials/config mounts are explicit run inputs and are not implied by skill or package selection.
+- Run metadata records which deployer binding name/hash was applied.
+
+### COL-2.7 — Agent Runtime Adapter
+
+- [ ]
+
+**Depends on:** COL-0.5, COL-2.1, COL-2.3, COL-2.4, COL-2.5, COL-2.6
+
+**Deliverables**
+
+- `start_run(packet, run_environment)`.
 - `get_run_status`.
 - `get_run_output`.
 - `cancel_run`.
@@ -743,7 +820,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Run metadata stores sandbox ID, packet hash, output envelope hash.
 - Pi-specific integration lives in `packages/agent-runtime`, not in workflow code.
 
-### COL-2.4 — Task And Review Packet Generation
+### COL-2.8 — Task And Review Packet Generation
 
 - [ ]
 
@@ -762,16 +839,16 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Packet includes required IDs, provider context, repo context, acceptance criteria, policy, capabilities, freshness, and required outputs.
 - Provider comments are quoted/provenance-linked and cannot become system instructions.
 
-### COL-2.5 — Developer Execution Flow
+### COL-2.9 — Developer Execution Flow
 
 - [ ]
 
-**Depends on:** COL-2.2, COL-2.3, COL-2.4
+**Depends on:** COL-2.2, COL-2.7, COL-2.8
 
 **Deliverables**
 
 - Supervisor activity to start Developer run.
-- Branch creation/fetch/push through Tool Gateway git proxy.
+- Branch creation/fetch/push through normal `git` in the prepared sandbox using scoped provider bot credentials.
 - Developer completion envelope ingestion.
 - MR/PR open through Provider Adapter.
 
@@ -781,7 +858,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Completion envelope must reference MR and commit artifact.
 - Stale envelope freshness is rejected.
 
-### COL-2.6 — GitLab Adapter: MR/PR, Commits, Pipelines
+### COL-2.10 — GitLab Adapter: MR/PR, Commits, Pipelines
 
 - [ ]
 
@@ -798,11 +875,11 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 - Integration test covers MR creation, pipeline status ingestion, and approval status normalization.
 
-### COL-2.7 — Reviewer Execution Flow
+### COL-2.11 — Reviewer Execution Flow
 
 - [ ]
 
-**Depends on:** COL-2.3, COL-2.4, COL-2.6
+**Depends on:** COL-2.7, COL-2.8, COL-2.10
 
 **Deliverables**
 
@@ -818,11 +895,11 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Reviewer changes requested moves task to `changes_requested`.
 - Findings include severity, evidence, acceptance criterion reference, confidence.
 
-### COL-2.8 — HITL Gate Enforcement
+### COL-2.12 — HITL Gate Enforcement
 
 - [ ]
 
-**Depends on:** COL-0.8, COL-1.4, COL-2.7
+**Depends on:** COL-0.8, COL-1.4, COL-2.11
 
 **Deliverables**
 
@@ -837,11 +914,11 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - New commit invalidates approval on prior SHA.
 - Human `/approve` is ignored if actor lacks capability.
 
-### COL-2.9 — Merge And Close Flow
+### COL-2.13 — Merge And Close Flow
 
 - [ ]
 
-**Depends on:** COL-2.6, COL-2.8
+**Depends on:** COL-2.10, COL-2.12
 
 **Deliverables**
 
@@ -855,11 +932,11 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - No merge without current approvals, green pipeline, no blocking threads, and Task Graph `merge_ready`.
 - Task does not close until provider issue and MR state reconcile.
 
-### COL-2.10 — Phase 2 End-To-End Acceptance
+### COL-2.14 — Phase 2 End-To-End Acceptance
 
 - [ ]
 
-**Depends on:** COL-1.9, COL-2.5, COL-2.7, COL-2.8, COL-2.9
+**Depends on:** COL-1.9, COL-2.9, COL-2.11, COL-2.12, COL-2.13
 
 **Deliverables**
 
@@ -879,7 +956,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 - [ ]
 
-**Depends on:** COL-2.9
+**Depends on:** COL-2.13
 
 **Deliverables**
 
@@ -1012,7 +1089,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 - [ ]
 
-**Depends on:** COL-0.6, COL-2.4
+**Depends on:** COL-0.6, COL-2.8
 
 **Deliverables**
 
@@ -1065,7 +1142,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 - [ ]
 
-**Depends on:** COL-2.8, COL-3.5
+**Depends on:** COL-2.12, COL-3.5
 
 **Deliverables**
 

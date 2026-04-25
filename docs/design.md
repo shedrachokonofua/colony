@@ -108,6 +108,7 @@ Roles describe **intent** (what the actor is for). Capabilities authorize **spec
 | `decision.write`           | —          | W (via cand.)  | W          | W (via cand.)  | W (via cand.)  | —              | W            |
 | `sandbox.exec`             | —          | W (own)        | —          | W (own)        | W (own)        | W (own)        | W (own)      |
 | `tool.call`                | —          | W (allowlist)  | —          | W (allowlist)  | W (allowlist)  | W (allowlist)  | —            |
+| `tool.cli.execute`         | —          | W (profile)    | —          | W (profile)    | W (profile)    | W (profile)    | —            |
 | `release.deploy`           | W          | —              | —          | —              | —              | G              | —            |
 | `policy.override`          | W (policy) | —              | —          | —              | —              | —              | —            |
 | `provider.admin.bootstrap` | W (admin)  | —              | —          | —              | —              | —              | —            |
@@ -116,7 +117,7 @@ Human actions are **first-class workflow events**, not trusted out-of-band mutat
 
 ### Open Questions
 
-- **Enforcement order.** MVP enforces capabilities at three points: (1) Task Graph API mutations, (2) Tool Gateway calls, (3) provider write calls via the adapter. Minimum sandbox egress enforcement is required before real Developer/Reviewer runs in Phase 2; deeper seccomp/profile hardening can continue in Phase 3.
+- **Enforcement order.** MVP enforces capabilities at three points: (1) Task Graph API mutations, (2) Tool Gateway calls, (3) provider write calls via the adapter. Generic CLI tools are exposed through run profiles; installing a binary does not grant its credentials or authority. Minimum sandbox egress enforcement is required before real Developer/Reviewer runs in Phase 2; deeper seccomp/profile hardening can continue in Phase 3.
 - **Identity mapping.** Human provider identity → Colony permissions via an operator-managed mapping table keyed on provider user ID. Bot accounts have a separate mapping marked `role=bot`.
 - **Task Graph API credentials.** Agents **do not** receive Task Graph API credentials in MVP. They only consume task/review packets and emit structured output envelopes. The Supervisor is the only normal writer.
 
@@ -131,7 +132,7 @@ Human actions are **first-class workflow events**, not trusted out-of-band mutat
 - **Task Graph API.** A service fronting Postgres. Transactional claims, schema validation, capability checks, audit writes. Fronts the `colony` database.
 - **Postgres.** One instance, three databases: `temporal`, `temporal_visibility`, `colony`.
 - **Agent Sandboxes.** Kubernetes `SandboxClaim` per invocation (gVisor default; Kata for scopes that demand hardware isolation). `SandboxWarmPool` for Developer.
-- **Tool Gateway.** Allowlisted outbound proxy for LLM endpoints, package registries, git provider, and external services. Short-lived credentials per run.
+- **Tool Gateway.** Allowlisted outbound access and credential broker for LLM endpoints, package registries, provider credentials, and external services. Short-lived credentials per run.
 - **Provider Adapter.** Library (embedded in Supervisor + Webhook Dispatcher) implementing the provider interface. GitLab-first; pluggable.
 - **Web UI + API.** Operator cockpit and admin API. Read-mostly in MVP.
 - **Memory subsystem.** Postgres tables + optional search index; Memory Consolidator writes accepted candidates.
@@ -158,7 +159,7 @@ provider event
 
 Visible at the wire:
 
-- Provider mutations use one of two audited paths: API mutations go through the Provider Adapter; git transport mutations (branch push/fetch) go through the Tool Gateway git proxy. Agent sandboxes do not receive raw long-lived provider credentials.
+- Provider mutations use audited paths: API mutations go through the Provider Adapter; repo operations use normal CLI tools in the sandbox with scoped bot credentials supplied by the prepared run environment. Agent sandboxes do not receive raw long-lived provider credentials.
 - The Task Graph API is the only component that writes to the `colony` database.
 - Temporal history holds orchestration decisions and pointers, not Task Graph authority, DAG semantics, or artifacts.
 - Scope/task hierarchy, dependency edges, state versions, approvals, and audit facts remain rebuildable from the Task Graph and provider/repo artifacts even if Temporal workflow executions are restarted or replaced.
@@ -502,7 +503,7 @@ ProviderAdapter.bootstrap(spec): Promise<BootstrapResult>
 2. **Deduplication.** `(event_id, object_id)` dedup table, 7-day TTL.
 3. **Classification.** Map event → `valid_command`, `context_update`, `review_feedback`, `approval`, `conflict`, `noop`, or `needs_clarification`.
 4. **Signal dispatch.** Look up `scope_id` from `provider_mirrors` using provider, project/repo ID, entity type, and provider entity ID; send signal to `supervisor-<scope_id>`.
-5. **Provider projection writes.** The webhook dispatcher **does not** write to the provider. Provider API writes are performed by Supervisor activities through the Provider Adapter; git transport writes from agent runs go through the Tool Gateway git proxy.
+5. **Provider projection writes.** The webhook dispatcher **does not** write to the provider. Provider API writes are performed by Supervisor activities through the Provider Adapter; repo operations from agent runs use scoped bot credentials in the prepared sandbox environment.
 
 ### Periodic reconciliation
 
@@ -947,7 +948,7 @@ See §10. Pluggable; GitLab implementation first.
 
 ### Agent Runtime Adapter
 
-- `start_run(packet, runtime_profile) → run_handle`
+- `start_run(packet, run_environment) → run_handle`
 - `get_run_status(run_handle)`
 - `get_run_output(run_handle) → Envelope`
 - `cancel_run(run_handle)`
@@ -1193,7 +1194,7 @@ Acceptance: open a GitLab epic/parent issue, see scope mirrored; approve a mock 
 Deliverables:
 
 - Agent sandbox (SandboxClaim) for Developer + Reviewer.
-- Minimum sandbox egress enforcement: no direct Task Graph access, provider API through Provider Adapter, git/package/LLM access through Tool Gateway allowlists.
+- Minimum sandbox egress enforcement: no direct Task Graph access, provider API through Provider Adapter, repo access through scoped bot credentials, package/LLM access through deployer-approved egress or Tool Gateway allowlists.
 - pi-coding-agent integration for Developer; pi-mono print/JSON for Reviewer.
 - Task packet + review packet generation.
 - Developer envelope validation; Reviewer envelope validation.

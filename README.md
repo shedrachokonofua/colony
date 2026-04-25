@@ -70,7 +70,7 @@ flowchart LR
     class GLIssues,GLMR,GLWebhook provider;
 ```
 
-The webhook dispatcher only **signals** — never writes the provider. Provider writes are performed by Supervisor activities (via `apps/api`/`packages/provider-gitlab`) or by agent sandboxes through the tool-gateway git proxy. Postgres holds Task Graph state, audit log, agent run metadata, and Temporal's own orchestration schemas (separate databases). See [`docs/design.md`](docs/design.md) §5 for the full architecture.
+The webhook dispatcher only **signals** — never writes the provider. Provider API writes are performed by Supervisor activities (via `apps/api`/`packages/provider-gitlab`); agent sandboxes use prepared CLI environments with scoped bot credentials for repo operations. Postgres holds Task Graph state, audit log, agent run metadata, and Temporal's own orchestration schemas (separate databases). See [`docs/design.md`](docs/design.md) §5 for the full architecture.
 
 ## Agent workflow
 

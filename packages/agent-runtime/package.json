@@ -5,5 +5,11 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/agent-runtime/src/sandbox-profile.test.ts"
+  },
+  "dependencies": {
+    "@colony/domain": "*"
   }
 }

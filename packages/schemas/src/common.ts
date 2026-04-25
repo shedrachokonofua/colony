@@ -149,6 +149,7 @@ export const CAPABILITY_VALUES = [
   "decision.write",
   "sandbox.exec",
   "tool.call",
+  "tool.cli.execute",
   "release.deploy",
   "policy.override",
   "provider.admin.bootstrap",
