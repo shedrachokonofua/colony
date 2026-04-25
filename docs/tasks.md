@@ -957,18 +957,19 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 **Deliverables**
 
-- Concrete `PiRunner` implementations behind `PiAgentRuntimeAdapter`:
-  - `PiCodingAgentRunner` for the Developer role — drives `pi-coding-agent` over the prepared sandbox, captures stdout/stderr, normalizes its output into a `developer_completion` envelope.
-  - `PiMonoRunner` for the Reviewer role — drives `pi-mono` in print/JSON mode and normalizes its output into a `reviewer_review` envelope.
-- Process supervision: timeout, cancel, structured logging redacting LLM/provider secrets.
-- Sandbox plumbing for the packet (stdin/file), tool profile (`PATH`), credentials (broker), and writable scratch dir.
-- Round-trip schema validation so an unparseable runner output marks the run `envelope_rejected` rather than crashing the activity.
+- Concrete `PiRunner` implementations behind `PiAgentRuntimeAdapter`, **using Pi as an embedded TypeScript library** (direct `import` from `@mariozechner/pi-mono` / `@mariozechner/pi-coding-agent`, not a child-process CLI):
+  - `PiCodingAgentRunner` for the Developer role — drives a `pi-coding-agent` session in-process, normalizes its result into a `developer_completion` envelope.
+  - `PiMonoRunner` for the Reviewer role — drives `pi-mono` in print/JSON mode in-process, normalizes its result into a `reviewer_review` envelope.
+- Run supervision: timeout, cancel (Pi's native cancellation/AbortSignal where available), structured logging redacting LLM/provider secrets.
+- In-process plumbing for the packet (function arg), tool profile (`PATH` of the surrounding sandbox), credentials (resolved through the Tool Gateway broker before SDK call), and writable scratch dir.
+- Schema-conforming output: prefer Pi's structured-output / tool-call mechanism so the SDK returns data that already conforms to the Colony envelope schema; otherwise post-validate and mark `envelope_rejected` on parse failure.
+- Per-run isolation lives at the surrounding boundary (Node process / Kubernetes sandbox pod), not at the Pi call site.
 
 **Acceptance**
 
-- A unit/integration test launches the real `pi-coding-agent` binary against a synthetic packet and gets back a schema-valid `developer_completion` envelope.
-- A unit/integration test launches the real `pi-mono` binary in print/JSON mode against a synthetic review packet and gets back a schema-valid `reviewer_review` envelope.
-- Cancel during run returns `canceled` and leaves no orphan child processes.
+- A unit/integration test imports the Pi SDK in-process, runs a synthetic packet through `PiCodingAgentRunner`, and gets back a schema-valid `developer_completion` envelope.
+- A unit/integration test imports the Pi SDK in-process, runs a synthetic review packet through `PiMonoRunner` (print/JSON mode), and gets back a schema-valid `reviewer_review` envelope.
+- Cancel during run resolves the run as `canceled` with no orphan async work (timers, fetches, child Pi sessions) leaking past the activity boundary.
 
 ### COL-2.16 — Runtime Selection And Wiring
 
@@ -980,7 +981,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 - `AGENT_RUNTIME` config (`fake` | `pi`) read by `apps/worker` (and any other adapter consumer) at startup.
 - Default to `fake` in tests, `pi` in pilot/prod; explicit ADR-style note in `packages/agent-runtime` README.
-- Worker constructs the appropriate `AgentRuntimeAdapter` from config, with role-specific runner selection (`developer -> pi-coding-agent`, `reviewer -> pi-mono`).
+- Worker constructs the appropriate `AgentRuntimeAdapter` from config, with role-specific runner selection (`developer -> pi-coding-agent` SDK, `reviewer -> pi-mono` SDK).
+- Pi SDK imports are gated so CI tests with `AGENT_RUNTIME=fake` do not require Pi or LLM secrets to be present — the `pi` adapter loads its TS module lazily.
 - `developer-run.ts` / `reviewer-run.ts` no longer hard-code `FakeAgentRuntimeAdapter` defaults at activity-instance level; wiring flows from the worker bootstrap.
 
 **Acceptance**
@@ -1022,9 +1024,9 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 **Acceptance**
 
-- A live run produces a real MR opened by `pi-coding-agent`'s envelope, a real review comment from `pi-mono`'s envelope, a green pipeline, a human `/approve`, and a merge — all on the home-lab GitLab.
+- A live run produces a real MR opened by an in-process `pi-coding-agent` SDK envelope, a real review comment from an in-process `pi-mono` SDK envelope, a green pipeline, a human `/approve`, and a merge — all on the home-lab GitLab.
 - Audit trail in Colony shows the real pi run IDs, sandbox IDs, packet hashes, and envelope hashes (no `fake-` prefixes).
-- Failure modes (binary not found, envelope schema fail, LLM rate-limit) are observable in Colony's UI, not just stderr.
+- Failure modes (Pi SDK import failure, missing LLM credential binding, envelope schema fail, LLM rate-limit) are observable in Colony's UI, not just stderr.
 
 ## Phase 3 — Reconciliation, Conflicts, And Pending Sync
 
