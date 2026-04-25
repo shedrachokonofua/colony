@@ -10,6 +10,7 @@
   const navLinks = [
     { href: "/", label: "Home" },
     { href: "/scopes", label: "Scopes" },
+    { href: "/admin/providers", label: "Providers" },
   ];
 
   function isActive(href: string): boolean {

@@ -34,6 +34,31 @@ export interface ScopeProviderSync {
   readonly tasks: readonly ProviderSyncItem[];
 }
 
+export interface OAuthProviderConnection {
+  readonly id: string;
+  readonly status: "active" | "expired" | "revoked";
+  readonly granted_by: string;
+  readonly granted_at: string;
+  readonly refreshed_at: string | null;
+  readonly expires_at: string | null;
+  readonly revoked_at: string | null;
+}
+
+export interface OAuthProviderSummary {
+  readonly key: string;
+  readonly api: string;
+  readonly subscription?: string;
+  readonly models: readonly { readonly id: string; readonly name: string }[];
+  readonly connection: OAuthProviderConnection | null;
+}
+
+export interface OAuthBeginResponse {
+  readonly session_id: string;
+  readonly authorize_url: string;
+  readonly instructions?: string;
+  readonly expires_at: string;
+}
+
 export interface ApiClient {
   listScopes(): Promise<readonly Scope[]>;
   getScope(id: ScopeId): Promise<Scope | null>;
@@ -54,6 +79,23 @@ export interface ApiClient {
     ok: boolean;
     service: string;
     db: { ok: boolean; version?: string; error?: string };
+  }>;
+  listOAuthProviders(): Promise<readonly OAuthProviderSummary[]>;
+  beginOAuthSession(providerKey: string): Promise<OAuthBeginResponse>;
+  submitOAuthCode(
+    providerKey: string,
+    sessionId: string,
+    code: string,
+  ): Promise<{
+    readonly provider_key: string;
+    readonly status: "active";
+    readonly granted_at: string;
+    readonly expires_at: string | null;
+  }>;
+  cancelOAuthSession(providerKey: string, sessionId: string): Promise<void>;
+  revokeOAuthConnection(providerKey: string): Promise<{
+    readonly provider_key: string;
+    readonly status: "revoked";
   }>;
 }
 
@@ -176,6 +218,48 @@ export function createApiClient(opts: {
     },
     async health() {
       return req("/health");
+    },
+    async listOAuthProviders() {
+      const body = await req<{ providers: OAuthProviderSummary[] }>(
+        "/admin/providers",
+      );
+      return body.providers;
+    },
+    async beginOAuthSession(providerKey) {
+      return req<OAuthBeginResponse>(
+        `/admin/providers/${encodeURIComponent(providerKey)}/oauth/start`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
+      );
+    },
+    async submitOAuthCode(providerKey, sessionId, code) {
+      return req(
+        `/admin/providers/${encodeURIComponent(providerKey)}/oauth/submit-code`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, code }),
+        },
+      );
+    },
+    async cancelOAuthSession(providerKey, sessionId) {
+      await req(
+        `/admin/providers/${encodeURIComponent(providerKey)}/oauth/cancel`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId }),
+        },
+      );
+    },
+    async revokeOAuthConnection(providerKey) {
+      return req(
+        `/admin/providers/${encodeURIComponent(providerKey)}/oauth/connection`,
+        { method: "DELETE" },
+      );
     },
   };
 }
