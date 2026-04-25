@@ -10,6 +10,7 @@
     "test": "vitest run --root ../.. src/*.test.ts"
   },
   "dependencies": {
+    "@colony/db": "*",
     "@colony/domain": "*",
     "@colony/schemas": "*"
   }

@@ -9,3 +9,4 @@ export * from "./runtime-bindings.js";
 export * from "./sandbox-profile.js";
 export * from "./skill-registry.js";
 export * from "./tool-materialization.js";
+export * from "./oauth-auth-storage.js";
