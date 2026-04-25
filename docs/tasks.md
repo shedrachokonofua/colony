@@ -397,7 +397,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.2 — GitLab Adapter: Issues, Comments, Labels
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.1
 
@@ -415,9 +415,112 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - Provider IDs are stored only in `provider_mirrors`; any project/repo context needed by adapter calls is passed explicitly rather than read from a durable singleton.
 - GitLab-specific dependencies live in `packages/provider-gitlab`, not `packages/provider`.
 
-### COL-1.2b — Multi-Repo Provider Target Model
+### COL-1.1b — Generalize Bootstrap To N Bots
 
 - [ ]
+
+**Depends on:** COL-1.1a
+
+**Deliverables**
+
+- `BootstrapBotSpec` accepted as a record/list keyed by role name rather than the hardcoded `{ engine, reviewer }` shape.
+- `ProviderBootstrapResult.bot_users` and `bot_tokens` mirror the role keying.
+- GitLab adapter loops over the bot spec, calling `users.create` + `personal_access_tokens` per entry idempotently. Existing `engine`/`reviewer` defaults remain when `bots` is omitted so older callers don't break.
+- Predefined role set seeded by default: `engine` (developer), `reviewer`, `architect`, `integrator`, `memory_consolidator`, `supervisor` (service identity, no provider writes).
+- Fake adapter mirrors the same shape.
+- `secrets/dev.yaml` shape documented as a *map* of role → token rather than a single `GITLAB_TOKEN` (with `GITLAB_TOKEN` retained as the default `engine` alias for back-compat with current adapter constructor wiring).
+
+**Acceptance**
+
+- A bootstrap call with five bots provisions five GitLab users + five PATs and returns them keyed by role.
+- Re-running rotates each PAT idempotently without leaving orphan users.
+- Adding a new role (e.g. `data_steward`) requires only a config-side spec entry, no code change to the adapter or bootstrap result type.
+- Live test against home-lab GitLab covers at least three roles end-to-end.
+
+### COL-1.1c — Persist Bot Registry To `provider_identities`
+
+- [ ]
+
+**Depends on:** COL-1.1b, COL-0.8
+
+**Deliverables**
+
+- Bootstrap writes one `provider_identities` row per minted bot mapping a Colony actor ID (e.g. `bot:engine`, `bot:architect`) to the provider user ID, with `is_bot=true` and the role set correctly.
+- Repository method `getProviderIdentitiesForRole(role)` so the Tool Gateway can resolve "give me the bot for this role" at request time.
+- Audit trail per identity write.
+- `task bots:list` reads `provider_identities` and prints role → username → token-fingerprint (no plaintext tokens).
+
+**Acceptance**
+
+- After bootstrap, every bot has a row in `provider_identities` with the correct role and `is_bot=true`.
+- Identity lookups by role return the canonical bot for that role.
+- Re-running bootstrap is a no-op against the registry (no duplicate rows; existing rows update in place).
+
+### COL-1.1d — Per-Bot Capability Grants
+
+- [ ]
+
+**Depends on:** COL-1.1c
+
+**Deliverables**
+
+- Seed migration that grants each bot role its capability set:
+  - `bot:engine` — `provider.issues.*`, `provider.mr.*`, `provider.branches.*`, `provider.commits.*`.
+  - `bot:reviewer` — `provider.issues.comment`, `provider.mr.approve`, `provider.mr.comment`, `provider.mr.review_thread`.
+  - `bot:architect` — `graph.write` (scoped), `provider.issues.create`, `provider.epics.*`.
+  - `bot:integrator` — `provider.mr.merge`, `provider.branches.protect`, `provider.pipelines.*`.
+  - `bot:memory_consolidator` — `provider.issues.update`, `provider.issues.addLabel/removeLabel`.
+  - `bot:supervisor` — service-only: `graph.write`, `audit.write`, no provider writes.
+- Tool Gateway resolves the calling actor's role → picks the right bot's PAT for the underlying adapter call. Token narrowing is implicit in this lookup.
+- Capability check refuses if the calling actor's role doesn't carry the capability for the requested op.
+
+**Acceptance**
+
+- An agent with role `developer` calling `provider.mr.merge` is denied; an agent with role `integrator` is allowed.
+- The token sent to GitLab varies per role: `bot:engine`'s PAT for engine-shaped calls, `bot:reviewer`'s PAT for review calls.
+- Audit log records the bot identity used for every adapter call.
+
+### COL-1.1e — Per-Namespace Bot Scoping
+
+- [ ]
+
+**Depends on:** COL-1.1d, COL-1.2b
+
+**Deliverables**
+
+- `provider_identities` extended with `allowed_namespaces: text[]` (empty array = unrestricted; populated array = allowlist).
+- Tool Gateway pre-flight: resolves `ProviderProjectRef.path` (or its namespace prefix) against the calling bot's allowed list before invoking the adapter; refuses with a typed error otherwise.
+- Provider-side defense-in-depth path documented: bots removed from GitLab admin, added only to specific groups they should reach. (Operational change, not code — keep the homelab posture optional.)
+- `task bots:scope` operator command to set/extend `allowed_namespaces` for a bot.
+
+**Acceptance**
+
+- A bot with `allowed_namespaces=['colony']` calling `issues.create` against a project under `other-org/...` is denied at the gateway.
+- A bot with empty `allowed_namespaces` falls back to "anything that succeeds at the provider" (homelab default).
+- Scope changes are auditable.
+
+### COL-1.1f — Bot Lifecycle Operator UX
+
+- [ ]
+
+**Depends on:** COL-1.1c
+
+**Deliverables**
+
+- `task bots:add ROLE=architect` mints a new bot, rotates its PAT, persists `provider_identities`, updates `secrets/dev.yaml` with the new token (encrypted in place), writes audit row.
+- `task bots:rotate [ROLE=...]` rotates one or all PATs and re-encrypts `secrets/dev.yaml`.
+- `task bots:list` prints role / username / token-fingerprint / scope.
+- `task bots:remove ROLE=...` revokes the PAT, marks the GitLab user disabled, writes audit row, leaves the `provider_identities` row with a `disabled_at` timestamp (no hard delete — preserves audit referential integrity).
+
+**Acceptance**
+
+- An operator can add a new role, rotate it, and remove it without touching the codebase.
+- `secrets/dev.yaml` after rotation decrypts to a fresh token map; old tokens are revoked GitLab-side.
+- `bots:list` matches what `provider_identities` says is current.
+
+### COL-1.2b — Multi-Repo Provider Target Model
+
+- [x]
 
 **Depends on:** COL-0.7, COL-1.2
 
@@ -1179,11 +1282,17 @@ After Phase 0, the next critical path is:
 
 1. COL-1.1
 2. COL-1.2
-3. COL-1.3
-4. COL-1.4
-5. COL-1.5
-6. COL-1.6
-7. COL-1.8
-8. COL-1.9
+3. COL-1.2b
+4. COL-1.1b — generalize bootstrap to N bots
+5. COL-1.1c — persist bot registry
+6. COL-1.1d — per-bot capability grants
+7. COL-1.3
+8. COL-1.4
+9. COL-1.5
+10. COL-1.6
+11. COL-1.8
+12. COL-1.9
+
+COL-1.1e (per-namespace bot scoping) and COL-1.1f (bot lifecycle UX) are tracked separately — land them in parallel with COL-1.5/1.6 once agents start making real adapter calls.
 
 Phase 2 should not start real Developer/Reviewer execution until COL-2.1 minimum sandbox egress enforcement is complete.

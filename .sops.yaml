@@ -1,0 +1,12 @@
+# SOPS config for the colony repo.
+#
+# Encryption key lives in OpenBao Transit at the URI below. The transit
+# mount + key must exist before `sops secrets/dev.yaml` works the first
+# time (see secrets/README.md for the one-time setup).
+#
+# Pattern matches the rest of the homelab (aether, seven30/*): one transit
+# mount per project, single key named `sops`.
+
+creation_rules:
+  - path_regex: secrets/.*\.ya?ml$
+    hc_vault_transit_uri: https://bao.home.shdr.ch/v1/colony/keys/sops

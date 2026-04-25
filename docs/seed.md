@@ -18,7 +18,7 @@ Core systems, different jobs:
 - **Git provider (collaboration + HITL):** human-visible issues, MRs/PRs, pipelines, approvals, comments. Humans read and write here. GitLab is the initial provider, but Colony talks through a provider adapter so GitHub, Gitea, Forgejo, or other platforms can be added later.
 - **Web UI (operator cockpit):** Colony-native surface for supervising scopes, DAGs, runs, memory, decisions, policies, conflicts, and audit. It does not replace provider issue/MR/PR comments as the normal human-agent communication surface.
 - **Sync bridge:** a thin adapter keeps Task Graph ↔ provider issues in lockstep (title, description, state, assignee). MRs/PRs and pipeline status flow from the provider back into Task Graph events/audit records.
-- **Temporal (durable control plane):** owns workflow state transitions, retries, timers, idempotent event handling, and HITL waits. Large artifacts stay outside workflow history.
+- **Temporal (durable orchestration runtime):** handles per-scope signals, retries, timers, idempotent event handling, and HITL waits around the Task Graph. It does not own scope/task hierarchy, Task DAG semantics, state versions, approvals, or audit facts. Large artifacts stay outside workflow history.
 - **Release authority:** merge is done by the Developer after approvals; deploy/release actions are handled by a narrow Integrator/Release role when the scope requires them.
 
 ## Source of Truth

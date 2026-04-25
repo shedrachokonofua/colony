@@ -4,13 +4,13 @@
 
 ## 1. Executive Summary
 
-Colony is a durable control plane for AI software work. A **scope** is a bounded unit of work decomposed into a DAG of **tasks**, executed by disposable agents collaborating through a git provider while humans remain the decision authority at defined gates. The bet: durable workflow state (Task Graph + Temporal) plus the provider's existing collaboration surface (issues, MRs/PRs, approvals, pipelines) gives us auditability, safe retries, and human control that chat-based agent sessions cannot offer.
+Colony is a durable control plane for AI software work. A **scope** is a bounded unit of work decomposed into a DAG of **tasks**, executed by disposable agents collaborating through a git provider while humans remain the decision authority at defined gates. The bet: an authoritative Task Graph plus Temporal orchestration and the provider's existing collaboration surface (issues, MRs/PRs, approvals, pipelines) gives us auditability, safe retries, and human control that chat-based agent sessions cannot offer.
 
 **First production slice:** GitLab-first provider adapter, Postgres-backed Task Graph, Temporal Supervisor workflow (one per scope), a webhook dispatcher that turns provider events into workflow signals, and sandboxed Developer/Reviewer runs launched per task/review via Kubernetes `SandboxClaim`s. Architect runs long-lived in a pi-mono session.
 
 **Strongest invariant:** irreversible actions — merge, deploy, task close, scope close, approval gate advance — only happen when Task Graph, provider state, repo state, policy, and audit all agree. Any disagreement fails closed into reconciliation.
 
-What makes Colony different from "a bot glued to GitLab": the Task Graph is the authoritative workflow state and durable memory, not the provider. The provider is a projection surface for humans. Agents are disposable; continuity lives in graph state, provider artifacts, repo commits, structured output envelopes, audit, and typed memory.
+What makes Colony different from "a bot glued to GitLab": the Task Graph is the authoritative workflow state and durable memory, not the provider and not Temporal. The provider is a projection surface for humans. Temporal is an orchestration runtime for signals, waits, timers, retries, and per-scope control flow. Agents are disposable; continuity lives in graph state, provider artifacts, repo commits, structured output envelopes, audit, and typed memory.
 
 ## 2. Background And Problem Statement
 
@@ -35,7 +35,7 @@ Normal issue trackers and chat-based agent sessions are insufficient for multi-s
 
 ### Goals
 
-1. **Durable task orchestration.** A crashed Supervisor worker, Developer run, or Reviewer run is resumed from durable state (Temporal history + Task Graph + provider + repo). No private agent memory is load-bearing.
+1. **Durable task orchestration.** A crashed Supervisor worker, Developer run, or Reviewer run is resumed from durable Task Graph state, Temporal orchestration history, provider artifacts, and repo commits. No private agent memory is load-bearing.
 2. **Provider-visible collaboration.** Every human-facing interaction happens in provider issues, MR/PR comments, review threads, and approvals. No secondary chat surface for scope execution.
 3. **Deterministic ownership of state.** Each field has one source of truth (see §7); all other copies are projections.
 4. **Safe HITL gates.** Spec/DAG approval, MR/PR approval, and scope close approval are policy-enforced; bypasses require explicit, audited override.
@@ -126,7 +126,7 @@ Human actions are **first-class workflow events**, not trusted out-of-band mutat
 
 - **Git provider (external).** GitLab self-hosted initially. Source of truth for human discussion, MR/PR state, pipeline status, approvals.
 - **Webhook Dispatcher.** Ingress service. Verifies HMAC signatures, deduplicates by `(event_id, object_id)`, classifies events, and emits Temporal signals to the relevant Supervisor workflow.
-- **Temporal cluster.** Self-hosted. Durable workflow state, retries, timers, HITL waits.
+- **Temporal cluster.** Self-hosted. Durable orchestration state, retries, timers, HITL waits.
 - **Supervisor Workers.** Horizontal Deployment running Temporal workflow and activity workers. Only process that writes the Task Graph in the default path.
 - **Task Graph API.** A service fronting Postgres. Transactional claims, schema validation, capability checks, audit writes. Fronts the `colony` database.
 - **Postgres.** One instance, three databases: `temporal`, `temporal_visibility`, `colony`.
@@ -160,7 +160,8 @@ Visible at the wire:
 
 - Provider mutations use one of two audited paths: API mutations go through the Provider Adapter; git transport mutations (branch push/fetch) go through the Tool Gateway git proxy. Agent sandboxes do not receive raw long-lived provider credentials.
 - The Task Graph API is the only component that writes to the `colony` database.
-- Temporal history holds decisions, not artifacts.
+- Temporal history holds orchestration decisions and pointers, not Task Graph authority, DAG semantics, or artifacts.
+- Scope/task hierarchy, dependency edges, state versions, approvals, and audit facts remain rebuildable from the Task Graph and provider/repo artifacts even if Temporal workflow executions are restarted or replaced.
 - Artifacts live in the repo (commits), the provider (MR/PRs, comments, pipelines), or Postgres tables (envelopes, audit, memory).
 
 ### Retries, idempotency, reconciliation
@@ -196,11 +197,11 @@ Each decision: **Decision / Rationale / Consequence / Revisit when**.
 - **Consequence.** Every provider call goes through the adapter. Minor complexity overhead; prevents a painful rewrite later.
 - **Revisit when.** The first non-GitLab user appears (likely GitHub). At that point we validate the abstraction with a real second implementation.
 
-### ADR-3: Temporal owns durable orchestration
+### ADR-3: Temporal owns durable orchestration, not domain state
 
-- **Decision.** Supervisor is a Temporal workflow; HITL gates are signals/updates; retries, timers, and sleeps are Temporal primitives.
+- **Decision.** Supervisor is a Temporal workflow; HITL gates are signals/updates; retries, timers, and sleeps are Temporal primitives. Temporal does not own scope/task hierarchy, Task DAG semantics, provider mirror truth, approvals, or audit facts.
 - **Rationale.** HITL waits are long (hours to days). We need durable state across worker restarts, retries with backoff, and a clean signal model.
-- **Consequence.** Temporal history must stay small — no large diffs/logs in workflow state. Adds operational surface (Temporal cluster).
+- **Consequence.** Temporal history must stay small — IDs, versions, pointers, and orchestration choices only. Domain state changes must be committed to the Task Graph/audit log through idempotent activities. Adds operational surface (Temporal cluster).
 - **Revisit when.** History bloat becomes a recurring operational issue despite discipline, or if a simpler orchestrator suffices.
 
 ### ADR-4: Provider comments/MRs/PRs are the human-agent communication surface
@@ -393,7 +394,7 @@ Rejected by the Supervisor with an audit event and a provider comment (if provid
 ### Workflow shape
 
 - **One Supervisor workflow per scope.** Workflow ID: `supervisor-<scope_id>`.
-- **Child workflows per task** for long-running work with independent lifecycle (e.g., a task whose review loop may span days). Child workflow ID: `task-<task_id>`. Parent/child relationship mirrors DAG; child termination signals parent.
+- **No child workflow per task in MVP.** Task lifecycle, parent/child meaning, and DAG readiness are Task Graph state. The scope workflow calls activities that claim tasks, emit packets, observe runs, and reconcile state. Introduce task child workflows only if long-running task loops become operationally painful, and never as the authoritative DAG representation.
 - **No child workflow per review** — reviews are short enough to run as activities with retry policies.
 
 ### Provider events → workflow inputs
@@ -441,7 +442,7 @@ Signals vs. updates: **signal** if fire-and-forget with async acknowledgment via
 - Full provider webhook payloads (only normalized event IDs + classified action).
 - Artifacts themselves — only artifact pointers (`(kind, id, uri, hash)`).
 
-Everything large goes to Postgres, object storage, or stays in the provider. Temporal history holds decisions and pointers.
+Everything large goes to Postgres, object storage, or stays in the provider. Temporal history holds orchestration choices and pointers.
 
 ### Versioning
 
@@ -449,7 +450,7 @@ Temporal `patched(...)` for in-place workflow changes; major state-machine chang
 
 ### Open Questions
 
-- **Workflow boundary.** Decided above: scope workflow + child per long task; activities for reviews.
+- **Workflow boundary.** Decided above: one scope workflow for MVP; activities for task/review side effects. Task child workflows are deferred until measured operational pain justifies them.
 - **Signals vs. updates.** Listed above; confirm during API review.
 - **Workflow versioning cadence.** MVP: prefer backward-compatible state machine additions; reserve `TaskV2` for a real breaking change (no speculation).
 

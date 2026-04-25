@@ -37,6 +37,16 @@
             # GitLab
             glab
 
+            # Secrets management (SOPS + OpenBao client; see secrets/README.md)
+            sops
+            openbao
+
+            # Task runner (Taskfile.yml at repo root)
+            go-task
+
+            # Used by scripts/bao-login.sh for the JSON token-exchange pipeline
+            jq
+
             # Formatting / lint parity with npm scripts
             nodePackages.prettier
             actionlint

@@ -1,0 +1,143 @@
+# Colony task runner. Thin orchestration over npm scripts + secrets workflow.
+# npm scripts remain the source of truth for build/test/lint; tasks bundle
+# things that need the bao token + sops decryption around them.
+#
+# Run `task --list` for the menu.
+
+version: "3"
+
+vars:
+  BAO_LOGIN: ./scripts/bao-login.sh
+  SECRETS_FILE: secrets/dev.yaml
+
+tasks:
+  # ---------------------------------------------------------------------------
+  # Auth
+  # ---------------------------------------------------------------------------
+  bao:login:
+    desc: Authenticate to OpenBao via Keycloak device flow (caches to ~/.colony-toolbox/bao/token)
+    cmds:
+      - "{{.BAO_LOGIN}}"
+
+  bao:status:
+    desc: Show colony bao token state
+    cmds:
+      - "{{.BAO_LOGIN}} --status"
+
+  bao:
+    desc: 'Run a bao CLI command with the colony token (e.g. `task bao -- token lookup`)'
+    cmds:
+      - "{{.BAO_LOGIN}} --exec bao {{.CLI_ARGS}}"
+
+  # ---------------------------------------------------------------------------
+  # Secrets
+  # ---------------------------------------------------------------------------
+  se:
+    desc: Edit encrypted secrets
+    aliases: [secrets:edit]
+    preconditions:
+      - sh: command -v sops
+        msg: "sops not found — enter `nix develop` first"
+    cmds:
+      - "{{.BAO_LOGIN}} --exec sops {{.SECRETS_FILE}}"
+
+  sl:
+    desc: List secret keys
+    aliases: [secrets:list]
+    preconditions:
+      - sh: command -v sops
+        msg: "sops not found — enter `nix develop` first"
+    cmds:
+      - '{{.BAO_LOGIN}} --exec sh -c ''sops -d {{.SECRETS_FILE}} | yq -r "[paths(scalars)] | .[] | \".\" + join(\".\")"'''
+
+  sd:
+    desc: Decrypt secrets to stdout (use sparingly)
+    aliases: [secrets:decrypt]
+    cmds:
+      - "{{.BAO_LOGIN}} --exec sops -d {{.SECRETS_FILE}}"
+
+  # ---------------------------------------------------------------------------
+  # Local stack
+  # ---------------------------------------------------------------------------
+  up:
+    desc: Start the local docker-compose stack (Postgres + Temporal)
+    cmds:
+      - docker-compose up -d
+
+  down:
+    desc: Stop the local docker-compose stack
+    cmds:
+      - docker-compose down
+
+  reset:
+    desc: Stop the stack and wipe all volumes (destructive)
+    prompt: This drops all local Postgres + Temporal data. Continue?
+    cmds:
+      - docker-compose down -v
+
+  db:migrate:
+    desc: Apply DB migrations
+    cmds:
+      - npm run db:migrate
+
+  db:migrate:down:
+    desc: Roll back the last DB migration
+    cmds:
+      - npm run db:migrate:down
+
+  # ---------------------------------------------------------------------------
+  # Dev / test
+  # ---------------------------------------------------------------------------
+  dev:
+    desc: Run all local services (api, worker, webhook-dispatcher, tool-gateway, web)
+    cmds:
+      - npm run dev
+
+  test:
+    desc: Run unit tests (no DB / no external services)
+    cmds:
+      - npm run test:unit
+
+  test:integration:
+    desc: Run integration tests (requires the local stack — see `task up`)
+    cmds:
+      - COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test npm run test:integration
+
+  test:live:gitlab:
+    desc: Run the live multi-repo GitLab integration test against the homelab GitLab
+    summary: |
+      Self-bootstraps a throwaway group, two projects, runs the full issue
+      lifecycle on both, then deletes the group. Requires GITLAB_BASE_URL +
+      GITLAB_TOKEN — pulled from secrets/dev.yaml at runtime.
+    cmds:
+      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run test:integration --workspace @colony/provider-gitlab'"
+
+  test:all:
+    desc: All tests (unit + integration + live GitLab)
+    cmds:
+      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test npm test'"
+
+  # ---------------------------------------------------------------------------
+  # Code quality
+  # ---------------------------------------------------------------------------
+  typecheck:
+    desc: Run tsc + svelte-check
+    cmds:
+      - npm run typecheck
+
+  lint:
+    desc: Run eslint
+    cmds:
+      - npm run lint
+
+  format:
+    desc: Format with Prettier
+    cmds:
+      - npm run format
+
+  ci:
+    desc: typecheck + lint + unit tests
+    cmds:
+      - task: typecheck
+      - task: lint
+      - task: test
