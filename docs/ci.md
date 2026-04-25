@@ -6,12 +6,12 @@ Colony's CI is a single `.gitlab-ci.yml` at the repo root. It builds per-app ima
 
 Stages: `validate → build → plan → apply`.
 
-| Stage    | Jobs (today)                                                                                       | Jobs (deferred)                       |
-| -------- | -------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| validate | `flake-check`, `format-check`, `lint`, `typecheck`, `schemas-check`, `unit-tests`, `tofu-validate` | integration / E2E (COL-X.1a)          |
-| build    | `build:api`, `build:worker`, `build:webhook-dispatcher`, `build:tool-gateway`, `build:web`         | image scan / signing (COL-X.1a)       |
-| plan     | `plan` (inline, kube-auth-aether + bao-auth)                                                       | —                                     |
-| apply    | `apply` (`when: manual` on `main`)                                                                 | post-apply migrate / smoke (COL-X.1a) |
+| Stage    | Jobs (today)                                                                                                        | Jobs (deferred)                       |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| validate | `flake-check`, `format-check`, `lint`, `typecheck`, `schemas-check`, `openapi-check`, `unit-tests`, `tofu-validate` | integration / E2E (COL-X.1a)          |
+| build    | `build:api`, `build:worker`, `build:webhook-dispatcher`, `build:tool-gateway`, `build:web`                          | image scan / signing (COL-X.1a)       |
+| plan     | `plan` (inline, kube-auth-aether + bao-auth)                                                                        | —                                     |
+| apply    | `apply` (`when: manual` on `main`)                                                                                  | post-apply migrate / smoke (COL-X.1a) |
 
 `tofu-validate`, `plan`, and `apply` are gated by `exists: tofu/main.tf` so they stay no-ops until the Tofu module lands in COL-1.9. The pipeline shape is stable from day one; only the existence of `tofu/main.tf` flips the deploy jobs on.
 

@@ -149,6 +149,13 @@ schemas-check:
   script:
     - nix develop --command npm run schemas:check
 
+# Checked-in /schemas/openapi/colony-api.json must match the live OpenAPI 3.1 doc.
+openapi-check:
+  stage: validate
+  extends: .with-deps
+  script:
+    - nix develop --command npm run openapi:check
+
 unit-tests:
   stage: validate
   extends: .with-deps

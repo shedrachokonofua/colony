@@ -21,6 +21,7 @@ const EXPECTED_TABLES = [
   "capability_grants",
   "events",
   "gates",
+  "idempotency_keys",
   "policies",
   "provider_identities",
   "provider_mirrors",

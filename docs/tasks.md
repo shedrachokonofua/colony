@@ -210,7 +210,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.7 — Task Graph Repository Layer
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.4, COL-0.6
 
@@ -231,7 +231,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.8 — Minimal Policy Engine
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.4, COL-0.6
 
@@ -251,7 +251,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.9 — Task Graph API
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.5, COL-0.7, COL-0.8
 

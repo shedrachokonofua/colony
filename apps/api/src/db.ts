@@ -1,13 +1,14 @@
-import pg from "pg";
+import { createPool, type Pool } from "@colony/db";
 import { env } from "@colony/config";
 
-const { Pool } = pg;
+let pool: Pool | undefined;
 
-let pool: pg.Pool | undefined;
-
-export function getPool(): pg.Pool {
+export function getPool(): Pool {
   if (!pool) {
-    pool = new Pool({ connectionString: env().DATABASE_URL });
+    pool = createPool({
+      connectionString: env().DATABASE_URL,
+      role: "colony_writer",
+    });
   }
   return pool;
 }

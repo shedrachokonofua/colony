@@ -72,6 +72,51 @@ flowchart LR
 
 The webhook dispatcher only **signals** — never writes the provider. Provider writes are performed by Supervisor activities (via `apps/api`/`packages/provider-gitlab`) or by agent sandboxes through the tool-gateway git proxy. Postgres holds Task Graph state, audit log, agent run metadata, and Temporal's own schemas (separate databases). See [`docs/design.md`](docs/design.md) §5 for the full architecture.
 
+## Agent workflow
+
+```mermaid
+flowchart TD
+    Scope["Human opens scope<br/>provider epic / parent issue"]
+    Architect["Architect proposes spec,<br/>tasks, and dependencies"]
+    SpecReview["Reviewer checks spec / DAG"]
+    SpecGate{"Human approves<br/>scope plan?"}
+    TaskGraph["Supervisor commits approved<br/>decomposition to Task Graph"]
+    Ready["Supervisor finds ready tasks<br/>and atomically claims work"]
+    Dev["Developer receives task packet,<br/>branches, implements, tests"]
+    MR["Developer opens MR/PR<br/>linked to provider issue"]
+    CodeReview["Reviewer reviews MR/PR<br/>against packet and acceptance criteria"]
+    Changes{"Changes<br/>requested?"}
+    MergeGate{"Merge gate open?<br/>approval + green pipeline + no blockers"}
+    Merge["Developer performs merge<br/>after gate opens"]
+    Reconcile["Supervisor reconciles<br/>Task Graph + provider + repo + audit"]
+    MoreTasks{"More unblocked<br/>tasks?"}
+    ScopeReview["Reviewer performs<br/>scope close review"]
+    CloseGate{"Human approves<br/>scope close?"}
+    Done["Supervisor / Integrator<br/>closes scope or releases"]
+
+    Scope --> Architect --> SpecReview --> SpecGate
+    SpecGate -- no --> Architect
+    SpecGate -- yes --> TaskGraph --> Ready --> Dev --> MR --> CodeReview --> Changes
+    Changes -- yes --> Dev
+    Changes -- no --> MergeGate
+    MergeGate -- no --> CodeReview
+    MergeGate -- yes --> Merge --> Reconcile --> MoreTasks
+    MoreTasks -- yes --> Ready
+    MoreTasks -- no --> ScopeReview --> CloseGate
+    CloseGate -- no --> ScopeReview
+    CloseGate -- yes --> Done
+```
+
+At the highest level, Colony treats agents as disposable workers behind a durable Supervisor workflow:
+
+- The **Architect** turns a human scope into an implementation plan: task list, dependencies, acceptance criteria, and known risks.
+- The **Reviewer** sits before each human-in-the-loop gate, reviewing the spec/DAG, MR/PR, and final scope closeout before a human approves the gated artifact.
+- The **Supervisor** is the only normal writer to the Task Graph. It claims ready work, issues bounded task/review packets, validates structured envelopes, records audit events, and projects state back to the provider.
+- The **Developer** works one claimed task at a time from a task packet, pushes a branch, opens an MR/PR, responds to review, and merges only after the merge gate opens.
+- The **Integrator / Release** role handles deployment, release tagging, environment promotion, and scope closeout when those actions are separate from the task merge path.
+
+Every state-affecting agent output must return a structured envelope. The Supervisor validates that envelope against schema, freshness, capability, policy, and current Task Graph state before advancing the workflow. Before merge, deploy, task close, scope close, or gate approval, Colony reconciles provider state, repo state, pipeline status, approvals, Task Graph state, and audit records; drift or stale evidence fails closed into a visible conflict.
+
 ## Documentation
 
 | Document                               | Purpose                                                                                    |

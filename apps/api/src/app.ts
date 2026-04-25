@@ -1,6 +1,11 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
 import { pingDatabase } from "./db.js";
+import {
+  getTaskGraphDeps,
+  registerTaskGraph,
+  type TaskGraphDeps,
+} from "./task-graph.js";
 
 const healthResponseSchema = z.object({
   ok: z.boolean(),
@@ -28,14 +33,39 @@ const healthRoute = createRoute({
   },
 });
 
-export function buildApp(): OpenAPIHono {
-  const app = new OpenAPIHono();
+export function buildApp(options?: { taskGraph?: TaskGraphDeps }): OpenAPIHono<{
+  Variables: { actor: string };
+}> {
+  const app = new OpenAPIHono<{ Variables: { actor: string } }>();
+
+  app.use(async (c, next) => {
+    const p = c.req.path;
+    if (p === "/health" || p === "/openapi.json" || p.startsWith("/docs")) {
+      return next();
+    }
+    const id = c.req.header("X-Actor-Id");
+    if (!id || !id.trim()) {
+      return c.json(
+        {
+          error: {
+            code: "MISSING_ACTOR",
+            message: "X-Actor-Id header is required for task graph routes",
+          },
+        },
+        400,
+      );
+    }
+    c.set("actor", id.trim());
+    return next();
+  });
 
   app.openapi(healthRoute, async (c) => {
     const db = await pingDatabase();
     const body = { ok: db.ok, service: "colony-api" as const, db };
     return c.json(body, db.ok ? 200 : 503);
   });
+
+  registerTaskGraph(app, options?.taskGraph ?? getTaskGraphDeps());
 
   app.doc("/openapi.json", {
     openapi: "3.1.0",

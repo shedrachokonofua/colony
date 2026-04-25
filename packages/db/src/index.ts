@@ -13,15 +13,32 @@ export interface CreatePoolOptions extends PoolConfig {
   readonly role?: ColonyDbRole;
 }
 
+type PoolConfigWithAsyncOnConnect = Omit<PoolConfig, "onConnect"> & {
+  readonly onConnect?: (
+    client: Parameters<NonNullable<PoolConfig["onConnect"]>>[0],
+  ) => void | Promise<void>;
+};
+
 export function createPool(opts: CreatePoolOptions = {}): Pool {
-  const { role, ...config } = opts;
-  const pool = new Pool(config);
-  if (role) {
-    pool.on("connect", (client) => {
-      void client.query(`SET ROLE ${role}`);
-    });
-  }
-  return pool;
+  const { role, onConnect, ...config } = opts;
+  const runUserOnConnect:
+    | PoolConfigWithAsyncOnConnect["onConnect"]
+    | undefined = onConnect;
+  const poolConfig: PoolConfigWithAsyncOnConnect = {
+    ...config,
+    async onConnect(client) {
+      await runUserOnConnect?.(client);
+      if (role) {
+        await client.query(`SET ROLE ${role}`);
+      }
+    },
+  };
+  return new Pool(poolConfig);
 }
 
 export type { Pool, PoolConfig } from "pg";
+
+export * from "./errors.js";
+export * from "./idempotency-repository.js";
+export * from "./policy-repository.js";
+export * from "./repository.js";
