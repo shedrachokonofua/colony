@@ -5,6 +5,12 @@ import { env } from "@colony/config";
 import { createPool, IdempotencyRepository, type Pool } from "@colony/db";
 import { isScopeId, isTaskId } from "@colony/domain";
 import {
+  parseProviderCommand,
+  type ProviderCommand,
+  type ProviderCommandParseResult,
+  type ProviderCommandSource,
+} from "@colony/provider";
+import {
   supervisorWorkflowId,
   type ProviderEventSignal,
   type ScopeId,
@@ -113,9 +119,18 @@ interface GitLabWebhookBody {
   readonly project_id?: unknown;
 }
 
+export type GitLabWebhookClassification =
+  | "valid_command"
+  | "context_update"
+  | "review_feedback"
+  | "approval"
+  | "conflict"
+  | "noop"
+  | "needs_clarification";
+
 export type ClassifiedGitLabWebhook =
   | {
-      readonly kind: "provider_event";
+      readonly kind: Exclude<GitLabWebhookClassification, "noop">;
       readonly scope_id: ScopeId;
       readonly event_id: string;
       readonly object_id: string;
@@ -233,6 +248,154 @@ function scalarAttributes(
   return out;
 }
 
+function lower(s: string | undefined): string {
+  return s?.toLowerCase() ?? "";
+}
+
+function commandAttributes(command: ProviderCommand): Record<string, string> {
+  switch (command.kind) {
+    case "approve":
+    case "unblock":
+      return { command_kind: command.kind };
+    case "changes":
+      return { command_kind: command.kind, command_prose: command.prose };
+    case "review":
+      return { command_kind: command.kind, command_target: command.target };
+    case "block":
+    case "override":
+      return { command_kind: command.kind, command_reason: command.reason };
+  }
+}
+
+function commentBody(
+  objectAttributes: Record<string, unknown> | undefined,
+  attributes: Record<string, unknown> | undefined,
+): string | undefined {
+  return firstString(
+    objectAttributes?.note,
+    objectAttributes?.body,
+    attributes?.note,
+    attributes?.body,
+  );
+}
+
+function classifyAction(input: {
+  readonly eventKind: string;
+  readonly objectKind: string | undefined;
+  readonly objectAttributes: Record<string, unknown> | undefined;
+  readonly attributes: Record<string, unknown> | undefined;
+}): Exclude<GitLabWebhookClassification, "noop"> {
+  const event = lower(input.eventKind);
+  const objectKind = lower(input.objectKind);
+  const action = lower(
+    firstString(
+      input.objectAttributes?.action,
+      input.objectAttributes?.state,
+      input.objectAttributes?.state_id,
+      input.attributes?.action,
+      input.attributes?.state,
+    ),
+  );
+
+  if (event.includes("approval") || objectKind.includes("approval")) {
+    return "approval";
+  }
+  if (event.includes("pipeline") || objectKind.includes("pipeline")) {
+    return "context_update";
+  }
+  if (event.includes("merge request") || objectKind.includes("merge")) {
+    if (["merge", "merged", "close", "closed"].includes(action)) {
+      return "conflict";
+    }
+    return "context_update";
+  }
+  if (["close", "closed", "reopen", "reopened"].includes(action)) {
+    return "conflict";
+  }
+  return "context_update";
+}
+
+function commandSource(input: {
+  readonly actor: string | undefined;
+  readonly occurredAt: string | undefined;
+  readonly eventId: string;
+  readonly objectId: string;
+  readonly objectKind: string | undefined;
+  readonly objectAttributes: Record<string, unknown> | undefined;
+  readonly project: Record<string, unknown> | undefined;
+  readonly providerProjectId: string | undefined;
+  readonly providerProjectPath: string | undefined;
+}): ProviderCommandSource {
+  const noteableKind = firstString(
+    input.objectAttributes?.noteable_type,
+    input.objectAttributes?.target_type,
+    input.objectKind,
+  );
+  const noteableId = firstString(
+    input.objectAttributes?.noteable_id,
+    input.objectAttributes?.target_id,
+    input.objectAttributes?.issue_id,
+    input.objectAttributes?.merge_request_id,
+    input.objectId,
+  );
+  return {
+    actor: input.actor ?? "unknown",
+    occurred_at: input.occurredAt ?? "unknown",
+    artifact: {
+      provider: "gitlab",
+      object_kind: noteableKind ?? input.objectKind ?? "unknown",
+      object_id: noteableId ?? input.objectId,
+      uri: firstString(input.objectAttributes?.url, input.project?.web_url),
+      ...(input.providerProjectId
+        ? { provider_project_id: input.providerProjectId }
+        : {}),
+      ...(input.providerProjectPath
+        ? { provider_project_path: input.providerProjectPath }
+        : {}),
+    },
+    raw_comment: {
+      provider: "gitlab",
+      comment_id: input.objectId,
+      uri: firstString(input.objectAttributes?.url),
+      ...(input.providerProjectId
+        ? { provider_project_id: input.providerProjectId }
+        : {}),
+      ...(input.providerProjectPath
+        ? { provider_project_path: input.providerProjectPath }
+        : {}),
+    },
+  };
+}
+
+function classificationForComment(
+  parsed: ProviderCommandParseResult,
+  objectAttributes: Record<string, unknown> | undefined,
+): {
+  readonly kind: Exclude<GitLabWebhookClassification, "noop">;
+  readonly attributes: Record<string, string>;
+} {
+  if (parsed.status === "parsed") {
+    return {
+      kind: "valid_command",
+      attributes: commandAttributes(parsed.command),
+    };
+  }
+  if (parsed.status === "needs_clarification") {
+    return {
+      kind: "needs_clarification",
+      attributes: {
+        clarification_reason: parsed.reason,
+        accepted_syntax: parsed.accepted_syntax.join(", "),
+      },
+    };
+  }
+  const noteableType = lower(firstString(objectAttributes?.noteable_type));
+  return {
+    kind: noteableType.includes("merge") ? "review_feedback" : "context_update",
+    attributes: {},
+  };
+}
+
 export function classifyGitLabWebhook(input: {
   readonly headers: Headers;
   readonly body: GitLabWebhookBody;
@@ -304,6 +467,39 @@ export function classifyGitLabWebhook(input: {
     project?.path_with_namespace,
     project?.path,
   );
+  const body = commentBody(objectAttributes, attributes);
+  const isComment =
+    lower(eventKind).includes("note") ||
+    lower(objectKind).includes("note") ||
+    lower(objectKind).includes("comment");
+  const parsedCommand =
+    isComment && body
+      ? parseProviderCommand({
+          body,
+          source: commandSource({
+            actor,
+            occurredAt,
+            eventId,
+            objectId,
+            objectKind,
+            objectAttributes,
+            project,
+            providerProjectId,
+            providerProjectPath,
+          }),
+        })
+      : undefined;
+  const commentClassification = parsedCommand
+    ? classificationForComment(parsedCommand, objectAttributes)
+    : undefined;
+  const classification =
+    commentClassification?.kind ??
+    classifyAction({
+      eventKind,
+      objectKind,
+      objectAttributes,
+      attributes,
+    });
   const signal: ProviderEventSignal = {
     provider: "gitlab",
     event_type: firstString(input.body.event_type, eventKind) ?? eventKind,
@@ -332,11 +528,16 @@ export function classifyGitLabWebhook(input: {
         ? { provider_project_path: providerProjectPath }
         : {}),
     },
-    attributes: scalarAttributes(attributes, objectAttributes),
+    attributes: {
+      classification,
+      ...scalarAttributes(attributes, objectAttributes),
+      ...(body ? { provider_text: body } : {}),
+      ...(commentClassification?.attributes ?? {}),
+    },
   };
 
   return {
-    kind: "provider_event",
+    kind: classification,
     scope_id: scopeId,
     event_id: eventId,
     object_id: objectId,

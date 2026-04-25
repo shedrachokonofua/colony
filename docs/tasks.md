@@ -588,7 +588,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.5 — Webhook Classification
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.4, COL-0.11
 
