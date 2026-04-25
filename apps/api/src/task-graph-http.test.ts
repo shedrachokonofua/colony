@@ -261,6 +261,65 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(rows.every((row) => row.projected_at instanceof Date)).toBe(true);
   });
 
+  it("reports provider sync status for mirrored and pending tasks", async () => {
+    const project = await deps.providerProjects.upsertProject({
+      provider: "fake",
+      provider_id: "proj-sync",
+      path: "colony/sync",
+    });
+
+    await app.request("http://x/scopes", {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: SCOPE,
+        title: "Sync scope",
+        description: "d",
+        provider_mirror: { provider_project_id: project.id },
+      }),
+    });
+    await app.request(`http://x/scopes/${SCOPE}/tasks`, {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: TASK,
+        title: "mirrored task",
+        description: "d",
+        provider_project_id: project.id,
+      }),
+    });
+    await deps.repo.createTask(
+      {
+        id: "col-http.2" as TaskId,
+        scope_id: SCOPE,
+        title: "pending task",
+        description: "d",
+      },
+      { actor: SUP, capability: "graph.write" },
+    );
+
+    const res = await app.request(`http://x/scopes/${SCOPE}/provider-sync`, {
+      headers: { "X-Actor-Id": SUP },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      scope: { status: string; mirrors: Array<{ provider_url?: string }> };
+      tasks: Array<{
+        colony_id: string;
+        status: string;
+        mirrors: Array<{ provider_url?: string }>;
+      }>;
+    };
+    expect(body.scope.status).toBe("synced");
+    expect(body.scope.mirrors[0]?.provider_url).toContain("fake://provider");
+    expect(body.tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ colony_id: TASK, status: "synced" }),
+        expect.objectContaining({ colony_id: "col-http.2", status: "pending" }),
+      ]),
+    );
+  });
+
   it("returns 404 when creating a task in a missing scope", async () => {
     const res = await app.request("http://x/scopes/col-miss/tasks", {
       method: "POST",

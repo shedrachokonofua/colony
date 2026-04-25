@@ -1,6 +1,7 @@
 import type {
   AuditRecord,
   Event,
+  ProviderMirror,
   Scope,
   ScopeId,
   Task,
@@ -14,12 +15,33 @@ export interface ApiError {
   details?: Record<string, unknown>;
 }
 
+export type ProviderSyncStatus = "synced" | "pending" | "drifted";
+
+export type ProviderSyncMirror = ProviderMirror & {
+  readonly status: ProviderSyncStatus;
+  readonly provider_url?: string;
+};
+
+export interface ProviderSyncItem {
+  readonly colony_id: string;
+  readonly entity_kind: "scope" | "task";
+  readonly status: ProviderSyncStatus;
+  readonly mirrors: readonly ProviderSyncMirror[];
+}
+
+export interface ScopeProviderSync {
+  readonly scope: ProviderSyncItem;
+  readonly tasks: readonly ProviderSyncItem[];
+}
+
 export interface ApiClient {
   listScopes(): Promise<readonly Scope[]>;
   getScope(id: ScopeId): Promise<Scope | null>;
   listTasks(scopeId: ScopeId): Promise<readonly Task[]>;
   readyTasks(scopeId: ScopeId): Promise<readonly Task[]>;
+  scopeProviderSync(scopeId: ScopeId): Promise<ScopeProviderSync>;
   getTask(taskId: TaskId): Promise<Task | null>;
+  taskProviderSync(taskId: TaskId): Promise<ProviderSyncItem | null>;
   getTaskDependencies(taskId: TaskId): Promise<{
     readonly blocked_by: readonly TaskId[];
     readonly blocks: readonly TaskId[];
@@ -108,9 +130,24 @@ export function createApiClient(opts: {
       );
       return body.items;
     },
+    async scopeProviderSync(scopeId) {
+      return req<ScopeProviderSync>(
+        `/scopes/${encodeURIComponent(scopeId)}/provider-sync`,
+      );
+    },
     async getTask(taskId) {
       try {
         return await req<Task>(`/tasks/${encodeURIComponent(taskId)}`);
+      } catch (e) {
+        if ((e as ApiError).status === 404) return null;
+        throw e;
+      }
+    },
+    async taskProviderSync(taskId) {
+      try {
+        return await req<ProviderSyncItem>(
+          `/tasks/${encodeURIComponent(taskId)}/provider-sync`,
+        );
       } catch (e) {
         if ((e as ApiError).status === 404) return null;
         throw e;

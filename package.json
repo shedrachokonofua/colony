@@ -33,6 +33,7 @@
     "openapi:check": "npm run openapi:generate && git diff --exit-code -- schemas/openapi",
     "db:migrate": "npm --workspace @colony/db run migrate:up",
     "db:migrate:down": "npm --workspace @colony/db run migrate:down",
+    "acceptance:phase1": "tsx scripts/phase1-acceptance.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

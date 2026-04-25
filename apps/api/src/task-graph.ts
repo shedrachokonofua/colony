@@ -6,6 +6,7 @@ import type {
   ActorId,
   Capability,
   EventKind,
+  ProviderMirror,
   ProviderProjectId,
   Scope,
   ScopeId,
@@ -430,6 +431,74 @@ function taskIssueInput(
       ...task.acceptance_criteria.map((criterion) => `- [ ] ${criterion}`),
     ].join("\n"),
     labels: ["colony:task", `state:${task.state}`],
+  };
+}
+
+type ProviderSyncStatus = "synced" | "pending" | "drifted";
+
+interface ProviderSyncItem {
+  readonly colony_id: string;
+  readonly entity_kind: "scope" | "task";
+  readonly status: ProviderSyncStatus;
+  readonly mirrors: readonly (ProviderMirror & {
+    readonly status: ProviderSyncStatus;
+    readonly provider_url?: string;
+  })[];
+}
+
+function mirrorStatus(mirror: ProviderMirror | undefined, now = Date.now()) {
+  if (!mirror?.projected_at) return "pending" as const;
+  const ttl = (mirror.freshness_ttl_seconds ?? 900) * 1000;
+  const projectedAt = Date.parse(mirror.projected_at);
+  if (Number.isFinite(projectedAt) && now - projectedAt > ttl) {
+    return "drifted" as const;
+  }
+  return "synced" as const;
+}
+
+function providerWebBase(provider: string): string | null {
+  if (provider === "gitlab") {
+    return env()
+      .GITLAB_BASE_URL.replace(/\/api\/v4\/?$/, "")
+      .replace(/\/+$/, "");
+  }
+  if (provider === "fake") return "fake://provider";
+  return null;
+}
+
+function issueIidFromProviderId(provider_id: string): string {
+  const separator = provider_id.lastIndexOf(":");
+  return separator === -1 ? provider_id : provider_id.slice(separator + 1);
+}
+
+function providerIssueUrl(mirror: ProviderMirror): string | undefined {
+  const base = providerWebBase(mirror.provider);
+  if (!base || !mirror.provider_project_path) return undefined;
+  const iid = issueIidFromProviderId(mirror.provider_id);
+  if (mirror.provider === "fake") {
+    return `${base}/${mirror.provider_project_path}/${iid}`;
+  }
+  return `${base}/${mirror.provider_project_path}/-/issues/${encodeURIComponent(iid)}`;
+}
+
+async function providerSyncItem(
+  deps: TaskGraphDeps,
+  input: {
+    readonly colony_id: string;
+    readonly entity_kind: "scope" | "task";
+  },
+): Promise<ProviderSyncItem> {
+  const now = Date.now();
+  const mirrors = await deps.providerProjects.listMirrorsForColony(input);
+  const decorated = mirrors.map((mirror) => ({
+    ...mirror,
+    status: mirrorStatus(mirror, now),
+    provider_url: providerIssueUrl(mirror),
+  }));
+  return {
+    ...input,
+    status: decorated.length === 0 ? "pending" : decorated[0].status,
+    mirrors: decorated,
   };
 }
 
@@ -871,6 +940,70 @@ export function registerTaskGraph(
     return c.json({ items }, 200);
   });
 
+  const scopeProviderSync = createRoute({
+    method: "get",
+    path: "/scopes/{scopeId}/provider-sync",
+    request: { params: z.object({ scopeId: scopeIdParam }) },
+    responses: {
+      200: {
+        description: "Provider mirror status for a scope and its tasks",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Scope not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(scopeProviderSync, async (c) => {
+    const { scopeId } = c.req.valid("param");
+    const actor = c.get("actor") as ActorId;
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "scope.read",
+      scopeId as ScopeId,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "scope.read",
+        scopeId as ScopeId,
+        r.capability,
+        r.reason,
+        { subresource: "provider-sync" },
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+
+    const scope = await deps.repo.getScope(scopeId as ScopeId);
+    if (!scope) {
+      return c.json(jsonError("NOT_FOUND", `scope not found: ${scopeId}`), 404);
+    }
+    const tasks = await deps.repo.listTasks(scopeId as ScopeId);
+    const [scopeSync, ...taskSync] = await Promise.all([
+      providerSyncItem(deps, {
+        colony_id: scopeId,
+        entity_kind: "scope",
+      }),
+      ...tasks.map((task) =>
+        providerSyncItem(deps, {
+          colony_id: task.id,
+          entity_kind: "task",
+        }),
+      ),
+    ]);
+    return c.json({ scope: scopeSync, tasks: taskSync }, 200);
+  });
+
   // audit
   const audit = createRoute({
     method: "get",
@@ -978,6 +1111,61 @@ export function registerTaskGraph(
       );
     }
     return c.json(task, 200);
+  });
+
+  const taskProviderSync = createRoute({
+    method: "get",
+    path: "/tasks/{taskId}/provider-sync",
+    request: { params: z.object({ taskId: taskIdParam }) },
+    responses: {
+      200: {
+        description: "Provider mirror status for one task",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Task not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(taskProviderSync, async (c) => {
+    const { taskId } = c.req.valid("param");
+    const actor = c.get("actor") as ActorId;
+    const task = await deps.repo.getTask(taskId as TaskId);
+    if (!task) {
+      return c.json(jsonError("NOT_FOUND", `task not found: ${taskId}`), 404);
+    }
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "task.read",
+      task.scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "task.read",
+        task.scope_id,
+        r.capability,
+        r.reason,
+        { taskId, subresource: "provider-sync" },
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+
+    const item = await providerSyncItem(deps, {
+      colony_id: taskId,
+      entity_kind: "task",
+    });
+    return c.json(item, 200);
   });
 
   // GET /tasks/{taskId}/dependencies

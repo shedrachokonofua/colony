@@ -112,6 +112,16 @@ tasks:
     cmds:
       - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run test:integration --workspace @colony/provider-gitlab'"
 
+  acceptance:phase1:
+    desc: Run Phase 1 acceptance against the homelab GitLab dev project
+    summary: |
+      Creates a throwaway GitLab project, opens provider scope/task issues,
+      runs the supervisor ready/claim/provider-projection path, and verifies
+      the Task Graph + provider projection audit. Requires GITLAB_BASE_URL
+      and GITLAB_TOKEN from secrets/dev.yaml.
+    cmds:
+      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase1'"
+
   test:all:
     desc: All tests (unit + integration + live GitLab)
     cmds:

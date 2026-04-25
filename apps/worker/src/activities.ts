@@ -1,13 +1,26 @@
-import { createPool, TaskGraphRepository, type Pool } from "@colony/db";
+import {
+  createPool,
+  PolicyRepository,
+  ProviderProjectRepository,
+  TaskGraphRepository,
+  type Pool,
+} from "@colony/db";
 import { env } from "@colony/config";
 import {
   isScopeId,
   isTaskId,
   type ActorId,
   type EventKind,
+  type ProviderMirror,
+  type ProviderProject,
+  type ScopeId as DomainScopeId,
   type TaskId,
 } from "@colony/domain";
+import type { ProviderAdapter } from "@colony/provider";
+import { GitLabProviderAdapter } from "@colony/provider-gitlab";
 import type {
+  ClaimReadyTaskInput,
+  ClaimReadyTaskResult,
   RecordWorkflowEventInput,
   RecordWorkflowEventResult,
   ScopeStateSnapshot,
@@ -18,16 +31,225 @@ const SUPERVISOR_ACTOR = "svc:supervisor" as ActorId;
 
 let pool: Pool | undefined;
 let repo: TaskGraphRepository | undefined;
+let providerProjects: ProviderProjectRepository | undefined;
+let policyRepo: PolicyRepository | undefined;
+let providerAdapter: ProviderAdapter | undefined;
 
-function getRepository(): TaskGraphRepository {
-  if (!repo) {
+function getPool(): Pool {
+  if (!pool) {
     pool = createPool({
       connectionString: env().DATABASE_URL,
       role: "colony_writer",
     });
-    repo = new TaskGraphRepository(pool);
+  }
+  return pool;
+}
+
+function getRepository(): TaskGraphRepository {
+  if (!repo) {
+    repo = new TaskGraphRepository(getPool());
   }
   return repo;
+}
+
+function getProviderProjects(): ProviderProjectRepository {
+  if (!providerProjects) {
+    providerProjects = new ProviderProjectRepository(getPool());
+  }
+  return providerProjects;
+}
+
+function getPolicyRepository(): PolicyRepository {
+  if (!policyRepo) {
+    policyRepo = new PolicyRepository(getPool());
+  }
+  return policyRepo;
+}
+
+function getProviderAdapter(): ProviderAdapter {
+  if (!providerAdapter) {
+    providerAdapter = new GitLabProviderAdapter({
+      baseUrl: env().GITLAB_BASE_URL,
+      token: env().GITLAB_TOKEN,
+    });
+  }
+  return providerAdapter;
+}
+
+function providerProjectRef(project: ProviderProject) {
+  return { id: project.provider_id, path: project.path };
+}
+
+async function writeProviderProjectionAudit(input: {
+  readonly scope_id: DomainScopeId;
+  readonly task_id: TaskId;
+  readonly mirror: ProviderMirror;
+  readonly status: "synced" | "failed";
+  readonly assignee: ActorId;
+  readonly provider_assignee_id?: string;
+  readonly error?: string;
+}): Promise<void> {
+  await getRepository().writeAudit({
+    scope_id: input.scope_id,
+    task_id: input.task_id,
+    actor: SUPERVISOR_ACTOR,
+    action: "provider.project.task_assignment",
+    capability: "task.assign",
+    target_kind: "provider_mirror",
+    target_id: input.mirror.id,
+    reason: "supervisor_ready_loop",
+    evidence: {
+      status: input.status,
+      assignee: input.assignee,
+      provider: input.mirror.provider,
+      provider_id: input.mirror.provider_id,
+      provider_project_id: input.mirror.provider_project_id,
+      provider_assignee_id: input.provider_assignee_id,
+      labels: ["state:claimed"],
+      error: input.error,
+    },
+  });
+}
+
+async function projectClaimToProvider(input: {
+  readonly task_id: TaskId;
+  readonly scope_id: DomainScopeId;
+  readonly assignee: ActorId;
+}): Promise<ClaimReadyTaskResult["provider_projection"]> {
+  const mirrors = await getProviderProjects().listMirrorsForColony({
+    colony_id: input.task_id,
+    entity_kind: "task",
+  });
+  const mirror = mirrors[0];
+  if (!mirror?.provider_project_id) {
+    return { status: "skipped", reason: "task_has_no_provider_mirror" };
+  }
+
+  const project = await getProviderProjects().getProject(
+    mirror.provider_project_id,
+  );
+  if (!project) {
+    return {
+      status: "skipped",
+      provider: mirror.provider,
+      provider_id: mirror.provider_id,
+      provider_project_id: mirror.provider_project_id,
+      reason: "provider_project_not_found",
+    };
+  }
+
+  try {
+    const adapter = getProviderAdapter();
+    if (project.provider !== adapter.provider) {
+      return {
+        status: "skipped",
+        provider: mirror.provider,
+        provider_id: mirror.provider_id,
+        provider_project_id: mirror.provider_project_id,
+        reason: "provider_adapter_mismatch",
+      };
+    }
+    const projectRef = providerProjectRef(project);
+    await adapter.issues.removeLabel(
+      projectRef,
+      mirror.provider_id,
+      "state:ready",
+    );
+    await adapter.issues.addLabel(
+      projectRef,
+      mirror.provider_id,
+      "state:claimed",
+    );
+
+    const identity = await getPolicyRepository().getProviderIdentity(
+      input.assignee,
+      project.provider,
+    );
+    if (identity) {
+      await adapter.issues.setAssignees(projectRef, mirror.provider_id, [
+        identity.provider_user_id,
+      ]);
+    }
+
+    await writeProviderProjectionAudit({
+      scope_id: input.scope_id,
+      task_id: input.task_id,
+      mirror,
+      status: "synced",
+      assignee: input.assignee,
+      provider_assignee_id: identity?.provider_user_id,
+    });
+
+    return {
+      status: "synced",
+      provider: mirror.provider,
+      provider_id: mirror.provider_id,
+      provider_project_id: mirror.provider_project_id,
+      ...(identity ? {} : { reason: "provider_identity_not_found" }),
+    };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    await writeProviderProjectionAudit({
+      scope_id: input.scope_id,
+      task_id: input.task_id,
+      mirror,
+      status: "failed",
+      assignee: input.assignee,
+      error: reason,
+    });
+    return {
+      status: "failed",
+      provider: mirror.provider,
+      provider_id: mirror.provider_id,
+      provider_project_id: mirror.provider_project_id,
+      reason,
+    };
+  }
+}
+
+export async function claimReadyTask(
+  input: ClaimReadyTaskInput,
+): Promise<ClaimReadyTaskResult> {
+  if (!isScopeId(input.scope_id)) {
+    return { claimed: false, reason: "invalid_scope_id" };
+  }
+  if (!input.assignee) {
+    return { claimed: false, reason: "missing_assignee" };
+  }
+
+  const repository = getRepository();
+  const ready = await repository.readyTasks(input.scope_id);
+  const candidate = ready[0];
+  if (!candidate) {
+    return { claimed: false, reason: "no_ready_tasks" };
+  }
+
+  const assignee = input.assignee as ActorId;
+  const claimed = await repository.claimTask(
+    candidate.id,
+    assignee,
+    candidate.state_version,
+    {
+      actor: SUPERVISOR_ACTOR,
+      capability: "task.claim",
+      reason: "supervisor_ready_loop",
+    },
+  );
+  if (!claimed) {
+    return { claimed: false, task_id: candidate.id, reason: "claim_lost" };
+  }
+
+  const provider_projection = await projectClaimToProvider({
+    task_id: claimed.id,
+    scope_id: claimed.scope_id,
+    assignee,
+  });
+  return {
+    claimed: true,
+    task_id: claimed.id,
+    assignee: claimed.assignee,
+    provider_projection,
+  };
 }
 
 export async function readScopeState(input: {
@@ -127,6 +349,7 @@ export async function recordWorkflowEvent(
 }
 
 export const activities = {
+  claimReadyTask,
   readScopeState,
   recordWorkflowEvent,
 };

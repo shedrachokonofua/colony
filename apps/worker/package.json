@@ -14,6 +14,8 @@
     "@colony/config": "*",
     "@colony/db": "*",
     "@colony/domain": "*",
+    "@colony/provider": "*",
+    "@colony/provider-gitlab": "*",
     "@colony/workflows": "*",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/client": "^1.11.0",

@@ -1,7 +1,12 @@
 import { error } from "@sveltejs/kit";
 import type { PageServerLoad } from "./$types";
 import type { AuditRecord, ScopeId, Task, TaskId } from "@colony/domain";
-import { apiConfigFromEnv, createApiClient, type ApiError } from "$lib/api";
+import {
+  apiConfigFromEnv,
+  createApiClient,
+  type ApiError,
+  type ProviderSyncItem,
+} from "$lib/api";
 
 export const load: PageServerLoad = async ({ fetch, params }) => {
   const cfg = apiConfigFromEnv(process.env);
@@ -15,6 +20,7 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
     blocks: [],
   };
   let audit: readonly AuditRecord[] = [];
+  let providerSync: ProviderSyncItem | null = null;
   let loadError: string | null = null;
 
   try {
@@ -23,12 +29,14 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
     if (task.scope_id !== scopeId) {
       throw error(404, `task ${taskId} is not in scope ${scopeId}`);
     }
-    const [depsResult, auditList] = await Promise.all([
+    const [depsResult, auditList, sync] = await Promise.all([
       api.getTaskDependencies(taskId),
       api.scopeAudit(scopeId, { taskId, limit: 50 }),
+      api.taskProviderSync(taskId),
     ]);
     if (depsResult) deps = depsResult;
     audit = auditList;
+    providerSync = sync;
   } catch (e) {
     if ((e as { status?: number }).status) throw e;
     const err = e as ApiError;
@@ -37,5 +45,5 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
       : String(e);
   }
 
-  return { scopeId, task, deps, audit, loadError };
+  return { scopeId, task, deps, audit, providerSync, loadError };
 };

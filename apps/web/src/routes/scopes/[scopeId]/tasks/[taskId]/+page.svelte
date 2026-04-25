@@ -5,6 +5,7 @@
 
   let { data }: { data: PageData } = $props();
   let tab = $state<"overview" | "audit">("overview");
+  const mirror = $derived(data.providerSync?.mirrors[0]);
 </script>
 
 <section class="stack">
@@ -58,6 +59,40 @@
               <dd class="muted">{new Date(data.task.created_at).toLocaleString()}</dd>
               <dt>Updated</dt>
               <dd class="muted">{new Date(data.task.updated_at).toLocaleString()}</dd>
+            </dl>
+          </div>
+
+          <div class="card stack">
+            <h2>Provider Sync</h2>
+            <dl class="kv">
+              <dt>Status</dt>
+              <dd>
+                <span class="badge state-{data.providerSync?.status ?? 'pending'}"
+                  >{data.providerSync?.status ?? "pending"}</span
+                >
+              </dd>
+              <dt>Projected</dt>
+              <dd class="muted">
+                {#if mirror?.projected_at}
+                  {new Date(mirror.projected_at).toLocaleString()}
+                {:else}
+                  pending
+                {/if}
+              </dd>
+              <dt>Version</dt>
+              <dd><code>{mirror?.source_version ?? "—"}</code></dd>
+              <dt>Issue</dt>
+              <dd>
+                {#if mirror?.provider_url}
+                  <a href={mirror.provider_url} target="_blank" rel="noreferrer"
+                    >{mirror.provider_id}</a
+                  >
+                {:else if mirror}
+                  <code>{mirror.provider_id}</code>
+                {:else}
+                  <span class="muted">pending</span>
+                {/if}
+              </dd>
             </dl>
           </div>
 

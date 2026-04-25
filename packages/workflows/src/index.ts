@@ -141,6 +141,25 @@ export interface RecordWorkflowEventResult {
   readonly reason?: string;
 }
 
+export interface ClaimReadyTaskInput {
+  readonly scope_id: ScopeId;
+  readonly assignee: string;
+}
+
+export interface ClaimReadyTaskResult {
+  readonly claimed: boolean;
+  readonly task_id?: TaskId;
+  readonly assignee?: string;
+  readonly provider_projection?: {
+    readonly status: "synced" | "skipped" | "failed";
+    readonly provider?: string;
+    readonly provider_id?: string;
+    readonly provider_project_id?: string;
+    readonly reason?: string;
+  };
+  readonly reason?: string;
+}
+
 export interface SupervisorActivities {
   readonly readScopeState: (input: {
     readonly scope_id: ScopeId;
@@ -148,6 +167,9 @@ export interface SupervisorActivities {
   readonly recordWorkflowEvent: (
     input: RecordWorkflowEventInput,
   ) => Promise<RecordWorkflowEventResult>;
+  readonly claimReadyTask: (
+    input: ClaimReadyTaskInput,
+  ) => Promise<ClaimReadyTaskResult>;
 }
 
 export const providerEventSignal =
@@ -209,6 +231,7 @@ export async function scopeSupervisorWorkflow(
   });
 
   await activities.readScopeState({ scope_id });
+  await activities.claimReadyTask({ scope_id, assignee: "bot:engine" });
 
   for (;;) {
     await condition(() => queue.length > 0);
@@ -228,5 +251,7 @@ export async function scopeSupervisorWorkflow(
       });
       signal = queue.shift();
     }
+
+    await activities.claimReadyTask({ scope_id, assignee: "bot:engine" });
   }
 }

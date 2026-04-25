@@ -604,7 +604,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.6 — Supervisor Ready/Claim/Assign Loop
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.10, COL-1.3, COL-1.5
 
@@ -623,7 +623,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.7 — Web UI Provider Sync Views
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.3, COL-1.6
 
@@ -640,7 +640,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.8 — Phase 1 End-To-End Acceptance
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.2, COL-1.6, COL-1.7
 

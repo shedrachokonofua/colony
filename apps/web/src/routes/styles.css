@@ -204,7 +204,8 @@ tbody tr:last-child td {
 
 .badge.state-ready,
 .badge.state-active,
-.badge.state-decomposition_approved {
+.badge.state-decomposition_approved,
+.badge.state-synced {
   color: var(--success);
   border-color: rgba(169, 212, 143, 0.4);
   background: rgba(169, 212, 143, 0.08);
@@ -213,7 +214,8 @@ tbody tr:last-child td {
 .badge.state-blocked,
 .badge.state-conflict,
 .badge.state-failed,
-.badge.state-canceled {
+.badge.state-canceled,
+.badge.state-drifted {
   color: var(--danger);
   border-color: rgba(242, 139, 130, 0.35);
   background: rgba(242, 139, 130, 0.08);
@@ -225,6 +227,7 @@ tbody tr:last-child td {
 .badge.state-changes_requested,
 .badge.state-merge_ready,
 .badge.state-pending_sync,
+.badge.state-pending,
 .badge.state-scope_review_requested {
   color: var(--warn);
   border-color: rgba(240, 195, 109, 0.35);

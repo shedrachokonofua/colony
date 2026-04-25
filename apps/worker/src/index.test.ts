@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { readScopeState, recordWorkflowEvent } from "./activities.js";
+import {
+  claimReadyTask,
+  readScopeState,
+  recordWorkflowEvent,
+} from "./activities.js";
 import { supervisorWorkflowId } from "./workflows.js";
 
 describe("@colony/worker", () => {
@@ -24,5 +28,9 @@ describe("@colony/worker", () => {
         payload: {},
       }),
     ).resolves.toEqual({ recorded: false, reason: "invalid_scope_id" });
+
+    await expect(
+      claimReadyTask({ scope_id: "not-a-scope", assignee: "agent:dev-1" }),
+    ).resolves.toEqual({ claimed: false, reason: "invalid_scope_id" });
   });
 });
