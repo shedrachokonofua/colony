@@ -7,16 +7,21 @@ import {
   type BootstrapAction,
   type BootstrapBotSpec,
   type CreateIssueInput,
+  type CreateProviderProjectInput,
   type ProviderAdapter,
   type ProviderBootstrapResult,
   type ProviderBootstrapSpec,
   type ProviderComment,
-  type ProviderCredential,
+  type ProviderGroup,
   type ProviderId,
+  type ProviderIdentitySnapshot,
   type ProviderIssue,
   type ProviderMetadata,
+  type ProviderProjectInfo,
+  type ProviderProjectRef,
   type ProviderRef,
   type ProviderUser,
+  type ProviderVisibility,
   type ProviderWebhook,
   type UpdateIssueInput,
 } from "@colony/provider";
@@ -29,7 +34,6 @@ type Fetch = typeof fetch;
 interface GitLabProviderAdapterOptions {
   readonly baseUrl: string;
   readonly token?: string;
-  readonly projectId?: ProviderId;
   readonly fetch?: Fetch;
 }
 
@@ -42,9 +46,16 @@ interface GitLabEntity {
   readonly web_url?: string;
   readonly url?: string;
   readonly path?: string;
+  readonly visibility?: string;
   readonly token?: string;
   readonly secret?: string;
   readonly application_id?: string;
+}
+
+interface GitLabProject extends GitLabEntity {
+  readonly path_with_namespace?: string;
+  readonly default_branch?: string | null;
+  readonly visibility?: string;
 }
 
 interface GitLabIssue extends GitLabEntity {
@@ -83,28 +94,134 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   readonly provider = "gitlab" as const;
   private readonly baseUrl: string;
   private readonly token?: string;
-  private readonly projectId?: ProviderId;
   private readonly fetchImpl: Fetch;
 
   constructor(options: GitLabProviderAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.token = options.token;
-    this.projectId = options.projectId;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
+  readonly groups: ProviderAdapter["groups"] = {
+    create: async (input) => {
+      const fullPath = input.parent ? `${input.parent}/${input.path}` : input.path;
+      const existing = await optionalGet<GitLabEntity>(
+        () => this.api<GitLabEntity>(`/groups/${encodePath(fullPath)}`),
+        404,
+      );
+      if (existing) return toGroup(this.provider, existing);
+      // GitLab takes parent_id (numeric) or parent path resolved out-of-band.
+      // For the homelab path we accept either; passing a path string lets
+      // GitLab error on resolution rather than us pre-resolving.
+      const created = await this.api<GitLabEntity>("/groups", {
+        method: "POST",
+        body: JSON.stringify({
+          name: input.name,
+          path: input.path,
+          parent_id: input.parent,
+          description: input.description,
+          visibility: input.visibility ?? "private",
+        }),
+      });
+      return toGroup(this.provider, created);
+    },
+    delete: async (id) => {
+      await this.api<unknown>(`/groups/${encodePath(id)}`, {
+        method: "DELETE",
+      });
+    },
+    getByPath: async (path) => {
+      const group = await optionalGet<GitLabEntity>(
+        () => this.api<GitLabEntity>(`/groups/${encodePath(path)}`),
+        404,
+      );
+      return group ? toGroup(this.provider, group) : null;
+    },
+  };
+
+  readonly projects: ProviderAdapter["projects"] = {
+    create: async (input) => {
+      // Idempotent: if a project with this full path already exists under
+      // the bot's namespace, surface it instead of erroring on conflict.
+      // Agents call `projects.create` defensively during decomposition.
+      const fullPath = input.namespace
+        ? `${input.namespace}/${input.path}`
+        : input.path;
+      const existing = await optionalGet<GitLabProject>(
+        () => this.api<GitLabProject>(`/projects/${encodePath(fullPath)}`),
+        404,
+      );
+      if (existing) return toProjectInfo(this.provider, existing);
+      const created = await this.api<GitLabProject>("/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          name: input.name,
+          path: input.path,
+          // GitLab accepts numeric namespace_id or path. We pass through.
+          namespace_id: input.namespace,
+          description: input.description,
+          visibility: input.visibility ?? "private",
+          default_branch: input.default_branch,
+        }),
+      });
+      return toProjectInfo(this.provider, created);
+    },
+    delete: async (id) => {
+      await this.api<unknown>(`/projects/${encodePath(id)}`, {
+        method: "DELETE",
+      });
+    },
+    getById: async (id) => {
+      const project = await optionalGet<GitLabProject>(
+        () => this.api<GitLabProject>(`/projects/${encodePath(id)}`),
+        404,
+      );
+      return project ? toProjectInfo(this.provider, project) : null;
+    },
+    getByPath: async (path) => {
+      const project = await optionalGet<GitLabProject>(
+        () => this.api<GitLabProject>(`/projects/${encodePath(path)}`),
+        404,
+      );
+      return project ? toProjectInfo(this.provider, project) : null;
+    },
+  };
+
+  async identity(): Promise<ProviderIdentitySnapshot> {
+    const me = await this.api<GitLabUser>("/user");
+    // Groups the bot can write into. min_access_level=30 is GitLab's
+    // "Developer" — the lowest level that can create projects under a group.
+    const groups = await optionalGet<GitLabEntity[]>(
+      () => this.api<GitLabEntity[]>("/groups?min_access_level=30&per_page=100"),
+      404,
+    );
+    const username = me.username ?? String(me.id);
+    return {
+      user_id: String(me.id),
+      username,
+      // GitLab stores personal projects under the user's own username.
+      default_namespace: username,
+      accessible_namespaces: [
+        username,
+        ...(groups ?? []).map((g) => g.path ?? String(g.id)),
+      ],
+    };
+  }
+
   readonly issues: ProviderAdapter["issues"] = {
-    create: async (input) => this.createIssue(input),
-    update: async (id, input) => this.updateIssue(id, input),
-    close: async (id) => this.updateIssueState(id, "close"),
-    reopen: async (id) => this.updateIssueState(id, "reopen"),
-    addLabel: async (id, label) =>
-      this.updateIssue(id, { add_labels: [label] }),
-    removeLabel: async (id, label) =>
-      this.updateIssue(id, { remove_labels: [label] }),
-    setAssignees: async (id, assigneeIds) =>
-      this.updateIssue(id, { assignee_ids: assigneeIds }),
-    comment: async (id, body) => this.commentOnIssue(id, body),
+    create: async (project, input) => this.createIssue(project, input),
+    update: async (project, id, input) =>
+      this.updateIssue(project, id, input),
+    close: async (project, id) => this.updateIssueState(project, id, "close"),
+    reopen: async (project, id) => this.updateIssueState(project, id, "reopen"),
+    addLabel: async (project, id, label) =>
+      this.updateIssue(project, id, { add_labels: [label] }),
+    removeLabel: async (project, id, label) =>
+      this.updateIssue(project, id, { remove_labels: [label] }),
+    setAssignees: async (project, id, assigneeIds) =>
+      this.updateIssue(project, id, { assignee_ids: assigneeIds }),
+    comment: async (project, id, body) =>
+      this.commentOnIssue(project, id, body),
   };
 
   readonly epics: ProviderAdapter["epics"] = {
@@ -141,6 +258,25 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   };
 
   readonly users: ProviderAdapter["users"] = {
+    create: async (input) => {
+      const existing = await this.api<GitLabUser[]>(
+        `/users?username=${encodeURIComponent(input.username)}`,
+      );
+      if (existing[0]) return toUser(this.provider, existing[0]);
+      const user = await this.api<GitLabUser>("/users", {
+        method: "POST",
+        body: JSON.stringify({
+          email: input.email,
+          username: input.username,
+          name: input.name,
+          password: `colony-${randomUUID()}A1!`,
+          skip_confirmation: true,
+          bot: input.bot ?? false,
+          admin: input.admin ?? false,
+        }),
+      });
+      return toUser(this.provider, user);
+    },
     resolveById: async (id) =>
       optionalGet(
         () => this.api<GitLabUser>(`/users/${encodePath(id)}`),
@@ -162,13 +298,16 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       input.headers["X-Gitlab-Token"] === input.secret,
   };
 
+
   async bootstrap(
     input: ProviderBootstrapSpec,
-    credential: ProviderCredential,
   ): Promise<ProviderBootstrapResult> {
+    // The configured bot credential is used directly; provider-side scope
+    // (admin flag, fine-grained permissions) decides what succeeds.
     const actions: BootstrapAction[] = [];
+    const token = this.requireToken();
     const api = <T>(path: string, init?: RequestInit) =>
-      this.request<T>(path, credential.token, init);
+      this.request<T>(path, token, init);
 
     const groupPath = input.group.path;
     const existingGroup = await optionalGet<GitLabEntity>(
@@ -244,6 +383,11 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
     const oauth = await this.ensureOAuthApplication(api, input, actions);
     const webhook = await this.ensureWebhook(api, input, project, actions);
+    // GITLAB_DEV_PROJECT_ID is a *seed* for the dev/dogfood ProviderProject
+    // registry, not a runtime default on the adapter. Adapter operations
+    // always take an explicit ProviderProjectRef; the dev entrypoint reads
+    // this env and registers the bootstrapped project via
+    // ProviderProjectRepository.upsertProject.
     const env = {
       GITLAB_BASE_URL: input.base_url,
       GITLAB_DEV_PROJECT_ID: String(project.id),
@@ -274,15 +418,19 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     };
   }
 
-  private async createIssue(input: CreateIssueInput): Promise<ProviderIssue> {
-    const issue = await this.projectApi<GitLabIssue>("/issues", {
+  private async createIssue(
+    project: ProviderProjectRef,
+    input: CreateIssueInput,
+  ): Promise<ProviderIssue> {
+    const issue = await this.projectApi<GitLabIssue>(project.id, "/issues", {
       method: "POST",
       body: JSON.stringify(issueInputBody(input)),
     });
-    return toIssue(this.provider, this.requireProjectId(), issue);
+    return toIssue(this.provider, project.id, issue);
   }
 
   private async updateIssue(
+    project: ProviderProjectRef,
     id: ProviderId,
     input: UpdateIssueInput & {
       readonly add_labels?: readonly string[];
@@ -290,35 +438,40 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     },
   ): Promise<ProviderIssue> {
     const issue = await this.projectApi<GitLabIssue>(
-      `/issues/${encodePath(issueIid(this.requireProjectId(), id))}`,
+      project.id,
+      `/issues/${encodePath(issueIid(project.id, id))}`,
       {
         method: "PUT",
         body: JSON.stringify(issueInputBody(input)),
       },
     );
-    return toIssue(this.provider, this.requireProjectId(), issue);
+    return toIssue(this.provider, project.id, issue);
   }
 
   private async updateIssueState(
+    project: ProviderProjectRef,
     id: ProviderId,
     stateEvent: "close" | "reopen",
   ): Promise<ProviderIssue> {
     const issue = await this.projectApi<GitLabIssue>(
-      `/issues/${encodePath(issueIid(this.requireProjectId(), id))}`,
+      project.id,
+      `/issues/${encodePath(issueIid(project.id, id))}`,
       {
         method: "PUT",
         body: JSON.stringify({ state_event: stateEvent }),
       },
     );
-    return toIssue(this.provider, this.requireProjectId(), issue);
+    return toIssue(this.provider, project.id, issue);
   }
 
   private async commentOnIssue(
+    project: ProviderProjectRef,
     id: ProviderId,
     body: string,
   ): Promise<ProviderComment> {
     const note = await this.projectApi<GitLabNote>(
-      `/issues/${encodePath(issueIid(this.requireProjectId(), id))}/notes`,
+      project.id,
+      `/issues/${encodePath(issueIid(project.id, id))}/notes`,
       {
         method: "POST",
         body: JSON.stringify({ body }),
@@ -531,11 +684,12 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     return this.request<T>(path, token, init);
   }
 
-  private async projectApi<T>(path: string, init?: RequestInit): Promise<T> {
-    return this.api<T>(
-      `/projects/${encodePath(this.requireProjectId())}${path}`,
-      init,
-    );
+  private async projectApi<T>(
+    projectId: ProviderId,
+    path: string,
+    init?: RequestInit,
+  ): Promise<T> {
+    return this.api<T>(`/projects/${encodePath(projectId)}${path}`, init);
   }
 
   private requireToken(): string {
@@ -547,17 +701,6 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       );
     }
     return this.token;
-  }
-
-  private requireProjectId(): ProviderId {
-    if (!this.projectId) {
-      throw new GitLabProviderError(
-        "GitLab provider requires a projectId for project operations",
-        500,
-        null,
-      );
-    }
-    return this.projectId;
   }
 }
 
@@ -618,6 +761,38 @@ function toRef(provider: "gitlab", entity: GitLabEntity): ProviderRef {
     metadata: meta(provider, entity),
   };
 }
+
+function toGroup(provider: "gitlab", entity: GitLabEntity): ProviderGroup {
+  const visibility: ProviderVisibility =
+    entity.visibility === "public" || entity.visibility === "internal"
+      ? entity.visibility
+      : "private";
+  return {
+    ...toRef(provider, entity),
+    path: entity.path ?? String(entity.id),
+    visibility,
+  };
+}
+
+function toProjectInfo(
+  provider: "gitlab",
+  project: GitLabProject,
+): ProviderProjectInfo {
+  const visibility: ProviderVisibility =
+    project.visibility === "public" || project.visibility === "internal"
+      ? project.visibility
+      : "private";
+  return {
+    ...toRef(provider, project),
+    path: project.path_with_namespace ?? project.path ?? String(project.id),
+    default_branch: project.default_branch ?? "main",
+    visibility,
+  };
+}
+
+// CreateProviderProjectInput is part of the adapter's public contract; it is
+// referenced via the `projects.create` parameter type.
+export type { CreateProviderProjectInput };
 
 function toUser(provider: "gitlab", entity: GitLabEntity): ProviderUser {
   return {

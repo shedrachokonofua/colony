@@ -25,9 +25,12 @@ const EXPECTED_TABLES = [
   "policies",
   "provider_identities",
   "provider_mirrors",
+  "provider_projects",
   "reviews",
+  "scope_targets",
   "scopes",
   "task_dependencies",
+  "task_targets",
   "tasks",
 ] as const;
 

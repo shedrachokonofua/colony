@@ -35,6 +35,14 @@ export interface SignalReference {
   readonly event_id?: string;
   readonly artifact_id?: string;
   readonly uri?: string;
+  /**
+   * Provider project context (COL-1.2b). Webhook events arriving from a
+   * multi-repo scope must carry the project ID/path so downstream lookups
+   * resolve `provider_mirrors` to the correct row even when issue IIDs
+   * collide across projects.
+   */
+  readonly provider_project_id?: string;
+  readonly provider_project_path?: string;
 }
 
 interface SupervisorSignalBase {
@@ -51,6 +59,8 @@ export interface ProviderEventSignal extends SupervisorSignalBase {
   readonly event_id: string;
   readonly object_kind: string;
   readonly object_id: string;
+  readonly provider_project_id?: string;
+  readonly provider_project_path?: string;
 }
 
 export interface ApprovalSignal extends SupervisorSignalBase {

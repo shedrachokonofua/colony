@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { ActorId } from "@colony/domain";
 import { PolicyRepository, TaskGraphRepository } from "@colony/db";
@@ -79,7 +78,10 @@ export function getProviderAdminDeps(): ProviderAdminDeps {
     singleton = {
       repo: new TaskGraphRepository(pool),
       policyRepo: new PolicyRepository(pool),
-      adapter: new GitLabProviderAdapter({ baseUrl: env().GITLAB_BASE_URL }),
+      adapter: new GitLabProviderAdapter({
+        baseUrl: env().GITLAB_BASE_URL,
+        token: env().GITLAB_TOKEN,
+      }),
     };
   }
   return singleton;
@@ -94,9 +96,6 @@ export function registerProviderAdmin(
     path: "/admin/provider/bootstrap",
     summary: "Provision or reconcile the GitLab provider environment",
     request: {
-      headers: z.object({
-        "X-Admin-Token": z.string().min(1),
-      }),
       body: {
         content: {
           "application/json": {
@@ -128,18 +127,6 @@ export function registerProviderAdmin(
   app.openapi(route, async (c) => {
     const actor = c.get("actor") as ActorId;
     const body = c.req.valid("json") as ProviderBootstrapSpec;
-    const adminToken = c.req.header("X-Admin-Token");
-    if (!adminToken?.trim()) {
-      return c.json(
-        {
-          error: {
-            code: "MISSING_ADMIN_CREDENTIAL",
-            message: "X-Admin-Token header is required",
-          },
-        },
-        400,
-      );
-    }
 
     const policy = await deps.policyRepo.getGlobalPolicy();
     const grants = await deps.policyRepo.getCapabilityGrantsForActor(
@@ -176,14 +163,8 @@ export function registerProviderAdmin(
       );
     }
 
-    const admin_credential_hash = createHash("sha256")
-      .update(adminToken)
-      .digest("hex");
     try {
-      const result = await deps.adapter.bootstrap(body, {
-        kind: "admin_pat",
-        token: adminToken,
-      });
+      const result = await deps.adapter.bootstrap(body);
       const redacted = redactBootstrapResult(result);
       await deps.repo.withTransaction(async (tx) => {
         for (const action of redacted.actions) {
@@ -194,11 +175,7 @@ export function registerProviderAdmin(
             target_kind: action.resource,
             target_id: action.provider_id,
             reason: "api",
-            evidence: {
-              admin_credential_hash,
-              action,
-              result: redacted,
-            },
+            evidence: { action, result: redacted },
           });
         }
         await tx.writeAudit({
@@ -208,10 +185,7 @@ export function registerProviderAdmin(
           target_kind: "provider_environment",
           target_id: `${body.provider}:${body.environment}`,
           reason: "api",
-          evidence: {
-            admin_credential_hash,
-            result: redacted,
-          },
+          evidence: { result: redacted },
         });
       });
       return c.json(redacted, 200);
@@ -224,7 +198,6 @@ export function registerProviderAdmin(
         target_id: `${body.provider}:${body.environment}`,
         reason: "api",
         evidence: {
-          admin_credential_hash,
           error: e instanceof Error ? e.message : String(e),
         },
       });

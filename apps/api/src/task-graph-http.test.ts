@@ -400,7 +400,6 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
       method: "POST",
       headers: {
         "X-Actor-Id": "agent:dev-1",
-        "X-Admin-Token": "admin-secret",
         "Content-Type": "application/json",
       },
       body: JSON.stringify(bootstrapBody()),
@@ -415,7 +414,6 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
       method: "POST",
       headers: {
         "X-Actor-Id": "human:op-1",
-        "X-Admin-Token": "admin-secret",
         "Content-Type": "application/json",
       },
       body: JSON.stringify(bootstrapBody()),
@@ -435,8 +433,6 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
        LIMIT 1`,
     );
     const evidence = JSON.stringify(rows[0]?.evidence);
-    expect(evidence).toContain("admin_credential_hash");
-    expect(evidence).not.toContain("admin-secret");
     expect(evidence).not.toContain("fake-token-colony-engine");
   });
 });

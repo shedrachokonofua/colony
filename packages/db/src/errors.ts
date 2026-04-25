@@ -2,7 +2,8 @@ export type RepositoryErrorCode =
   | "STATE_VERSION_MISMATCH"
   | "NOT_FOUND"
   | "INVALID_STATE_TRANSITION"
-  | "TERMINAL_STATE";
+  | "TERMINAL_STATE"
+  | "UNIQUE_VIOLATION";
 
 export class RepositoryError extends Error {
   readonly code: RepositoryErrorCode;

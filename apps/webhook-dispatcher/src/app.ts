@@ -291,6 +291,19 @@ export function classifyGitLabWebhook(input: {
     objectAttributes?.updated_at,
     objectAttributes?.created_at,
   );
+  // Resolve the originating provider project so downstream lookups against
+  // `provider_mirrors` can scope by project (COL-1.2b). GitLab webhooks put
+  // the project ID either on `body.project.id` or `body.project_id`, and the
+  // path under `project.path_with_namespace` (older payloads use `project.path`).
+  const providerProjectId = firstString(
+    project?.id,
+    objectAttributes?.project_id,
+    input.body.project_id,
+  );
+  const providerProjectPath = firstString(
+    project?.path_with_namespace,
+    project?.path,
+  );
   const signal: ProviderEventSignal = {
     provider: "gitlab",
     event_type: firstString(input.body.event_type, eventKind) ?? eventKind,
@@ -300,6 +313,10 @@ export function classifyGitLabWebhook(input: {
     ...(taskId && isTaskId(taskId) ? { task_id: taskId } : {}),
     ...(actor ? { actor } : {}),
     ...(occurredAt ? { occurred_at: occurredAt } : {}),
+    ...(providerProjectId ? { provider_project_id: providerProjectId } : {}),
+    ...(providerProjectPath
+      ? { provider_project_path: providerProjectPath }
+      : {}),
     reference: {
       provider: "gitlab",
       object_kind: objectKind,
@@ -310,6 +327,10 @@ export function classifyGitLabWebhook(input: {
         objectAttributes?.web_url,
         project?.web_url,
       ),
+      ...(providerProjectId ? { provider_project_id: providerProjectId } : {}),
+      ...(providerProjectPath
+        ? { provider_project_path: providerProjectPath }
+        : {}),
     },
     attributes: scalarAttributes(attributes, objectAttributes),
   };

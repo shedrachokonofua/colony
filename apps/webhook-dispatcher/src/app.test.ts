@@ -154,4 +154,32 @@ describe("@colony/webhook-dispatcher", () => {
       attributes: { id: 42, status: "success" },
     });
   });
+
+  it("extracts provider project ID and path so multi-repo lookups can scope mirrors", () => {
+    const classified = classifyGitLabWebhook({
+      headers: new Headers({
+        "X-Gitlab-Event": "Issue Hook",
+        "X-Gitlab-Event-UUID": "evt-proj",
+      }),
+      body: {
+        scope_id: "col-hook",
+        object_kind: "issue",
+        object_attributes: { id: 7, iid: 7 },
+        project: {
+          id: 100,
+          path_with_namespace: "colony/frontend",
+          web_url: "https://gitlab.example/colony/frontend",
+        },
+      },
+    });
+    if (classified.kind !== "provider_event") {
+      throw new Error("expected provider_event");
+    }
+    expect(classified.signal.provider_project_id).toBe("100");
+    expect(classified.signal.provider_project_path).toBe("colony/frontend");
+    expect(classified.signal.reference?.provider_project_id).toBe("100");
+    expect(classified.signal.reference?.provider_project_path).toBe(
+      "colony/frontend",
+    );
+  });
 });

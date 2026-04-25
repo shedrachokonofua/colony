@@ -12,9 +12,12 @@ import type {
   GateId,
   PolicyId,
   ProviderMirrorId,
+  ProviderProjectId,
   ReviewId,
   ScopeId,
+  ScopeTargetId,
   TaskId,
+  TaskTargetId,
 } from "./ids.js";
 import type { ScopeState, TaskState } from "./state-machines.js";
 
@@ -219,9 +222,52 @@ export interface ProviderMirror {
   readonly entity_kind: ProviderEntityKind;
   readonly provider: string;
   readonly provider_id: string;
+  readonly provider_project_id?: ProviderProjectId;
+  readonly provider_project_path?: string;
   readonly source_version?: string;
   readonly projected_at?: Iso8601;
   readonly freshness_ttl_seconds?: number;
+}
+
+export type ProviderVisibility = "private" | "internal" | "public";
+
+export interface ProviderProject {
+  readonly id: ProviderProjectId;
+  readonly provider: string;
+  readonly provider_id: string;
+  readonly path: string;
+  readonly default_branch: string;
+  readonly visibility: ProviderVisibility;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly created_at: Iso8601;
+  readonly updated_at: Iso8601;
+}
+
+export type ScopeTargetRole =
+  | "primary"
+  | "frontend"
+  | "backend"
+  | "data"
+  | "infra"
+  | "docs"
+  | "shared";
+
+export interface ScopeTarget {
+  readonly id: ScopeTargetId;
+  readonly scope_id: ScopeId;
+  readonly provider_project_id: ProviderProjectId;
+  readonly role: ScopeTargetRole;
+  readonly created_at: Iso8601;
+}
+
+export type TaskTargetRole = "primary" | "secondary";
+
+export interface TaskTarget {
+  readonly id: TaskTargetId;
+  readonly task_id: TaskId;
+  readonly provider_project_id: ProviderProjectId;
+  readonly role: TaskTargetRole;
+  readonly created_at: Iso8601;
 }
 
 export type PolicyScope = "global" | "project" | "scope" | "task";
