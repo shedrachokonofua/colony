@@ -65,7 +65,7 @@ curl -X POST http://localhost:4000/admin/provider/bootstrap \
 The operation returns provider resource IDs and a redacted `.env` snippet, and writes an audit record with a hash of the admin credential. For break-glass setup or debugging, the equivalent manual fallback is:
 
 1. **Create a dev project on home-lab GitLab.**
-2. **Create one bot account** (e.g. `colony-engine`) with a personal access token scoped to `api`, `read_repository`, `write_repository`. Put the token in `.env` as `GITLAB_TOKEN`. Record the numeric project ID in `GITLAB_DEV_PROJECT_ID` and the base URL in `GITLAB_BASE_URL` (e.g. `https://gitlab.home.shdr.ch`).
+2. **Create one bot account** (e.g. `colony-engine`) with a personal access token scoped to `api`, `read_repository`, `write_repository`. Put the token in `.env` as `GITLAB_TOKEN`. Record the numeric project ID for the local default/dogfood project in `GITLAB_DEV_PROJECT_ID` and the base URL in `GITLAB_BASE_URL` (e.g. `https://gitlab.home.shdr.ch`). This is only the local default project; the durable architecture supports scopes that span multiple GitLab projects through Task Graph provider targets.
 3. **Pick a webhook secret** — any random string (`openssl rand -hex 32`) — and put it in `.env` as `GITLAB_WEBHOOK_SECRET`.
 4. **Work out the webhook URL.** The dispatcher runs on your laptop at `http://<laptop-lan-address>:$WEBHOOK_DISPATCHER_PORT/webhook/gitlab`. Set `PUBLIC_HOST` in `.env` to the laptop's LAN name or IP (e.g. `10.0.4.10`). On restart, the dispatcher logs the exact URL GitLab should POST to.
 5. **In GitLab project → Settings → Webhooks**, add:

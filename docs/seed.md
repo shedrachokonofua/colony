@@ -42,7 +42,7 @@ Availability rule: if the git provider is unreachable, Colony freezes new visibl
 
 ## Git Provider Integration
 
-- **Human surface:** a single GitLab project (or group) initially. Humans interact through the active provider surface.
+- **Human surface:** GitLab projects/groups initially. A scope may span multiple repos/projects; humans interact through the active provider surfaces linked to that scope.
 - **Provider adapter:** Colony uses a git-provider interface for issues, comments, review threads, merge requests / pull requests, approvals, branches, commits, pipeline status, labels, and user identity. GitLab is the first adapter, not a hard architectural dependency.
 - **Scope mirror → epic / parent issue.** Task mirrors → child issues linked via `Closes #<issue>` on MRs/PRs.
 - **Tier assumption:** GitLab Premium/Ultimate is assumed for epics and required MR approval rules in the initial adapter. If unavailable, fall back to parent issues, labels, comments, and Supervisor-enforced merge readiness checks.

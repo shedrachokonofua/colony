@@ -6,14 +6,19 @@ import {
   defaultReviewerBot,
   type BootstrapAction,
   type BootstrapBotSpec,
+  type CreateIssueInput,
   type ProviderAdapter,
   type ProviderBootstrapResult,
   type ProviderBootstrapSpec,
+  type ProviderComment,
   type ProviderCredential,
+  type ProviderId,
+  type ProviderIssue,
   type ProviderMetadata,
   type ProviderRef,
   type ProviderUser,
   type ProviderWebhook,
+  type UpdateIssueInput,
 } from "@colony/provider";
 
 export const COLONY_PROVIDER_GITLAB_PACKAGE =
@@ -23,6 +28,8 @@ type Fetch = typeof fetch;
 
 interface GitLabProviderAdapterOptions {
   readonly baseUrl: string;
+  readonly token?: string;
+  readonly projectId?: ProviderId;
   readonly fetch?: Fetch;
 }
 
@@ -40,6 +47,27 @@ interface GitLabEntity {
   readonly application_id?: string;
 }
 
+interface GitLabIssue extends GitLabEntity {
+  readonly project_id?: number | string;
+  readonly title: string;
+  readonly description?: string | null;
+  readonly state: "opened" | "closed" | (string & {});
+  readonly labels?: readonly string[];
+  readonly assignee?: GitLabUser | null;
+  readonly assignees?: readonly GitLabUser[];
+}
+
+interface GitLabNote extends GitLabEntity {
+  readonly body?: string;
+  readonly note?: string;
+  readonly author?: GitLabUser;
+  readonly created_at?: string;
+}
+
+interface GitLabUser extends GitLabEntity {
+  readonly bot?: boolean;
+}
+
 export class GitLabProviderError extends Error {
   constructor(
     message: string,
@@ -54,22 +82,29 @@ export class GitLabProviderError extends Error {
 export class GitLabProviderAdapter implements ProviderAdapter {
   readonly provider = "gitlab" as const;
   private readonly baseUrl: string;
+  private readonly token?: string;
+  private readonly projectId?: ProviderId;
   private readonly fetchImpl: Fetch;
 
   constructor(options: GitLabProviderAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.token = options.token;
+    this.projectId = options.projectId;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
   readonly issues: ProviderAdapter["issues"] = {
-    create: async () => notImplemented(),
-    update: async () => notImplemented(),
-    close: async () => notImplemented(),
-    reopen: async () => notImplemented(),
-    addLabel: async () => notImplemented(),
-    removeLabel: async () => notImplemented(),
-    setAssignees: async () => notImplemented(),
-    comment: async () => notImplemented(),
+    create: async (input) => this.createIssue(input),
+    update: async (id, input) => this.updateIssue(id, input),
+    close: async (id) => this.updateIssueState(id, "close"),
+    reopen: async (id) => this.updateIssueState(id, "reopen"),
+    addLabel: async (id, label) =>
+      this.updateIssue(id, { add_labels: [label] }),
+    removeLabel: async (id, label) =>
+      this.updateIssue(id, { remove_labels: [label] }),
+    setAssignees: async (id, assigneeIds) =>
+      this.updateIssue(id, { assignee_ids: assigneeIds }),
+    comment: async (id, body) => this.commentOnIssue(id, body),
   };
 
   readonly epics: ProviderAdapter["epics"] = {
@@ -106,8 +141,17 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   };
 
   readonly users: ProviderAdapter["users"] = {
-    resolveById: async () => notImplemented(),
-    resolveByUsername: async () => notImplemented(),
+    resolveById: async (id) =>
+      optionalGet(
+        () => this.api<GitLabUser>(`/users/${encodePath(id)}`),
+        404,
+      ).then((user) => (user ? toUser(this.provider, user) : null)),
+    resolveByUsername: async (username) => {
+      const users = await this.api<GitLabUser[]>(
+        `/users?username=${encodeURIComponent(username)}`,
+      );
+      return users[0] ? toUser(this.provider, users[0]) : null;
+    },
   };
 
   readonly webhooks: ProviderAdapter["webhooks"] = {
@@ -228,6 +272,59 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         .map(([k, v]) => `${k}=${sensitive(k) ? redact(v) : v}`)
         .join("\n"),
     };
+  }
+
+  private async createIssue(input: CreateIssueInput): Promise<ProviderIssue> {
+    const issue = await this.projectApi<GitLabIssue>("/issues", {
+      method: "POST",
+      body: JSON.stringify(issueInputBody(input)),
+    });
+    return toIssue(this.provider, this.requireProjectId(), issue);
+  }
+
+  private async updateIssue(
+    id: ProviderId,
+    input: UpdateIssueInput & {
+      readonly add_labels?: readonly string[];
+      readonly remove_labels?: readonly string[];
+    },
+  ): Promise<ProviderIssue> {
+    const issue = await this.projectApi<GitLabIssue>(
+      `/issues/${encodePath(issueIid(this.requireProjectId(), id))}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(issueInputBody(input)),
+      },
+    );
+    return toIssue(this.provider, this.requireProjectId(), issue);
+  }
+
+  private async updateIssueState(
+    id: ProviderId,
+    stateEvent: "close" | "reopen",
+  ): Promise<ProviderIssue> {
+    const issue = await this.projectApi<GitLabIssue>(
+      `/issues/${encodePath(issueIid(this.requireProjectId(), id))}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ state_event: stateEvent }),
+      },
+    );
+    return toIssue(this.provider, this.requireProjectId(), issue);
+  }
+
+  private async commentOnIssue(
+    id: ProviderId,
+    body: string,
+  ): Promise<ProviderComment> {
+    const note = await this.projectApi<GitLabNote>(
+      `/issues/${encodePath(issueIid(this.requireProjectId(), id))}/notes`,
+      {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      },
+    );
+    return toComment(this.provider, note);
   }
 
   private async ensureBot(
@@ -428,6 +525,90 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     }
     return body as T;
   }
+
+  private async api<T>(path: string, init?: RequestInit): Promise<T> {
+    const token = this.requireToken();
+    return this.request<T>(path, token, init);
+  }
+
+  private async projectApi<T>(path: string, init?: RequestInit): Promise<T> {
+    return this.api<T>(
+      `/projects/${encodePath(this.requireProjectId())}${path}`,
+      init,
+    );
+  }
+
+  private requireToken(): string {
+    if (!this.token) {
+      throw new GitLabProviderError(
+        "GitLab provider requires a token for project operations",
+        500,
+        null,
+      );
+    }
+    return this.token;
+  }
+
+  private requireProjectId(): ProviderId {
+    if (!this.projectId) {
+      throw new GitLabProviderError(
+        "GitLab provider requires a projectId for project operations",
+        500,
+        null,
+      );
+    }
+    return this.projectId;
+  }
+}
+
+function issueInputBody(
+  input: UpdateIssueInput & {
+    readonly add_labels?: readonly string[];
+    readonly remove_labels?: readonly string[];
+  },
+): Record<string, unknown> {
+  return {
+    title: input.title,
+    description: input.description,
+    labels: input.labels ? input.labels.join(",") : undefined,
+    add_labels: input.add_labels ? input.add_labels.join(",") : undefined,
+    remove_labels: input.remove_labels
+      ? input.remove_labels.join(",")
+      : undefined,
+    assignee_ids: input.assignee_ids,
+  };
+}
+
+function toIssue(
+  provider: "gitlab",
+  projectId: ProviderId,
+  issue: GitLabIssue,
+): ProviderIssue {
+  const assignees = issue.assignees ?? (issue.assignee ? [issue.assignee] : []);
+  const id = issueId(projectId, issue);
+  return {
+    id,
+    iid: issue.iid,
+    title: issue.title,
+    description: issue.description ?? "",
+    state: issue.state === "closed" ? "closed" : "opened",
+    labels: [...(issue.labels ?? [])],
+    assignee_ids: assignees.map((user) => String(user.id)),
+    metadata: {
+      ...meta(provider, issue),
+      id,
+    },
+  };
+}
+
+function toComment(provider: "gitlab", note: GitLabNote): ProviderComment {
+  return {
+    id: String(note.id),
+    body: note.body ?? note.note ?? "",
+    author_id: note.author ? String(note.author.id) : undefined,
+    created_at: note.created_at ?? new Date(0).toISOString(),
+    metadata: meta(provider, note),
+  };
 }
 
 function toRef(provider: "gitlab", entity: GitLabEntity): ProviderRef {
@@ -444,7 +625,7 @@ function toUser(provider: "gitlab", entity: GitLabEntity): ProviderUser {
     username: entity.username ?? String(entity.id),
     name: entity.name ?? entity.username ?? String(entity.id),
     email: entity.email,
-    bot: true,
+    bot: "bot" in entity && entity.bot === true,
   };
 }
 
@@ -467,6 +648,21 @@ async function optionalGet<T>(
     if (e instanceof GitLabProviderError && e.status === status) return null;
     throw e;
   }
+}
+
+function issueId(projectId: ProviderId, issue: GitLabIssue): ProviderId {
+  return `${String(issue.project_id ?? projectId)}:${String(issue.iid ?? issue.id)}`;
+}
+
+function issueIid(projectId: ProviderId, id: ProviderId): string {
+  const prefix = `${projectId}:`;
+  if (id.startsWith(prefix)) return id.slice(prefix.length);
+  const separator = id.lastIndexOf(":");
+  return separator === -1 ? id : id.slice(separator + 1);
+}
+
+function encodePath(value: string | number): string {
+  return encodeURIComponent(String(value));
 }
 
 function notImplemented(): never {

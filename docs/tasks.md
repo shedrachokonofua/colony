@@ -355,7 +355,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ## Phase 1 — Scope/Task Mirror And Supervisor Workflow
 
-Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Supervisor assignment logic without executing agents yet.
+Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Supervisor assignment logic without executing agents yet. Scopes may span multiple repos/projects; any single-project GitLab setting is only a local default for dogfooding and adapter tests.
 
 ### COL-1.1 — Provider Adapter Interface
 
@@ -412,10 +412,10 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Acceptance**
 
 - Integration test against the home-lab GitLab covers issue mirror lifecycle.
-- Provider IDs are stored only in `provider_mirrors`.
+- Provider IDs are stored only in `provider_mirrors`; any project/repo context needed by adapter calls is passed explicitly rather than read from a durable singleton.
 - GitLab-specific dependencies live in `packages/provider-gitlab`, not `packages/provider`.
 
-### COL-1.3 — Scope And Task Mirror
+### COL-1.2b — Multi-Repo Provider Target Model
 
 - [ ]
 
@@ -423,15 +423,40 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 **Deliverables**
 
-- Scope epic/parent issue -> Task Graph scope mirror.
-- Task -> provider issue mirror.
+- Domain and repository types for provider project/repo registry:
+  - `provider_projects` — provider, provider project ID/path, default branch, visibility, metadata.
+  - `scope_targets` — many provider projects per scope, with roles such as `primary`, `frontend`, `backend`, `data`, `infra`, `docs`, or `shared`.
+  - `task_targets` — one primary provider project per task plus optional secondary affected projects.
+- Migration(s), repository methods, and tests for registering provider projects and linking scope/task targets.
+- Provider adapter operation shapes updated so issue/MR/branch/pipeline calls receive project context per operation; local `GITLAB_DEV_PROJECT_ID` remains a test/dogfood default only.
+- Webhook lookup design updated to include provider project ID/path when resolving provider events to `provider_mirrors`.
+
+**Acceptance**
+
+- A single scope can be linked to at least two GitLab projects in tests.
+- Tasks can be created with distinct primary provider projects under the same scope.
+- Provider mirror uniqueness includes enough project/repo context to avoid collisions across GitLab projects.
+- Existing single-project local dev flow still works by registering `GITLAB_DEV_PROJECT_ID` as the default provider project.
+
+### COL-1.3 — Scope And Task Mirror
+
+- [ ]
+
+**Depends on:** COL-1.2b
+
+**Deliverables**
+
+- Scope epic/parent issue -> Task Graph scope mirror, associated with one or more provider project targets.
+- Task -> provider issue mirror in the task's primary provider project.
+- Multi-repo decomposition support: frontend/backend/data/etc. tasks under one scope can target different provider projects.
 - Projection version metadata.
 - Provider projection writes through Supervisor activities.
 
 **Acceptance**
 
 - Creating a scope creates or links the provider parent issue.
-- Creating a task creates or links a provider issue.
+- Creating a task creates or links a provider issue in the correct provider project.
+- One scope with at least two provider projects can create tasks mirrored to different GitLab projects.
 - Projection drift can be detected from stored version metadata.
 
 ### COL-1.4 — Provider Command Parser

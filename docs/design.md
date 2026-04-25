@@ -269,6 +269,9 @@ Each decision: **Decision / Rationale / Consequence / Revisit when**.
 | `memory_candidates` | Memory     | Pending proposals from agents                                                             |
 | `capabilities`      | Policy     | Role + context → action allow/deny                                                        |
 | `policies`          | Policy     | Project/scope/task-level policy config                                                    |
+| `provider_projects` | Task Graph | Provider repo/project registry, independent of scopes                                     |
+| `scope_targets`     | Task Graph | Provider projects/repos in scope, with roles such as frontend/backend/data/infra          |
+| `task_targets`      | Task Graph | Primary and secondary provider projects/repos for each task                               |
 | `provider_mirrors`  | Task Graph | Mapping between Colony IDs and provider IDs                                               |
 
 ### Source of truth (per field)
@@ -298,6 +301,8 @@ Every projection carries:
 
 **Colony IDs vs. provider IDs.** Every entity gets a Colony ID (`col-xxxx` for scopes, `col-xxxx.N` for tasks). Provider IDs live in `provider_mirrors`, never as primary keys. A scope can survive provider migration because Colony IDs are stable.
 
+**Provider project targeting.** A scope is not assumed to belong to one repo. A single scope may cover frontend, backend, data, infra, docs, and shared-library projects. Provider account credentials and webhook/OAuth setup are environment configuration; the set of provider projects Colony may touch is Task Graph data. `provider_projects` records repo/project identity (`provider`, `provider_project_id`, `path`, `default_branch`, metadata). `scope_targets` declares the projects in a scope and their role. `task_targets` assigns each task one primary project and optional secondary affected projects. Provider adapter calls receive project context per operation; global env vars may provide a local default for dogfooding but are not the durable model.
+
 ### ERD sketch (not locked)
 
 ```
@@ -305,17 +310,19 @@ scopes ──┬── tasks ──┬── task_dependencies
          │           ├── assignments
          │           ├── gates ── approvals, reviews
          │           ├── artifacts
+         │           ├── task_targets ── provider_projects
          │           └── agent_runs
+         ├── scope_targets ── provider_projects
          └── events (polymorphic, scope_id/task_id FK)
              audit_log (append-only, every mutation)
-             provider_mirrors (col_id, provider_id, provider, entity_type)
+             provider_mirrors (col_id, provider_id, provider, provider_project_id, entity_type)
 ```
 
 Exact columns are deferred to the schema-freeze milestone (Phase 0 end).
 
 ### Open Questions
 
-- **Minimum MVP schema.** Target: scopes, tasks, task_dependencies, assignments, gates, approvals, artifacts, events, audit_log, agent_runs, provider_mirrors, policies, capability_grants. Memory tables can trail by one phase.
+- **Minimum MVP schema.** Target: scopes, tasks, task_dependencies, assignments, gates, approvals, artifacts, events, audit_log, agent_runs, provider_projects, scope_targets, task_targets, provider_mirrors, policies, capability_grants. Memory tables can trail by one phase.
 - **Audit log storage.** MVP: Postgres table with `INSERT`-only RLS policy and no `UPDATE`/`DELETE` grants. Separate event store is a Phase 4 consideration; cryptographic integrity (Merkle or signed chain) is deferred unless a compliance requirement forces it earlier.
 - **Memory in `colony` database.** MVP: yes, same database, separate schema (`colony.memory_*`). Split if/when isolation or scaling requires.
 
@@ -470,6 +477,7 @@ ProviderAdapter {
 - **Tier.** GitLab Premium/Ultimate for epics and MR approval rules.
 - **Fallback (if Premium unavailable).** Parent issues instead of epics. Approvals via `/approve` comment + Supervisor-enforced merge readiness. Protected-branch rules still required.
 - **Bot accounts.** Two: `colony-engine` (Architect, Supervisor, Developer, Integrator personas — opens issues/branches/MRs, comments, merges) and `colony-reviewer` (only reviews/approves). The split is forced by GitLab's MR self-approval rule; finer-grained per-role attribution is not worth the operational cost. Per-role attribution lives in Colony's audit log, not GitLab's username column. Bot tokens are scoped per role and rotated every 24h. The bot users, their PATs, and the Web UI OAuth Application are created by the Provider Bootstrap operation (below) — no manual user creation in the GitLab UI.
+- **Multi-repo scopes.** GitLab project context is not a singleton. One Colony scope can target multiple GitLab projects, e.g. frontend, backend, data, infra, and docs repos. The provider adapter takes a project target on issue/MR/branch/pipeline operations. The Supervisor chooses the target from `scope_targets` and `task_targets`; a local `GITLAB_DEV_PROJECT_ID` can be used only as a default project for local dogfooding and adapter tests.
 
 ### Provider Bootstrap
 
@@ -479,20 +487,20 @@ Provisioning a new provider environment (groups, projects, bot users, bot PATs, 
 ProviderAdapter.bootstrap(spec): Promise<BootstrapResult>
 ```
 
-- **Input:** a request-scoped admin credential (e.g. GitLab admin PAT) plus a config (group/project names, bot names, redirect URIs, webhook URL, scopes per role).
+- **Input:** a request-scoped admin credential (e.g. GitLab admin PAT) plus a config (group/project names, bot names, redirect URIs, webhook URL, scopes per role). Bootstrap may create an initial project, but additional target projects are registered as Task Graph provider projects and can be added later without changing global credentials.
 - **Behavior:** idempotent — checks existing resources by name and creates only what's missing; rotates tokens when policy says.
 - **Output:** structured result listing created/existing resource IDs and a redacted `.env` snippet for the operator.
 - **Surface:** invoked by the operator via the Web UI ("Set up provider") or a capability-gated API endpoint on `apps/api`. The admin credential is request-scoped — it is never stored at rest in Colony.
 - **Capability:** `provider.admin.bootstrap` (granted only to a human admin actor; never to agents). Every bootstrap action writes a Task Graph audit event with the actor, the redacted result, and a hash of the admin credential used.
 - **GitLab implementation** uses `POST /api/v4/users` (with `bot=true`, `skip_confirmation=true`), `POST /api/v4/users/:id/personal_access_tokens`, `POST /api/v4/groups`, `POST /api/v4/projects`, `POST /api/v4/applications`, and `POST /api/v4/projects/:id/hooks`. One admin PAT is the only human-touched credential; everything else is created over the API.
-- **Re-running** the operation is the rotation/drift-correction path. Two environments (dev and prod) are two invocations against two GitLab projects.
+- **Re-running** the operation is the rotation/drift-correction path. Two environments (dev and prod) are two invocations against their environment bootstrap specs. Multi-repo operation within one environment is modeled by registering multiple provider projects and linking scopes/tasks to them.
 
 ### Webhook handling
 
 1. **Signature verification.** HMAC per-project secret; reject on mismatch with 401.
 2. **Deduplication.** `(event_id, object_id)` dedup table, 7-day TTL.
 3. **Classification.** Map event → `valid_command`, `context_update`, `review_feedback`, `approval`, `conflict`, `noop`, or `needs_clarification`.
-4. **Signal dispatch.** Look up `scope_id` from `provider_mirrors`; send signal to `supervisor-<scope_id>`.
+4. **Signal dispatch.** Look up `scope_id` from `provider_mirrors` using provider, project/repo ID, entity type, and provider entity ID; send signal to `supervisor-<scope_id>`.
 5. **Provider projection writes.** The webhook dispatcher **does not** write to the provider. Provider API writes are performed by Supervisor activities through the Provider Adapter; git transport writes from agent runs go through the Tool Gateway git proxy.
 
 ### Periodic reconciliation
@@ -500,7 +508,7 @@ ProviderAdapter.bootstrap(spec): Promise<BootstrapResult>
 In addition to webhook-driven sync, every 15 minutes per active scope:
 
 - Re-fetch MR/PR status, pipeline status, approval list for all active artifacts.
-- Diff against `provider_mirrors` projection.
+- Diff against `provider_mirrors` projection, scoped to each active provider project target.
 - Emit `drift_detected` events on mismatch; trigger `ReconcileScope`.
 
 ### Provider outage behavior
@@ -1147,7 +1155,7 @@ The production-like environment is Aether: the private-cloud infrastructure repo
 
 - **Local dev tooling.** Decided: Nix dev shell + npm workspaces + Docker Compose for Temporal/Postgres + `npm run dev` for app processes. No local k8s cluster; Kubernetes validation happens on Aether in `colony-dev`. Requirement: preserve production-relevant seams without making local setup painful.
 - **CI/CD.** Decided: GitLab CI with Nix-backed jobs.
-- **First production-like environment.** Aether-hosted Kubernetes with the full stack; bot users and tokens provisioned via the Provider Bootstrap operation (§10); one GitLab project to start (`colony-dev`), prod project provisioned by re-running bootstrap.
+- **First production-like environment.** Aether-hosted Kubernetes with the full stack; bot users and tokens provisioned via the Provider Bootstrap operation (§10); one GitLab project may be used as the first local dogfood/default target, but the Task Graph model supports registering multiple GitLab projects per environment and assigning scope/task targets across them.
 - **Backup RPO/RTO.** 5 min / 1 hour for Task Graph + audit. Refine with pilot SLOs.
 
 ## 20. Rollout Plan And Milestones
@@ -1156,7 +1164,7 @@ The production-like environment is Aether: the private-cloud infrastructure repo
 
 Deliverables:
 
-- Postgres `colony` schema: scopes, tasks, task_dependencies, assignments, gates, approvals, artifacts, events, audit_log, agent_runs, provider_mirrors.
+- Postgres `colony` schema: scopes, tasks, task_dependencies, assignments, gates, approvals, artifacts, events, audit_log, agent_runs, provider_projects, scope_targets, task_targets, provider_mirrors.
 - Minimal policy schema: policies, capability grants, provider identity mapping.
 - Task Graph API: core CRUD + `claim_task` + `ready_tasks` + audit writes.
 - Webhook dispatcher: signature verify + dedup + classify + signal stub.
@@ -1171,12 +1179,13 @@ Acceptance: a synthetic scope can be created, a task claimed atomically by two c
 Deliverables:
 
 - Provider adapter (GitLab) for issues, comments, labels.
-- Scope epic → Task Graph scope mirror; task → provider issue mirror.
+- Scope epic/parent issue → Task Graph scope mirror; task → provider issue mirror in the task's primary provider project.
+- Multi-repo scope targeting: register provider projects, link multiple provider projects to one scope, and assign primary/secondary provider project targets to tasks.
 - Supervisor workflow: receive signal, run `ready_tasks`, `claim_task`, assign agent via provider label + assignee, post comment.
 - Web UI read views for mirrored scopes/tasks, provider sync status, and workflow state.
 - No agent execution yet — the workflow stops at "would assign Developer."
 
-Acceptance: open a GitLab epic, see scope mirrored; approve a mock decomposition; see `state:ready` tasks appear.
+Acceptance: open a GitLab epic/parent issue, see scope mirrored; approve a mock decomposition that spans at least two GitLab projects; see `state:ready` tasks appear in the correct provider projects.
 
 ### Phase 2 — Developer + Reviewer + merge
 
