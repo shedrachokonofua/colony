@@ -6,7 +6,6 @@ const cfg = env();
 const app = buildApp();
 
 serve({ fetch: app.fetch, port: cfg.WEBHOOK_DISPATCHER_PORT }, (info) => {
-  // eslint-disable-next-line no-console
   console.log(
     `colony-webhook-dispatcher listening on http://localhost:${info.port} ` +
       `(GitLab should POST to http://${cfg.PUBLIC_HOST}:${info.port}/webhook/gitlab)`,

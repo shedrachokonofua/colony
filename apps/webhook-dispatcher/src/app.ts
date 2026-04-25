@@ -84,13 +84,14 @@ export function buildApp(): OpenAPIHono {
 
     // Placeholder: in COL-0.6 this becomes a Task Graph `events` row (with dedup).
     // For COL-0.3, stdout proves the webhook round-trip completed.
-    const body = await c.req.json().catch(() => ({}));
-    // eslint-disable-next-line no-console
+    const body = await c.req
+      .json<{ object_kind?: string }>()
+      .catch((): { object_kind?: string } => ({}));
     console.log(
       JSON.stringify({
         event_kind: eventKind,
         event_uuid: eventUuid,
-        object_kind: (body as { object_kind?: string }).object_kind,
+        object_kind: body.object_kind,
         at: new Date().toISOString(),
       }),
     );
