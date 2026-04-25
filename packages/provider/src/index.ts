@@ -296,14 +296,8 @@ export interface ProviderAdapter {
       id: ProviderId,
       input: UpdateIssueInput,
     ): Promise<ProviderIssue>;
-    close(
-      project: ProviderProjectRef,
-      id: ProviderId,
-    ): Promise<ProviderIssue>;
-    reopen(
-      project: ProviderProjectRef,
-      id: ProviderId,
-    ): Promise<ProviderIssue>;
+    close(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
+    reopen(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
     addLabel(
       project: ProviderProjectRef,
       id: ProviderId,
@@ -335,10 +329,7 @@ export interface ProviderAdapter {
       id: ProviderId,
       input: UpdateIssueInput,
     ): Promise<ProviderIssue>;
-    close(
-      project: ProviderProjectRef,
-      id: ProviderId,
-    ): Promise<ProviderIssue>;
+    close(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
   };
   readonly mergeRequests: {
     open(
@@ -389,10 +380,7 @@ export interface ProviderAdapter {
       ref: string,
     ): Promise<ProviderBranch>;
     delete(project: ProviderProjectRef, name: string): Promise<void>;
-    protect(
-      project: ProviderProjectRef,
-      name: string,
-    ): Promise<ProviderBranch>;
+    protect(project: ProviderProjectRef, name: string): Promise<ProviderBranch>;
   };
   readonly commits: {
     get(project: ProviderProjectRef, sha: string): Promise<ProviderCommit>;
@@ -503,7 +491,9 @@ export class FakeProviderAdapter implements ProviderAdapter {
 
   readonly groups: ProviderAdapter["groups"] = {
     create: async (input) => {
-      const fullPath = input.parent ? `${input.parent}/${input.path}` : input.path;
+      const fullPath = input.parent
+        ? `${input.parent}/${input.path}`
+        : input.path;
       const existing = this.groupsByPath.get(fullPath);
       if (existing) return existing;
       const id = `fake-group-${this.groupSeq++}`;
@@ -565,17 +555,13 @@ export class FakeProviderAdapter implements ProviderAdapter {
       user_id: "fake-bot",
       username: "fake-bot",
       default_namespace: "fake-bot",
-      accessible_namespaces: [
-        "fake-bot",
-        ...this.groupsByPath.keys(),
-      ],
+      accessible_namespaces: ["fake-bot", ...this.groupsByPath.keys()],
     };
   }
 
   readonly issues: ProviderAdapter["issues"] = {
     create: async (project, input) => this.createIssue(project, "issue", input),
-    update: async (project, id, input) =>
-      this.updateIssue(project, id, input),
+    update: async (project, id, input) => this.updateIssue(project, id, input),
     close: async (project, id) => this.setIssueState(project, id, "closed"),
     reopen: async (project, id) => this.setIssueState(project, id, "opened"),
     addLabel: async (project, id, label) => {
@@ -605,8 +591,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
 
   readonly epics: ProviderAdapter["epics"] = {
     create: async (project, input) => this.createIssue(project, "epic", input),
-    update: async (project, id, input) =>
-      this.updateIssue(project, id, input),
+    update: async (project, id, input) => this.updateIssue(project, id, input),
     close: async (project, id) => this.setIssueState(project, id, "closed"),
   };
 

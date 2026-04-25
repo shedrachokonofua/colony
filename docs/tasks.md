@@ -428,7 +428,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - GitLab adapter loops over the bot spec, calling `users.create` + `personal_access_tokens` per entry idempotently. Existing `engine`/`reviewer` defaults remain when `bots` is omitted so older callers don't break.
 - Predefined role set seeded by default: `engine` (developer), `reviewer`, `architect`, `integrator`, `memory_consolidator`, `supervisor` (service identity, no provider writes).
 - Fake adapter mirrors the same shape.
-- `secrets/dev.yaml` shape documented as a *map* of role → token rather than a single `GITLAB_TOKEN` (with `GITLAB_TOKEN` retained as the default `engine` alias for back-compat with current adapter constructor wiring).
+- `secrets/dev.yaml` shape documented as a _map_ of role → token rather than a single `GITLAB_TOKEN` (with `GITLAB_TOKEN` retained as the default `engine` alias for back-compat with current adapter constructor wiring).
 
 **Acceptance**
 

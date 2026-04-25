@@ -98,9 +98,9 @@ describe("FakeProviderAdapter", () => {
       bot: true,
     });
     expect(subBot.bot).toBe(true);
-    expect(await adapter.users.resolveByUsername("colony-it-bot")).toMatchObject(
-      { id: subBot.id },
-    );
+    expect(
+      await adapter.users.resolveByUsername("colony-it-bot"),
+    ).toMatchObject({ id: subBot.id });
 
     const project = await adapter.projects.create({
       name: "throwaway",

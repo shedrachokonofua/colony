@@ -104,7 +104,9 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly groups: ProviderAdapter["groups"] = {
     create: async (input) => {
-      const fullPath = input.parent ? `${input.parent}/${input.path}` : input.path;
+      const fullPath = input.parent
+        ? `${input.parent}/${input.path}`
+        : input.path;
       const existing = await optionalGet<GitLabEntity>(
         () => this.api<GitLabEntity>(`/groups/${encodePath(fullPath)}`),
         404,
@@ -192,7 +194,8 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     // Groups the bot can write into. min_access_level=30 is GitLab's
     // "Developer" — the lowest level that can create projects under a group.
     const groups = await optionalGet<GitLabEntity[]>(
-      () => this.api<GitLabEntity[]>("/groups?min_access_level=30&per_page=100"),
+      () =>
+        this.api<GitLabEntity[]>("/groups?min_access_level=30&per_page=100"),
       404,
     );
     const username = me.username ?? String(me.id);
@@ -210,8 +213,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly issues: ProviderAdapter["issues"] = {
     create: async (project, input) => this.createIssue(project, input),
-    update: async (project, id, input) =>
-      this.updateIssue(project, id, input),
+    update: async (project, id, input) => this.updateIssue(project, id, input),
     close: async (project, id) => this.updateIssueState(project, id, "close"),
     reopen: async (project, id) => this.updateIssueState(project, id, "reopen"),
     addLabel: async (project, id, label) =>
@@ -297,7 +299,6 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       input.headers["x-gitlab-token"] === input.secret ||
       input.headers["X-Gitlab-Token"] === input.secret,
   };
-
 
   async bootstrap(
     input: ProviderBootstrapSpec,

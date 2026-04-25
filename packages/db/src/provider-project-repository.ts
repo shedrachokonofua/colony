@@ -198,9 +198,7 @@ export class ProviderProjectRepository {
     return rows.map(mapScopeTarget);
   }
 
-  async getPrimaryScopeTarget(
-    scope_id: ScopeId,
-  ): Promise<ScopeTarget | null> {
+  async getPrimaryScopeTarget(scope_id: ScopeId): Promise<ScopeTarget | null> {
     const { rows } = await this.pool.query<ScopeTargetRow>(
       `SELECT * FROM scope_targets
        WHERE scope_id = $1 AND role = 'primary'`,

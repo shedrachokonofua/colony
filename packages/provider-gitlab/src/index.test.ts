@@ -458,7 +458,6 @@ describe("GitLabProviderAdapter issues", () => {
       "https://gitlab.test/api/v4/projects/200/issues",
     ]);
   });
-
 });
 
 const describeLive =
@@ -485,104 +484,100 @@ const describeLive =
  * removed; subsequent runs use a fresh timestamp.
  */
 describeLive("GitLabProviderAdapter live multi-repo integration", () => {
-  it(
-    "self-bootstraps a group, two projects, runs issue lifecycle on each, and cleans up",
-    async () => {
-      const adapter = new GitLabProviderAdapter({
-        baseUrl: process.env.GITLAB_BASE_URL!,
-        token: process.env.GITLAB_TOKEN!,
+  it("self-bootstraps a group, two projects, runs issue lifecycle on each, and cleans up", async () => {
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: process.env.GITLAB_BASE_URL!,
+      token: process.env.GITLAB_TOKEN!,
+    });
+
+    const me = await adapter.identity();
+    expect(me.username).toBeTruthy();
+    expect(me.default_namespace).toBeTruthy();
+
+    const stamp = Date.now();
+    const groupPath = `colony-it-${stamp}`;
+    let groupId: string | null = null;
+
+    try {
+      const group = await adapter.groups.create({
+        name: `Colony IT ${stamp}`,
+        path: groupPath,
+        visibility: "private",
+        description: "Throwaway group created by Colony integration tests.",
       });
+      groupId = group.id;
+      expect(group.path).toBe(groupPath);
 
-      const me = await adapter.identity();
-      expect(me.username).toBeTruthy();
-      expect(me.default_namespace).toBeTruthy();
+      const projectA = await adapter.projects.create({
+        name: "a",
+        path: "a",
+        namespace: group.id,
+        visibility: "private",
+      });
+      const projectB = await adapter.projects.create({
+        name: "b",
+        path: "b",
+        namespace: group.id,
+        visibility: "private",
+      });
+      expect(projectA.id).not.toBe(projectB.id);
+      expect(projectA.path).toBe(`${groupPath}/a`);
+      expect(projectB.path).toBe(`${groupPath}/b`);
 
-      const stamp = Date.now();
-      const groupPath = `colony-it-${stamp}`;
-      let groupId: string | null = null;
+      // Issue lifecycle on both projects in parallel — same workflow,
+      // different project context per call. The IDs returned must be
+      // namespaced by project so identical iids don't collide.
+      const [issueA, issueB] = await Promise.all([
+        adapter.issues.create(projectA, {
+          title: "live-it: a",
+          description: "Created by Colony integ test.",
+          labels: ["colony:integration"],
+        }),
+        adapter.issues.create(projectB, {
+          title: "live-it: b",
+          description: "Created by Colony integ test.",
+          labels: ["colony:integration"],
+        }),
+      ]);
+      expect(issueA.id).toContain(":");
+      expect(issueB.id).toContain(":");
+      expect(issueA.id).not.toBe(issueB.id);
+      expect(issueA.id.startsWith(`${projectA.id}:`)).toBe(true);
+      expect(issueB.id.startsWith(`${projectB.id}:`)).toBe(true);
 
-      try {
-        const group = await adapter.groups.create({
-          name: `Colony IT ${stamp}`,
-          path: groupPath,
-          visibility: "private",
-          description: "Throwaway group created by Colony integration tests.",
-        });
-        groupId = group.id;
-        expect(group.path).toBe(groupPath);
+      const label = `colony:test:${stamp}`;
+      const [labeledA, labeledB] = await Promise.all([
+        adapter.issues.addLabel(projectA, issueA.id, label),
+        adapter.issues.addLabel(projectB, issueB.id, label),
+      ]);
+      expect(labeledA.labels).toContain(label);
+      expect(labeledB.labels).toContain(label);
 
-        const projectA = await adapter.projects.create({
-          name: "a",
-          path: "a",
-          namespace: group.id,
-          visibility: "private",
-        });
-        const projectB = await adapter.projects.create({
-          name: "b",
-          path: "b",
-          namespace: group.id,
-          visibility: "private",
-        });
-        expect(projectA.id).not.toBe(projectB.id);
-        expect(projectA.path).toBe(`${groupPath}/a`);
-        expect(projectB.path).toBe(`${groupPath}/b`);
+      await Promise.all([
+        adapter.issues
+          .comment(projectA, issueA.id, "from-a")
+          .then((c) => expect(c.body).toBe("from-a")),
+        adapter.issues
+          .comment(projectB, issueB.id, "from-b")
+          .then((c) => expect(c.body).toBe("from-b")),
+      ]);
 
-        // Issue lifecycle on both projects in parallel — same workflow,
-        // different project context per call. The IDs returned must be
-        // namespaced by project so identical iids don't collide.
-        const [issueA, issueB] = await Promise.all([
-          adapter.issues.create(projectA, {
-            title: "live-it: a",
-            description: "Created by Colony integ test.",
-            labels: ["colony:integration"],
-          }),
-          adapter.issues.create(projectB, {
-            title: "live-it: b",
-            description: "Created by Colony integ test.",
-            labels: ["colony:integration"],
-          }),
-        ]);
-        expect(issueA.id).toContain(":");
-        expect(issueB.id).toContain(":");
-        expect(issueA.id).not.toBe(issueB.id);
-        expect(issueA.id.startsWith(`${projectA.id}:`)).toBe(true);
-        expect(issueB.id.startsWith(`${projectB.id}:`)).toBe(true);
+      await Promise.all([
+        adapter.issues.close(projectA, issueA.id),
+        adapter.issues.close(projectB, issueB.id),
+      ]);
 
-        const label = `colony:test:${stamp}`;
-        const [labeledA, labeledB] = await Promise.all([
-          adapter.issues.addLabel(projectA, issueA.id, label),
-          adapter.issues.addLabel(projectB, issueB.id, label),
-        ]);
-        expect(labeledA.labels).toContain(label);
-        expect(labeledB.labels).toContain(label);
-
-        await Promise.all([
-          adapter.issues
-            .comment(projectA, issueA.id, "from-a")
-            .then((c) => expect(c.body).toBe("from-a")),
-          adapter.issues
-            .comment(projectB, issueB.id, "from-b")
-            .then((c) => expect(c.body).toBe("from-b")),
-        ]);
-
-        await Promise.all([
-          adapter.issues.close(projectA, issueA.id),
-          adapter.issues.close(projectB, issueB.id),
-        ]);
-
-        // Sanity: getByPath round-trips, proving project context is what
-        // the registry would store for these mirrors.
-        const fetchedA = await adapter.projects.getByPath(`${groupPath}/a`);
-        expect(fetchedA?.id).toBe(projectA.id);
-      } finally {
-        if (groupId) {
-          // GitLab delete is async (returns 202); failure here is best-effort.
-          await adapter.groups.delete(groupId).catch(() => {});
-        }
+      // Sanity: getByPath round-trips, proving project context is what
+      // the registry would store for these mirrors.
+      const fetchedA = await adapter.projects.getByPath(`${groupPath}/a`);
+      expect(fetchedA?.id).toBe(projectA.id);
+    } finally {
+      if (groupId) {
+        // GitLab delete is async (returns 202); failure here is best-effort.
+        await adapter.groups.delete(groupId).catch(() => {});
       }
-    },
-    120_000,
-  );
+    }
+  }, 120_000);
 });
 
 function json(body: unknown, status = 200): Response {

@@ -82,9 +82,9 @@ describe.runIf(TEST_URL)("ProviderProjectRepository", () => {
     expect(updated.path).toBe("colony/frontend-renamed");
     expect(updated.visibility).toBe("internal");
 
-    expect(
-      await repo.getProjectByProviderId("gitlab", "100"),
-    ).toMatchObject({ path: "colony/frontend-renamed" });
+    expect(await repo.getProjectByProviderId("gitlab", "100")).toMatchObject({
+      path: "colony/frontend-renamed",
+    });
     expect(
       await repo.getProjectByPath("gitlab", "colony/frontend-renamed"),
     ).toMatchObject({ id: created.id });

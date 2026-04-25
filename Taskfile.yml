@@ -25,7 +25,7 @@ tasks:
       - "{{.BAO_LOGIN}} --status"
 
   bao:
-    desc: 'Run a bao CLI command with the colony token (e.g. `task bao -- token lookup`)'
+    desc: "Run a bao CLI command with the colony token (e.g. `task bao -- token lookup`)"
     cmds:
       - "{{.BAO_LOGIN}} --exec bao {{.CLI_ARGS}}"
 
