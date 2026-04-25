@@ -10,6 +10,8 @@
     "node": ">=24"
   },
   "scripts": {
+    "postinstall": "node -e \"if(require('fs').existsSync('.git'))require('child_process').execSync('git config core.hooksPath scripts/git-hooks',{stdio:'inherit'})\"",
+    "hooks:install": "git config core.hooksPath scripts/git-hooks",
     "dev": "run-p -l -n --aggregate-output dev:*",
     "dev:api": "npm --workspace @colony/api run dev",
     "dev:worker": "npm --workspace @colony/worker run dev",

@@ -141,3 +141,13 @@ tasks:
       - task: typecheck
       - task: lint
       - task: test
+
+  hooks:install:
+    desc: Point git at scripts/git-hooks (auto-runs after `npm install`)
+    cmds:
+      - npm run hooks:install
+
+  precommit:
+    desc: Run the same checks the pre-commit hook runs (validate + unit tests)
+    cmds:
+      - ./scripts/git-hooks/pre-commit

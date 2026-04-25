@@ -129,46 +129,28 @@ default:
     COLONY_TEST_DATABASE_URL: postgres://colony:colony@postgres:5432/colony_test
 
 # ---------------------------------------------------------------------------
-# validate stage — Nix-driven workspace checks + tofu validate
+# validate stage — single Nix-driven workspace check.
+#
+# All workspace gates share the same image and dep cache; running them in
+# one job chained inside a single `nix develop` invocation avoids paying
+# the dev-shell entry cost six times. `tofu-validate` stays separate
+# because it uses a different image and is gated on `tofu/main.tf`.
 # ---------------------------------------------------------------------------
 
-flake-check:
+validate:
   stage: validate
+  extends: .with-deps
   script:
     - nix flake check --no-build
-
-format-check:
-  stage: validate
-  extends: .with-deps
-  script:
-    - nix develop --command npm run format:check
-
-lint:
-  stage: validate
-  extends: .with-deps
-  script:
-    - nix develop --command npm run lint
-
-typecheck:
-  stage: validate
-  extends: .with-deps
-  script:
-    - nix develop --command npm run typecheck
-
-# Regenerates schemas/ and fails if the working tree drifts. COL-0.3a gate.
-# Generators land in COL-0.5 / COL-0.9 (see scripts/schemas-generate.mjs).
-schemas-check:
-  stage: validate
-  extends: .with-deps
-  script:
-    - nix develop --command npm run schemas:check
-
-# Checked-in /schemas/openapi/colony-api.json must match the live OpenAPI 3.1 doc.
-openapi-check:
-  stage: validate
-  extends: .with-deps
-  script:
-    - nix develop --command npm run openapi:check
+    - |
+      nix develop --command bash -c '
+        set -euxo pipefail
+        npm run format:check
+        npm run lint
+        npm run typecheck
+        npm run schemas:check
+        npm run openapi:check
+      '
 
 unit-tests:
   stage: unit
@@ -177,24 +159,17 @@ unit-tests:
     - nix develop --command npm run test:unit
 
 # ---------------------------------------------------------------------------
-# integration stage — per-app/service behavior against CI-local dependencies.
+# integration stage — single job covering db + api + provider-gitlab.
+#
+# `npm run test:integration` chains all three suites via run-s; the
+# postgres service backs the db + api suites and is harmless for the
+# provider-gitlab contract suite.
 # ---------------------------------------------------------------------------
 
-integration:db:
+integration:
   extends: .integration-postgres
   script:
-    - nix develop --command bash -lc 'until pg_isready -h postgres -U colony -d colony_test; do sleep 1; done; npm run test:integration:db'
-
-integration:api:
-  extends: .integration-postgres
-  script:
-    - nix develop --command bash -lc 'until pg_isready -h postgres -U colony -d colony_test; do sleep 1; done; npm run test:integration:api'
-
-integration:provider-gitlab-contract:
-  stage: integration
-  extends: .with-deps
-  script:
-    - nix develop --command npm run test:integration:provider-gitlab-contract
+    - nix develop --command bash -lc 'until pg_isready -h postgres -U colony -d colony_test; do sleep 1; done; npm run test:integration'
 
 tofu-validate:
   stage: validate
