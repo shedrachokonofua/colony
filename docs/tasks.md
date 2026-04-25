@@ -278,7 +278,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.10 — Temporal Skeleton Scope Workflow
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.3, COL-0.7
 
@@ -298,7 +298,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.11 — Webhook Dispatcher Skeleton
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.3, COL-0.10
 
