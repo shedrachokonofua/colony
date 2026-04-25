@@ -73,5 +73,8 @@ describe("requiredCapabilityForAction", () => {
     expect(requiredCapabilityForAction("scope.list")).toBe("graph.read");
     expect(requiredCapabilityForAction("scope.create")).toBe("graph.write");
     expect(requiredCapabilityForAction("task.claim")).toBe("task.claim");
+    expect(requiredCapabilityForAction("provider.bootstrap")).toBe(
+      "provider.admin.bootstrap",
+    );
   });
 });

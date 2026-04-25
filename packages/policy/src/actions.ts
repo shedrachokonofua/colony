@@ -13,7 +13,8 @@ export type TaskGraphAction =
   | "ready.read"
   | "task.claim"
   | "event.record"
-  | "audit.read";
+  | "audit.read"
+  | "provider.bootstrap";
 
 const READ_ACTIONS: ReadonlySet<TaskGraphAction> = new Set([
   "scope.read",
@@ -28,6 +29,7 @@ export function requiredCapabilityForAction(
   action: TaskGraphAction,
 ): Capability {
   if (action === "task.claim") return "task.claim";
+  if (action === "provider.bootstrap") return "provider.admin.bootstrap";
   if (READ_ACTIONS.has(action)) return "graph.read";
   return "graph.write";
 }

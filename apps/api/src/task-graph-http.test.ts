@@ -10,6 +10,7 @@ import {
   PolicyRepository,
   TaskGraphRepository,
 } from "@colony/db";
+import { FakeProviderAdapter } from "@colony/provider";
 import { buildApp } from "./app.js";
 
 const TEST = process.env.COLONY_TEST_DATABASE_URL;
@@ -37,7 +38,15 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     policyRepo: new PolicyRepository(pool),
     idempotencyRepo: new IdempotencyRepository(pool),
   };
-  const app = buildApp({ taskGraph: deps });
+  const providerAdapter = new FakeProviderAdapter();
+  const app = buildApp({
+    taskGraph: deps,
+    providerAdmin: {
+      repo: deps.repo,
+      policyRepo: deps.policyRepo,
+      adapter: providerAdapter,
+    },
+  });
 
   beforeAll(async () => {
     const c = new Client({ connectionString: url });
@@ -79,6 +88,7 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
            ('cgr-hm-02', 'human:op-1', 'human', 'graph.write', NULL, NULL, 'human:op-1'),
            ('cgr-hm-03', 'human:op-1', 'human', 'task.claim', NULL, NULL, 'human:op-1'),
            ('cgr-hm-04', 'human:op-1', 'human', 'policy.override', NULL, NULL, 'human:op-1'),
+           ('cgr-hm-05', 'human:op-1', 'human', 'provider.admin.bootstrap', NULL, NULL, 'human:op-1'),
            ('cgr-dv-01', 'agent:dev-1', 'developer', 'graph.read', NULL, NULL, 'human:op-1'),
            ('cgr-dv-02', 'agent:dev-1', 'developer', 'task.claim', NULL, NULL, 'human:op-1')
          ON CONFLICT (id) DO NOTHING`,
@@ -384,4 +394,68 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     });
     expect(res.status).toBe(404);
   });
+
+  it("POST /admin/provider/bootstrap requires the bootstrap capability", async () => {
+    const res = await app.request("http://x/admin/provider/bootstrap", {
+      method: "POST",
+      headers: {
+        "X-Actor-Id": "agent:dev-1",
+        "X-Admin-Token": "admin-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(bootstrapBody()),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("POLICY_DENY");
+  });
+
+  it("POST /admin/provider/bootstrap audits a redacted bootstrap result", async () => {
+    const res = await app.request("http://x/admin/provider/bootstrap", {
+      method: "POST",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "X-Admin-Token": "admin-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(bootstrapBody()),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      redacted_env: string;
+      bot_tokens: { engine: string };
+    };
+    expect(body.redacted_env).toContain("GITLAB_TOKEN=");
+    expect(body.bot_tokens.engine).not.toContain("fake-token-colony-engine");
+
+    const { rows } = await pool.query<{ evidence: unknown }>(
+      `SELECT evidence FROM audit_log
+       WHERE action = 'provider.bootstrap' AND actor = 'human:op-1'
+       ORDER BY recorded_at DESC
+       LIMIT 1`,
+    );
+    const evidence = JSON.stringify(rows[0]?.evidence);
+    expect(evidence).toContain("admin_credential_hash");
+    expect(evidence).not.toContain("admin-secret");
+    expect(evidence).not.toContain("fake-token-colony-engine");
+  });
 });
+
+function bootstrapBody() {
+  return {
+    provider: "gitlab",
+    environment: "dev",
+    base_url: "https://gitlab.example.test",
+    group: { name: "Colony", path: "colony" },
+    project: { name: "Colony Dev", path: "dev" },
+    oauth_application: {
+      name: "Colony Web",
+      redirect_uris: ["https://colony.example.test/oauth/callback"],
+      scopes: ["read_user"],
+    },
+    webhook: {
+      url: "https://colony.example.test/webhook/gitlab",
+      secret: "webhook-secret",
+    },
+  };
+}

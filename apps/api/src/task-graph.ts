@@ -175,7 +175,7 @@ function registerIdempotencyMiddleware(
 ): void {
   app.use(async (c, next) => {
     const idem = c.req.header("Idempotency-Key");
-    if (!idem || c.req.method !== "POST") {
+    if (!idem || c.req.method !== "POST" || c.req.path.startsWith("/admin/")) {
       await next();
       return;
     }

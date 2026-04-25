@@ -359,7 +359,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1 — Provider Adapter Interface
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.2, COL-0.4
 
@@ -376,7 +376,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1a — Provider Bootstrap Operation
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.8, COL-0.9, COL-1.1
 

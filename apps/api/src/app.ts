@@ -6,6 +6,11 @@ import {
   registerTaskGraph,
   type TaskGraphDeps,
 } from "./task-graph.js";
+import {
+  getProviderAdminDeps,
+  registerProviderAdmin,
+  type ProviderAdminDeps,
+} from "./provider-admin.js";
 
 const healthResponseSchema = z.object({
   ok: z.boolean(),
@@ -33,9 +38,10 @@ const healthRoute = createRoute({
   },
 });
 
-export function buildApp(options?: { taskGraph?: TaskGraphDeps }): OpenAPIHono<{
-  Variables: { actor: string };
-}> {
+export function buildApp(options?: {
+  taskGraph?: TaskGraphDeps;
+  providerAdmin?: ProviderAdminDeps | false;
+}): OpenAPIHono<{ Variables: { actor: string } }> {
   const app = new OpenAPIHono<{ Variables: { actor: string } }>();
 
   app.use(async (c, next) => {
@@ -66,6 +72,14 @@ export function buildApp(options?: { taskGraph?: TaskGraphDeps }): OpenAPIHono<{
   });
 
   registerTaskGraph(app, options?.taskGraph ?? getTaskGraphDeps());
+  if (options?.providerAdmin !== false) {
+    const providerAdmin = options?.providerAdmin ?? getProviderAdminDeps();
+    registerProviderAdmin(app, {
+      ...providerAdmin,
+      repo: options?.taskGraph?.repo ?? providerAdmin.repo,
+      policyRepo: options?.taskGraph?.policyRepo ?? providerAdmin.policyRepo,
+    });
+  }
 
   app.doc("/openapi.json", {
     openapi: "3.1.0",

@@ -52,7 +52,17 @@ Ports are read from `.env` (`API_PORT`, `WEBHOOK_DISPATCHER_PORT`, `TOOL_GATEWAY
 
 Provider provisioning (group, project, bot users, bot PATs, OAuth Application for Web UI sign-in, project webhook) is a single API operation: `POST /admin/provider/bootstrap` on `apps/api`. The only credential a human supplies is one **GitLab admin PAT**; everything else is created over the GitLab admin API. See `design.md` §10 "Provider Bootstrap" and tasks `COL-1.1a`.
 
-For environments where the bootstrap operation hasn't landed yet (i.e. before COL-1.1a ships), use this manual fallback:
+Run bootstrap with a request-scoped GitLab admin PAT:
+
+```sh
+curl -X POST http://localhost:4000/admin/provider/bootstrap \
+  -H 'X-Actor-Id: human:op-1' \
+  -H 'X-Admin-Token: <gitlab-admin-pat>' \
+  -H 'Content-Type: application/json' \
+  -d @bootstrap-dev.json
+```
+
+The operation returns provider resource IDs and a redacted `.env` snippet, and writes an audit record with a hash of the admin credential. For break-glass setup or debugging, the equivalent manual fallback is:
 
 1. **Create a dev project on home-lab GitLab.**
 2. **Create one bot account** (e.g. `colony-engine`) with a personal access token scoped to `api`, `read_repository`, `write_repository`. Put the token in `.env` as `GITLAB_TOKEN`. Record the numeric project ID in `GITLAB_DEV_PROJECT_ID` and the base URL in `GITLAB_BASE_URL` (e.g. `https://gitlab.home.shdr.ch`).
@@ -65,7 +75,7 @@ For environments where the bootstrap operation hasn't landed yet (i.e. before CO
    - SSL verification: off for the plain-HTTP `PUBLIC_HOST` URL.
 6. **Fire a test event.** Open an issue on the dev project. The dispatcher should log a structured JSON line in its stdout, and the request returns 200.
 
-Once COL-1.1a ships, the same end state is reached with: `curl -X POST http://localhost:4000/admin/provider/bootstrap -H 'X-Admin-Token: <gitlab-admin-pat>' -d @bootstrap-dev.json` (one admin PAT, one call). The Web UI will surface the same operation as an "Set up provider" admin action once the cockpit lands.
+The Web UI will surface the same operation as an "Set up provider" admin action once the cockpit lands.
 
 Note: the dispatcher currently records events to stdout as a COL-0.3 placeholder. The Task Graph `events` table is now defined by the schema migration (COL-0.6); the dispatcher will write through the repository layer once COL-0.7 / COL-0.11 land.
 
