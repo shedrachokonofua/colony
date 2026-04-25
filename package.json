@@ -20,7 +20,7 @@
     "dev:web": "npm --workspace @colony/web run dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && npm --workspace @colony/web run typecheck",
     "test": "vitest run",
-    "test:unit": "vitest run apps/api/src/index.test.ts apps/tool-gateway/src/app.test.ts apps/webhook-dispatcher/src/app.test.ts apps/worker/src/index.test.ts packages/agent-runtime/src/oauth-auth-storage.test.ts packages/config/test/colony-config.test.ts packages/db/test/secret-encryption.test.ts packages/domain/src/state-machines.test.ts packages/policy/test/evaluate.test.ts packages/provider/src/index.test.ts packages/schemas/src/schemas.test.ts",
+    "test:unit": "vitest run apps/api/src/index.test.ts apps/tool-gateway/src/app.test.ts apps/webhook-dispatcher/src/app.test.ts apps/worker/src/index.test.ts apps/worker/src/prompts/prompts.test.ts packages/agent-runtime/src/oauth-auth-storage.test.ts packages/config/test/colony-config.test.ts packages/db/test/secret-encryption.test.ts packages/domain/src/state-machines.test.ts packages/policy/test/evaluate.test.ts packages/provider/src/index.test.ts packages/schemas/src/schemas.test.ts",
     "test:integration": "run-s test:integration:db test:integration:api test:integration:provider-gitlab-contract test:integration:worker",
     "test:integration:db": "npm --workspace @colony/db run test:integration",
     "test:integration:api": "npm --workspace @colony/api run test:integration",
