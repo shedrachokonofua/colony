@@ -153,6 +153,7 @@ export const CAPABILITY_VALUES = [
   "release.deploy",
   "policy.override",
   "provider.admin.bootstrap",
+  "provider.oauth.connect",
 ] as const;
 
 export const capabilitySchema = z.enum(CAPABILITY_VALUES);

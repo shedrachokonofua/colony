@@ -228,7 +228,8 @@
                     "tool.cli.execute",
                     "release.deploy",
                     "policy.override",
-                    "provider.admin.bootstrap"
+                    "provider.admin.bootstrap",
+                    "provider.oauth.connect"
                   ]
                 }
               },

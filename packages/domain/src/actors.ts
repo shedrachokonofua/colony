@@ -47,6 +47,7 @@ export const CAPABILITIES = [
   "release.deploy",
   "policy.override",
   "provider.admin.bootstrap",
+  "provider.oauth.connect",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

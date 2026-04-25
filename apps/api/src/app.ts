@@ -11,6 +11,10 @@ import {
   registerProviderAdmin,
   type ProviderAdminDeps,
 } from "./provider-admin.js";
+import {
+  registerOAuthAdmin,
+  type OAuthAdminDeps,
+} from "./oauth/admin-routes.js";
 
 const healthResponseSchema = z.object({
   ok: z.boolean(),
@@ -41,6 +45,7 @@ const healthRoute = createRoute({
 export function buildApp(options?: {
   taskGraph?: TaskGraphDeps;
   providerAdmin?: ProviderAdminDeps | false;
+  oauthAdmin?: OAuthAdminDeps | false;
 }): OpenAPIHono<{ Variables: { actor: string } }> {
   const app = new OpenAPIHono<{ Variables: { actor: string } }>();
 
@@ -79,6 +84,9 @@ export function buildApp(options?: {
       repo: options?.taskGraph?.repo ?? providerAdmin.repo,
       policyRepo: options?.taskGraph?.policyRepo ?? providerAdmin.policyRepo,
     });
+  }
+  if (options?.oauthAdmin) {
+    registerOAuthAdmin(app, options.oauthAdmin);
   }
 
   app.doc("/openapi.json", {
