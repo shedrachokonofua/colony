@@ -1,5 +1,6 @@
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { env } from "@colony/config";
+import { activities } from "./activities.js";
 
 async function main(): Promise<void> {
   const cfg = env();
@@ -13,6 +14,7 @@ async function main(): Promise<void> {
     namespace: cfg.TEMPORAL_NAMESPACE,
     taskQueue: cfg.TEMPORAL_TASK_QUEUE,
     workflowsPath: new URL("./workflows.ts", import.meta.url).pathname,
+    activities,
   });
 
   console.log(

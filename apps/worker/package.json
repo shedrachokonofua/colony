@@ -8,11 +8,13 @@
     "dev": "tsx watch src/worker.ts",
     "start": "tsx src/worker.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest --root ../.. run apps/worker/src/index.test.ts"
   },
   "dependencies": {
     "@colony/config": "*",
+    "@colony/db": "*",
     "@colony/domain": "*",
+    "@colony/workflows": "*",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/client": "^1.11.0",
     "@temporalio/worker": "^1.11.0",

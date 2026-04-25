@@ -1,6 +1,1 @@
-// Placeholder workflow bundle for the supervisor task queue.
-// Real workflows land in packages/workflows and are wired in via COL-0.10+.
-
-export function healthCheckWorkflow(): Promise<string> {
-  return Promise.resolve("ok");
-}
+export * from "@colony/workflows";
