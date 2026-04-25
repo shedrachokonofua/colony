@@ -319,4 +319,49 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     );
     expect(aud[0]?.scope_id).toBe(SCOPE);
   });
+
+  it("returns blocked_by and blocks for a task", async () => {
+    await deps.repo.createScope(
+      { id: SCOPE, title: "s", description: "d" },
+      { actor: SUP, capability: "graph.write" },
+    );
+    const A = "col-http.1" as TaskId;
+    const B = "col-http.2" as TaskId;
+    const C = "col-http.3" as TaskId;
+    for (const id of [A, B, C]) {
+      await deps.repo.createTask(
+        { id, scope_id: SCOPE, title: id, description: "d" },
+        { actor: SUP, capability: "graph.write" },
+      );
+    }
+    // A blocks B; B blocks C.
+    await deps.repo.addDependency(A, B, "blocks", {
+      actor: SUP,
+      capability: "graph.write",
+    });
+    await deps.repo.addDependency(B, C, "blocks", {
+      actor: SUP,
+      capability: "graph.write",
+    });
+
+    const res = await app.request(`http://x/tasks/${B}/dependencies`, {
+      method: "GET",
+      headers: { "X-Actor-Id": SUP },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      blocked_by: string[];
+      blocks: string[];
+    };
+    expect(body.blocked_by).toEqual([A]);
+    expect(body.blocks).toEqual([C]);
+  });
+
+  it("returns 404 for dependencies on a missing task", async () => {
+    const res = await app.request("http://x/tasks/col-http.9/dependencies", {
+      method: "GET",
+      headers: { "X-Actor-Id": SUP },
+    });
+    expect(res.status).toBe(404);
+  });
 });

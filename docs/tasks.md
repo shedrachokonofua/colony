@@ -318,7 +318,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.12 — Read-Only Web UI Shell
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.9
 

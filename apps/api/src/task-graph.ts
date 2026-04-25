@@ -753,6 +753,67 @@ export function registerTaskGraph(
     return c.json(task, 200);
   });
 
+  // GET /tasks/{taskId}/dependencies
+  const getTaskDeps = createRoute({
+    method: "get",
+    path: "/tasks/{taskId}/dependencies",
+    request: { params: z.object({ taskId: taskIdParam }) },
+    responses: {
+      200: {
+        description: "OK",
+        content: {
+          "application/json": {
+            schema: z.object({
+              blocked_by: z.array(z.string()),
+              blocks: z.array(z.string()),
+            }),
+          },
+        },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Task not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(getTaskDeps, async (c) => {
+    const { taskId } = c.req.valid("param");
+    const actor = c.get("actor") as ActorId;
+    const task = await deps.repo.getTask(taskId as TaskId);
+    if (!task) {
+      return c.json(jsonError("NOT_FOUND", `task not found: ${taskId}`), 404);
+    }
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "task.read",
+      task.scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "task.read",
+        task.scope_id,
+        r.capability,
+        r.reason,
+        { taskId, subresource: "dependencies" },
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+    const { blocked_by, blocks } = await deps.repo.getTaskDependencies(
+      taskId as TaskId,
+    );
+    return c.json({ blocked_by: [...blocked_by], blocks: [...blocks] }, 200);
+  });
+
   // POST claim
   const claim = createRoute({
     method: "post",

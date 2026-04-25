@@ -458,6 +458,30 @@ export class TaskGraphRepository {
     };
   }
 
+  async getTaskDependencies(task_id: TaskId): Promise<{
+    readonly blocked_by: readonly TaskId[];
+    readonly blocks: readonly TaskId[];
+  }> {
+    const { rows: upstream } = await queryRows<{ from_task_id: string }>(
+      this.pool,
+      `SELECT from_task_id FROM task_dependencies
+       WHERE to_task_id = $1 AND kind = 'blocks'
+       ORDER BY created_at`,
+      [task_id],
+    );
+    const { rows: downstream } = await queryRows<{ to_task_id: string }>(
+      this.pool,
+      `SELECT to_task_id FROM task_dependencies
+       WHERE from_task_id = $1 AND kind = 'blocks'
+       ORDER BY created_at`,
+      [task_id],
+    );
+    return {
+      blocked_by: upstream.map((r) => r.from_task_id as TaskId),
+      blocks: downstream.map((r) => r.to_task_id as TaskId),
+    };
+  }
+
   async listAuditForScope(
     scope_id: ScopeId,
     options: ListAuditOptions = {},

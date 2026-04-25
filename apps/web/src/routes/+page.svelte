@@ -4,37 +4,39 @@
   let { data }: { data: PageData } = $props();
 </script>
 
-<main>
-  <h1>Colony — Operator</h1>
-  <p>API base: <code>{data.apiBase}</code></p>
+<section class="stack">
+  <div>
+    <h1>Colony Operator</h1>
+    <p class="muted">API base: <code>{data.apiBase}</code></p>
+  </div>
 
   {#if data.error}
-    <p style="color: crimson">Could not reach API: {data.error}</p>
+    <div class="error">Could not reach API: {data.error}</div>
   {:else if data.body}
-    <p>
-      Service: <strong>{data.body.service}</strong>
-      &nbsp;|&nbsp; HTTP <strong>{data.status}</strong>
-    </p>
-    <p>
-      DB ok: <strong>{data.body.db.ok}</strong>
-      {#if data.body.db.version}
-        <br /><code>{data.body.db.version}</code>
-      {/if}
-      {#if data.body.db.error}
-        <br /><span style="color: crimson">{data.body.db.error}</span>
-      {/if}
-    </p>
+    <div class="card stack">
+      <h2>Health</h2>
+      <dl class="kv">
+        <dt>Service</dt>
+        <dd><strong>{data.body.service}</strong></dd>
+        <dt>HTTP</dt>
+        <dd>{data.status}</dd>
+        <dt>DB</dt>
+        <dd>
+          {#if data.body.db.ok}
+            <span class="badge state-active">ok</span>
+          {:else}
+            <span class="badge state-failed">unreachable</span>
+          {/if}
+          {#if data.body.db.version}
+            <code>{data.body.db.version}</code>
+          {/if}
+          {#if data.body.db.error}
+            <span class="error">{data.body.db.error}</span>
+          {/if}
+        </dd>
+      </dl>
+    </div>
   {/if}
-</main>
 
-<style>
-  main {
-    font-family: system-ui, sans-serif;
-    max-width: 640px;
-    margin: 2rem auto;
-    padding: 0 1rem;
-  }
-  code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-</style>
+  <p><a href="/scopes">Browse scopes →</a></p>
+</section>
