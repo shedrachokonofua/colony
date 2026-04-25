@@ -227,9 +227,13 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   };
 
   readonly epics: ProviderAdapter["epics"] = {
-    create: async () => notImplemented(),
-    update: async () => notImplemented(),
-    close: async () => notImplemented(),
+    create: async (project, input) =>
+      this.createIssue(project, {
+        ...input,
+        labels: [...(input.labels ?? []), "colony:scope"],
+      }),
+    update: async (project, id, input) => this.updateIssue(project, id, input),
+    close: async (project, id) => this.updateIssueState(project, id, "close"),
   };
 
   readonly mergeRequests: ProviderAdapter["mergeRequests"] = {

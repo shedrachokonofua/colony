@@ -543,7 +543,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.3 — Scope And Task Mirror
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.2b
 

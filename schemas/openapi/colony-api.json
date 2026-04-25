@@ -200,6 +200,55 @@
                       "conflict",
                       "canceled"
                     ]
+                  },
+                  "provider_targets": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "provider_project_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "primary",
+                            "frontend",
+                            "backend",
+                            "data",
+                            "infra",
+                            "docs",
+                            "shared"
+                          ],
+                          "default": "primary"
+                        }
+                      },
+                      "required": [
+                        "provider_project_id"
+                      ]
+                    }
+                  },
+                  "provider_mirror": {
+                    "type": "object",
+                    "properties": {
+                      "provider_project_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "provider_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "freshness_ttl_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "exclusiveMinimum": true
+                      }
+                    },
+                    "required": [
+                      "provider_project_id"
+                    ]
                   }
                 },
                 "required": [
@@ -263,6 +312,45 @@
           },
           "403": {
             "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "nullable": true
+                          }
+                        },
+                        "retriable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider project not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -606,6 +694,28 @@
                       "canceled",
                       "pending_sync"
                     ]
+                  },
+                  "provider_project_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "provider_mirror": {
+                    "type": "object",
+                    "properties": {
+                      "provider_project_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "provider_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "freshness_ttl_seconds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "exclusiveMinimum": true
+                      }
+                    }
                   }
                 },
                 "required": [

@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import type {
   Iso8601,
+  ProviderEntityKind,
+  ProviderMirror,
+  ProviderMirrorId,
   ProviderProject,
   ProviderProjectId,
   ProviderVisibility,
@@ -37,6 +40,17 @@ export interface LinkTaskTargetInput {
   readonly role: TaskTargetRole;
 }
 
+export interface UpsertProviderMirrorInput {
+  readonly colony_id: string;
+  readonly entity_kind: ProviderEntityKind;
+  readonly provider: string;
+  readonly provider_id: string;
+  readonly provider_project_id?: ProviderProjectId;
+  readonly provider_project_path?: string;
+  readonly source_version?: string;
+  readonly freshness_ttl_seconds?: number;
+}
+
 interface ProviderProjectRow {
   id: string;
   provider: string;
@@ -63,6 +77,19 @@ interface TaskTargetRow {
   provider_project_id: string;
   role: TaskTargetRole;
   created_at: Date;
+}
+
+interface ProviderMirrorRow {
+  id: string;
+  colony_id: string;
+  entity_kind: ProviderEntityKind;
+  provider: string;
+  provider_id: string;
+  provider_project_id: string | null;
+  provider_project_path: string | null;
+  source_version: string | null;
+  projected_at: Date | null;
+  freshness_ttl_seconds: number | null;
 }
 
 const toIso = (d: Date): Iso8601 => d.toISOString();
@@ -98,6 +125,23 @@ function mapTaskTarget(r: TaskTargetRow): TaskTarget {
     provider_project_id: r.provider_project_id as ProviderProjectId,
     role: r.role,
     created_at: toIso(r.created_at),
+  };
+}
+
+function mapMirror(r: ProviderMirrorRow): ProviderMirror {
+  return {
+    id: r.id as ProviderMirrorId,
+    colony_id: r.colony_id,
+    entity_kind: r.entity_kind,
+    provider: r.provider,
+    provider_id: r.provider_id,
+    provider_project_id: r.provider_project_id
+      ? (r.provider_project_id as ProviderProjectId)
+      : undefined,
+    provider_project_path: r.provider_project_path ?? undefined,
+    source_version: r.source_version ?? undefined,
+    projected_at: r.projected_at ? toIso(r.projected_at) : undefined,
+    freshness_ttl_seconds: r.freshness_ttl_seconds ?? undefined,
   };
 }
 
@@ -237,6 +281,62 @@ export class ProviderProjectRepository {
       [task_id],
     );
     return rows[0] ? mapTaskTarget(rows[0]) : null;
+  }
+
+  async upsertMirror(
+    input: UpsertProviderMirrorInput,
+  ): Promise<ProviderMirror> {
+    const id = randomUUID();
+    const { rows } = await this.pool.query<ProviderMirrorRow>(
+      `INSERT INTO provider_mirrors
+         (id, colony_id, entity_kind, provider, provider_id,
+          provider_project_id, provider_project_path, source_version,
+          projected_at, freshness_ttl_seconds)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9)
+       ON CONFLICT (
+         provider,
+         entity_kind,
+         provider_id,
+         COALESCE(provider_project_id, '')
+       ) DO UPDATE
+       SET colony_id = EXCLUDED.colony_id,
+           provider_project_path = EXCLUDED.provider_project_path,
+           source_version = EXCLUDED.source_version,
+           projected_at = now(),
+           freshness_ttl_seconds = EXCLUDED.freshness_ttl_seconds
+       RETURNING *`,
+      [
+        id,
+        input.colony_id,
+        input.entity_kind,
+        input.provider,
+        input.provider_id,
+        input.provider_project_id ?? null,
+        input.provider_project_path ?? null,
+        input.source_version ?? null,
+        input.freshness_ttl_seconds ?? 900,
+      ],
+    );
+    return mapMirror(rows[0]);
+  }
+
+  async listMirrorsForColony(input: {
+    readonly colony_id: string;
+    readonly entity_kind?: ProviderEntityKind;
+  }): Promise<ProviderMirror[]> {
+    const params: unknown[] = [input.colony_id];
+    const where = ["colony_id = $1"];
+    if (input.entity_kind) {
+      params.push(input.entity_kind);
+      where.push(`entity_kind = $${params.length}`);
+    }
+    const { rows } = await this.pool.query<ProviderMirrorRow>(
+      `SELECT * FROM provider_mirrors
+       WHERE ${where.join(" AND ")}
+       ORDER BY projected_at DESC NULLS LAST`,
+      params,
+    );
+    return rows.map(mapMirror);
   }
 }
 

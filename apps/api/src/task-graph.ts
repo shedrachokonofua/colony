@@ -6,7 +6,10 @@ import type {
   ActorId,
   Capability,
   EventKind,
+  ProviderProjectId,
+  Scope,
   ScopeId,
+  Task,
   TaskId,
 } from "@colony/domain";
 import { DomainStateError } from "@colony/domain";
@@ -14,9 +17,13 @@ import { evaluateAction, type TaskGraphAction } from "@colony/policy";
 import {
   IdempotencyRepository,
   PolicyRepository,
+  ProviderProjectRepository,
   RepositoryError,
   TaskGraphRepository,
 } from "@colony/db";
+import { env } from "@colony/config";
+import type { ProviderAdapter } from "@colony/provider";
+import { GitLabProviderAdapter } from "@colony/provider-gitlab";
 import { getPool } from "./db.js";
 
 const scopeIdParam = z
@@ -79,10 +86,31 @@ function isPostgresForeignKeyViolation(e: unknown): e is { code: string } {
   );
 }
 
+const providerTargetSchema = z.object({
+  provider_project_id: z.string().min(1),
+  role: z
+    .enum(["primary", "frontend", "backend", "data", "infra", "docs", "shared"])
+    .default("primary"),
+});
+
+const scopeMirrorSchema = z.object({
+  provider_project_id: z.string().min(1),
+  provider_id: z.string().min(1).optional(),
+  freshness_ttl_seconds: z.number().int().positive().optional(),
+});
+
+const taskMirrorSchema = z.object({
+  provider_project_id: z.string().min(1).optional(),
+  provider_id: z.string().min(1).optional(),
+  freshness_ttl_seconds: z.number().int().positive().optional(),
+});
+
 export interface TaskGraphDeps {
   readonly repo: TaskGraphRepository;
   readonly policyRepo: PolicyRepository;
   readonly idempotencyRepo: IdempotencyRepository;
+  readonly providerProjects: ProviderProjectRepository;
+  readonly providerAdapter?: ProviderAdapter;
 }
 
 let singleton: TaskGraphDeps | undefined;
@@ -94,6 +122,11 @@ export function getTaskGraphDeps(): TaskGraphDeps {
       repo: new TaskGraphRepository(pool),
       policyRepo: new PolicyRepository(pool),
       idempotencyRepo: new IdempotencyRepository(pool),
+      providerProjects: new ProviderProjectRepository(pool),
+      providerAdapter: new GitLabProviderAdapter({
+        baseUrl: env().GITLAB_BASE_URL,
+        token: env().GITLAB_TOKEN,
+      }),
     };
   }
   return singleton;
@@ -234,6 +267,172 @@ function registerIdempotencyMiddleware(
   });
 }
 
+type ProviderTargetInput = z.infer<typeof providerTargetSchema>;
+type ScopeMirrorInput = z.infer<typeof scopeMirrorSchema>;
+type TaskMirrorInput = z.infer<typeof taskMirrorSchema>;
+
+async function mirrorScopeIfRequested(
+  deps: TaskGraphDeps,
+  input: {
+    readonly scope: Scope;
+    readonly providerTargets: readonly ProviderTargetInput[];
+    readonly providerMirror?: ScopeMirrorInput;
+    readonly actor: ActorId;
+    readonly capability: Capability;
+  },
+): Promise<void> {
+  const linked = new Set<string>();
+  for (const target of input.providerTargets) {
+    await deps.providerProjects.linkScopeTarget({
+      scope_id: input.scope.id,
+      provider_project_id: target.provider_project_id as ProviderProjectId,
+      role: target.role,
+    });
+    linked.add(`${target.provider_project_id}:${target.role}`);
+  }
+  if (!input.providerMirror) return;
+
+  const project = await deps.providerProjects.getProject(
+    input.providerMirror.provider_project_id as ProviderProjectId,
+  );
+  if (!project) {
+    throw new RepositoryError("NOT_FOUND", "provider project not found", {
+      provider_project_id: input.providerMirror.provider_project_id,
+    });
+  }
+  if (!linked.has(`${project.id}:primary`)) {
+    await deps.providerProjects.linkScopeTarget({
+      scope_id: input.scope.id,
+      provider_project_id: project.id,
+      role: "primary",
+    });
+  }
+
+  const issue = input.providerMirror.provider_id
+    ? undefined
+    : await requireProviderAdapter(deps).epics.create(
+        { id: project.provider_id, path: project.path },
+        {
+          title: input.scope.title,
+          description: `${input.scope.description}\n\nColony scope: ${input.scope.id}`,
+          labels: ["colony:scope", `state:${input.scope.state}`],
+        },
+      );
+  const providerId = input.providerMirror.provider_id ?? issue?.id;
+  if (!providerId) {
+    throw new Error("missing provider id for scope mirror");
+  }
+  const mirror = await deps.providerProjects.upsertMirror({
+    colony_id: input.scope.id,
+    entity_kind: "scope",
+    provider: project.provider,
+    provider_id: providerId,
+    provider_project_id: project.id,
+    provider_project_path: project.path,
+    source_version: issue?.metadata.version,
+    freshness_ttl_seconds: input.providerMirror.freshness_ttl_seconds,
+  });
+  await deps.repo.writeAudit({
+    scope_id: input.scope.id,
+    actor: input.actor,
+    action: "provider.mirror.scope",
+    capability: input.capability,
+    target_kind: "provider_mirror",
+    target_id: mirror.id,
+    reason: "api",
+    evidence: { mirror },
+  });
+}
+
+async function mirrorTaskIfRequested(
+  deps: TaskGraphDeps,
+  input: {
+    readonly task: Task;
+    readonly providerProjectId?: string;
+    readonly providerMirror?: TaskMirrorInput;
+    readonly actor: ActorId;
+    readonly capability: Capability;
+  },
+): Promise<void> {
+  const providerProjectId =
+    input.providerMirror?.provider_project_id ??
+    input.providerProjectId ??
+    (await deps.providerProjects.getPrimaryScopeTarget(input.task.scope_id))
+      ?.provider_project_id;
+  if (!providerProjectId) return;
+
+  const project = await deps.providerProjects.getProject(
+    providerProjectId as ProviderProjectId,
+  );
+  if (!project) {
+    throw new RepositoryError("NOT_FOUND", "provider project not found", {
+      provider_project_id: providerProjectId,
+    });
+  }
+
+  await deps.providerProjects.linkTaskTarget({
+    task_id: input.task.id,
+    provider_project_id: project.id,
+    role: "primary",
+  });
+
+  const issue = input.providerMirror?.provider_id
+    ? undefined
+    : await requireProviderAdapter(deps).issues.create(
+        { id: project.provider_id, path: project.path },
+        taskIssueInput(input.task),
+      );
+  const providerId = input.providerMirror?.provider_id ?? issue?.id;
+  if (!providerId) {
+    throw new Error("missing provider id for task mirror");
+  }
+  const mirror = await deps.providerProjects.upsertMirror({
+    colony_id: input.task.id,
+    entity_kind: "task",
+    provider: project.provider,
+    provider_id: providerId,
+    provider_project_id: project.id,
+    provider_project_path: project.path,
+    source_version: issue?.metadata.version,
+    freshness_ttl_seconds: input.providerMirror?.freshness_ttl_seconds,
+  });
+  await deps.repo.writeAudit({
+    scope_id: input.task.scope_id,
+    task_id: input.task.id,
+    actor: input.actor,
+    action: "provider.mirror.task",
+    capability: input.capability,
+    target_kind: "provider_mirror",
+    target_id: mirror.id,
+    reason: "api",
+    evidence: { mirror },
+  });
+}
+
+function requireProviderAdapter(deps: TaskGraphDeps): ProviderAdapter {
+  if (!deps.providerAdapter) {
+    throw new Error("provider adapter is not configured");
+  }
+  return deps.providerAdapter;
+}
+
+function taskIssueInput(
+  task: Task,
+): Parameters<ProviderAdapter["issues"]["create"]>[1] {
+  return {
+    title: task.title,
+    description: [
+      task.description,
+      "",
+      `Colony task: ${task.id}`,
+      `Colony scope: ${task.scope_id}`,
+      "",
+      ...task.acceptance_criteria.map((criterion) => `- [ ] ${criterion}`),
+    ].join("\n"),
+    labels: ["colony:task", `state:${task.state}`],
+  };
+}
+
 const scopeStateSchema = z.enum([
   "draft",
   "decomposition_proposed",
@@ -302,6 +501,8 @@ export function registerTaskGraph(
               title: z.string().min(1),
               description: z.string(),
               state: scopeStateSchema.optional(),
+              provider_targets: z.array(providerTargetSchema).optional(),
+              provider_mirror: scopeMirrorSchema.optional(),
             }),
           },
         },
@@ -318,6 +519,10 @@ export function registerTaskGraph(
       },
       403: {
         description: "Forbidden",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Provider project not found",
         content: { "application/json": { schema: errorBody } },
       },
       409: {
@@ -378,6 +583,13 @@ export function registerTaskGraph(
         },
         { actor, capability: r.capability, reason: "api" },
       );
+      await mirrorScopeIfRequested(deps, {
+        scope,
+        providerTargets: body.provider_targets ?? [],
+        providerMirror: body.provider_mirror,
+        actor,
+        capability: r.capability,
+      });
       return c.json(scope, 201);
     } catch (e) {
       if (isPostgresUniqueViolation(e)) {
@@ -387,6 +599,9 @@ export function registerTaskGraph(
           }),
           409,
         );
+      }
+      if (e instanceof RepositoryError && e.code === "NOT_FOUND") {
+        return c.json(jsonError("NOT_FOUND", e.message, e.details), 404);
       }
       throw e;
     }
@@ -510,6 +725,8 @@ export function registerTaskGraph(
               acceptance_criteria: z.array(z.string()).optional(),
               non_goals: z.array(z.string()).optional(),
               state: taskStateSchema.optional(),
+              provider_project_id: z.string().min(1).optional(),
+              provider_mirror: taskMirrorSchema.optional(),
             }),
           },
         },
@@ -576,6 +793,13 @@ export function registerTaskGraph(
         },
         { actor, capability: r.capability, reason: "api" },
       );
+      await mirrorTaskIfRequested(deps, {
+        task: t,
+        providerProjectId: body.provider_project_id,
+        providerMirror: body.provider_mirror,
+        actor,
+        capability: r.capability,
+      });
       return c.json(t, 201);
     } catch (e) {
       if (isPostgresUniqueViolation(e)) {
@@ -591,6 +815,9 @@ export function registerTaskGraph(
           jsonError("NOT_FOUND", `scope not found: ${scopeId}`),
           404,
         );
+      }
+      if (e instanceof RepositoryError && e.code === "NOT_FOUND") {
+        return c.json(jsonError("NOT_FOUND", e.message, e.details), 404);
       }
       throw e;
     }

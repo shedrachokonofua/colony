@@ -8,6 +8,7 @@ import {
   createPool,
   IdempotencyRepository,
   PolicyRepository,
+  ProviderProjectRepository,
   TaskGraphRepository,
 } from "@colony/db";
 import { FakeProviderAdapter } from "@colony/provider";
@@ -33,12 +34,14 @@ const NOPE = "actor:no-grants" as ActorId;
 describe.runIf(TEST)("Task Graph API (HTTP)", () => {
   const url = TEST!;
   const pool = createPool({ connectionString: url, role: "colony_writer" });
+  const providerAdapter = new FakeProviderAdapter();
   const deps = {
     repo: new TaskGraphRepository(pool),
     policyRepo: new PolicyRepository(pool),
     idempotencyRepo: new IdempotencyRepository(pool),
+    providerProjects: new ProviderProjectRepository(pool),
+    providerAdapter,
   };
-  const providerAdapter = new FakeProviderAdapter();
   const app = buildApp({
     taskGraph: deps,
     providerAdmin: {
@@ -75,7 +78,9 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
       await c.query(
         `TRUNCATE
            task_dependencies, assignments, gates, reviews, approvals,
-           agent_runs, events, audit_log, artifacts, tasks, scopes, idempotency_keys
+           agent_runs, events, audit_log, artifacts, provider_mirrors,
+           task_targets, scope_targets, provider_projects,
+           tasks, scopes, idempotency_keys
          RESTART IDENTITY CASCADE`,
       );
       await c.query(
@@ -166,6 +171,94 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(b.status).toBe(409);
     const err = (await b.json()) as { error: { code: string } };
     expect(err.error.code).toBe("CONFLICT");
+  });
+
+  it("mirrors one scope and tasks into distinct provider projects", async () => {
+    const frontend = await deps.providerProjects.upsertProject({
+      provider: "fake",
+      provider_id: "proj-fe",
+      path: "colony/frontend",
+    });
+    const backend = await deps.providerProjects.upsertProject({
+      provider: "fake",
+      provider_id: "proj-be",
+      path: "colony/backend",
+    });
+
+    const scopeRes = await app.request("http://x/scopes", {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: SCOPE,
+        title: "Mirrored scope",
+        description: "d",
+        provider_targets: [
+          { provider_project_id: frontend.id, role: "frontend" },
+          { provider_project_id: backend.id, role: "backend" },
+        ],
+        provider_mirror: { provider_project_id: frontend.id },
+      }),
+    });
+    expect(scopeRes.status).toBe(201);
+
+    const feTask = await app.request(`http://x/scopes/${SCOPE}/tasks`, {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: TASK,
+        title: "frontend task",
+        description: "d",
+        provider_project_id: frontend.id,
+        acceptance_criteria: ["button exports CSV"],
+      }),
+    });
+    expect(feTask.status).toBe(201);
+
+    const beTask = await app.request(`http://x/scopes/${SCOPE}/tasks`, {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "col-http.2",
+        title: "backend task",
+        description: "d",
+        provider_project_id: backend.id,
+      }),
+    });
+    expect(beTask.status).toBe(201);
+
+    const { rows } = await pool.query<{
+      colony_id: string;
+      provider_project_id: string;
+      source_version: string | null;
+      projected_at: Date | null;
+    }>(
+      `SELECT colony_id, provider_project_id, source_version, projected_at
+       FROM provider_mirrors
+       WHERE colony_id IN ($1, $2, $3)
+       ORDER BY colony_id`,
+      [SCOPE, TASK, "col-http.2"],
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          colony_id: SCOPE,
+          provider_project_id: frontend.id,
+          source_version: "1",
+        }),
+        expect.objectContaining({
+          colony_id: TASK,
+          provider_project_id: frontend.id,
+          source_version: "1",
+        }),
+        expect.objectContaining({
+          colony_id: "col-http.2",
+          provider_project_id: backend.id,
+          source_version: "1",
+        }),
+      ]),
+    );
+    expect(rows.every((row) => row.projected_at instanceof Date)).toBe(true);
   });
 
   it("returns 404 when creating a task in a missing scope", async () => {
