@@ -2,6 +2,7 @@ import {
   createPool,
   PolicyRepository,
   ProviderProjectRepository,
+  ReviewGateRepository,
   TaskGraphRepository,
   type Pool,
 } from "@colony/db";
@@ -11,6 +12,33 @@ import {
   type StartDeveloperRunInput,
   type StartDeveloperRunResult,
 } from "./developer-run.js";
+import {
+  createReviewerRun,
+  type StartReviewerRunInput,
+  type StartReviewerRunResult,
+} from "./reviewer-run.js";
+import {
+  createCheckMrGate,
+  createOpenMrGate,
+  createRecordHumanApproval,
+  createRecordPipelineStatus,
+  type CheckMrGateInput,
+  type CheckMrGateResult,
+  type OpenMrGateInput,
+  type OpenMrGateResult,
+  type RecordHumanApprovalInput,
+  type RecordHumanApprovalResult,
+  type RecordPipelineStatusInput,
+  type RecordPipelineStatusResult,
+} from "./gate-evaluation.js";
+import {
+  createCloseTaskAfterMerge,
+  createMergeTask,
+  type CloseTaskAfterMergeInput,
+  type CloseTaskAfterMergeResult,
+  type MergeTaskInput,
+  type MergeTaskResult,
+} from "./merge-flow.js";
 import type { AgentRuntimeAdapter } from "@colony/agent-runtime";
 import { env } from "@colony/config";
 import {
@@ -40,6 +68,7 @@ let pool: Pool | undefined;
 let repo: TaskGraphRepository | undefined;
 let providerProjects: ProviderProjectRepository | undefined;
 let policyRepo: PolicyRepository | undefined;
+let reviewGateRepo: ReviewGateRepository | undefined;
 let providerAdapter: ProviderAdapter | undefined;
 let agentRuntime: AgentRuntimeAdapter | undefined;
 
@@ -91,6 +120,13 @@ function getAgentRuntime(): AgentRuntimeAdapter {
   return agentRuntime;
 }
 
+function getReviewGateRepository(): ReviewGateRepository {
+  if (!reviewGateRepo) {
+    reviewGateRepo = new ReviewGateRepository(getPool());
+  }
+  return reviewGateRepo;
+}
+
 export async function startDeveloperRun(
   input: StartDeveloperRunInput,
 ): Promise<StartDeveloperRunResult> {
@@ -101,6 +137,85 @@ export async function startDeveloperRun(
     agentRuntime: getAgentRuntime(),
   });
   return run(input);
+}
+
+export async function startReviewerRun(
+  input: StartReviewerRunInput,
+): Promise<StartReviewerRunResult> {
+  const run = createReviewerRun({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    providerAdapter: getProviderAdapter(),
+    agentRuntime: getAgentRuntime(),
+  });
+  return run(input);
+}
+
+export async function openMrGate(
+  input: OpenMrGateInput,
+): Promise<OpenMrGateResult> {
+  return createOpenMrGate({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    policy: getPolicyRepository(),
+  })(input);
+}
+
+export async function recordHumanApproval(
+  input: RecordHumanApprovalInput,
+): Promise<RecordHumanApprovalResult> {
+  return createRecordHumanApproval({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    policy: getPolicyRepository(),
+  })(input);
+}
+
+export async function recordPipelineStatus(
+  input: RecordPipelineStatusInput,
+): Promise<RecordPipelineStatusResult> {
+  return createRecordPipelineStatus({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    policy: getPolicyRepository(),
+  })(input);
+}
+
+export async function checkMrGate(
+  input: CheckMrGateInput,
+): Promise<CheckMrGateResult> {
+  return createCheckMrGate({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    policy: getPolicyRepository(),
+  })(input);
+}
+
+export async function mergeTask(
+  input: MergeTaskInput,
+): Promise<MergeTaskResult> {
+  return createMergeTask({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    providerAdapter: getProviderAdapter(),
+  })(input);
+}
+
+export async function closeTaskAfterMerge(
+  input: CloseTaskAfterMergeInput,
+): Promise<CloseTaskAfterMergeResult> {
+  return createCloseTaskAfterMerge({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    providerAdapter: getProviderAdapter(),
+  })(input);
 }
 
 function providerProjectRef(project: ProviderProject) {
@@ -380,4 +495,11 @@ export const activities = {
   readScopeState,
   recordWorkflowEvent,
   startDeveloperRun,
+  startReviewerRun,
+  openMrGate,
+  recordHumanApproval,
+  recordPipelineStatus,
+  checkMrGate,
+  mergeTask,
+  closeTaskAfterMerge,
 };

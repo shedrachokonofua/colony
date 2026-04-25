@@ -877,7 +877,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.11 — Reviewer Execution Flow
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.7, COL-2.8, COL-2.10
 
@@ -897,7 +897,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.12 — HITL Gate Enforcement
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.8, COL-1.4, COL-2.11
 
@@ -916,7 +916,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.13 — Merge And Close Flow
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.10, COL-2.12
 
@@ -934,7 +934,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.14 — Phase 2 End-To-End Acceptance
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.9, COL-2.9, COL-2.11, COL-2.12, COL-2.13
 

@@ -43,3 +43,4 @@ export * from "./idempotency-repository.js";
 export * from "./policy-repository.js";
 export * from "./provider-project-repository.js";
 export * from "./repository.js";
+export * from "./review-gate-repository.js";
