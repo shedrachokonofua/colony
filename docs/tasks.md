@@ -841,7 +841,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.9 — Developer Execution Flow
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.2, COL-2.7, COL-2.8
 
@@ -860,7 +860,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.10 — GitLab Adapter: MR/PR, Commits, Pipelines
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.2
 

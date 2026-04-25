@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GitLabProviderAdapter } from "./index.js";
+import { GitLabProviderAdapter, GitLabProviderError } from "./index.js";
 
 describe("GitLabProviderAdapter bootstrap", () => {
   it("provisions resources through the GitLab API and returns normalized IDs", async () => {
@@ -470,6 +470,325 @@ describe("GitLabProviderAdapter issues", () => {
   });
 });
 
+describe("GitLabProviderAdapter mergeRequests", () => {
+  it("opens, updates, comments, approves, unapproves, merges, closes, and adds review threads", async () => {
+    const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+    const mr = {
+      id: 1001,
+      iid: 5,
+      project_id: 20,
+      title: "Add CSV export",
+      description: "draft",
+      source_branch: "feature/csv",
+      target_branch: "main",
+      state: "opened",
+      web_url: "https://gitlab.test/colony/dev/-/merge_requests/5",
+    };
+    const fetchMock: typeof fetch = (url, init) => {
+      const method = init?.method ?? "GET";
+      const rawBody = typeof init?.body === "string" ? init.body : undefined;
+      const body = rawBody
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : {};
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      calls.push({ url: urlText, method, body });
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+
+      if (method === "POST" && path === "/projects/20/merge_requests") {
+        mr.title = stringField(body, "title");
+        mr.description = stringField(body, "description");
+        mr.source_branch = stringField(body, "source_branch");
+        mr.target_branch = stringField(body, "target_branch");
+        return Promise.resolve(json(mr));
+      }
+      if (method === "PUT" && path === "/projects/20/merge_requests/5") {
+        if (body.title) mr.title = stringField(body, "title");
+        if (body.description) mr.description = stringField(body, "description");
+        if (body.state_event === "close") mr.state = "closed";
+        return Promise.resolve(json(mr));
+      }
+      if (
+        method === "POST" &&
+        path === "/projects/20/merge_requests/5/approve"
+      ) {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      if (
+        method === "POST" &&
+        path === "/projects/20/merge_requests/5/unapprove"
+      ) {
+        return Promise.resolve(new Response(null, { status: 201 }));
+      }
+      if (method === "GET" && path === "/projects/20/merge_requests/5") {
+        return Promise.resolve(json(mr));
+      }
+      if (method === "PUT" && path === "/projects/20/merge_requests/5/merge") {
+        mr.state = "merged";
+        return Promise.resolve(json(mr));
+      }
+      if (method === "POST" && path === "/projects/20/merge_requests/5/notes") {
+        return Promise.resolve(
+          json({
+            id: 901,
+            body: stringField(body, "body"),
+            author: { id: 91, username: "colony-engine", name: "Engine" },
+            created_at: "2026-04-25T00:00:00.000Z",
+          }),
+        );
+      }
+      if (
+        method === "POST" &&
+        path === "/projects/20/merge_requests/5/discussions"
+      ) {
+        return Promise.resolve(
+          json({
+            id: "discussion-1",
+            notes: [
+              {
+                id: 902,
+                body: stringField(body, "body"),
+                author: { id: 92, username: "colony-reviewer", name: "Rev" },
+                created_at: "2026-04-25T00:01:00.000Z",
+              },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+    const project = { id: "20", path: "colony/dev" } as const;
+
+    const opened = await adapter.mergeRequests.open(project, {
+      title: "Add CSV export",
+      description: "draft",
+      source_branch: "feature/csv",
+      target_branch: "main",
+    });
+    expect(opened.id).toBe("20:5");
+    expect(opened.iid).toBe(5);
+    expect(opened.state).toBe("opened");
+
+    const updated = await adapter.mergeRequests.update(project, opened.id, {
+      title: "Add CSV export (v2)",
+    });
+    expect(updated.title).toBe("Add CSV export (v2)");
+
+    const approved = await adapter.mergeRequests.approve(project, opened.id);
+    expect(approved.id).toBe("20:5");
+
+    const unapproved = await adapter.mergeRequests.unapprove(
+      project,
+      opened.id,
+    );
+    expect(unapproved.id).toBe("20:5");
+
+    const note = await adapter.mergeRequests.comment(
+      project,
+      opened.id,
+      "looks good",
+    );
+    expect(note).toMatchObject({ id: "901", body: "looks good" });
+
+    const thread = await adapter.mergeRequests.addReviewThread(
+      project,
+      opened.id,
+      "nit: rename helper",
+    );
+    expect(thread).toMatchObject({ id: "902", body: "nit: rename helper" });
+
+    const merged = await adapter.mergeRequests.merge(project, opened.id);
+    expect(merged.state).toBe("merged");
+
+    mr.state = "opened";
+    const closed = await adapter.mergeRequests.close(project, opened.id);
+    expect(closed.state).toBe("closed");
+
+    expect(
+      calls.some((c) => c.url.endsWith("/projects/20/merge_requests/5/merge")),
+    ).toBe(true);
+  });
+});
+
+describe("GitLabProviderAdapter branches", () => {
+  it("creates, deletes, and idempotently protects a branch", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    let protectedExists = false;
+    const fetchMock: typeof fetch = (url, init) => {
+      const method = init?.method ?? "GET";
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      calls.push({ url: urlText, method });
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+
+      if (
+        method === "POST" &&
+        path.startsWith("/projects/20/repository/branches?")
+      ) {
+        return Promise.resolve(
+          json({
+            name: "feature/csv",
+            commit: { id: "abc123" },
+            protected: false,
+            web_url: "https://gitlab.test/colony/dev/-/tree/feature/csv",
+            id: 0,
+          }),
+        );
+      }
+      if (
+        method === "DELETE" &&
+        path === "/projects/20/repository/branches/feature%2Fcsv"
+      ) {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (method === "GET" && path === "/projects/20/protected_branches/main") {
+        return Promise.resolve(
+          protectedExists ? json({ id: 7, name: "main" }) : json(null, 404),
+        );
+      }
+      if (
+        method === "POST" &&
+        path === "/projects/20/protected_branches?name=main"
+      ) {
+        protectedExists = true;
+        return Promise.resolve(json({ id: 7, name: "main" }));
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+    const project = { id: "20" } as const;
+
+    const branch = await adapter.branches.create(
+      project,
+      "feature/csv",
+      "main",
+    );
+    expect(branch).toMatchObject({
+      name: "feature/csv",
+      commit_sha: "abc123",
+      protected: false,
+    });
+
+    await adapter.branches.delete(project, "feature/csv");
+    expect(
+      calls.some(
+        (c) =>
+          c.method === "DELETE" &&
+          c.url.endsWith("/projects/20/repository/branches/feature%2Fcsv"),
+      ),
+    ).toBe(true);
+
+    const first = await adapter.branches.protect(project, "main");
+    expect(first.protected).toBe(true);
+    const second = await adapter.branches.protect(project, "main");
+    // Second call hits the GET path and short-circuits — proves idempotency.
+    expect(second.protected).toBe(true);
+    expect(
+      calls.filter(
+        (c) =>
+          c.method === "POST" &&
+          c.url.endsWith("/projects/20/protected_branches?name=main"),
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe("GitLabProviderAdapter commits and pipelines", () => {
+  it("gets a commit, fetches its diff, gets a pipeline, and triggers a pipeline", async () => {
+    const fetchMock: typeof fetch = (url, init) => {
+      const method = init?.method ?? "GET";
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+
+      if (
+        method === "GET" &&
+        path === "/projects/20/repository/commits/abc123"
+      ) {
+        return Promise.resolve(
+          json({ id: "abc123", title: "feat: csv export" }),
+        );
+      }
+      if (
+        method === "GET" &&
+        path === "/projects/20/repository/commits/abc123/diff"
+      ) {
+        return Promise.resolve(
+          json([
+            {
+              old_path: "src/csv.ts",
+              new_path: "src/csv.ts",
+              diff: "@@ -0,0 +1 @@\n+export const csv = '';\n",
+            },
+          ]),
+        );
+      }
+      if (method === "GET" && path === "/projects/20/pipelines/77") {
+        return Promise.resolve(
+          json({ id: 77, status: "success", sha: "abc123" }),
+        );
+      }
+      if (method === "POST" && path === "/projects/20/pipeline?ref=main") {
+        return Promise.resolve(
+          json({ id: 78, status: "pending", sha: "abc123" }),
+        );
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+    const project = { id: "20" } as const;
+
+    const commit = await adapter.commits.get(project, "abc123");
+    expect(commit).toMatchObject({ sha: "abc123", title: "feat: csv export" });
+
+    const diff = await adapter.commits.diff(project, "abc123");
+    expect(diff).toHaveLength(1);
+
+    const pipeline = await adapter.pipelines.getStatus(project, "77");
+    expect(pipeline).toMatchObject({
+      id: "77",
+      status: "success",
+      commit_sha: "abc123",
+    });
+
+    const triggered = await adapter.pipelines.trigger(project, "main");
+    expect(triggered.status).toBe("pending");
+  });
+});
+
 const describeLive =
   process.env.GITLAB_BASE_URL && process.env.GITLAB_TOKEN
     ? describe
@@ -589,6 +908,232 @@ describeLive("GitLabProviderAdapter live multi-repo integration", () => {
     }
   }, 120_000);
 });
+
+/**
+ * Live end-to-end MR / branch / commit / pipeline lifecycle (COL-2.10).
+ *
+ * Provisions a throwaway group + project, seeds an initial commit on the
+ * default branch via GitLab's repository-commits API, then exercises every
+ * adapter method added in COL-2.10:
+ *
+ *   - branches.create + delete
+ *   - commits.get + diff
+ *   - mergeRequests.open / update / comment / addReviewThread / approve /
+ *     unapprove / close
+ *   - pipelines.getStatus (best-effort: only asserted when a pipeline exists,
+ *     which it won't on a project without a .gitlab-ci.yml).
+ *
+ * Cleanup deletes the throwaway group at the end of the run.
+ */
+describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
+  it("walks branch -> commit -> MR -> review -> approve -> close end-to-end", async () => {
+    const baseUrl = process.env.GITLAB_BASE_URL!;
+    const token = process.env.GITLAB_TOKEN!;
+    const adapter = new GitLabProviderAdapter({ baseUrl, token });
+
+    const stamp = Date.now();
+    const groupPath = `colony-it-mr-${stamp}`;
+    let groupId: string | null = null;
+
+    try {
+      const group = await adapter.groups.create({
+        name: `Colony MR IT ${stamp}`,
+        path: groupPath,
+        visibility: "private",
+      });
+      groupId = group.id;
+
+      // Seed the project with an initial commit on `main` so we have a ref
+      // to branch from. `initialize_with_readme` on `projects.create` would
+      // also work but the adapter doesn't expose it; using a direct API
+      // call here keeps the adapter surface clean and minimal.
+      const project = await adapter.projects.create({
+        name: "csv-export",
+        path: "csv-export",
+        namespace: group.id,
+        visibility: "private",
+        default_branch: "main",
+      });
+
+      await rawCommit({
+        baseUrl,
+        token,
+        projectId: project.id,
+        branch: "main",
+        startBranch: undefined,
+        message: "chore: initial commit",
+        actions: [
+          { action: "create", file_path: "README.md", content: "# csv-export" },
+        ],
+      });
+
+      const featureBranch = "feature/csv-export";
+      const branch = await adapter.branches.create(
+        { id: project.id, path: project.path },
+        featureBranch,
+        "main",
+      );
+      expect(branch.name).toBe(featureBranch);
+      expect(branch.commit_sha).toMatch(/^[0-9a-f]{40}$/);
+
+      // Push a real commit on the feature branch so commits.get/diff and
+      // the MR diff have content to return.
+      const headCommit = await rawCommit({
+        baseUrl,
+        token,
+        projectId: project.id,
+        branch: featureBranch,
+        startBranch: undefined,
+        message: "feat: csv export",
+        actions: [
+          {
+            action: "create",
+            file_path: "src/csv.ts",
+            content: "export const csv = '';\n",
+          },
+        ],
+      });
+      expect(headCommit.id).toMatch(/^[0-9a-f]{40}$/);
+
+      const projectRef = { id: project.id, path: project.path } as const;
+
+      const commit = await adapter.commits.get(projectRef, headCommit.id);
+      expect(commit.sha).toBe(headCommit.id);
+      expect(commit.title).toMatch(/csv export/);
+
+      const diff = await adapter.commits.diff(projectRef, headCommit.id);
+      expect(diff.length).toBeGreaterThan(0);
+
+      const mr = await adapter.mergeRequests.open(projectRef, {
+        title: "Add CSV export",
+        description: "Live integration test",
+        source_branch: featureBranch,
+        target_branch: "main",
+      });
+      expect(mr.id).toBe(`${project.id}:${mr.iid}`);
+      expect(mr.state).toBe("opened");
+      expect(mr.source_branch).toBe(featureBranch);
+
+      const updated = await adapter.mergeRequests.update(projectRef, mr.id, {
+        title: "Add CSV export (renamed)",
+      });
+      expect(updated.title).toBe("Add CSV export (renamed)");
+
+      const note = await adapter.mergeRequests.comment(
+        projectRef,
+        mr.id,
+        "looks good from live IT",
+      );
+      expect(note.body).toBe("looks good from live IT");
+
+      const thread = await adapter.mergeRequests.addReviewThread(
+        projectRef,
+        mr.id,
+        "thread: please rename helper",
+      );
+      expect(thread.body).toBe("thread: please rename helper");
+
+      // Approve/unapprove. Self-approval works for a homelab admin PAT;
+      // managed instances may reject it (the project's MR approval rules
+      // can require non-author approval). If approval fails on the
+      // instance under test, wrap with a soft-skip rather than failing.
+      try {
+        const approved = await adapter.mergeRequests.approve(projectRef, mr.id);
+        expect(approved.id).toBe(mr.id);
+        const unapproved = await adapter.mergeRequests.unapprove(
+          projectRef,
+          mr.id,
+        );
+        expect(unapproved.id).toBe(mr.id);
+      } catch (err) {
+        if (
+          !(err instanceof GitLabProviderError) ||
+          (err.status !== 401 && err.status !== 403)
+        ) {
+          throw err;
+        }
+      }
+
+      // pipelines.getStatus only when one exists. The live project has
+      // no .gitlab-ci.yml so we expect zero pipelines and skip — what we
+      // care about is that the adapter call shape is right when called.
+      const pipelinesList = await rawApi<readonly { id: number }[]>({
+        baseUrl,
+        token,
+        path: `/projects/${encodeURIComponent(project.id)}/pipelines?per_page=1`,
+      });
+      if (pipelinesList[0]) {
+        const pipeline = await adapter.pipelines.getStatus(
+          projectRef,
+          String(pipelinesList[0].id),
+        );
+        expect(pipeline.id).toBe(String(pipelinesList[0].id));
+      }
+
+      const closed = await adapter.mergeRequests.close(projectRef, mr.id);
+      expect(closed.state).toBe("closed");
+
+      await adapter.branches.delete(projectRef, featureBranch);
+    } finally {
+      if (groupId) {
+        await adapter.groups.delete(groupId).catch(() => {});
+      }
+    }
+  }, 180_000);
+});
+
+interface RawCommitArgs {
+  readonly baseUrl: string;
+  readonly token: string;
+  readonly projectId: string;
+  readonly branch: string;
+  readonly startBranch?: string;
+  readonly message: string;
+  readonly actions: ReadonlyArray<{
+    readonly action: "create" | "update" | "delete";
+    readonly file_path: string;
+    readonly content?: string;
+  }>;
+}
+
+async function rawCommit(args: RawCommitArgs): Promise<{ id: string }> {
+  return rawApi<{ id: string }>({
+    baseUrl: args.baseUrl,
+    token: args.token,
+    method: "POST",
+    path: `/projects/${encodeURIComponent(args.projectId)}/repository/commits`,
+    body: {
+      branch: args.branch,
+      start_branch: args.startBranch,
+      commit_message: args.message,
+      actions: args.actions,
+    },
+  });
+}
+
+async function rawApi<T>(args: {
+  readonly baseUrl: string;
+  readonly token: string;
+  readonly path: string;
+  readonly method?: string;
+  readonly body?: unknown;
+}): Promise<T> {
+  const res = await fetch(`${args.baseUrl}/api/v4${args.path}`, {
+    method: args.method ?? "GET",
+    headers: {
+      "PRIVATE-TOKEN": args.token,
+      "Content-Type": "application/json",
+    },
+    body: args.body !== undefined ? JSON.stringify(args.body) : undefined,
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `raw GitLab call ${args.method ?? "GET"} ${args.path} -> ${res.status}: ${text}`,
+    );
+  }
+  return text ? (JSON.parse(text) as T) : (null as T);
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(body === null ? "" : JSON.stringify(body), {

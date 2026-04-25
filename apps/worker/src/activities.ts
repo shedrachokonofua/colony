@@ -5,6 +5,13 @@ import {
   TaskGraphRepository,
   type Pool,
 } from "@colony/db";
+import {
+  createDefaultAgentRuntime,
+  createDeveloperRun,
+  type StartDeveloperRunInput,
+  type StartDeveloperRunResult,
+} from "./developer-run.js";
+import type { AgentRuntimeAdapter } from "@colony/agent-runtime";
 import { env } from "@colony/config";
 import {
   isScopeId,
@@ -34,6 +41,7 @@ let repo: TaskGraphRepository | undefined;
 let providerProjects: ProviderProjectRepository | undefined;
 let policyRepo: PolicyRepository | undefined;
 let providerAdapter: ProviderAdapter | undefined;
+let agentRuntime: AgentRuntimeAdapter | undefined;
 
 function getPool(): Pool {
   if (!pool) {
@@ -74,6 +82,25 @@ function getProviderAdapter(): ProviderAdapter {
     });
   }
   return providerAdapter;
+}
+
+function getAgentRuntime(): AgentRuntimeAdapter {
+  if (!agentRuntime) {
+    agentRuntime = createDefaultAgentRuntime();
+  }
+  return agentRuntime;
+}
+
+export async function startDeveloperRun(
+  input: StartDeveloperRunInput,
+): Promise<StartDeveloperRunResult> {
+  const run = createDeveloperRun({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
+    agentRuntime: getAgentRuntime(),
+  });
+  return run(input);
 }
 
 function providerProjectRef(project: ProviderProject) {
@@ -352,4 +379,5 @@ export const activities = {
   claimReadyTask,
   readScopeState,
   recordWorkflowEvent,
+  startDeveloperRun,
 };

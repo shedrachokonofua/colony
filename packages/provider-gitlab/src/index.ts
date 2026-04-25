@@ -11,12 +11,16 @@ import {
   type ProviderAdapter,
   type ProviderBootstrapResult,
   type ProviderBootstrapSpec,
+  type ProviderBranch,
   type ProviderComment,
+  type ProviderCommit,
   type ProviderGroup,
   type ProviderId,
   type ProviderIdentitySnapshot,
   type ProviderIssue,
+  type ProviderMergeRequest,
   type ProviderMetadata,
+  type ProviderPipeline,
   type ProviderProjectInfo,
   type ProviderProjectRef,
   type ProviderRef,
@@ -73,6 +77,26 @@ interface GitLabNote extends GitLabEntity {
   readonly note?: string;
   readonly author?: GitLabUser;
   readonly created_at?: string;
+}
+
+interface GitLabMergeRequest extends GitLabEntity {
+  readonly project_id?: number | string;
+  readonly title: string;
+  readonly description?: string | null;
+  readonly source_branch?: string;
+  readonly target_branch?: string;
+  readonly state?: "opened" | "closed" | "merged" | "locked" | (string & {});
+}
+
+interface GitLabBranch extends GitLabEntity {
+  readonly name: string;
+  readonly commit?: { readonly id?: string };
+  readonly protected?: boolean;
+}
+
+interface GitLabCommit extends GitLabEntity {
+  readonly id: string;
+  readonly title?: string;
 }
 
 interface GitLabUser extends GitLabEntity {
@@ -237,30 +261,203 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   };
 
   readonly mergeRequests: ProviderAdapter["mergeRequests"] = {
-    open: async () => notImplemented(),
-    update: async () => notImplemented(),
-    approve: async () => notImplemented(),
-    unapprove: async () => notImplemented(),
-    merge: async () => notImplemented(),
-    close: async () => notImplemented(),
-    comment: async () => notImplemented(),
-    addReviewThread: async () => notImplemented(),
+    open: async (project, input) => {
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        project.id,
+        "/merge_requests",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            title: input.title,
+            description: input.description,
+            source_branch: input.source_branch,
+            target_branch: input.target_branch,
+          }),
+        },
+      );
+      return toMergeRequest(this.provider, project.id, mr);
+    },
+    update: async (project, id, input) => {
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            title: input.title,
+            description: input.description,
+          }),
+        },
+      );
+      return toMergeRequest(this.provider, project.id, mr);
+    },
+    approve: async (project, id) => {
+      // GitLab's approve/unapprove endpoints return narrow MergeRequestApproval
+      // payloads rather than the canonical merge request shape; refetch the
+      // MR so the adapter's normalized response is consistent across calls.
+      await this.projectApi<unknown>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}/approve`,
+        { method: "POST" },
+      );
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}`,
+      );
+      return toMergeRequest(this.provider, project.id, mr);
+    },
+    unapprove: async (project, id) => {
+      await this.projectApi<unknown>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}/unapprove`,
+        { method: "POST" },
+      );
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}`,
+      );
+      return toMergeRequest(this.provider, project.id, mr);
+    },
+    merge: async (project, id) => {
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}/merge`,
+        { method: "PUT", body: JSON.stringify({}) },
+      );
+      return toMergeRequest(this.provider, project.id, mr);
+    },
+    close: async (project, id) => {
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ state_event: "close" }),
+        },
+      );
+      return toMergeRequest(this.provider, project.id, mr);
+    },
+    comment: async (project, id, body) => {
+      const note = await this.projectApi<GitLabNote>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}/notes`,
+        {
+          method: "POST",
+          body: JSON.stringify({ body }),
+        },
+      );
+      return toComment(this.provider, note);
+    },
+    addReviewThread: async (project, id, body) => {
+      const discussion = await this.projectApi<{
+        readonly id?: string;
+        readonly notes?: readonly GitLabNote[];
+      }>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}/discussions`,
+        {
+          method: "POST",
+          body: JSON.stringify({ body }),
+        },
+      );
+      const note = discussion.notes?.[0];
+      if (!note) {
+        throw new GitLabProviderError(
+          "GitLab discussion response missing note",
+          500,
+          discussion,
+        );
+      }
+      return toComment(this.provider, note);
+    },
   };
 
   readonly branches: ProviderAdapter["branches"] = {
-    create: async () => notImplemented(),
-    delete: async () => notImplemented(),
-    protect: async () => notImplemented(),
+    create: async (project, name, ref) => {
+      const branch = await this.projectApi<GitLabBranch>(
+        project.id,
+        `/repository/branches?branch=${encodeURIComponent(name)}&ref=${encodeURIComponent(ref)}`,
+        { method: "POST" },
+      );
+      return toBranch(this.provider, project.id, branch);
+    },
+    delete: async (project, name) => {
+      await this.projectApi<unknown>(
+        project.id,
+        `/repository/branches/${encodePath(name)}`,
+        { method: "DELETE" },
+      );
+    },
+    protect: async (project, name) => {
+      // POST /protected_branches with ?name=...; GitLab errors 409 if it
+      // already exists, in which case fall through to the GET path so the
+      // call is idempotent for callers that don't track prior protection.
+      const existing = await optionalGet<GitLabBranch>(
+        () =>
+          this.projectApi<GitLabBranch>(
+            project.id,
+            `/protected_branches/${encodePath(name)}`,
+          ),
+        404,
+      );
+      if (existing) {
+        return toBranch(this.provider, project.id, {
+          ...existing,
+          name,
+          protected: true,
+        });
+      }
+      const protectedBranch = await this.projectApi<GitLabBranch>(
+        project.id,
+        `/protected_branches?name=${encodeURIComponent(name)}`,
+        { method: "POST" },
+      );
+      return toBranch(this.provider, project.id, {
+        ...protectedBranch,
+        name,
+        protected: true,
+      });
+    },
   };
 
   readonly commits: ProviderAdapter["commits"] = {
-    get: async () => notImplemented(),
-    diff: async () => notImplemented(),
+    get: async (project, sha) => {
+      const commit = await this.projectApi<GitLabCommit>(
+        project.id,
+        `/repository/commits/${encodePath(sha)}`,
+      );
+      return toCommit(this.provider, project.id, commit);
+    },
+    diff: async (project, sha) => {
+      const diff = await this.projectApi<readonly Record<string, unknown>[]>(
+        project.id,
+        `/repository/commits/${encodePath(sha)}/diff`,
+      );
+      return diff;
+    },
   };
 
   readonly pipelines: ProviderAdapter["pipelines"] = {
-    getStatus: async () => notImplemented(),
-    trigger: async () => notImplemented(),
+    getStatus: async (project, id) => {
+      const pipeline = await this.projectApi<
+        GitLabEntity & {
+          readonly status?: string;
+          readonly sha?: string;
+        }
+      >(project.id, `/pipelines/${encodePath(id)}`);
+      return toPipeline(this.provider, pipeline);
+    },
+    trigger: async (project, ref) => {
+      const pipeline = await this.projectApi<
+        GitLabEntity & {
+          readonly status?: string;
+          readonly sha?: string;
+        }
+      >(project.id, `/pipeline?ref=${encodeURIComponent(ref)}`, {
+        method: "POST",
+      });
+      return toPipeline(this.provider, pipeline);
+    },
   };
 
   readonly users: ProviderAdapter["users"] = {
@@ -833,6 +1030,85 @@ function issueIid(projectId: ProviderId, id: ProviderId): string {
   if (id.startsWith(prefix)) return id.slice(prefix.length);
   const separator = id.lastIndexOf(":");
   return separator === -1 ? id : id.slice(separator + 1);
+}
+
+// MR IDs use the same `<project_id>:<iid>` shape as issues so a single ID is
+// stable across project context. `mrIid` strips the project prefix so the
+// caller can hit GitLab's `/merge_requests/<iid>` endpoint.
+function mrIid(projectId: ProviderId, id: ProviderId): string {
+  return issueIid(projectId, id);
+}
+
+function toMergeRequest(
+  provider: "gitlab",
+  projectId: ProviderId,
+  mr: GitLabMergeRequest,
+): ProviderMergeRequest {
+  const iid = mr.iid ?? Number(mr.id);
+  const id = `${String(mr.project_id ?? projectId)}:${String(mr.iid ?? mr.id)}`;
+  const state = normalizeMrState(mr.state);
+  return {
+    id,
+    iid,
+    title: mr.title,
+    description: mr.description ?? "",
+    source_branch: mr.source_branch ?? "",
+    target_branch: mr.target_branch ?? "",
+    state,
+    metadata: { ...meta(provider, mr), id },
+  };
+}
+
+function normalizeMrState(
+  state: GitLabMergeRequest["state"],
+): ProviderMergeRequest["state"] {
+  if (state === "merged") return "merged";
+  if (state === "closed" || state === "locked") return "closed";
+  return "opened";
+}
+
+function toBranch(
+  provider: "gitlab",
+  projectId: ProviderId,
+  branch: GitLabBranch,
+): ProviderBranch {
+  const id = `${String(projectId)}:${branch.name}`;
+  return {
+    id,
+    name: branch.name,
+    commit_sha: branch.commit?.id ?? "",
+    protected: branch.protected ?? false,
+    metadata: { ...meta(provider, branch), id },
+  };
+}
+
+function toCommit(
+  provider: "gitlab",
+  projectId: ProviderId,
+  commit: GitLabCommit,
+): ProviderCommit {
+  const id = `${String(projectId)}:${commit.id}`;
+  return {
+    id,
+    sha: commit.id,
+    title: commit.title,
+    metadata: { ...meta(provider, commit), id },
+  };
+}
+
+function toPipeline(
+  provider: "gitlab",
+  pipeline: GitLabEntity & {
+    readonly status?: string;
+    readonly sha?: string;
+  },
+): ProviderPipeline {
+  return {
+    id: String(pipeline.id),
+    status: pipeline.status ?? "unknown",
+    commit_sha: pipeline.sha,
+    metadata: meta(provider, pipeline),
+  };
 }
 
 function encodePath(value: string | number): string {

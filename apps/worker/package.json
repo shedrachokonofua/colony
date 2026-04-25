@@ -8,14 +8,17 @@
     "dev": "tsx watch src/worker.ts",
     "start": "tsx src/worker.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest --root ../.. run apps/worker/src/index.test.ts"
+    "test": "vitest --root ../.. run apps/worker/src/index.test.ts",
+    "test:integration": "tsx ../../scripts/require-env.ts COLONY_TEST_DATABASE_URL GITLAB_BASE_URL GITLAB_TOKEN && vitest --root ../.. run apps/worker/src/developer-run.test.ts"
   },
   "dependencies": {
+    "@colony/agent-runtime": "*",
     "@colony/config": "*",
     "@colony/db": "*",
     "@colony/domain": "*",
     "@colony/provider": "*",
     "@colony/provider-gitlab": "*",
+    "@colony/schemas": "*",
     "@colony/workflows": "*",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/client": "^1.11.0",
