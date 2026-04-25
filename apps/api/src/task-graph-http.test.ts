@@ -421,10 +421,13 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       redacted_env: string;
-      bot_tokens: { engine: string };
+      bot_tokens: { engine: string; architect: string };
     };
     expect(body.redacted_env).toContain("GITLAB_TOKEN=");
     expect(body.bot_tokens.engine).not.toContain("fake-token-colony-engine");
+    expect(body.bot_tokens.architect).not.toContain(
+      "fake-token-colony-architect",
+    );
 
     const { rows } = await pool.query<{ evidence: unknown }>(
       `SELECT evidence FROM audit_log
@@ -434,6 +437,38 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     );
     const evidence = JSON.stringify(rows[0]?.evidence);
     expect(evidence).not.toContain("fake-token-colony-engine");
+
+    const identities = await pool.query<{
+      actor: string;
+      role: string;
+      provider_username: string | null;
+      is_bot: boolean;
+      token_fingerprint: string | null;
+    }>(
+      `SELECT actor, role, provider_username, is_bot, token_fingerprint
+       FROM provider_identities
+       WHERE provider = 'fake'
+       ORDER BY actor`,
+    );
+    expect(identities.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actor: "bot:engine",
+          role: "developer",
+          provider_username: "colony-engine",
+          is_bot: true,
+        }),
+        expect.objectContaining({
+          actor: "bot:architect",
+          role: "architect",
+          provider_username: "colony-architect",
+          is_bot: true,
+        }),
+      ]),
+    );
+    expect(
+      identities.rows.every((row) => row.token_fingerprint?.length === 16),
+    ).toBe(true);
   });
 });
 

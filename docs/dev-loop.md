@@ -50,7 +50,7 @@ Ports are read from `.env` (`API_PORT`, `WEBHOOK_DISPATCHER_PORT`, `TOOL_GATEWAY
 
 ## Pointing at the home-lab GitLab
 
-Provider provisioning (group, project, bot users, bot PATs, OAuth Application for Web UI sign-in, project webhook) is a single API operation: `POST /admin/provider/bootstrap` on `apps/api`. The only credential a human supplies is one **GitLab admin PAT**; everything else is created over the GitLab admin API. See `design.md` §10 "Provider Bootstrap" and tasks `COL-1.1a`.
+Provider provisioning (group, project, bot users, bot PATs, OAuth Application for Web UI sign-in, project webhook) is a single API operation: `POST /admin/provider/bootstrap` on `apps/api`. The only credential a human supplies is one **GitLab admin PAT**; everything else is created over the GitLab admin API. Bootstrap returns role-keyed bot tokens as `GITLAB_BOT_<ROLE>_TOKEN`; `GITLAB_TOKEN` remains the engine/developer alias for current local wiring. See `design.md` §10 "Provider Bootstrap" and tasks `COL-1.1a`/`COL-1.1b`.
 
 Run bootstrap with a request-scoped GitLab admin PAT:
 
@@ -65,7 +65,7 @@ curl -X POST http://localhost:4000/admin/provider/bootstrap \
 The operation returns provider resource IDs and a redacted `.env` snippet, and writes an audit record with a hash of the admin credential. For break-glass setup or debugging, the equivalent manual fallback is:
 
 1. **Create a dev project on home-lab GitLab.**
-2. **Create one bot account** (e.g. `colony-engine`) with a personal access token scoped to `api`, `read_repository`, `write_repository`. Put the token in `.env` as `GITLAB_TOKEN`. Record the numeric project ID for the local default/dogfood project in `GITLAB_DEV_PROJECT_ID` and the base URL in `GITLAB_BASE_URL` (e.g. `https://gitlab.home.shdr.ch`). This is only the local default project; the durable architecture supports scopes that span multiple GitLab projects through Task Graph provider targets.
+2. **Create bot accounts** through bootstrap when possible. If you are bypassing bootstrap for local dogfooding, create at least an engine bot (`colony-engine`) with a personal access token scoped to `api`, `read_repository`, `write_repository`. Put the token in `.env` as `GITLAB_BOT_ENGINE_TOKEN` and the back-compat alias `GITLAB_TOKEN`. Additional roles use `GITLAB_BOT_REVIEWER_TOKEN`, `GITLAB_BOT_ARCHITECT_TOKEN`, `GITLAB_BOT_INTEGRATOR_TOKEN`, `GITLAB_BOT_MEMORY_CONSOLIDATOR_TOKEN`, and `GITLAB_BOT_SUPERVISOR_TOKEN`. Record the numeric project ID for the local default/dogfood project in `GITLAB_DEV_PROJECT_ID` and the base URL in `GITLAB_BASE_URL` (e.g. `https://gitlab.home.shdr.ch`). This is only the local default project; the durable architecture supports scopes that span multiple GitLab projects through Task Graph provider targets.
 3. **Pick a webhook secret** — any random string (`openssl rand -hex 32`) — and put it in `.env` as `GITLAB_WEBHOOK_SECRET`.
 4. **Work out the webhook URL.** The dispatcher runs on your laptop at `http://<laptop-lan-address>:$WEBHOOK_DISPATCHER_PORT/webhook/gitlab`. Set `PUBLIC_HOST` in `.env` to the laptop's LAN name or IP (e.g. `10.0.4.10`). On restart, the dispatcher logs the exact URL GitLab should POST to.
 5. **In GitLab project → Settings → Webhooks**, add:

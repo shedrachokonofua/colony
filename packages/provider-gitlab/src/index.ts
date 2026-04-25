@@ -2,8 +2,8 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  defaultEngineBot,
-  defaultReviewerBot,
+  botTokenEnv,
+  normalizeBootstrapBots,
   type BootstrapAction,
   type BootstrapBotSpec,
   type CreateIssueInput,
@@ -355,32 +355,22 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       provider_id: String(project.id),
     });
 
-    const engine = await this.ensureBot(
-      api,
-      input.bots?.engine ?? defaultEngineBot(),
-      actions,
-      "engine",
-    );
-    const reviewer = await this.ensureBot(
-      api,
-      input.bots?.reviewer ?? defaultReviewerBot(),
-      actions,
-      "reviewer",
-    );
-    const engineToken = await this.rotateToken(
-      api,
-      engine,
-      input.bots?.engine ?? defaultEngineBot(),
-      actions,
-      "engine",
-    );
-    const reviewerToken = await this.rotateToken(
-      api,
-      reviewer,
-      input.bots?.reviewer ?? defaultReviewerBot(),
-      actions,
-      "reviewer",
-    );
+    const botSpecs = normalizeBootstrapBots(input.bots);
+    const botUsers: Record<string, GitLabEntity> = {};
+    for (const [role, spec] of Object.entries(botSpecs)) {
+      botUsers[role] = await this.ensureBot(api, spec, actions, role);
+    }
+
+    const botTokens: Record<string, string> = {};
+    for (const [role, user] of Object.entries(botUsers)) {
+      const spec = botSpecs[role];
+      if (!spec) {
+        throw new GitLabProviderError(`Missing bot spec for ${role}`, 500, {
+          role,
+        });
+      }
+      botTokens[role] = await this.rotateToken(api, user, spec, actions, role);
+    }
 
     const oauth = await this.ensureOAuthApplication(api, input, actions);
     const webhook = await this.ensureWebhook(api, input, project, actions);
@@ -392,8 +382,10 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     const env = {
       GITLAB_BASE_URL: input.base_url,
       GITLAB_DEV_PROJECT_ID: String(project.id),
-      GITLAB_TOKEN: engineToken,
-      GITLAB_REVIEWER_TOKEN: reviewerToken,
+      ...botTokenEnv(botTokens),
+      // Back-compat aliases for current adapter constructor wiring.
+      GITLAB_TOKEN: botTokens.engine ?? "",
+      GITLAB_REVIEWER_TOKEN: botTokens.reviewer ?? "",
       GITLAB_WEBHOOK_SECRET: webhook.secret,
       OAUTH_CLIENT_ID: oauth.client_id,
       OAUTH_CLIENT_SECRET: oauth.client_secret ?? "",
@@ -404,11 +396,13 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       base_url: input.base_url,
       group: toRef(this.provider, group),
       project: toRef(this.provider, project),
-      bot_users: {
-        engine: toUser(this.provider, engine),
-        reviewer: toUser(this.provider, reviewer),
-      },
-      bot_tokens: { engine: engineToken, reviewer: reviewerToken },
+      bot_users: Object.fromEntries(
+        Object.entries(botUsers).map(([role, user]) => [
+          role,
+          toUser(this.provider, user),
+        ]),
+      ),
+      bot_tokens: botTokens,
       oauth_application: oauth,
       webhook,
       actions,
@@ -485,7 +479,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     api: <T>(path: string, init?: RequestInit) => Promise<T>,
     spec: BootstrapBotSpec,
     actions: BootstrapAction[],
-    name: "engine" | "reviewer",
+    role: string,
   ): Promise<GitLabEntity> {
     const users = await api<GitLabEntity[]>(
       `/users?username=${encodeURIComponent(spec.username)}`,
@@ -493,7 +487,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     const existing = users[0];
     if (existing) {
       actions.push({
-        resource: `bot:${name}`,
+        resource: `bot:${role}`,
         status: "existing",
         provider_id: String(existing.id),
       });
@@ -511,7 +505,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       }),
     });
     actions.push({
-      resource: `bot:${name}`,
+      resource: `bot:${role}`,
       status: "created",
       provider_id: String(created.id),
     });
@@ -523,7 +517,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     user: GitLabEntity,
     spec: BootstrapBotSpec,
     actions: BootstrapAction[],
-    name: "engine" | "reviewer",
+    role: string,
   ): Promise<string> {
     const expires = new Date(Date.now() + 24 * 60 * 60 * 1000)
       .toISOString()
@@ -533,14 +527,14 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       {
         method: "POST",
         body: JSON.stringify({
-          name: `colony-${name}-${Date.now()}`,
+          name: `colony-${role}-${Date.now()}`,
           scopes: spec.scopes,
           expires_at: expires,
         }),
       },
     );
     actions.push({
-      resource: `bot_token:${name}`,
+      resource: `bot_token:${role}`,
       status: "rotated",
       provider_id: String(token.id),
     });

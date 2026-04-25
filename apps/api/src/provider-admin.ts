@@ -1,5 +1,11 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import type { ActorId } from "@colony/domain";
+import { createHash } from "node:crypto";
+import type {
+  ActorId,
+  Capability,
+  ProviderIdentity,
+  Role,
+} from "@colony/domain";
 import { PolicyRepository, TaskGraphRepository } from "@colony/db";
 import { env } from "@colony/config";
 import { evaluateAction } from "@colony/policy";
@@ -43,12 +49,7 @@ const bootstrapSpecSchema = z.object({
     description: z.string().optional(),
     visibility: z.enum(["private", "internal", "public"]).optional(),
   }),
-  bots: z
-    .object({
-      engine: botSpec.optional(),
-      reviewer: botSpec.optional(),
-    })
-    .optional(),
+  bots: z.union([z.record(z.string(), botSpec), z.array(botSpec)]).optional(),
   oauth_application: z.object({
     name: z.string().min(1),
     redirect_uris: z.array(z.string().url()).min(1),
@@ -166,6 +167,28 @@ export function registerProviderAdmin(
     try {
       const result = await deps.adapter.bootstrap(body);
       const redacted = redactBootstrapResult(result);
+      const identityWrites: ProviderIdentity[] = [];
+      for (const [botKey, user] of Object.entries(result.bot_users)) {
+        const role = botRole(botKey);
+        const botActor = `bot:${botKey}` as ActorId;
+        const identity = await deps.policyRepo.upsertProviderIdentity({
+          actor: botActor,
+          provider: result.provider,
+          provider_user_id: user.id,
+          provider_username: user.username,
+          role,
+          is_bot: true,
+          token_fingerprint: fingerprint(result.bot_tokens[botKey] ?? ""),
+          allowed_namespaces: [],
+        });
+        await deps.policyRepo.grantCapabilitiesForActor({
+          actor: botActor,
+          role,
+          capabilities: botCapabilities(botKey),
+          granted_by: actor,
+        });
+        identityWrites.push(identity);
+      }
       await deps.repo.withTransaction(async (tx) => {
         for (const action of redacted.actions) {
           await tx.writeAudit({
@@ -176,6 +199,17 @@ export function registerProviderAdmin(
             target_id: action.provider_id,
             reason: "api",
             evidence: { action, result: redacted },
+          });
+        }
+        for (const identity of identityWrites) {
+          await tx.writeAudit({
+            actor,
+            action: "provider.bootstrap.identity",
+            capability: decision.capability,
+            target_kind: "provider_identity",
+            target_id: `${identity.provider}:${identity.actor}`,
+            reason: "api",
+            evidence: { identity },
           });
         }
         await tx.writeAudit({
@@ -212,4 +246,65 @@ export function registerProviderAdmin(
       );
     }
   });
+}
+
+function fingerprint(token: string): string {
+  if (!token) return "";
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
+function botRole(botKey: string): Role {
+  if (botKey === "engine") return "developer";
+  if (botKey === "reviewer") return "reviewer";
+  if (botKey === "architect") return "architect";
+  if (botKey === "integrator") return "integrator";
+  if (botKey === "memory_consolidator") return "memory_consolidator";
+  if (botKey === "supervisor") return "supervisor";
+  return "developer";
+}
+
+function botCapabilities(botKey: string): Capability[] {
+  switch (botKey) {
+    case "engine":
+      return [
+        "provider.issues.create",
+        "provider.issues.update",
+        "provider.issues.comment",
+        "provider.mr.open",
+        "provider.branches.push",
+        "provider.commits.read",
+      ];
+    case "reviewer":
+      return [
+        "provider.issues.comment",
+        "provider.mr.approve",
+        "provider.mr.comment",
+        "provider.mr.review_thread",
+      ];
+    case "architect":
+      return [
+        "graph.write",
+        "provider.issues.create",
+        "provider.epics.create",
+        "provider.epics.update",
+        "provider.epics.close",
+      ];
+    case "integrator":
+      return [
+        "provider.mr.merge",
+        "provider.branches.protect",
+        "provider.pipelines.read",
+        "provider.pipelines.trigger",
+      ];
+    case "memory_consolidator":
+      return [
+        "provider.issues.update",
+        "provider.issues.addLabel",
+        "provider.issues.removeLabel",
+      ];
+    case "supervisor":
+      return ["graph.write", "audit.write"];
+    default:
+      return [];
+  }
 }

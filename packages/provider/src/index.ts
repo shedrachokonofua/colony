@@ -143,6 +143,10 @@ export interface BootstrapBotSpec {
   readonly role?: string;
 }
 
+export type BootstrapBotSpecs =
+  | Readonly<Record<string, BootstrapBotSpec>>
+  | BootstrapBotSpec[];
+
 export interface BootstrapGroupSpec {
   readonly name: string;
   readonly path: string;
@@ -177,10 +181,7 @@ export interface ProviderBootstrapSpec {
   readonly base_url: string;
   readonly group: BootstrapGroupSpec;
   readonly project: BootstrapProjectSpec;
-  readonly bots?: {
-    readonly engine?: BootstrapBotSpec;
-    readonly reviewer?: BootstrapBotSpec;
-  };
+  readonly bots?: BootstrapBotSpecs;
   readonly oauth_application: BootstrapOAuthApplicationSpec;
   readonly webhook: BootstrapWebhookSpec;
   readonly rotate_tokens?: boolean;
@@ -204,14 +205,8 @@ export interface ProviderBootstrapResult {
   readonly base_url: string;
   readonly group: ProviderRef;
   readonly project: ProviderRef;
-  readonly bot_users: {
-    readonly engine: ProviderUser;
-    readonly reviewer: ProviderUser;
-  };
-  readonly bot_tokens: {
-    readonly engine: string;
-    readonly reviewer: string;
-  };
+  readonly bot_users: Readonly<Record<string, ProviderUser>>;
+  readonly bot_tokens: Readonly<Record<string, string>>;
   readonly oauth_application: ProviderRef & {
     readonly client_id: string;
     readonly client_secret?: string;
@@ -449,10 +444,12 @@ export function redactBootstrapResult(
   );
   return {
     ...result,
-    bot_tokens: {
-      engine: redact(result.bot_tokens.engine),
-      reviewer: redact(result.bot_tokens.reviewer),
-    },
+    bot_tokens: Object.fromEntries(
+      Object.entries(result.bot_tokens).map(([role, token]) => [
+        role,
+        redact(token),
+      ]),
+    ),
     oauth_application: {
       ...result.oauth_application,
       client_secret: result.oauth_application.client_secret
@@ -741,17 +738,28 @@ export class FakeProviderAdapter implements ProviderAdapter {
       id: `fake-project-${spec.environment}`,
       metadata: this.meta(`fake-project-${spec.environment}`),
     };
-    const engine = this.upsertBot(spec.bots?.engine ?? defaultEngineBot());
-    const reviewer = this.upsertBot(
-      spec.bots?.reviewer ?? defaultReviewerBot(),
+    const botSpecs = normalizeBootstrapBots(spec.bots);
+    const botUsers = Object.fromEntries(
+      Object.entries(botSpecs).map(([role, botSpec]) => [
+        role,
+        this.upsertBot(botSpec),
+      ]),
+    );
+    const botTokens = Object.fromEntries(
+      Object.entries(botUsers).map(([role, user]) => [
+        role,
+        `fake-token-${user.username}`,
+      ]),
     );
     const webhookSecret =
       spec.webhook.secret ?? `fake-webhook-secret-${spec.environment}`;
     const env = {
       GITLAB_BASE_URL: spec.base_url,
       GITLAB_DEV_PROJECT_ID: project.id,
-      GITLAB_TOKEN: `fake-token-${engine.username}`,
-      GITLAB_REVIEWER_TOKEN: `fake-token-${reviewer.username}`,
+      ...botTokenEnv(botTokens),
+      // Back-compat aliases for current adapter constructor wiring.
+      GITLAB_TOKEN: botTokens.engine ?? "",
+      GITLAB_REVIEWER_TOKEN: botTokens.reviewer ?? "",
       GITLAB_WEBHOOK_SECRET: webhookSecret,
       OAUTH_CLIENT_ID: `fake-oauth-${spec.environment}`,
       OAUTH_CLIENT_SECRET: `fake-oauth-secret-${spec.environment}`,
@@ -762,11 +770,8 @@ export class FakeProviderAdapter implements ProviderAdapter {
       base_url: spec.base_url,
       group,
       project,
-      bot_users: { engine, reviewer },
-      bot_tokens: {
-        engine: env.GITLAB_TOKEN,
-        reviewer: env.GITLAB_REVIEWER_TOKEN,
-      },
+      bot_users: botUsers,
+      bot_tokens: botTokens,
       oauth_application: {
         id: `fake-oauth-${spec.environment}`,
         client_id: `fake-oauth-${spec.environment}`,
@@ -788,12 +793,18 @@ export class FakeProviderAdapter implements ProviderAdapter {
       actions: [
         { resource: "group", status: "existing", provider_id: group.id },
         { resource: "project", status: "existing", provider_id: project.id },
-        { resource: "bot:engine", status: "rotated", provider_id: engine.id },
-        {
-          resource: "bot:reviewer",
-          status: "rotated",
-          provider_id: reviewer.id,
-        },
+        ...Object.entries(botUsers).flatMap(([role, user]) => [
+          {
+            resource: `bot:${role}`,
+            status: "existing" as const,
+            provider_id: user.id,
+          },
+          {
+            resource: `bot_token:${role}`,
+            status: "rotated" as const,
+            provider_id: `fake-token-${role}`,
+          },
+        ]),
         {
           resource: "oauth_application",
           status: "existing",
@@ -945,4 +956,98 @@ export function defaultReviewerBot(): BootstrapBotSpec {
     scopes: ["api", "read_repository"],
     role: "reviewer",
   };
+}
+
+export function defaultArchitectBot(): BootstrapBotSpec {
+  return {
+    username: "colony-architect",
+    name: "Colony Architect",
+    email: "colony-architect@example.invalid",
+    scopes: ["api", "read_repository"],
+    role: "architect",
+  };
+}
+
+export function defaultIntegratorBot(): BootstrapBotSpec {
+  return {
+    username: "colony-integrator",
+    name: "Colony Integrator",
+    email: "colony-integrator@example.invalid",
+    scopes: ["api", "read_repository", "write_repository"],
+    role: "integrator",
+  };
+}
+
+export function defaultMemoryConsolidatorBot(): BootstrapBotSpec {
+  return {
+    username: "colony-memory-consolidator",
+    name: "Colony Memory Consolidator",
+    email: "colony-memory-consolidator@example.invalid",
+    scopes: ["api", "read_repository"],
+    role: "memory_consolidator",
+  };
+}
+
+export function defaultSupervisorBot(): BootstrapBotSpec {
+  return {
+    username: "colony-supervisor",
+    name: "Colony Supervisor",
+    email: "colony-supervisor@example.invalid",
+    scopes: ["api", "read_repository"],
+    role: "supervisor",
+  };
+}
+
+export function defaultBootstrapBots(): Readonly<
+  Record<string, BootstrapBotSpec>
+> {
+  return {
+    engine: defaultEngineBot(),
+    reviewer: defaultReviewerBot(),
+    architect: defaultArchitectBot(),
+    integrator: defaultIntegratorBot(),
+    memory_consolidator: defaultMemoryConsolidatorBot(),
+    supervisor: defaultSupervisorBot(),
+  };
+}
+
+export function normalizeBootstrapBots(
+  bots: BootstrapBotSpecs | undefined,
+): Readonly<Record<string, BootstrapBotSpec>> {
+  if (!bots) return defaultBootstrapBots();
+  if (Array.isArray(bots)) {
+    const botList: readonly BootstrapBotSpec[] = bots;
+    return Object.fromEntries(
+      botList.map((bot) => [bot.role ?? bot.username, botWithRole(bot)]),
+    );
+  }
+  const botRecord: Readonly<Record<string, BootstrapBotSpec>> = bots;
+  return Object.fromEntries(
+    Object.entries(botRecord).map(([role, bot]) => [
+      role,
+      bot.role === role ? bot : { ...bot, role },
+    ]),
+  );
+}
+
+export function botTokenEnv(
+  botTokens: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  return Object.fromEntries(
+    Object.entries(botTokens).map(([role, token]) => [
+      `GITLAB_BOT_${envRole(role)}_TOKEN`,
+      token,
+    ]),
+  );
+}
+
+function botWithRole(bot: BootstrapBotSpec): BootstrapBotSpec {
+  return bot.role ? bot : { ...bot, role: bot.username };
+}
+
+function envRole(role: string): string {
+  return role
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
 }

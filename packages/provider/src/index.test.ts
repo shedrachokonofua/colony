@@ -132,9 +132,41 @@ describe("FakeProviderAdapter", () => {
     expect(result.group.id).toBe("fake-group-dev");
     expect(result.project.id).toBe("fake-project-dev");
     expect(result.bot_users.engine.username).toBe("colony-engine");
+    expect(Object.keys(result.bot_users)).toEqual([
+      "engine",
+      "reviewer",
+      "architect",
+      "integrator",
+      "memory_consolidator",
+      "supervisor",
+    ]);
 
     const redacted = redactBootstrapResult(result);
     expect(redacted.bot_tokens.engine).not.toBe(result.bot_tokens.engine);
     expect(redacted.redacted_env).toContain("GITLAB_TOKEN=fake...gine");
+  });
+
+  it("accepts custom role-keyed bootstrap bots without adapter code changes", async () => {
+    const adapter = new FakeProviderAdapter();
+    const result = await adapter.bootstrap({
+      ...spec,
+      bots: {
+        data_steward: {
+          username: "colony-data-steward",
+          name: "Colony Data Steward",
+          email: "colony-data-steward@example.invalid",
+          scopes: ["api"],
+        },
+      },
+    });
+
+    expect(Object.keys(result.bot_users)).toEqual(["data_steward"]);
+    expect(result.bot_users.data_steward.username).toBe("colony-data-steward");
+    expect(result.bot_tokens.data_steward).toBe(
+      "fake-token-colony-data-steward",
+    );
+    expect(result.env.GITLAB_BOT_DATA_STEWARD_TOKEN).toBe(
+      "fake-token-colony-data-steward",
+    );
   });
 });

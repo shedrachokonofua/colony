@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@colony/config": "*",
+    "@colony/domain": "*",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-openapi": "^1.2.2",
     "@scalar/hono-api-reference": "^0.10.0",

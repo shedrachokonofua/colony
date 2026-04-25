@@ -1596,77 +1596,82 @@
                     ]
                   },
                   "bots": {
-                    "type": "object",
-                    "properties": {
-                      "engine": {
+                    "anyOf": [
+                      {
                         "type": "object",
-                        "properties": {
-                          "username": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "name": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "email": {
-                            "type": "string",
-                            "format": "email"
-                          },
-                          "scopes": {
-                            "type": "array",
-                            "items": {
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "username": {
                               "type": "string",
                               "minLength": 1
                             },
-                            "minItems": 1
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "email": {
+                              "type": "string",
+                              "format": "email"
+                            },
+                            "scopes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "minItems": 1
+                            },
+                            "role": {
+                              "type": "string"
+                            }
                           },
-                          "role": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "username",
-                          "name",
-                          "email",
-                          "scopes"
-                        ]
+                          "required": [
+                            "username",
+                            "name",
+                            "email",
+                            "scopes"
+                          ]
+                        }
                       },
-                      "reviewer": {
-                        "type": "object",
-                        "properties": {
-                          "username": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "name": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "email": {
-                            "type": "string",
-                            "format": "email"
-                          },
-                          "scopes": {
-                            "type": "array",
-                            "items": {
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "username": {
                               "type": "string",
                               "minLength": 1
                             },
-                            "minItems": 1
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "email": {
+                              "type": "string",
+                              "format": "email"
+                            },
+                            "scopes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "minItems": 1
+                            },
+                            "role": {
+                              "type": "string"
+                            }
                           },
-                          "role": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "username",
-                          "name",
-                          "email",
-                          "scopes"
-                        ]
+                          "required": [
+                            "username",
+                            "name",
+                            "email",
+                            "scopes"
+                          ]
+                        }
                       }
-                    }
+                    ]
                   },
                   "oauth_application": {
                     "type": "object",

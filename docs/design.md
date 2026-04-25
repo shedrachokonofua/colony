@@ -477,7 +477,7 @@ ProviderAdapter {
 
 - **Tier.** GitLab Premium/Ultimate for epics and MR approval rules.
 - **Fallback (if Premium unavailable).** Parent issues instead of epics. Approvals via `/approve` comment + Supervisor-enforced merge readiness. Protected-branch rules still required.
-- **Bot accounts.** Two: `colony-engine` (Architect, Supervisor, Developer, Integrator personas — opens issues/branches/MRs, comments, merges) and `colony-reviewer` (only reviews/approves). The split is forced by GitLab's MR self-approval rule; finer-grained per-role attribution is not worth the operational cost. Per-role attribution lives in Colony's audit log, not GitLab's username column. Bot tokens are scoped per role and rotated every 24h. The bot users, their PATs, and the Web UI OAuth Application are created by the Provider Bootstrap operation (below) — no manual user creation in the GitLab UI.
+- **Bot accounts.** Bootstrap creates role-keyed bot users by default: `engine`/developer, `reviewer`, `architect`, `integrator`, `memory_consolidator`, and `supervisor`. Additional roles can be supplied in the bootstrap spec without changing the adapter contract. The split avoids GitLab MR self-approval issues, lets the Tool Gateway pick the narrowest role token per provider call, and preserves per-role attribution in both GitLab and Colony audit. `GITLAB_TOKEN` remains the engine alias for current local wiring; role-keyed tokens are emitted as `GITLAB_BOT_<ROLE>_TOKEN`.
 - **Multi-repo scopes.** GitLab project context is not a singleton. One Colony scope can target multiple GitLab projects, e.g. frontend, backend, data, infra, and docs repos. The provider adapter takes a project target on issue/MR/branch/pipeline operations. The Supervisor chooses the target from `scope_targets` and `task_targets`; a local `GITLAB_DEV_PROJECT_ID` can be used only as a default project for local dogfooding and adapter tests.
 
 ### Provider Bootstrap
@@ -822,7 +822,7 @@ Default-deny egress. Allowlist:
 ### Secrets
 
 - **External Secrets Operator + Vault.**
-- **Short-lived provider tokens:** scoped per bot (`colony-engine`, `colony-reviewer`), 24h rotation. Initial provisioning and subsequent rotation go through the Provider Bootstrap operation (§10).
+- **Short-lived provider tokens:** scoped per role-keyed bot, 24h rotation. Initial provisioning and subsequent rotation go through the Provider Bootstrap operation (§10) or the operator bot lifecycle command.
 - **LLM API keys:** held only by Tool Gateway; never injected into agent sandbox.
 - **Per-run secrets:** scoped to sandbox lifetime, revoked on run completion.
 

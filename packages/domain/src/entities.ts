@@ -301,6 +301,10 @@ export interface ProviderIdentity {
   readonly actor: ActorId;
   readonly provider: string;
   readonly provider_user_id: string;
+  readonly provider_username?: string;
   readonly role: Role;
   readonly is_bot: boolean;
+  readonly token_fingerprint?: string;
+  readonly allowed_namespaces: ReadonlyArray<string>;
+  readonly disabled_at?: Iso8601;
 }

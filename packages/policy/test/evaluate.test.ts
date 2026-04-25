@@ -36,6 +36,7 @@ describe("evaluate", () => {
       provider_user_id: "1",
       role: "developer",
       is_bot: true,
+      allowed_namespaces: [],
     };
     const r = evaluateAction("scope.create", {
       granted: new Set<import("@colony/domain").Capability>([
@@ -58,6 +59,7 @@ describe("evaluate", () => {
       provider_user_id: "1",
       role: "supervisor",
       is_bot: true,
+      allowed_namespaces: [],
     };
     const r = evaluateAction("scope.create", {
       granted: new Set<import("@colony/domain").Capability>(["graph.write"]),

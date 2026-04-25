@@ -382,7 +382,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 **Deliverables**
 
-- `ProviderAdapter.bootstrap(spec)` GitLab implementation: idempotent provisioning of group, project, bot users (`colony-engine`, `colony-reviewer`) marked `bot=true`, per-bot PATs with role-scoped permissions, instance-wide OAuth Application for Web UI sign-in, and the project webhook (URL + secret).
+- `ProviderAdapter.bootstrap(spec)` GitLab implementation: idempotent provisioning of group, project, role-keyed bot users marked `bot=true`, per-bot PATs with role-scoped permissions, instance-wide OAuth Application for Web UI sign-in, and the project webhook (URL + secret).
 - API endpoint on `apps/api`: `POST /admin/provider/bootstrap` taking a request-scoped admin credential and returning a structured result + redacted `.env` snippet.
 - Capability `provider.admin.bootstrap` granted only to a human admin actor; never to agents.
 - Audit event written for every bootstrap action with actor, redacted result, and a hash of the admin credential.
@@ -417,7 +417,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1b — Generalize Bootstrap To N Bots
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.1a
 
@@ -439,7 +439,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1c — Persist Bot Registry To `provider_identities`
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.1b, COL-0.8
 
@@ -458,7 +458,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1d — Per-Bot Capability Grants
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.1c
 
@@ -482,7 +482,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1e — Per-Namespace Bot Scoping
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.1d, COL-1.2b
 
@@ -501,7 +501,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.1f — Bot Lifecycle Operator UX
 
-- [ ]
+- [x]
 
 **Depends on:** COL-1.1c
 

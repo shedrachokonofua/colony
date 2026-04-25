@@ -100,11 +100,21 @@ describe("GitLabProviderAdapter bootstrap", () => {
       "project",
       "bot:engine",
       "bot:reviewer",
+      "bot:architect",
+      "bot:integrator",
+      "bot:memory_consolidator",
+      "bot:supervisor",
       "bot_token:engine",
       "bot_token:reviewer",
+      "bot_token:architect",
+      "bot_token:integrator",
+      "bot_token:memory_consolidator",
+      "bot_token:supervisor",
       "oauth_application",
       "webhook",
     ]);
+    expect(result.bot_tokens.architect).toMatch(/^secret-token-/);
+    expect(result.env.GITLAB_BOT_ARCHITECT_TOKEN).toMatch(/^secret-token-/);
     expect(calls.some((c) => c.url.endsWith("/projects/20/hooks"))).toBe(true);
   });
 });

@@ -26,6 +26,7 @@
     "test:integration:api": "npm --workspace @colony/api run test:integration",
     "test:integration:provider-gitlab-contract": "npm --workspace @colony/provider-gitlab run test:integration",
     "acceptance:phase0": "tsx scripts/phase0-acceptance.ts",
+    "bots": "tsx scripts/bots.ts",
     "schemas:generate": "tsx scripts/schemas-generate.ts",
     "schemas:check": "tsx scripts/schemas-generate.ts && git diff --exit-code -- schemas/envelopes schemas/packets",
     "openapi:generate": "tsx scripts/openapi-generate.ts",

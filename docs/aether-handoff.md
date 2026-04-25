@@ -48,13 +48,13 @@ Even before COL-1.9 lands the Tofu module, the following artifacts already exist
 
 Colony's Tofu reads these OpenBao paths via `data "vault_kv_secret_v2"` and writes the values directly into `kubernetes_secret_v1` resources in Colony's namespaces. (No ESO on host; we read at apply time.)
 
-| OpenBao path          | Keys                                                                                  | Consumed by                                       |
-| --------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `kv/colony/postgres`  | `COLONY_DATABASE_URL`, `TEMPORAL_DATABASE_URL`, `TEMPORAL_VISIBILITY_DATABASE_URL`    | api, worker, webhook-dispatcher                   |
-| `kv/colony/gitlab`    | `GITLAB_BASE_URL`, `GITLAB_TOKEN`, `GITLAB_WEBHOOK_SECRET`, `GITLAB_PROJECT_ID`       | api, webhook-dispatcher, worker (provider writes) |
-| `kv/colony/oauth`     | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` (the GitLab Application from COL-1.1a)       | web                                               |
-| `kv/colony/temporal`  | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` (in OpenBao for parity, not strictly secret) | worker, api                                       |
-| (request-scoped only) | `GITLAB_ADMIN_PAT` — never persisted; supplied by an operator at bootstrap            | api `/admin/provider/bootstrap`                   |
+| OpenBao path          | Keys                                                                                                                 | Consumed by                                       |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `kv/colony/postgres`  | `COLONY_DATABASE_URL`, `TEMPORAL_DATABASE_URL`, `TEMPORAL_VISIBILITY_DATABASE_URL`                                   | api, worker, webhook-dispatcher                   |
+| `kv/colony/gitlab`    | `GITLAB_BASE_URL`, `GITLAB_TOKEN` (engine alias), `GITLAB_BOT_*_TOKEN`, `GITLAB_WEBHOOK_SECRET`, `GITLAB_PROJECT_ID` | api, webhook-dispatcher, worker (provider writes) |
+| `kv/colony/oauth`     | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` (the GitLab Application from COL-1.1a)                                      | web                                               |
+| `kv/colony/temporal`  | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` (in OpenBao for parity, not strictly secret)                                | worker, api                                       |
+| (request-scoped only) | `GITLAB_ADMIN_PAT` — never persisted; supplied by an operator at bootstrap                                           | api `/admin/provider/bootstrap`                   |
 
 Anything else Colony adds (LLM provider keys, internal signing keys) follows the same `kv/colony/...` pattern and is appended here.
 
