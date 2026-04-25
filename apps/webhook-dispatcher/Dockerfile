@@ -2,7 +2,7 @@
 # Build context: repo root. Built via Buildah on Aether's GitLab Kubernetes runner.
 # See ADR-006 for the per-app Dockerfile rationale.
 
-FROM node:24-alpine AS deps
+FROM docker.io/library/node:24-bookworm-slim AS deps
 WORKDIR /workspace
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY apps/api/package.json ./apps/api/
@@ -23,9 +23,10 @@ COPY packages/testing/package.json ./packages/testing/
 COPY packages/workflows/package.json ./packages/workflows/
 RUN npm ci --include=dev
 
-FROM node:24-alpine AS runtime
+FROM docker.io/library/node:24-bookworm-slim AS runtime
 WORKDIR /workspace
 ENV NODE_ENV=production
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /workspace/node_modules ./node_modules
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages ./packages

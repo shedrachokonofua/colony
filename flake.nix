@@ -33,6 +33,7 @@
             kubectl
             kubernetes-helm
             k9s
+            opentofu
 
             # GitLab
             glab

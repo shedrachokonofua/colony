@@ -4,9 +4,14 @@ import { activities } from "./activities.js";
 
 async function main(): Promise<void> {
   const cfg = env();
+  const tls =
+    cfg.TEMPORAL_TLS_SERVER_NAME !== undefined
+      ? { serverNameOverride: cfg.TEMPORAL_TLS_SERVER_NAME }
+      : cfg.TEMPORAL_TLS;
 
   const connection = await NativeConnection.connect({
     address: cfg.TEMPORAL_ADDRESS,
+    tls,
   });
 
   const worker = await Worker.create({

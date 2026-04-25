@@ -46,14 +46,14 @@ Even before COL-1.9 lands the Tofu module, the following artifacts already exist
 
 ## Secret shape
 
-Colony's Tofu reads these OpenBao paths via `data "vault_kv_secret_v2"` and writes the values directly into `kubernetes_secret_v1` resources in Colony's namespaces. (No ESO on host; we read at apply time.)
+Colony's Tofu reads OpenBao paths via `data "vault_kv_secret_v2"` and writes needed values directly into `kubernetes_secret_v1` resources in Colony's namespaces. (No ESO on host; we read at apply time.) The first `colony-dev` preview keeps Aether changes near zero by reusing the existing Dokku Temporal deployment through `grpc.temporal.home.shdr.ch:443` and running a small in-namespace Postgres StatefulSet instead of requiring host-cluster CNPG.
 
 | OpenBao path          | Keys                                                                                                                 | Consumed by                                       |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `kv/colony/postgres`  | `COLONY_DATABASE_URL`, `TEMPORAL_DATABASE_URL`, `TEMPORAL_VISIBILITY_DATABASE_URL`                                   | api, worker, webhook-dispatcher                   |
+| Tofu-generated        | Preview Postgres username/password and `DATABASE_URL`                                                                | api, worker, webhook-dispatcher                   |
 | `kv/colony/gitlab`    | `GITLAB_BASE_URL`, `GITLAB_TOKEN` (engine alias), `GITLAB_BOT_*_TOKEN`, `GITLAB_WEBHOOK_SECRET`, `GITLAB_PROJECT_ID` | api, webhook-dispatcher, worker (provider writes) |
 | `kv/colony/oauth`     | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` (the GitLab Application from COL-1.1a)                                      | web                                               |
-| `kv/colony/temporal`  | `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE` (in OpenBao for parity, not strictly secret)                                | worker, api                                       |
+| Tofu variables        | `TEMPORAL_ADDRESS=grpc.temporal.home.shdr.ch:443`, `TEMPORAL_TLS=true`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE`  | worker, webhook-dispatcher                        |
 | (request-scoped only) | `GITLAB_ADMIN_PAT` — never persisted; supplied by an operator at bootstrap                                           | api `/admin/provider/bootstrap`                   |
 
 Anything else Colony adds (LLM provider keys, internal signing keys) follows the same `kv/colony/...` pattern and is appended here.
@@ -68,7 +68,8 @@ Each is a small Aether MR. Track them here until they merge.
    - `vault_policy "colony_ci"` granting `read` on `kv/data/colony/*` and `list` on `kv/metadata/colony/*`.
    - Optional: a separate read-only `colony-ci-readonly` role for plan-only jobs if we ever split apply credentials.
 2. **Initial OpenBao `kv/colony/*` paths** populated with placeholders, so Colony's first apply can read them. Owner: a human, once the GitLab project, bot users, and OAuth Application exist (after COL-1.1a runs).
-3. **(Phase 2)** **agent-sandbox controller install** cluster-wide, with the CRD versions Colony's `SandboxTemplate` resources target. Document the install in Aether's `tofu/home/kubernetes/`. Track when COL-2.1 / COL-2.3 land.
-4. **(Optional, future)** **External Secrets Operator** cluster-wide. Switching Colony's secret pattern from Tofu-vault-read to `ExternalSecret` is a one-MR follow-up once Aether installs ESO; the OpenBao paths don't change.
+3. **(Future)** **CloudNativePG on the host cluster**, if Colony outgrows the preview StatefulSet database and wants operator-managed Postgres in `colony-dev`.
+4. **(Phase 2)** **agent-sandbox controller install** cluster-wide, with the CRD versions Colony's `SandboxTemplate` resources target. Document the install in Aether's `tofu/home/kubernetes/`. Track when COL-2.1 / COL-2.3 land.
+5. **(Optional, future)** **External Secrets Operator** cluster-wide. Switching Colony's secret pattern from Tofu-vault-read to `ExternalSecret` is a one-MR follow-up once Aether installs ESO; the OpenBao paths don't change.
 
 This list is the source of truth until COL-1.9 lands; once the Tofu module exists, each item moves to a closed status here.

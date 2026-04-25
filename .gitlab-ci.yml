@@ -248,7 +248,7 @@ plan:
   script:
     - cd ${TF_ROOT}
     - tofu init
-    - tofu plan -lock=false -out=plan.cache
+    - tofu plan -lock=false -var "image_registry=$CI_REGISTRY_IMAGE" -var "image_tag=$CI_COMMIT_SHA" -var "enforce_pinned_images=true" -out=plan.cache
     - tofu show -json plan.cache > plan.json
     - tofu show -no-color plan.cache > plan.txt
   artifacts:

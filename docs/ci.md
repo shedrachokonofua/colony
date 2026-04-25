@@ -86,6 +86,15 @@ address = "https://gitlab.home.shdr.ch/api/v4/projects/<colony-project-id>/terra
 
 Auth in CI is automatic (`TF_HTTP_USERNAME=gitlab-ci-token`, `TF_HTTP_PASSWORD=$CI_JOB_TOKEN`). Locally, `tofu init` from inside the Nix dev shell — set `TF_HTTP_USERNAME=<your-gitlab-user>` and `TF_HTTP_PASSWORD=<your-PAT-with-api-scope>` first.
 
+The plan job passes the exact image coordinates produced by the build stage:
+
+```sh
+tofu plan \
+  -var "image_registry=$CI_REGISTRY_IMAGE" \
+  -var "image_tag=$CI_COMMIT_SHA" \
+  -var "enforce_pinned_images=true"
+```
+
 ## Required CI/CD variables
 
 Built-in (provided by GitLab):

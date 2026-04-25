@@ -9,3 +9,9 @@ build/
 coverage/
 .nix-result
 .svelte-kit/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+plan.cache

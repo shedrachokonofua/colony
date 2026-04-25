@@ -161,8 +161,13 @@ class TemporalSupervisorSignalDispatcher implements SupervisorSignalDispatcher {
   ): Promise<{ readonly workflow_id: string }> {
     const cfg = env();
     if (!this.client) {
+      const tls =
+        cfg.TEMPORAL_TLS_SERVER_NAME !== undefined
+          ? { serverNameOverride: cfg.TEMPORAL_TLS_SERVER_NAME }
+          : cfg.TEMPORAL_TLS;
       const connection = await Connection.connect({
         address: cfg.TEMPORAL_ADDRESS,
+        tls,
       });
       this.client = new TemporalClient({
         connection,
