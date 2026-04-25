@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { Client, type Pool } from "pg";
+import { Pool } from "pg";
 import { runner } from "node-pg-migrate";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -21,16 +21,20 @@ const FUTURE = "future-grant" as ActorId;
 
 describe.runIf(TEST_URL)("PolicyRepository", () => {
   const url = TEST_URL!;
+  // `pool` runs as colony_writer (which lacks TRUNCATE owner privileges) so we
+  // also keep a long-lived `admin` pool for schema setup / cleanup. Reusing one
+  // pooled connection per test avoids piling up fresh physical connects in
+  // beforeEach (which on a slow CI postgres can stall past the 10s hook timeout
+  // and leave orphan connects racing against the next test's TRUNCATE).
+  let admin: Pool;
   let pool: Pool;
   let pr: PolicyRepository;
 
   beforeAll(async () => {
-    const c = new Client({ connectionString: url });
-    await c.connect();
-    await c.query("DROP SCHEMA public CASCADE");
-    await c.query("CREATE SCHEMA public");
-    await c.query("GRANT ALL ON SCHEMA public TO public");
-    await c.end();
+    admin = new Pool({ connectionString: url, max: 1 });
+    await admin.query("DROP SCHEMA public CASCADE");
+    await admin.query("CREATE SCHEMA public");
+    await admin.query("GRANT ALL ON SCHEMA public TO public");
     await runner({
       databaseUrl: url,
       dir: MIGRATIONS_DIR,
@@ -44,18 +48,13 @@ describe.runIf(TEST_URL)("PolicyRepository", () => {
 
   afterAll(async () => {
     if (pool) await pool.end();
+    if (admin) await admin.end();
   });
 
   beforeEach(async () => {
-    const c = new Client({ connectionString: url });
-    await c.connect();
-    try {
-      await c.query(
-        `TRUNCATE tasks, events, audit_log, scopes, capability_grants, policies, provider_identities, idempotency_keys RESTART IDENTITY CASCADE`,
-      );
-    } finally {
-      await c.end();
-    }
+    await admin.query(
+      `TRUNCATE tasks, events, audit_log, scopes, capability_grants, policies, provider_identities, idempotency_keys RESTART IDENTITY CASCADE`,
+    );
     await pool.query(
       `INSERT INTO policies (id, scope, target_id, version, protected_paths, security_labels, always_human_review, review_loop_cap, settings)
        VALUES ('pol-g', 'global', NULL, 1, '{}', '{}', false, 3, '{}'::jsonb)`,
