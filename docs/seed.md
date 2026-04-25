@@ -25,16 +25,16 @@ Core systems, different jobs:
 
 The system should avoid split-brain by assigning each field to one owner and treating other copies as projections:
 
-| Field / event | Source of truth | Projection |
-| --- | --- | --- |
-| Task title / description / acceptance criteria | Task Graph, written by Supervisor from approved spec/decomposition | Provider issue + agent task packet |
-| Task dependencies / DAG readiness | Task Graph | Provider labels/comments |
-| Task assignment | Supervisor via atomic Task Graph claim | Provider assignee + `state:*` label + agent task packet |
-| Human discussion / approval comments | Git provider | Task Graph event/audit record |
-| MR/PR status / approvals / pipeline status | Git provider | Task Graph event/audit record + task status |
-| Scope state | Supervisor workflow | Task Graph scope + provider epic/parent issue |
-| Merge action | Developer, after gates pass | Git provider MR/PR + Task Graph event/audit record |
-| Deploy / release action | Integrator / Release | Provider release/deploy record + Task Graph event/audit record |
+| Field / event                                  | Source of truth                                                    | Projection                                                     |
+| ---------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Task title / description / acceptance criteria | Task Graph, written by Supervisor from approved spec/decomposition | Provider issue + agent task packet                             |
+| Task dependencies / DAG readiness              | Task Graph                                                         | Provider labels/comments                                       |
+| Task assignment                                | Supervisor via atomic Task Graph claim                             | Provider assignee + `state:*` label + agent task packet        |
+| Human discussion / approval comments           | Git provider                                                       | Task Graph event/audit record                                  |
+| MR/PR status / approvals / pipeline status     | Git provider                                                       | Task Graph event/audit record + task status                    |
+| Scope state                                    | Supervisor workflow                                                | Task Graph scope + provider epic/parent issue                  |
+| Merge action                                   | Developer, after gates pass                                        | Git provider MR/PR + Task Graph event/audit record             |
+| Deploy / release action                        | Integrator / Release                                               | Provider release/deploy record + Task Graph event/audit record |
 
 Conflict rule: the owning system wins for ordinary projection drift. Gate, merge, close, approval, or done-state conflicts fail closed and enter reconciliation.
 
@@ -57,6 +57,7 @@ Availability rule: if the git provider is unreachable, Colony freezes new visibl
 ## Roles
 
 ### Architect
+
 - Elicits requirements from the human stakeholder (via the scope epic description / comments).
 - Proposes scope decomposition: child tasks, clear inputs, outputs, acceptance criteria, and dependencies.
 - Supervisor commits the approved decomposition into the Task Graph, forming the DAG.
@@ -64,6 +65,7 @@ Availability rule: if the git provider is unreachable, Colony freezes new visibl
 - **HITL:** requirements sign-off on the epic, scope-change approval.
 
 ### Supervisor
+
 - Implemented as a **Temporal workflow** per scope; provider webhooks arrive as signals.
 - Reads DAG state from the Task Graph (`ready_tasks`, `get_task`, dependency graph).
 - Owns all normal Task Graph writes: scope/task creation, dependency updates, claims, state transitions, gates, events, and audit records.
@@ -77,6 +79,7 @@ Availability rule: if the git provider is unreachable, Colony freezes new visibl
 - **HITL:** escalation on ambiguity, repeated failure, or budget/time overrun.
 
 ### Developer
+
 - Works tasks assigned by the Supervisor; reads the Supervisor task packet, provider issue/MR/PR context, and relevant repo files.
 - Creates a branch per task, implements against the spec, writes tests and docs.
 - Opens an MR/PR that `Closes #<provider-issue>` and references the `col-xxxx.N` ID; responds to review comments.
@@ -85,6 +88,7 @@ Availability rule: if the git provider is unreachable, Colony freezes new visibl
 - **HITL:** conditional — see Review Policy.
 
 ### Reviewer
+
 The Reviewer sits at **every HITL gate** as the agent-side pre-reviewer. Humans approve vetted, annotated artifacts — not raw ones. Assigned by the Supervisor:
 
 - **Spec / DAG review** (before epic approval): checks task decomposition, testability of acceptance criteria, and dep correctness on the Architect's output.
@@ -95,6 +99,7 @@ The Reviewer sits at **every HITL gate** as the agent-side pre-reviewer. Humans 
 - Can also be assigned when a human requests review in an issue comment, MR/PR comment, or review thread.
 
 ### Integrator / Release
+
 - Performs deploy, release tagging, environment promotion, and scope closeout when those are separate from merge.
 - Runs as a narrow bot/service with the minimum token needed to update release/deploy records.
 - Before release/deploy, verifies all linked tasks are closed, scope review is approved, required environment checks pass, and release HITL gates are satisfied.
@@ -148,6 +153,7 @@ The graph is implemented by Colony, not delegated to an external tracker. It kee
 ## HITL Policy (sketch)
 
 Humans are pulled in when:
+
 - Requirements are ambiguous or changing.
 - Confidence is below threshold on a decision.
 - An action is irreversible or high-stakes (merge, deploy, external comms).
@@ -360,6 +366,7 @@ Colony control plane is self-hosted. External LLM endpoints and git providers ma
 ```
 
 **Notes:**
+
 - Namespace per scope/epic for high-risk or long-lived scopes; otherwise shared namespace with per-sandbox RBAC, quotas, and NetworkPolicies.
 - Task Graph API/service fronts Postgres so agents never touch graph tables directly. In the default path, only Supervisor workers write to it; other agents receive task/review packets. Transactional claims, auth, audit, conflict handling, and JSON schema validation live there.
 - NetworkPolicies: agent egress limited to the active git provider, Task Graph API when explicitly allowed, tool gateway, and LLM endpoints.

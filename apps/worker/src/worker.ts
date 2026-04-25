@@ -17,7 +17,7 @@ async function main(): Promise<void> {
 
   // eslint-disable-next-line no-console
   console.log(
-    `colony-worker connected to Temporal at ${cfg.TEMPORAL_ADDRESS}, polling queue "${cfg.TEMPORAL_TASK_QUEUE}"`
+    `colony-worker connected to Temporal at ${cfg.TEMPORAL_ADDRESS}, polling queue "${cfg.TEMPORAL_TASK_QUEUE}"`,
   );
 
   await worker.run();

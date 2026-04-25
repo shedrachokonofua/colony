@@ -24,10 +24,11 @@ Normal issue trackers and chat-based agent sessions are insufficient for multi-s
 
 `seed.md` names the building blocks: scopes, tasks, a DAG with `ready_tasks`/`claim_task` primitives, HITL gates, structured output envelopes, provider mirrors, reconciled done semantics, disposable agents, typed memory, and a capability model. The design problem is to turn those concepts into a reliable distributed workflow with explicit ownership, recoverability, and human control — and to do it in a way that a single small team can operate.
 
-**Example scope used throughout this document:** *"Add CSV export to the reporting dashboard."* The scope epic decomposes into tasks like `schema design`, `backend endpoint`, `frontend button`, `integration test`, `docs update`. It is realistic enough to surface dependencies, review loops, pipeline gates, and discovered-work proposals, but small enough to fit in a single diagram.
+**Example scope used throughout this document:** _"Add CSV export to the reporting dashboard."_ The scope epic decomposes into tasks like `schema design`, `backend endpoint`, `frontend button`, `integration test`, `docs update`. It is realistic enough to surface dependencies, review loops, pipeline gates, and discovered-work proposals, but small enough to fit in a single diagram.
 
 **Open questions:**
-- Which failures from prior agent workflows are we *explicitly* designing against? (Initial list above; expand as we observe pilot data.)
+
+- Which failures from prior agent workflows are we _explicitly_ designing against? (Initial list above; expand as we observe pilot data.)
 - Primary axis when axes conflict: safety vs. throughput vs. DX vs. auditability? Current answer: **safety > auditability > DX > throughput**. Pilot feedback may reorder.
 
 ## 3. Goals And Non-Goals
@@ -68,18 +69,18 @@ Each goal is phrased as a property the implementation can be tested against.
 
 ### Actors (code-level)
 
-| Actor | Kind | Lifecycle |
-| --- | --- | --- |
-| Human user | External identity | Long-lived provider user |
-| Architect | Agent (long-lived pi-mono session) | Per-scope, resumable |
-| Supervisor | Temporal workflow | One per scope |
-| Developer | Agent (pi-coding-agent session) | Per-task |
-| Reviewer | Agent (pi-mono print/JSON mode) | Per-review (fresh each time) |
-| Integrator / Release | Agent or bot | Per-release |
-| Memory Consolidator | Service or scheduled workflow | Background |
-| Webhook Dispatcher | Service | Long-lived |
-| Tool Gateway | Service | Long-lived |
-| Provider Adapter | Service/library behind Task Graph API | Long-lived |
+| Actor                | Kind                                  | Lifecycle                    |
+| -------------------- | ------------------------------------- | ---------------------------- |
+| Human user           | External identity                     | Long-lived provider user     |
+| Architect            | Agent (long-lived pi-mono session)    | Per-scope, resumable         |
+| Supervisor           | Temporal workflow                     | One per scope                |
+| Developer            | Agent (pi-coding-agent session)       | Per-task                     |
+| Reviewer             | Agent (pi-mono print/JSON mode)       | Per-review (fresh each time) |
+| Integrator / Release | Agent or bot                          | Per-release                  |
+| Memory Consolidator  | Service or scheduled workflow         | Background                   |
+| Webhook Dispatcher   | Service                               | Long-lived                   |
+| Tool Gateway         | Service                               | Long-lived                   |
+| Provider Adapter     | Service/library behind Task Graph API | Long-lived                   |
 
 ### Role vs. Capability
 
@@ -89,27 +90,27 @@ Roles describe **intent** (what the actor is for). Capabilities authorize **spec
 
 `R` = read only. `W` = may write. `—` = not allowed. `G` = gated (requires open gate).
 
-| Capability | Human | Architect | Supervisor | Developer | Reviewer | Integrator | Memory Cons. |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `graph.read` | R (via UI) | R (via packet) | W | R (via packet) | R (via packet) | R (via packet) | R |
-| `graph.write` | — | — | W | — | — | — | — |
-| `task.claim` | — | — | W | — | — | — | — |
-| `task.assign` | — | — | W | — | — | — | — |
-| `task.close` | — | — | W | — | — | — | — |
-| `provider.comment` | W | W (via Sup.) | W | W | W | W | — |
-| `provider.issue.update` | W | — | W | — | — | — | — |
-| `provider.branch.push` | W | — | — | W | — | — | — |
-| `provider.mr.open` | W | — | — | W | — | — | — |
-| `provider.mr.approve` | W | — | — | — | W | — | — |
-| `provider.mr.merge` | W | — | — | G | — | — | — |
-| `memory.candidate.write` | — | W | W | W | W | W | W |
-| `memory.write` | — | — | — | — | — | — | W |
-| `decision.write` | — | W (via cand.) | W | W (via cand.) | W (via cand.) | — | W |
-| `sandbox.exec` | — | W (own) | — | W (own) | W (own) | W (own) | W (own) |
-| `tool.call` | — | W (allowlist) | — | W (allowlist) | W (allowlist) | W (allowlist) | — |
-| `release.deploy` | W | — | — | — | — | G | — |
-| `policy.override` | W (policy) | — | — | — | — | — | — |
-| `provider.admin.bootstrap` | W (admin) | — | — | — | — | — | — |
+| Capability                 | Human      | Architect      | Supervisor | Developer      | Reviewer       | Integrator     | Memory Cons. |
+| -------------------------- | ---------- | -------------- | ---------- | -------------- | -------------- | -------------- | ------------ |
+| `graph.read`               | R (via UI) | R (via packet) | W          | R (via packet) | R (via packet) | R (via packet) | R            |
+| `graph.write`              | —          | —              | W          | —              | —              | —              | —            |
+| `task.claim`               | —          | —              | W          | —              | —              | —              | —            |
+| `task.assign`              | —          | —              | W          | —              | —              | —              | —            |
+| `task.close`               | —          | —              | W          | —              | —              | —              | —            |
+| `provider.comment`         | W          | W (via Sup.)   | W          | W              | W              | W              | —            |
+| `provider.issue.update`    | W          | —              | W          | —              | —              | —              | —            |
+| `provider.branch.push`     | W          | —              | —          | W              | —              | —              | —            |
+| `provider.mr.open`         | W          | —              | —          | W              | —              | —              | —            |
+| `provider.mr.approve`      | W          | —              | —          | —              | W              | —              | —            |
+| `provider.mr.merge`        | W          | —              | —          | G              | —              | —              | —            |
+| `memory.candidate.write`   | —          | W              | W          | W              | W              | W              | W            |
+| `memory.write`             | —          | —              | —          | —              | —              | —              | W            |
+| `decision.write`           | —          | W (via cand.)  | W          | W (via cand.)  | W (via cand.)  | —              | W            |
+| `sandbox.exec`             | —          | W (own)        | —          | W (own)        | W (own)        | W (own)        | W (own)      |
+| `tool.call`                | —          | W (allowlist)  | —          | W (allowlist)  | W (allowlist)  | W (allowlist)  | —            |
+| `release.deploy`           | W          | —              | —          | —              | —              | G              | —            |
+| `policy.override`          | W (policy) | —              | —          | —              | —              | —              | —            |
+| `provider.admin.bootstrap` | W (admin)  | —              | —          | —              | —              | —              | —            |
 
 Human actions are **first-class workflow events**, not trusted out-of-band mutations. They go through the webhook dispatcher, classification, and capability check just like agent actions. A casual comment becomes context; only policy-valid commands advance state.
 
@@ -156,6 +157,7 @@ provider event
 ### Source-of-truth ownership at the architecture level
 
 Visible at the wire:
+
 - Provider mutations use one of two audited paths: API mutations go through the Provider Adapter; git transport mutations (branch push/fetch) go through the Tool Gateway git proxy. Agent sandboxes do not receive raw long-lived provider credentials.
 - The Task Graph API is the only component that writes to the `colony` database.
 - Temporal history holds decisions, not artifacts.
@@ -164,6 +166,7 @@ Visible at the wire:
 ### Retries, idempotency, reconciliation
 
 First-class, not afterthoughts:
+
 - Every activity has an idempotency key derived from `(workflow_id, activity_type, logical_key)`.
 - Provider writes are projection-style: the adapter reads current provider state, computes desired state, and applies the diff. Double-apply is a no-op.
 - Webhook events carry provider IDs; the dispatcher maintains a dedup table with a 7-day TTL.
@@ -180,42 +183,49 @@ First-class, not afterthoughts:
 Each decision: **Decision / Rationale / Consequence / Revisit when**.
 
 ### ADR-1: Postgres-backed first-party Task Graph
+
 - **Decision.** The Task Graph lives in a first-party service backed by Postgres, not delegated to an external tracker.
 - **Rationale.** We need transactional `claim_task`, schema-validated envelopes, and strict append-only audit — none of which external trackers offer with adequate guarantees.
 - **Consequence.** We own schema migrations, backup/restore, and query performance. Task Graph writes are centralized behind one service.
 - **Revisit when.** An external system offers transactional claims and typed events (unlikely) or when the graph grows to a scale where Postgres hurts (> ~10M active tasks).
 
 ### ADR-2: GitLab-first with a provider abstraction
+
 - **Decision.** Implement GitLab first; keep all provider-specific code behind a `ProviderAdapter` interface.
 - **Rationale.** Target users run GitLab self-hosted; but coupling the system to GitLab APIs would block portability. Seed.md explicitly calls this out.
 - **Consequence.** Every provider call goes through the adapter. Minor complexity overhead; prevents a painful rewrite later.
 - **Revisit when.** The first non-GitLab user appears (likely GitHub). At that point we validate the abstraction with a real second implementation.
 
 ### ADR-3: Temporal owns durable orchestration
+
 - **Decision.** Supervisor is a Temporal workflow; HITL gates are signals/updates; retries, timers, and sleeps are Temporal primitives.
 - **Rationale.** HITL waits are long (hours to days). We need durable state across worker restarts, retries with backoff, and a clean signal model.
 - **Consequence.** Temporal history must stay small — no large diffs/logs in workflow state. Adds operational surface (Temporal cluster).
 - **Revisit when.** History bloat becomes a recurring operational issue despite discipline, or if a simpler orchestrator suffices.
 
 ### ADR-4: Provider comments/MRs/PRs are the human-agent communication surface
+
 - **Decision.** All human-agent discussion happens in provider issues, MR/PR comments, and review threads. The web UI does not host discussion.
 - **Rationale.** Collaboration record must be portable and survive Colony. Duplicating chat UIs fragments the conversation.
 - **Consequence.** Web UI is read-mostly plus admin. Comments on the provider must be parsed into structured commands.
 - **Revisit when.** Provider-hosted discussion proves insufficient (e.g., need to discuss across scopes or in private) — unlikely in MVP.
 
 ### ADR-5: Agents are disposable; durable continuity lives elsewhere
+
 - **Decision.** No workflow transition depends on private agent state. Continuity lives in Task Graph, provider artifacts, repo commits, structured envelopes, audit, and memory.
 - **Rationale.** A crashed or timed-out run must be replaceable by a fresh run, given only the packet.
 - **Consequence.** Agents must checkpoint (commits, envelopes, memory candidates). Review/spec/scope-review steps run with fresh Reviewer.
 - **Revisit when.** We observe judgment-heavy tasks that genuinely cannot checkpoint (none expected).
 
 ### ADR-6: Structured output envelopes for anything that affects workflow state
+
 - **Decision.** Agent outputs that influence workflow state carry a machine-readable envelope (`result`, `confidence`, `requires_human`, `risk_level`, `artifacts`, `policy_flags`, `next_action`, plus role-specific fields).
 - **Rationale.** Prose is for humans; routing/validation/policy/audit need structure.
 - **Consequence.** Every agent output goes through envelope validation before Task Graph write. Malformed envelopes are rejected and returned for correction.
 - **Revisit when.** Envelope rigidity gets in the way of a new role.
 
 ### ADR-7: Irreversible actions fail closed on drift or stale evidence
+
 - **Decision.** Merge, deploy, task close, scope close, and gate approvals pause and record a conflict event when required facts disagree.
 - **Rationale.** Auto-correcting drift risks silent overrides; pausing with a visible reconciliation is safer and auditable.
 - **Consequence.** Some scopes will pause more often than a looser system; operators must unblock. Web UI needs a good conflict view.
@@ -242,45 +252,46 @@ Each decision: **Decision / Rationale / Consequence / Revisit when**.
 
 ### Entities
 
-| Entity | Owner | Description |
-| --- | --- | --- |
-| `scopes` | Task Graph | Scope metadata, state, provider epic ID |
-| `tasks` | Task Graph | Task metadata, state, acceptance criteria |
+| Entity              | Owner      | Description                                                                               |
+| ------------------- | ---------- | ----------------------------------------------------------------------------------------- |
+| `scopes`            | Task Graph | Scope metadata, state, provider epic ID                                                   |
+| `tasks`             | Task Graph | Task metadata, state, acceptance criteria                                                 |
 | `task_dependencies` | Task Graph | Edges: `blocks`, `parent_child`, `related`, `discovered_from`, `duplicates`, `supersedes` |
-| `assignments` | Task Graph | Current assignee + history |
-| `gates` | Task Graph | Gate definitions and current status |
-| `reviews` | Task Graph | Review request + result envelope |
-| `approvals` | Task Graph | Approval facts keyed on `(artifact, actor, commit_sha)` |
-| `artifacts` | Task Graph | Pointers to provider MR/PR/issue, repo commits, pipeline runs |
-| `events` | Task Graph | Append-only timeline |
-| `audit_log` | Task Graph | Append-only, capability-gated record of decisions |
-| `agent_runs` | Task Graph | Run metadata, sandbox ID, packet hash, output envelope hash |
-| `memory_records` | Memory | Typed, provenance-linked, validity-windowed memory |
-| `memory_candidates` | Memory | Pending proposals from agents |
-| `capabilities` | Policy | Role + context → action allow/deny |
-| `policies` | Policy | Project/scope/task-level policy config |
-| `provider_mirrors` | Task Graph | Mapping between Colony IDs and provider IDs |
+| `assignments`       | Task Graph | Current assignee + history                                                                |
+| `gates`             | Task Graph | Gate definitions and current status                                                       |
+| `reviews`           | Task Graph | Review request + result envelope                                                          |
+| `approvals`         | Task Graph | Approval facts keyed on `(artifact, actor, commit_sha)`                                   |
+| `artifacts`         | Task Graph | Pointers to provider MR/PR/issue, repo commits, pipeline runs                             |
+| `events`            | Task Graph | Append-only timeline                                                                      |
+| `audit_log`         | Task Graph | Append-only, capability-gated record of decisions                                         |
+| `agent_runs`        | Task Graph | Run metadata, sandbox ID, packet hash, output envelope hash                               |
+| `memory_records`    | Memory     | Typed, provenance-linked, validity-windowed memory                                        |
+| `memory_candidates` | Memory     | Pending proposals from agents                                                             |
+| `capabilities`      | Policy     | Role + context → action allow/deny                                                        |
+| `policies`          | Policy     | Project/scope/task-level policy config                                                    |
+| `provider_mirrors`  | Task Graph | Mapping between Colony IDs and provider IDs                                               |
 
 ### Source of truth (per field)
 
 Derived from `seed.md` §Source of Truth:
 
-| Field / event | Source of truth | Projection(s) |
-| --- | --- | --- |
-| Task title / description / acceptance criteria | Task Graph (written by Supervisor from approved spec) | Provider issue body + agent task packet |
-| Task dependencies / DAG readiness | Task Graph | Provider labels/comments |
-| Task assignment | Supervisor via atomic Task Graph claim | Provider assignee + `state:*` label |
-| Human discussion / approval comments | Git provider | Task Graph `events` + `audit_log` |
-| MR/PR status / approvals / pipeline status | Git provider | Task Graph `events` + `artifacts` |
-| Scope state | Supervisor workflow | Task Graph `scopes` + provider epic/parent issue |
-| Merge action | Developer (after gates pass) | Provider MR/PR state + Task Graph event + audit |
-| Deploy / release action | Integrator/Release | Provider release record + Task Graph event + audit |
+| Field / event                                  | Source of truth                                       | Projection(s)                                      |
+| ---------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------- |
+| Task title / description / acceptance criteria | Task Graph (written by Supervisor from approved spec) | Provider issue body + agent task packet            |
+| Task dependencies / DAG readiness              | Task Graph                                            | Provider labels/comments                           |
+| Task assignment                                | Supervisor via atomic Task Graph claim                | Provider assignee + `state:*` label                |
+| Human discussion / approval comments           | Git provider                                          | Task Graph `events` + `audit_log`                  |
+| MR/PR status / approvals / pipeline status     | Git provider                                          | Task Graph `events` + `artifacts`                  |
+| Scope state                                    | Supervisor workflow                                   | Task Graph `scopes` + provider epic/parent issue   |
+| Merge action                                   | Developer (after gates pass)                          | Provider MR/PR state + Task Graph event + audit    |
+| Deploy / release action                        | Integrator/Release                                    | Provider release record + Task Graph event + audit |
 
 **Conflict rule.** Owning system wins for ordinary projection drift (e.g., label de-sync). Gate/merge/close/approval/done-state conflicts **fail closed** and enter reconciliation.
 
 ### Projection, version, freshness
 
 Every projection carries:
+
 - `source_version` — the version/timestamp of the source at projection time.
 - `projected_at` — wall clock.
 - `freshness_ttl` — when the projection becomes suspect and triggers periodic reconcile.
@@ -335,19 +346,19 @@ created → ready (gated by deps)
 
 ### Transitions, owners, preconditions
 
-| From → To | Owner | Precondition |
-| --- | --- | --- |
-| `created → ready` | Supervisor | No open blocking deps; spec/DAG approved |
-| `ready → claimed` | Supervisor | Atomic: `UPDATE ... WHERE state='ready'` with `RETURNING` |
-| `claimed → in_progress` | Supervisor | Agent packet delivered + run started |
-| `in_progress → review_requested` | Supervisor | Developer envelope `next_action=request_review` |
-| `review_requested → changes_requested` | Supervisor | Reviewer envelope `result=changes_requested` |
-| `review_requested → merge_ready` | Supervisor | Reviewer approval + human approval (if required) + pipeline green + no blocking threads |
-| `merge_ready → merged` | Developer (via provider) | Gate open + merge fast-forward or linear; verified by webhook |
-| `merged → closed` | Supervisor | Reconcile: MR merged at expected SHA + provider issue closed + audit event written |
-| any → `blocked` | Supervisor | Classified blocker (missing approval, failing pipeline, external dep) |
-| any → `conflict` | Supervisor | Reconciliation disagreement |
-| any → `pending_sync` | Supervisor | Provider unreachable during write |
+| From → To                              | Owner                    | Precondition                                                                            |
+| -------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------- |
+| `created → ready`                      | Supervisor               | No open blocking deps; spec/DAG approved                                                |
+| `ready → claimed`                      | Supervisor               | Atomic: `UPDATE ... WHERE state='ready'` with `RETURNING`                               |
+| `claimed → in_progress`                | Supervisor               | Agent packet delivered + run started                                                    |
+| `in_progress → review_requested`       | Supervisor               | Developer envelope `next_action=request_review`                                         |
+| `review_requested → changes_requested` | Supervisor               | Reviewer envelope `result=changes_requested`                                            |
+| `review_requested → merge_ready`       | Supervisor               | Reviewer approval + human approval (if required) + pipeline green + no blocking threads |
+| `merge_ready → merged`                 | Developer (via provider) | Gate open + merge fast-forward or linear; verified by webhook                           |
+| `merged → closed`                      | Supervisor               | Reconcile: MR merged at expected SHA + provider issue closed + audit event written      |
+| any → `blocked`                        | Supervisor               | Classified blocker (missing approval, failing pipeline, external dep)                   |
+| any → `conflict`                       | Supervisor               | Reconciliation disagreement                                                             |
+| any → `pending_sync`                   | Supervisor               | Provider unreachable during write                                                       |
 
 ### Critical transactional operations
 
@@ -380,28 +391,28 @@ Rejected by the Supervisor with an audit event and a provider comment (if provid
 
 ### Provider events → workflow inputs
 
-| Provider event | Temporal mechanism |
-| --- | --- |
-| Issue/MR/PR webhook | Signal to scope workflow |
-| Human `/approve`, `/changes` comment | Signal |
-| Pipeline completion | Signal |
-| Operator override from web UI | Update (synchronous response with acceptance/rejection) |
-| Conflict resolution from web UI | Update |
+| Provider event                       | Temporal mechanism                                      |
+| ------------------------------------ | ------------------------------------------------------- |
+| Issue/MR/PR webhook                  | Signal to scope workflow                                |
+| Human `/approve`, `/changes` comment | Signal                                                  |
+| Pipeline completion                  | Signal                                                  |
+| Operator override from web UI        | Update (synchronous response with acceptance/rejection) |
+| Conflict resolution from web UI      | Update                                                  |
 
 Signals vs. updates: **signal** if fire-and-forget with async acknowledgment via audit; **update** if the caller needs a synchronous decision (accepted/rejected).
 
 ### Activities
 
-| Activity | Purpose | Idempotency key |
-| --- | --- | --- |
-| `SyncProviderIssue` | Write provider projection for a task | `(task_id, target_version)` |
-| `ProposeDecomposition` | Invoke Architect | `(scope_id, spec_version)` |
-| `RunReview` | Invoke Reviewer | `(artifact_id, commit_sha, review_type)` |
-| `ClaimTask` | Atomic DB claim | `(scope_id, ready_set_hash, attempt_n)` |
-| `StartSandbox` | Create `SandboxClaim` | `(run_id)` |
-| `ValidateEnvelope` | Schema + capability check | `(run_id, envelope_hash)` |
-| `UpdateProvider` | Write projection (labels, comments, status) | `(target_id, target_version)` |
-| `ReconcileScope` | Cross-system consistency check | `(scope_id, tick)` |
+| Activity               | Purpose                                     | Idempotency key                          |
+| ---------------------- | ------------------------------------------- | ---------------------------------------- |
+| `SyncProviderIssue`    | Write provider projection for a task        | `(task_id, target_version)`              |
+| `ProposeDecomposition` | Invoke Architect                            | `(scope_id, spec_version)`               |
+| `RunReview`            | Invoke Reviewer                             | `(artifact_id, commit_sha, review_type)` |
+| `ClaimTask`            | Atomic DB claim                             | `(scope_id, ready_set_hash, attempt_n)`  |
+| `StartSandbox`         | Create `SandboxClaim`                       | `(run_id)`                               |
+| `ValidateEnvelope`     | Schema + capability check                   | `(run_id, envelope_hash)`                |
+| `UpdateProvider`       | Write projection (labels, comments, status) | `(target_id, target_version)`            |
+| `ReconcileScope`       | Cross-system consistency check              | `(scope_id, tick)`                       |
 
 ### Retry policies
 
@@ -418,6 +429,7 @@ Signals vs. updates: **signal** if fire-and-forget with async acknowledgment via
 ### Workflow history hygiene
 
 **MUST NOT** enter workflow history:
+
 - Large diffs, raw agent transcripts, logs, test output.
 - Full provider webhook payloads (only normalized event IDs + classified action).
 - Artifacts themselves — only artifact pointers (`(kind, id, uri, hash)`).
@@ -486,6 +498,7 @@ ProviderAdapter.bootstrap(spec): Promise<BootstrapResult>
 ### Periodic reconciliation
 
 In addition to webhook-driven sync, every 15 minutes per active scope:
+
 - Re-fetch MR/PR status, pipeline status, approval list for all active artifacts.
 - Diff against `provider_mirrors` projection.
 - Emit `drift_detected` events on mismatch; trigger `ReconcileScope`.
@@ -500,14 +513,14 @@ In addition to webhook-driven sync, every 15 minutes per active scope:
 
 MVP command set (case-insensitive, must be first line of comment):
 
-| Command | Meaning |
-| --- | --- |
-| `/approve` | Human approval for the current gate |
-| `/changes <prose>` | Request changes; prose captured as feedback |
-| `/review @agent` or `/review @user` | Request agent or human review |
-| `/block <reason>` | Human marks task blocked |
-| `/unblock` | Human clears blocker |
-| `/override <reason>` | Policy override (requires capability) |
+| Command                             | Meaning                                     |
+| ----------------------------------- | ------------------------------------------- |
+| `/approve`                          | Human approval for the current gate         |
+| `/changes <prose>`                  | Request changes; prose captured as feedback |
+| `/review @agent` or `/review @user` | Request agent or human review               |
+| `/block <reason>`                   | Human marks task blocked                    |
+| `/unblock`                          | Human clears blocker                        |
+| `/override <reason>`                | Policy override (requires capability)       |
 
 Ambiguous or malformed commands → Supervisor posts a `needs_clarification` reply with accepted syntax. **No command guessing.**
 
@@ -522,6 +535,7 @@ Ambiguous or malformed commands → Supervisor posts a `needs_clarification` rep
 ### Packets
 
 **Task packet** (Developer + Architect when working on decomposition):
+
 ```
 {
   "scope_id", "task_id", "provider_issue",
@@ -551,6 +565,7 @@ Ambiguous or malformed commands → Supervisor posts a `needs_clarification` rep
 ### Structured output envelopes
 
 Every envelope includes:
+
 ```
 {
   "result":            "done" | "changes_requested" | "approved" | "blocked" | "escalate",
@@ -574,6 +589,7 @@ Every envelope includes:
 ```
 
 **Developer completion example:**
+
 ```json
 {
   "result": "done",
@@ -581,7 +597,12 @@ Every envelope includes:
   "requires_human": false,
   "risk_level": "medium",
   "artifacts": [
-    { "kind": "mr", "id": "!42", "uri": "https://gitlab.example.com/...", "hash": "sha:abc123" },
+    {
+      "kind": "mr",
+      "id": "!42",
+      "uri": "https://gitlab.example.com/...",
+      "hash": "sha:abc123"
+    },
     { "kind": "commit", "id": "abc123", "uri": "...", "hash": "abc123" }
   ],
   "policy_flags": [],
@@ -596,20 +617,26 @@ Every envelope includes:
   },
   "rationale": "Implemented CSV export endpoint with streaming and content-type header. Tests cover empty and large datasets.",
   "role_specific": {
-    "tests_added": ["export_csv_test.go:TestStreaming", "export_csv_test.go:TestEmpty"],
+    "tests_added": [
+      "export_csv_test.go:TestStreaming",
+      "export_csv_test.go:TestEmpty"
+    ],
     "self_review_notes": "Pagination edge case untested; flagging for reviewer."
   }
 }
 ```
 
 **Reviewer finding example:**
+
 ```json
 {
   "result": "changes_requested",
   "confidence": 0.9,
   "requires_human": false,
   "risk_level": "medium",
-  "artifacts": [{ "kind": "mr", "id": "!42", "uri": "...", "hash": "sha:abc123" }],
+  "artifacts": [
+    { "kind": "mr", "id": "!42", "uri": "...", "hash": "sha:abc123" }
+  ],
   "next_action": "return_to_author",
   "freshness": {
     "packet_hash": "sha256:reviewpacket456",
@@ -661,12 +688,12 @@ Behind `AgentRuntimeAdapter` so we can swap runtimes if needed.
 
 ### Gates
 
-| Gate | When | Required approvals |
-| --- | --- | --- |
-| Spec/DAG | After Architect decomposition | Reviewer approval + human approval |
-| MR/PR | After Developer `review_requested` | Reviewer approval + (human approval if policy) + green pipeline + no blocking threads |
-| Scope close | After all child tasks closed | Reviewer scope-review approval + (human approval if policy) |
-| Release/deploy | Before release/deploy | Integrator precheck + human approval (if policy) |
+| Gate           | When                               | Required approvals                                                                    |
+| -------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
+| Spec/DAG       | After Architect decomposition      | Reviewer approval + human approval                                                    |
+| MR/PR          | After Developer `review_requested` | Reviewer approval + (human approval if policy) + green pipeline + no blocking threads |
+| Scope close    | After all child tasks closed       | Reviewer scope-review approval + (human approval if policy)                           |
+| Release/deploy | Before release/deploy              | Integrator precheck + human approval (if policy)                                      |
 
 Gate-specific policies (protected paths, security labels) can raise additional approval requirements.
 
@@ -689,6 +716,7 @@ Gate-specific policies (protected paths, security labels) can raise additional a
 ### Stale approvals / evidence invalidation
 
 Approvals are keyed on `(artifact_id, actor, commit_sha, pipeline_id)`. Any of:
+
 - New commit on the branch,
 - New failed pipeline,
 - New `changes_requested`,
@@ -709,6 +737,7 @@ invalidates approvals on that artifact. Supervisor re-requests review.
 Before: merge, deploy, task close, scope close, any gate approval.
 
 Checks:
+
 - MR/PR state vs. Task Graph state.
 - Commit SHA on MR vs. approval record SHA.
 - Pipeline status vs. merge-readiness record.
@@ -718,18 +747,18 @@ Checks:
 
 ### Conflict classes
 
-| Class | Detected by | System response | Human message | Recovery |
-| --- | --- | --- | --- | --- |
-| Provider drift (label mismatch) | Periodic reconcile | Auto-correct projection | None (audit only) | Auto |
-| Stale commit (approval on old SHA) | Pre-merge check | Pause, invalidate approvals, re-request review | Provider comment + UI | Re-review |
-| Stale pipeline | Pre-merge check | Pause | Comment | Wait for green pipeline |
-| Manual merge | Webhook classify | `conflict` event, Task Graph reconcile | Comment | Supervisor reconciles if matches expected state; else human |
-| Manual close | Webhook classify | `conflict` event | Comment | Operator confirms or reopens |
-| Label mismatch | Periodic reconcile | Auto-correct | None | Auto |
-| Missing audit | Pre-close check | Pause | UI conflict view | Operator |
-| Malformed output | Envelope validate | Reject, return to author | Provider comment | Retry/escalate |
-| Unauthorized action | Capability check | Reject, audit, alert | UI alert | Operator |
-| Provider outage | Adapter health check | Freeze visible actions | UI banner | Wait for provider |
+| Class                              | Detected by          | System response                                | Human message         | Recovery                                                    |
+| ---------------------------------- | -------------------- | ---------------------------------------------- | --------------------- | ----------------------------------------------------------- |
+| Provider drift (label mismatch)    | Periodic reconcile   | Auto-correct projection                        | None (audit only)     | Auto                                                        |
+| Stale commit (approval on old SHA) | Pre-merge check      | Pause, invalidate approvals, re-request review | Provider comment + UI | Re-review                                                   |
+| Stale pipeline                     | Pre-merge check      | Pause                                          | Comment               | Wait for green pipeline                                     |
+| Manual merge                       | Webhook classify     | `conflict` event, Task Graph reconcile         | Comment               | Supervisor reconciles if matches expected state; else human |
+| Manual close                       | Webhook classify     | `conflict` event                               | Comment               | Operator confirms or reopens                                |
+| Label mismatch                     | Periodic reconcile   | Auto-correct                                   | None                  | Auto                                                        |
+| Missing audit                      | Pre-close check      | Pause                                          | UI conflict view      | Operator                                                    |
+| Malformed output                   | Envelope validate    | Reject, return to author                       | Provider comment      | Retry/escalate                                              |
+| Unauthorized action                | Capability check     | Reject, audit, alert                           | UI alert              | Operator                                                    |
+| Provider outage                    | Adapter health check | Freeze visible actions                         | UI banner             | Wait for provider                                           |
 
 ### Fail-closed invariants
 
@@ -741,6 +770,7 @@ Checks:
 ### Recovery from `pending_sync`
 
 On provider return:
+
 1. List `agent_runs` with outputs marked `pending_sync`.
 2. For each: fetch current provider state; diff against the expected state at run completion.
 3. Match → publish (write projection, advance state).
@@ -773,6 +803,7 @@ On provider return:
 ### Network policy
 
 Default-deny egress. Allowlist:
+
 - Active git provider API + webhooks.
 - Tool Gateway endpoint.
 - LLM endpoints (via Tool Gateway).
@@ -796,15 +827,15 @@ All three check the effective capability set derived from: actor identity, role,
 
 ### Threat model (concrete)
 
-| Threat | Mitigation |
-| --- | --- |
-| Compromised agent run | Sandbox isolation; capability checks at every boundary; short-lived secrets |
+| Threat                                | Mitigation                                                                                                                                                                       |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Compromised agent run                 | Sandbox isolation; capability checks at every boundary; short-lived secrets                                                                                                      |
 | Prompt injection via provider comment | Provider text treated as untrusted data; packet separates instructions from quoted context; structured command parsing; no command guessing; review of discovered-work proposals |
-| Leaked token | Short-lived rotation; Vault audit; token scoping per bot |
-| Malicious dependency | Package registry allowlist; SBOM on merge (later phase) |
-| Provider webhook spoofing | HMAC signature verification; per-project secret |
-| Unsafe tool call | Tool Gateway allowlist; capability check; audit every call |
-| Supply chain on Colony itself | Pinned CRD/controller versions; signed container images |
+| Leaked token                          | Short-lived rotation; Vault audit; token scoping per bot                                                                                                                         |
+| Malicious dependency                  | Package registry allowlist; SBOM on merge (later phase)                                                                                                                          |
+| Provider webhook spoofing             | HMAC signature verification; per-project secret                                                                                                                                  |
+| Unsafe tool call                      | Tool Gateway allowlist; capability check; audit every call                                                                                                                       |
+| Supply chain on Colony itself         | Pinned CRD/controller versions; signed container images                                                                                                                          |
 
 ### Open Questions
 
@@ -820,14 +851,14 @@ Issue comments, MR/PR comments, review threads, labels, and provider-authored de
 
 ### Memory types
 
-| Type | Purpose | Lifetime |
-| --- | --- | --- |
-| Working | Current packet, run scratchpad | Run-scoped |
-| Episodic | What happened: runs, failures, reviews | Long-lived |
-| Semantic | Stable facts about repo/domain | Long-lived |
-| Procedural | How work is done: checklists, rituals | Long-lived |
-| Policy | What is allowed | Long-lived, read-only to agents |
-| Decision | Why choices were made | Long-lived, versioned |
+| Type       | Purpose                                | Lifetime                        |
+| ---------- | -------------------------------------- | ------------------------------- |
+| Working    | Current packet, run scratchpad         | Run-scoped                      |
+| Episodic   | What happened: runs, failures, reviews | Long-lived                      |
+| Semantic   | Stable facts about repo/domain         | Long-lived                      |
+| Procedural | How work is done: checklists, rituals  | Long-lived                      |
+| Policy     | What is allowed                        | Long-lived, read-only to agents |
+| Decision   | Why choices were made                  | Long-lived, versioned           |
 
 ### Candidate workflow
 
@@ -840,6 +871,7 @@ Task/review packets receive a **small relevant memory bundle** (≤ ~2KB per typ
 ### Decision records
 
 Every significant engineering choice records:
+
 - Problem framing.
 - Alternatives.
 - Selected option.
@@ -871,6 +903,7 @@ On decay: trigger review, refresh, warning, or discovered-work proposal per poli
 ### Task Graph API (command + query)
 
 Commands (mutations; Supervisor-only in default path):
+
 - `ready_tasks(scope_id) → [task_id]`
 - `claim_task(task_id, assignee, expected_state_version) → task | null`
 - `get_task_packet(task_id) → TaskPacket`
@@ -882,11 +915,13 @@ Commands (mutations; Supervisor-only in default path):
 - `reconcile_scope(scope_id) → ReconcileReport`
 
 Queries (for web UI + admins):
+
 - `get_scope(scope_id)`, `list_scopes(filter)`
 - `get_task(task_id)`, `list_tasks(scope_id, filter)`
 - `get_audit_log(entity_id, range)`
 
 All mutations require:
+
 - **Caller identity** (service account + actor).
 - **Capability** matching the action.
 - **Preconditions** (state, version).
@@ -944,18 +979,18 @@ See §10. Pluggable; GitLab implementation first.
 
 ### Positioning
 
-The web UI is an **operator cockpit**, not the primary collaboration channel. Provider comments remain the human-agent discussion surface. The UI answers operator questions the provider cannot: *why is this blocked? what changed? who/what can act? what evidence is stale? what must be approved?*
+The web UI is an **operator cockpit**, not the primary collaboration channel. Provider comments remain the human-agent discussion surface. The UI answers operator questions the provider cannot: _why is this blocked? what changed? who/what can act? what evidence is stale? what must be approved?_
 
 ### MVP views (read, plus limited write)
 
-| View | Purpose | Write actions in MVP |
-| --- | --- | --- |
-| Scope dashboard | Scope status, DAG, blocked work, active gates, pending reviews, conflicts, `pending_sync`, budget | None |
-| Task graph | Deps, readiness, claims, state, discovered-work proposals | None |
-| Run view | Agent runs, packets, sandbox status, tool calls, logs, artifacts, envelopes, retries, failures | Cancel run |
-| Review/gate view | Approvals, required checks, unresolved findings, stale evidence, merge readiness | None |
-| Conflict/reconciliation view | Mismatches; resolution status; override records | **Resolve conflict; operator override** |
-| Audit view | Timeline of provider events, graph transitions, agent outputs, tool calls, approvals, merges, releases, memory writes | None |
+| View                         | Purpose                                                                                                               | Write actions in MVP                    |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Scope dashboard              | Scope status, DAG, blocked work, active gates, pending reviews, conflicts, `pending_sync`, budget                     | None                                    |
+| Task graph                   | Deps, readiness, claims, state, discovered-work proposals                                                             | None                                    |
+| Run view                     | Agent runs, packets, sandbox status, tool calls, logs, artifacts, envelopes, retries, failures                        | Cancel run                              |
+| Review/gate view             | Approvals, required checks, unresolved findings, stale evidence, merge readiness                                      | None                                    |
+| Conflict/reconciliation view | Mismatches; resolution status; override records                                                                       | **Resolve conflict; operator override** |
+| Audit view                   | Timeline of provider events, graph transitions, agent outputs, tool calls, approvals, merges, releases, memory writes | None                                    |
 
 Deferred beyond the first MVP slice: richer memory/decision and policy authoring views. Read-only memory/decision summaries may appear earlier if they are needed to explain task context.
 
@@ -983,6 +1018,7 @@ Deferred beyond the first MVP slice: richer memory/decision and policy authoring
 ### Audit (compliance-grade)
 
 Separate from debugging telemetry. Written to `audit_log` (Postgres, append-only). Captures:
+
 - Every state transition in Task Graph.
 - Every gate approval, merge, close, release, override.
 - Every envelope accepted by the Supervisor.
@@ -1056,6 +1092,7 @@ Per the diagram in `seed.md` §Deployment:
 - `colony` — Task Graph, audit, run metadata, memory, policy.
 
 Separate roles:
+
 - `temporal_user` — Temporal only.
 - `colony_writer` — Task Graph API writer.
 - `colony_reader` — Web UI queries.
@@ -1118,6 +1155,7 @@ The production-like environment is Aether: the private-cloud infrastructure repo
 ### Phase 0 — Foundations (schema + ingestion + audit)
 
 Deliverables:
+
 - Postgres `colony` schema: scopes, tasks, task_dependencies, assignments, gates, approvals, artifacts, events, audit_log, agent_runs, provider_mirrors.
 - Minimal policy schema: policies, capability grants, provider identity mapping.
 - Task Graph API: core CRUD + `claim_task` + `ready_tasks` + audit writes.
@@ -1131,6 +1169,7 @@ Acceptance: a synthetic scope can be created, a task claimed atomically by two c
 ### Phase 1 — Scope/task mirror + Supervisor workflow
 
 Deliverables:
+
 - Provider adapter (GitLab) for issues, comments, labels.
 - Scope epic → Task Graph scope mirror; task → provider issue mirror.
 - Supervisor workflow: receive signal, run `ready_tasks`, `claim_task`, assign agent via provider label + assignee, post comment.
@@ -1142,6 +1181,7 @@ Acceptance: open a GitLab epic, see scope mirrored; approve a mock decomposition
 ### Phase 2 — Developer + Reviewer + merge
 
 Deliverables:
+
 - Agent sandbox (SandboxClaim) for Developer + Reviewer.
 - Minimum sandbox egress enforcement: no direct Task Graph access, provider API through Provider Adapter, git/package/LLM access through Tool Gateway allowlists.
 - pi-coding-agent integration for Developer; pi-mono print/JSON for Reviewer.
@@ -1156,6 +1196,7 @@ Acceptance: end-to-end CSV-export example scope completes a task from `ready` to
 ### Phase 3 — Reconciliation + conflict + `pending_sync`
 
 Deliverables:
+
 - `reconcile_scope` activity + periodic timer.
 - Conflict classification + `conflict` events + UI surface.
 - `pending_sync` handling + recovery on provider return.
@@ -1167,6 +1208,7 @@ Acceptance: inject provider outage → no irreversible actions proceed; on recov
 ### Phase 4 — Memory, policy hardening, release role
 
 Deliverables:
+
 - Memory tables + candidate flow + retrieval into packets.
 - Decision records wired into packets.
 - Richer Web UI views for memory, decisions, and policy inspection/authoring.
@@ -1186,18 +1228,18 @@ Acceptance: full scope (decomposition → closed) across ≥3 tasks with memory-
 
 ### Major risks
 
-| Risk | Impact | Mitigation | Owner |
-| --- | --- | --- | --- |
-| Workflow complexity | Slow delivery, bugs | Thin vertical slice first (§20); strict state machine (§8); fail-closed invariants (§13) | Tech lead |
-| Provider API drift | Outage, incorrect projection | Periodic reconcile; provider integration tests; pin provider library versions | Platform |
-| Agent prompt injection | Compromise, unsafe action | Structured command parsing; capability checks; sandbox isolation | Security |
-| False confidence in agent reviews | Bad merges | Reviewer+human for high-risk; envelope `confidence` + `risk_level` drives escalation; post-merge audit | Tech lead |
-| Stale evidence | Approval-on-stale-SHA incidents | Evidence validity (§15); invalidation on new commit; pre-merge reconcile | Tech lead |
-| Temporal history bloat | Workflow failures, slow replay | No artifacts in history; pointers only; periodic history size metric | Platform |
-| Sandbox overhead | Cost, latency | Warm pool for Developer; shared namespace for low-risk scopes | Platform |
-| Premature provider abstraction | Wasted effort | Concrete GitLab-first; abstraction proven by Phase 4 GitHub adapter | Tech lead |
-| Memory quality | Bad retrieval pollutes context | Conservative consolidation policy; provenance links; easy supersession | Platform |
-| Operational burden | Small team can't run it | Start with single-cluster; observable by default; runbooks per failure class | Ops |
+| Risk                              | Impact                          | Mitigation                                                                                             | Owner     |
+| --------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------ | --------- |
+| Workflow complexity               | Slow delivery, bugs             | Thin vertical slice first (§20); strict state machine (§8); fail-closed invariants (§13)               | Tech lead |
+| Provider API drift                | Outage, incorrect projection    | Periodic reconcile; provider integration tests; pin provider library versions                          | Platform  |
+| Agent prompt injection            | Compromise, unsafe action       | Structured command parsing; capability checks; sandbox isolation                                       | Security  |
+| False confidence in agent reviews | Bad merges                      | Reviewer+human for high-risk; envelope `confidence` + `risk_level` drives escalation; post-merge audit | Tech lead |
+| Stale evidence                    | Approval-on-stale-SHA incidents | Evidence validity (§15); invalidation on new commit; pre-merge reconcile                               | Tech lead |
+| Temporal history bloat            | Workflow failures, slow replay  | No artifacts in history; pointers only; periodic history size metric                                   | Platform  |
+| Sandbox overhead                  | Cost, latency                   | Warm pool for Developer; shared namespace for low-risk scopes                                          | Platform  |
+| Premature provider abstraction    | Wasted effort                   | Concrete GitLab-first; abstraction proven by Phase 4 GitHub adapter                                    | Tech lead |
+| Memory quality                    | Bad retrieval pollutes context  | Conservative consolidation policy; provenance links; easy supersession                                 | Platform  |
+| Operational burden                | Small team can't run it         | Start with single-cluster; observable by default; runbooks per failure class                           | Ops       |
 
 ### Intentional tradeoffs
 
@@ -1243,6 +1285,7 @@ See §8 (scope + task state machines). To be rendered as images in the appendix 
 ### Envelope JSON schemas
 
 Canonical schemas at `/schemas/envelopes/`. Initial files:
+
 - `architect.decomposition.v1.json`
 - `developer.completion.v1.json`
 - `reviewer.review.v1.json`
@@ -1305,9 +1348,10 @@ From outline + design decisions still open:
 - Audit cryptographic integrity (deferred unless compliance requires).
 - Retention policy (legal input pending).
 
-### Example scope used throughout: *Add CSV export to reporting dashboard*
+### Example scope used throughout: _Add CSV export to reporting dashboard_
 
 Decomposition used in diagrams and payload samples:
+
 - `col-0001.1 — schema: CSV export record format` (Architect + Developer)
 - `col-0001.2 — backend streaming endpoint` (Developer; depends on .1)
 - `col-0001.3 — frontend export button + download flow` (Developer; depends on .2)
@@ -1318,4 +1362,4 @@ Exercised gates: spec/DAG approval (after Architect), MR/PR approval ×5, scope 
 
 ---
 
-*End of first pass. Phase 0 schema freeze + ADR write-up are the next milestones before implementation begins.*
+_End of first pass. Phase 0 schema freeze + ADR write-up are the next milestones before implementation begins._

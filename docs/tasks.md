@@ -21,6 +21,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** none
 
 **Deliverables**
+
 - npm workspace layout for control-plane services, shared packages, schemas, and Web UI.
 - Packages for:
   - `apps/api`
@@ -44,6 +45,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - npm workspace package layout.
 
 **Acceptance**
+
 - `nix develop` enters a shell with the project toolchain.
 - `npm install`, `npm run typecheck`, and `npm test` run from repo root inside the dev shell.
 - A trivial import from `packages/domain` works in `apps/api` and `apps/worker`.
@@ -56,6 +58,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.1
 
 **Deliverables**
+
 - ADR for API/Web framework selection.
 - ADR for Postgres migration tooling.
 - ADR for OpenAPI generation.
@@ -65,6 +68,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - ADR for Aether deployment ownership boundaries.
 
 **Acceptance**
+
 - ADRs document decision, alternatives, rationale, consequences, and revisit triggers.
 - Decisions align with `design.md`: TypeScript/Node, Hono + `@hono/zod-openapi` + `@scalar/hono-api-reference` for APIs, SvelteKit (Svelte 5, `@sveltejs/adapter-node`) for the Web UI, HTTP + JSON/OpenAPI, Zod schemas end-to-end, Postgres, Temporal, Nix dev shell, GitLab CI, Docker Compose for local infra with apps via `npm run dev`, Helm chart packaging, and Aether-hosted deployment via Tofu `helm_release` into a `colony-dev` namespace first.
 
@@ -75,6 +79,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.1, COL-0.2
 
 **Deliverables**
+
 - `flake.nix` and lockfile for the Colony dev shell.
 - `docker-compose.yml` for local Temporal and Postgres, with `temporal`, `temporal_visibility`, and `colony` databases initialized.
 - Per-app `npm run dev` scripts so API, worker, webhook dispatcher, tool gateway, and Web UI run as native watch processes against the Compose infra.
@@ -82,6 +87,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Developer docs for booting the stack (`docker compose up` + `npm run dev`), with Aether `colony-dev` called out as the k8s validation target (not a local k8s cluster).
 
 **Acceptance**
+
 - A new developer can enter `nix develop`, run `docker compose up`, and start the control plane apps with `npm run dev` from documented commands.
 - API can connect to Postgres.
 - Worker can connect to Temporal.
@@ -95,12 +101,14 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.1, COL-0.2, COL-0.3
 
 **Deliverables**
+
 - `.gitlab-ci.yml`.
 - Jobs for Nix flake check, install/cache, typecheck, unit tests, schema generation diff check, lint/format check.
 - Buildah-compatible container build job for Aether's GitLab Kubernetes runner.
 - CI docs for runner assumptions and required variables.
 
 **Acceptance**
+
 - GitLab CI runs on merge requests.
 - Build job works with the Kubernetes runner/Buildah path documented in Aether.
 - CI fails if generated schemas or OpenAPI artifacts are stale.
@@ -112,26 +120,30 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.2
 
 **Deliverables**
+
 - Deployment ownership doc describing what lives in Colony vs. `~/projects/aether`.
 - Initial Aether integration notes for namespace, ingress, secrets, GitLab runner, registry, observability, and database/storage assumptions.
 - List of required Aether changes as follow-up tasks or MRs.
 
 **Acceptance**
+
 - There is a clear boundary between app manifests in Colony and infrastructure wiring in Aether.
 - Required Aether secrets, DNS/ingress, and GitLab runner assumptions are documented before deployment work starts.
 
 ### COL-0.4 — Core Domain Types And State Machines
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.1
 
 **Deliverables**
+
 - TypeScript domain types for scopes, tasks, dependencies, assignments, gates, reviews, approvals, artifacts, events, audit records, agent runs, provider mirrors, policies, capability grants.
 - Enumerations for scope states and task states from `design.md`.
 - Transition validation helpers with owner/precondition metadata.
 
 **Acceptance**
+
 - Unit tests cover valid and invalid state transitions.
 - Invalid transitions produce structured errors with code, message, details, and retriable flag.
 
@@ -142,6 +154,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.1, COL-0.4
 
 **Deliverables**
+
 - Zod schemas (shared between agent envelope validation and the Hono HTTP boundary via `@hono/zod-openapi`) for:
   - task packet
   - review packet
@@ -157,6 +170,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Required freshness metadata on every state-affecting envelope.
 
 **Acceptance**
+
 - Runtime validation rejects malformed envelopes.
 - Runtime validation rejects envelopes missing `packet_hash`, `task_graph_version`, `provider_event_ts`, `commit_sha`, `policy_version`, or `memory_bundle_version` where applicable.
 - Schema examples from `design.md` validate.
@@ -168,6 +182,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.2, COL-0.4
 
 **Deliverables**
+
 - Migrations for:
   - `scopes`
   - `tasks`
@@ -188,6 +203,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Insert-only database permissions for `audit_log`.
 
 **Acceptance**
+
 - Migrations apply cleanly to an empty `colony` database.
 - Migrations can be rolled forward in local development.
 - Tests verify `audit_log` cannot be updated or deleted by the app role.
@@ -199,6 +215,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.4, COL-0.6
 
 **Deliverables**
+
 - Repository methods for scope/task CRUD.
 - `ready_tasks(scope_id)`.
 - `claim_task(task_id, assignee, expected_state_version)`.
@@ -207,6 +224,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - `get_task_packet` query shape stub.
 
 **Acceptance**
+
 - Concurrent `claim_task` test proves exactly one claimant wins.
 - `ready_tasks` excludes tasks with open blocking dependencies.
 - Every mutation writes an audit event in the same transaction.
@@ -218,12 +236,14 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.4, COL-0.6
 
 **Deliverables**
+
 - `evaluate(actor, action, context)`.
 - `get_effective_policy(scope_id)`.
 - Minimal capability grants for Supervisor, Developer, Reviewer, human operator, and service accounts.
 - Provider identity mapping lookup.
 
 **Acceptance**
+
 - Mutating actions fail without a matching capability.
 - Supervisor graph writes pass with the correct service identity.
 - Agents cannot receive `graph.write`.
@@ -236,6 +256,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.5, COL-0.7, COL-0.8
 
 **Deliverables**
+
 - HTTP + JSON API for:
   - creating/listing scopes
   - creating/listing tasks
@@ -250,6 +271,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - OpenAPI generation.
 
 **Acceptance**
+
 - API contract is generated and checked in.
 - Mutating endpoints require identity, capability, preconditions, and audit.
 - Duplicate idempotency keys return prior result.
@@ -261,12 +283,14 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.3, COL-0.7
 
 **Deliverables**
+
 - Temporal worker package.
 - `supervisor-<scope_id>` workflow skeleton in `packages/workflows`.
 - Activities for reading scope/task state and recording workflow events.
 - Signal handlers for provider event, approval, changes requested, pipeline update, and operator override.
 
 **Acceptance**
+
 - Local Temporal can start a scope workflow.
 - Signals are recorded as Task Graph events.
 - Workflow history stores pointers/normalized data only, not large payloads.
@@ -279,6 +303,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.3, COL-0.10
 
 **Deliverables**
+
 - Ingress service for provider webhooks.
 - Signature verification interface.
 - Dedup table usage with `(event_id, object_id)` and TTL.
@@ -286,6 +311,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - Temporal signal dispatch to `supervisor-<scope_id>`.
 
 **Acceptance**
+
 - Duplicate webhook events are ignored.
 - Invalid signatures are rejected.
 - Valid synthetic events signal the matching workflow.
@@ -297,6 +323,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.9
 
 **Deliverables**
+
 - Web UI shell.
 - Scope list/detail page.
 - Task list/detail page.
@@ -304,6 +331,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 - API client generated from OpenAPI or shared API types.
 
 **Acceptance**
+
 - Synthetic scope/task/audit data is visible in the UI.
 - UI shows task state, dependencies, current assignment, and recent audit records.
 
@@ -314,11 +342,13 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 **Depends on:** COL-0.7, COL-0.9, COL-0.10, COL-0.11, COL-0.12, COL-0.3a
 
 **Deliverables**
+
 - Automated test or scripted demo that creates a synthetic scope and tasks.
 - Concurrent claim test through API or repository layer.
 - Audit visibility in Web UI.
 
 **Acceptance**
+
 - Exactly one of two concurrent claimers wins.
 - Every mutation appears in `audit_log`.
 - Web UI displays the synthetic scope/task/audit trail.
@@ -334,11 +364,13 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.2, COL-0.4
 
 **Deliverables**
+
 - TypeScript `ProviderAdapter` interface for issues, epics/parent issues, comments, labels, assignees, MRs/PRs, approvals, branches, commits, pipelines, users, webhooks, and **bootstrap (provision groups, projects, bot users, bot PATs, OAuth Application, webhook from a request-scoped admin credential)**.
 - Provider domain types separate from Colony domain types.
 - Fake provider adapter for tests.
 
 **Acceptance**
+
 - Fake adapter supports create/update/comment/label flows and an in-memory bootstrap that returns deterministic IDs.
 - Adapter methods return stable provider IDs and normalized metadata.
 
@@ -349,6 +381,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.8, COL-0.9, COL-1.1
 
 **Deliverables**
+
 - `ProviderAdapter.bootstrap(spec)` GitLab implementation: idempotent provisioning of group, project, bot users (`colony-engine`, `colony-reviewer`) marked `bot=true`, per-bot PATs with role-scoped permissions, instance-wide OAuth Application for Web UI sign-in, and the project webhook (URL + secret).
 - API endpoint on `apps/api`: `POST /admin/provider/bootstrap` taking a request-scoped admin credential and returning a structured result + redacted `.env` snippet.
 - Capability `provider.admin.bootstrap` granted only to a human admin actor; never to agents.
@@ -356,6 +389,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - Re-running the operation rotates tokens and corrects drift idempotently.
 
 **Acceptance**
+
 - Running bootstrap against a clean home-lab GitLab project creates all resources and returns IDs.
 - Re-running is a no-op (or rotates tokens when configured) and writes a second audit event.
 - Admin credential is never persisted; capability check denies non-admin actors.
@@ -368,6 +402,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-1.1
 
 **Deliverables**
+
 - GitLab implementation for issue create/update/close/reopen.
 - Comment posting.
 - Label add/remove.
@@ -375,6 +410,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - User identity lookup.
 
 **Acceptance**
+
 - Integration test against the home-lab GitLab covers issue mirror lifecycle.
 - Provider IDs are stored only in `provider_mirrors`.
 - GitLab-specific dependencies live in `packages/provider-gitlab`, not `packages/provider`.
@@ -386,12 +422,14 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.7, COL-1.2
 
 **Deliverables**
+
 - Scope epic/parent issue -> Task Graph scope mirror.
 - Task -> provider issue mirror.
 - Projection version metadata.
 - Provider projection writes through Supervisor activities.
 
 **Acceptance**
+
 - Creating a scope creates or links the provider parent issue.
 - Creating a task creates or links a provider issue.
 - Projection drift can be detected from stored version metadata.
@@ -403,6 +441,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.8, COL-1.1
 
 **Deliverables**
+
 - Parser for first-line commands:
   - `/approve`
   - `/changes <prose>`
@@ -414,6 +453,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - Untrusted provider text handling.
 
 **Acceptance**
+
 - Ambiguous/malformed commands do not mutate state.
 - Parsed commands include actor, provider artifact, timestamp, and raw comment reference.
 - Provider prose is stored as context, not instructions.
@@ -425,10 +465,12 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-1.4, COL-0.11
 
 **Deliverables**
+
 - Classification into `valid_command`, `context_update`, `review_feedback`, `approval`, `conflict`, `noop`, `needs_clarification`.
 - Signal payloads for Supervisor workflow.
 
 **Acceptance**
+
 - Unit tests classify comment, issue edit, label change, close/reopen, approval, MR update, pipeline update.
 - Classification is audit-recorded.
 
@@ -439,12 +481,14 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.10, COL-1.3, COL-1.5
 
 **Deliverables**
+
 - Workflow logic to evaluate `ready_tasks`.
 - Atomic `claim_task`.
 - Provider projection for assignee and `state:*` label.
 - "Would assign Developer" stop point.
 
 **Acceptance**
+
 - Approved mock decomposition produces ready tasks.
 - Supervisor claims exactly one ready task and mirrors assignment to provider.
 - No agent sandbox is started.
@@ -456,11 +500,13 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-1.3, COL-1.6
 
 **Deliverables**
+
 - Scope/task provider mirror status.
 - Provider sync timestamps and projection version.
 - Workflow state display.
 
 **Acceptance**
+
 - UI shows whether a scope/task is synced, pending, or drifted.
 - UI links to provider issue URLs.
 
@@ -471,9 +517,11 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-1.2, COL-1.6, COL-1.7
 
 **Deliverables**
+
 - Scripted demo against the home-lab GitLab dev project.
 
 **Acceptance**
+
 - Open provider parent issue -> scope mirror appears.
 - Approve mock decomposition -> `state:ready` tasks appear.
 - Supervisor claims a task and mirrors assignment/provider label.
@@ -485,6 +533,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Depends on:** COL-0.3b, COL-1.8
 
 **Deliverables**
+
 - In-repo Tofu module at `tofu/` deploying Colony directly to the Aether host cluster (not into the seven30 vcluster) from Colony's CI. Apply authority is Colony, per ADR-007. Resources written via `kubernetes_*` and `kubectl_manifest` providers — no Helm chart for Colony's own services. Covers API, worker, webhook dispatcher, tool gateway, Web UI, ServiceAccounts, NetworkPolicies, HTTPRoutes attached to Aether's main Gateway, plus the in-namespace **Postgres** (CNPG `Cluster` CR) and **Temporal** (`helm_release`) Colony's apps depend on. `SandboxTemplate` CRs land alongside agent-sandbox controller availability (Phase 2).
 - `tofu/main.tf` with `backend "http"` against `gitlab.home.shdr.ch/api/v4/projects/<id>/terraform/state/colony`, `kubernetes` / `kubectl` / `vault` providers. Reads OpenBao via `data "vault_kv_secret_v2"` and writes `kubernetes_secret_v1` directly (no ESO on host).
 - Namespaces created from the module: `colony-dev` first, with `*-dev.apps.home.shdr.ch` hostnames. `colony` (prod control plane) and `colony-sandboxes` (Phase 2 agent pods) land in later iterations.
@@ -492,6 +541,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 - The Aether MR for the `jwt-gitlab-colony` OpenBao mount + `colony-ci` role + policy (see `docs/aether-handoff.md`) merged before the first apply. Initial `kv/colony/*` paths populated with placeholder values.
 
 **Acceptance**
+
 - Preview deployment runs in the Aether host cluster's `colony-dev` namespace pointed at the home-lab GitLab dev project (separate bot account from prod).
 - Web UI is reachable at its `*-dev.apps.home.shdr.ch` hostname through Aether's existing main Gateway.
 - `apply` job in Colony's pipeline successfully reconciles the cluster state on `main`.
@@ -508,6 +558,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-0.3, COL-0.8
 
 **Deliverables**
+
 - Sandbox launch profile for Developer and Reviewer.
 - Default-deny egress.
 - No direct Task Graph API access from agent sandboxes.
@@ -515,6 +566,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Git/package/LLM access through Tool Gateway allowlists.
 
 **Acceptance**
+
 - Agent sandbox cannot reach Task Graph API.
 - Agent sandbox can access allowed git/package endpoints through Tool Gateway.
 - Denied egress is logged.
@@ -526,6 +578,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-0.8, COL-2.1
 
 **Deliverables**
+
 - Tool Gateway capability checks.
 - Git proxy path for branch fetch/push.
 - Package registry allowlist.
@@ -533,6 +586,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Tool call audit records.
 
 **Acceptance**
+
 - Developer can push a branch only with `provider.branch.push`.
 - Unauthorized git/package calls fail and are audited.
 - Secrets are not present in logs.
@@ -544,6 +598,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-0.5, COL-2.1
 
 **Deliverables**
+
 - `start_run(packet, runtime_profile)`.
 - `get_run_status`.
 - `get_run_output`.
@@ -552,6 +607,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - pi-mono print/JSON integration for Reviewer.
 
 **Acceptance**
+
 - Fake agent run can return a valid envelope.
 - Malformed envelope is rejected.
 - Run metadata stores sandbox ID, packet hash, output envelope hash.
@@ -564,6 +620,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-0.5, COL-1.6
 
 **Deliverables**
+
 - Task packet builder.
 - Review packet builder.
 - Packet hashing.
@@ -571,6 +628,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Untrusted provider text separation.
 
 **Acceptance**
+
 - Packet includes required IDs, provider context, repo context, acceptance criteria, policy, capabilities, freshness, and required outputs.
 - Provider comments are quoted/provenance-linked and cannot become system instructions.
 
@@ -581,12 +639,14 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-2.2, COL-2.3, COL-2.4
 
 **Deliverables**
+
 - Supervisor activity to start Developer run.
 - Branch creation/fetch/push through Tool Gateway git proxy.
 - Developer completion envelope ingestion.
 - MR/PR open through Provider Adapter.
 
 **Acceptance**
+
 - Developer run can produce branch + MR for a task.
 - Completion envelope must reference MR and commit artifact.
 - Stale envelope freshness is rejected.
@@ -598,12 +658,14 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-1.2
 
 **Deliverables**
+
 - MR open/update/comment/close/merge.
 - Commit lookup and diff summary.
 - Pipeline status lookup and webhook normalization.
 - Approval lookup.
 
 **Acceptance**
+
 - Integration test covers MR creation, pipeline status ingestion, and approval status normalization.
 
 ### COL-2.7 — Reviewer Execution Flow
@@ -613,6 +675,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-2.3, COL-2.4, COL-2.6
 
 **Deliverables**
+
 - Supervisor activity to start Reviewer run.
 - Review packet generation.
 - Reviewer envelope validation.
@@ -620,6 +683,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Review finding persistence.
 
 **Acceptance**
+
 - Reviewer approval moves task toward `merge_ready` when other gates pass.
 - Reviewer changes requested moves task to `changes_requested`.
 - Findings include severity, evidence, acceptance criterion reference, confidence.
@@ -631,12 +695,14 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-0.8, COL-1.4, COL-2.7
 
 **Deliverables**
+
 - Spec/DAG approval gate.
 - MR/PR approval gate.
 - Human review conditional rules.
 - Stale approval invalidation on new commit, failed pipeline, changes requested, or policy version change.
 
 **Acceptance**
+
 - Gate opens only when all applicable approvals/checks are present.
 - New commit invalidates approval on prior SHA.
 - Human `/approve` is ignored if actor lacks capability.
@@ -648,12 +714,14 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-2.6, COL-2.8
 
 **Deliverables**
+
 - `merge_ready` transition.
 - Developer-initiated gated merge through provider write path.
 - Webhook verification of merged commit.
 - Task close after merge + provider issue close + audit.
 
 **Acceptance**
+
 - No merge without current approvals, green pipeline, no blocking threads, and Task Graph `merge_ready`.
 - Task does not close until provider issue and MR state reconcile.
 
@@ -664,9 +732,11 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 **Depends on:** COL-1.9, COL-2.5, COL-2.7, COL-2.8, COL-2.9
 
 **Deliverables**
+
 - CSV-export example task through real MR.
 
 **Acceptance**
+
 - Task goes `ready -> claimed -> in_progress -> review_requested -> merge_ready -> merged -> closed`.
 - Reviewer approval, green pipeline, and human `/approve` are required.
 - Audit trail links provider event, workflow action, envelope hash, and resulting state version.
@@ -682,11 +752,13 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Depends on:** COL-2.9
 
 **Deliverables**
+
 - `reconcile_scope(scope_id)`.
 - Checks for MR state, commit SHA, pipeline status, approvals, provider issue state, labels, audit, `pending_sync`, conflicts.
 - Reconcile report type.
 
 **Acceptance**
+
 - Reconcile detects stale commit approval.
 - Reconcile detects provider issue closed while MR is open.
 - Reconcile auto-corrects label drift.
@@ -698,10 +770,12 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Depends on:** COL-3.1
 
 **Deliverables**
+
 - Temporal 15-minute active scope reconcile timer.
 - Reconcile activity idempotency keys.
 
 **Acceptance**
+
 - Active scopes reconcile periodically.
 - Repeated reconcile with no drift is a no-op.
 
@@ -712,6 +786,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Depends on:** COL-3.1
 
 **Deliverables**
+
 - Adapter health check.
 - Freeze provider-visible actions.
 - Mark already-claimed agent outputs as `pending_sync`.
@@ -719,6 +794,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - 72-hour abandon threshold.
 
 **Acceptance**
+
 - Provider outage blocks new visible actions and irreversible actions.
 - Already-claimed work can finish internally but cannot advance DAG until reconciliation.
 - Recovery publishes matching outputs and conflicts mismatches.
@@ -730,12 +806,14 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Depends on:** COL-3.1
 
 **Deliverables**
+
 - Conflict event model.
 - Conflict states for task/scope.
 - Auto-resolve classes: label drift, projection mismatch, stale-pipeline-clear-on-new-green.
 - Human-required classes: manual merge/close, stale commit + human approval, policy violation, unauthorized action.
 
 **Acceptance**
+
 - Manual merge creates conflict.
 - Missing audit blocks close.
 - Auto-resolvable label drift is corrected and audited.
@@ -747,12 +825,14 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Depends on:** COL-3.4, COL-1.4
 
 **Deliverables**
+
 - `/override <reason>` handling.
 - UI override action.
 - `policy.override` capability check.
 - Audit record with operator identity and reason.
 
 **Acceptance**
+
 - Override without reason is rejected.
 - Override without capability is rejected and audited.
 - Successful override links actor, reason, target, previous state, new state.
@@ -764,6 +844,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Depends on:** COL-3.4, COL-3.5
 
 **Deliverables**
+
 - Conflict/reconciliation view.
 - Resolve conflict action.
 - Operator override action.
@@ -772,6 +853,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - Scope cancel.
 
 **Acceptance**
+
 - UI shows conflict class, detected facts, expected facts, source provider artifact, and recovery options.
 - UI writes are capability checked and audited.
 
@@ -782,10 +864,12 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Depends on:** COL-3.3, COL-3.4, COL-3.6
 
 **Deliverables**
+
 - Outage scenario test.
 - Manual merge conflict scenario test.
 
 **Acceptance**
+
 - Provider outage prevents irreversible actions.
 - Pending sync recovers cleanly after provider return.
 - Manual merge creates conflict visible in UI.
@@ -801,6 +885,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-0.6, COL-2.4
 
 **Deliverables**
+
 - `memory_records`.
 - `memory_candidates`.
 - Candidate proposal API.
@@ -808,6 +893,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 - Supersede/expire operations.
 
 **Acceptance**
+
 - Agents can propose but not directly write shared memory.
 - Accepted memory records link to source artifact/run/evidence.
 
@@ -818,11 +904,13 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-4.1
 
 **Deliverables**
+
 - Memory bundle retrieval by scope/task/type/filter.
 - 2KB-per-type budget enforcement.
 - Decision/procedural/policy bundle injection into task/review packets.
 
 **Acceptance**
+
 - Packets include relevant accepted decisions.
 - Raw memory is not dumped wholesale.
 
@@ -833,11 +921,13 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-4.1
 
 **Deliverables**
+
 - Decision record schema.
 - Fields for problem, alternatives, selected option, assumptions, evidence, affected files/modules, rollback plan, owner, revisit trigger.
 - UI summary view.
 
 **Acceptance**
+
 - Accepted decision record appears in task packet when relevant.
 - Decision can be superseded or expired.
 
@@ -848,6 +938,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-2.8, COL-3.5
 
 **Deliverables**
+
 - Protected path policies.
 - Security-sensitive labels.
 - Always-human-review mode.
@@ -855,6 +946,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 - Discovered-work auto-accept policy classes, default none.
 
 **Acceptance**
+
 - Protected path forces human review.
 - Security-sensitive scope forces human review.
 - Discovered work does not become a task unless policy/human approval allows it.
@@ -866,6 +958,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-4.4
 
 **Deliverables**
+
 - Proposal record for discovered work.
 - Supervisor classification: blocker, in-scope follow-up, out-of-scope follow-up, scope change, rejected.
 - Approval flow.
@@ -873,6 +966,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 - Follow-up linkage.
 
 **Acceptance**
+
 - Rejected proposal remains in audit but does not affect readiness.
 - Accepted blocker blocks current task and inserts dependency.
 - Accepted follow-up does not block current task.
@@ -884,6 +978,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-3.1, COL-4.4
 
 **Deliverables**
+
 - Integrator packet.
 - Release/deploy precheck.
 - Release gate.
@@ -891,6 +986,7 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 - Dry-run deploy path for pilot.
 
 **Acceptance**
+
 - No deploy without all linked tasks closed and release gate approved.
 - Release action is attributable to Integrator/Release role.
 
@@ -901,12 +997,14 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-4.2, COL-4.3, COL-4.4
 
 **Deliverables**
+
 - Memory/decision view.
 - Policy view.
 - Scope close readiness view.
 - Filtered stakeholder audit view.
 
 **Acceptance**
+
 - Operator can see why memory/decision context was included in a packet.
 - Operator can see effective policy for a scope/task.
 
@@ -917,10 +1015,12 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-1.1, COL-3.1
 
 **Deliverables**
+
 - GitHub implementation of provider adapter for issues, comments, PRs, reviews, branches, commits, checks, labels, users, webhooks.
 - Provider parity test suite reused from GitLab.
 
 **Acceptance**
+
 - GitHub adapter passes the same provider contract tests as GitLab where equivalent features exist.
 - Gaps are documented as adapter capability differences.
 
@@ -931,12 +1031,14 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 **Depends on:** COL-4.2, COL-4.5, COL-4.6, COL-4.8
 
 **Deliverables**
+
 - Full multi-task scope demo across at least three tasks.
 - Memory-informed packet.
 - Release gate.
 - GitHub provider adapter test.
 
 **Acceptance**
+
 - Scope runs decomposition -> tasks -> MR review/merge -> scope review -> release gate -> closed.
 - No `pending_sync` or `conflict` remains at scope close.
 - GitHub adapter passes provider E2E suite.
@@ -952,11 +1054,13 @@ These tasks run alongside phases when their dependencies are available.
 **Depends on:** COL-0.3
 
 **Deliverables**
+
 - OTel traces with `scope_id`, `task_id`, `run_id`, `workflow_id`.
 - Prometheus metrics for workflow latency, claim contention, envelope rejection rate, provider write retries, sandbox cold-start latency, tool gateway errors, reconciliation mismatches.
 - Loki log labels by service and run ID.
 
 **Acceptance**
+
 - A synthetic scope can be followed across API, workflow, worker activity, and audit via trace IDs.
 - Shared observability setup lives in `packages/observability` and is imported by apps, not workflow definitions.
 
@@ -967,12 +1071,14 @@ These tasks run alongside phases when their dependencies are available.
 **Depends on:** COL-0.3a, COL-2.10
 
 **Deliverables**
+
 - Pipeline stages for unit, integration, E2E, image build, scan, deploy preview, deploy Aether.
 - GitLab registry image tagging strategy.
 - Protected branch/tag deploy rules.
 - CI variables/secrets documented with Aether/OpenBao/SOPS ownership.
 
 **Acceptance**
+
 - MR pipeline gates code quality and tests.
 - Protected deploy jobs cannot run from unprotected refs.
 - Container images are pushed to the GitLab registry with commit SHA tags.
@@ -984,11 +1090,13 @@ These tasks run alongside phases when their dependencies are available.
 **Depends on:** COL-0.6
 
 **Deliverables**
+
 - Audit retention policy defaults.
 - Transcript/diff retention defaults.
 - Optional future cryptographic integrity ADR.
 
 **Acceptance**
+
 - Audit records are append-only.
 - Retention settings are configurable by environment.
 
@@ -999,10 +1107,12 @@ These tasks run alongside phases when their dependencies are available.
 **Depends on:** COL-0.4, COL-2.1
 
 **Deliverables**
+
 - STRIDE-style worksheet for compromised agent run, prompt injection, leaked token, malicious dependency, webhook spoofing, unsafe tool call, supply chain compromise.
 - Mitigation tasks linked back to implementation work.
 
 **Acceptance**
+
 - Every threat in `design.md` maps to at least one mitigation or explicit accepted risk.
 
 ### COL-X.4 — Runbooks
@@ -1012,6 +1122,7 @@ These tasks run alongside phases when their dependencies are available.
 **Depends on:** COL-3.1
 
 **Deliverables**
+
 - Provider outage runbook.
 - Manual merge conflict runbook.
 - Stale approval runbook.
@@ -1019,6 +1130,7 @@ These tasks run alongside phases when their dependencies are available.
 - Temporal workflow stuck/replay runbook.
 
 **Acceptance**
+
 - Each runbook includes detection, impact, operator steps, verification, and rollback/escalation.
 
 ## Initial Critical Path

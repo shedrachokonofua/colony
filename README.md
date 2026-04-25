@@ -74,13 +74,13 @@ The webhook dispatcher only **signals** — never writes the provider. Provider 
 
 ## Documentation
 
-| Document                                    | Purpose                                                                                    |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [`docs/seed.md`](docs/seed.md)              | Original architecture seed: roles, HITL policy, reconciliation, packets, deployment sketch |
-| [`docs/design.md`](docs/design.md)          | Technical design: components, domain model, APIs, security, rollout                        |
-| [`docs/tasks.md`](docs/tasks.md)            | Dependency-aware implementation plan (Phase 0–4), with per-task progress checkboxes        |
-| [`docs/dev-loop.md`](docs/dev-loop.md)      | How to boot the local stack and run the dev loop                                           |
-| [`docs/adr/`](docs/adr/README.md)           | Architecture Decision Records                                                              |
+| Document                               | Purpose                                                                                    |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [`docs/seed.md`](docs/seed.md)         | Original architecture seed: roles, HITL policy, reconciliation, packets, deployment sketch |
+| [`docs/design.md`](docs/design.md)     | Technical design: components, domain model, APIs, security, rollout                        |
+| [`docs/tasks.md`](docs/tasks.md)       | Dependency-aware implementation plan (Phase 0–4), with per-task progress checkboxes        |
+| [`docs/dev-loop.md`](docs/dev-loop.md) | How to boot the local stack and run the dev loop                                           |
+| [`docs/adr/`](docs/adr/README.md)      | Architecture Decision Records                                                              |
 
 ## Repository layout
 

@@ -58,7 +58,10 @@ export function buildApp(): OpenAPIHono {
   const app = new OpenAPIHono();
 
   app.openapi(healthRoute, (c) =>
-    c.json({ ok: true as const, service: "colony-webhook-dispatcher" as const })
+    c.json({
+      ok: true as const,
+      service: "colony-webhook-dispatcher" as const,
+    }),
   );
 
   app.openapi(gitlabWebhookRoute, async (c) => {
@@ -67,14 +70,17 @@ export function buildApp(): OpenAPIHono {
 
     if (!tokenMatches(token, cfg.GITLAB_WEBHOOK_SECRET)) {
       return c.json(
-        { accepted: false as const, error: "invalid or missing X-Gitlab-Token" },
-        401
+        {
+          accepted: false as const,
+          error: "invalid or missing X-Gitlab-Token",
+        },
+        401,
       );
     }
 
-    const eventKind =
-      c.req.header("X-Gitlab-Event") ?? "unknown-gitlab-event";
-    const eventUuid = c.req.header("X-Gitlab-Event-UUID") ?? crypto.randomUUID();
+    const eventKind = c.req.header("X-Gitlab-Event") ?? "unknown-gitlab-event";
+    const eventUuid =
+      c.req.header("X-Gitlab-Event-UUID") ?? crypto.randomUUID();
 
     // Placeholder: in COL-0.6 this becomes a Task Graph `events` row (with dedup).
     // For COL-0.3, stdout proves the webhook round-trip completed.
@@ -86,12 +92,12 @@ export function buildApp(): OpenAPIHono {
         event_uuid: eventUuid,
         object_kind: (body as { object_kind?: string }).object_kind,
         at: new Date().toISOString(),
-      })
+      }),
     );
 
     return c.json(
       { accepted: true, event_kind: eventKind, event_uuid: eventUuid },
-      200
+      200,
     );
   });
 

@@ -22,7 +22,7 @@ export function buildApp(): OpenAPIHono {
   const app = new OpenAPIHono();
 
   app.openapi(healthRoute, (c) =>
-    c.json({ ok: true as const, service: "colony-tool-gateway" as const })
+    c.json({ ok: true as const, service: "colony-tool-gateway" as const }),
   );
 
   app.doc("/openapi.json", {
@@ -32,7 +32,7 @@ export function buildApp(): OpenAPIHono {
 
   app.get(
     "/docs",
-    Scalar({ url: "/openapi.json", pageTitle: "Colony Tool Gateway" })
+    Scalar({ url: "/openapi.json", pageTitle: "Colony Tool Gateway" }),
   );
 
   return app;

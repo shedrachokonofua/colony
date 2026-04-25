@@ -33,14 +33,14 @@ npm run dev
 
 After `npm run dev`, you should have:
 
-| Service | URL |
-| --- | --- |
-| `apps/api` | http://localhost:4000/health, /docs, /openapi.json |
-| `apps/tool-gateway` | http://localhost:4200/health |
-| `apps/webhook-dispatcher` | http://localhost:4100/webhook/gitlab (POST) |
-| `apps/web` | http://localhost:3000 |
-| Temporal UI | http://localhost:8233 |
-| Postgres | `postgres://colony:colony@localhost:5432/colony` |
+| Service                   | URL                                                |
+| ------------------------- | -------------------------------------------------- |
+| `apps/api`                | http://localhost:4000/health, /docs, /openapi.json |
+| `apps/tool-gateway`       | http://localhost:4200/health                       |
+| `apps/webhook-dispatcher` | http://localhost:4100/webhook/gitlab (POST)        |
+| `apps/web`                | http://localhost:3000                              |
+| Temporal UI               | http://localhost:8233                              |
+| Postgres                  | `postgres://colony:colony@localhost:5432/colony`   |
 
 The web page at `localhost:3000` fetches the API `/health` on every load and renders the DB status — this is the end-to-end heartbeat.
 
