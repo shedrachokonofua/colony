@@ -8,6 +8,12 @@ export interface CachedIdempotentResponse {
   readonly response_json: unknown;
 }
 
+function isPostgresUniqueViolation(e: unknown): e is { code: string } {
+  return (
+    typeof e === "object" && e !== null && "code" in e && e.code === "23505"
+  );
+}
+
 /**
  * Deduplicate mutating task-graph API calls (COL-0.9).
  */
@@ -84,5 +90,36 @@ export class IdempotencyRepository {
         JSON.stringify(response_json),
       ],
     );
+  }
+
+  async tryClaimWebhookEvent(input: {
+    readonly provider: string;
+    readonly event_id: string;
+    readonly object_id: string;
+    readonly ttl_seconds: number;
+  }): Promise<boolean> {
+    const actor = `svc:webhook-dispatcher:${input.provider}` as ActorId;
+    const key = `${input.event_id}:${input.object_id}`;
+    const fingerprint = "webhook-dedup:v1";
+    const response = {
+      provider: input.provider,
+      event_id: input.event_id,
+      object_id: input.object_id,
+    };
+
+    await this.pool.query(
+      `DELETE FROM idempotency_keys
+       WHERE actor_id = $1
+         AND created_at < now() - ($2 * interval '1 second')`,
+      [actor, input.ttl_seconds],
+    );
+
+    try {
+      await this.store(actor, key, fingerprint, 200, response);
+      return true;
+    } catch (e) {
+      if (isPostgresUniqueViolation(e)) return false;
+      throw e;
+    }
   }
 }
