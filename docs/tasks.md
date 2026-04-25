@@ -564,7 +564,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 ### COL-1.4 — Provider Command Parser
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.8, COL-1.1
 

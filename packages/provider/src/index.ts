@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/require-await */
 
+export * from "./commands.js";
+
 export const COLONY_PROVIDER_PACKAGE = "@colony/provider" as const;
 
 export type ProviderId = string;
