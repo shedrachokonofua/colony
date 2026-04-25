@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "architect.decomposition.v1",
+  "version": 1,
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "result": {
+      "type": "string",
+      "enum": [
+        "done",
+        "changes_requested",
+        "approved",
+        "blocked",
+        "escalate"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "requires_human": {
+      "type": "boolean"
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "issue",
+              "epic",
+              "mr",
+              "pr",
+              "commit",
+              "branch",
+              "pipeline",
+              "comment",
+              "release"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uri": {
+            "type": "string",
+            "minLength": 1
+          },
+          "hash": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "uri"
+        ],
+        "additionalProperties": false,
+        "title": "ArtifactRef",
+        "description": "Pointer to a provider/repo/pipeline artifact, identified by Colony-stable id and provider URI. `hash` is required for any artifact with a meaningful content hash (commit, MR/PR head SHA, branch tip)."
+      }
+    },
+    "policy_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_action": {
+      "type": "string",
+      "enum": [
+        "request_review",
+        "merge",
+        "close",
+        "wait_human",
+        "return_to_author",
+        "request_human_review",
+        "propose_decomposition",
+        "propose_discovered_work",
+        "open_gate",
+        "report_blocked",
+        "escalate"
+      ]
+    },
+    "freshness": {
+      "type": "object",
+      "properties": {
+        "packet_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_graph_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_event_ts": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "commit_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "memory_bundle_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "packet_hash",
+        "task_graph_version",
+        "provider_event_ts",
+        "commit_sha",
+        "policy_version",
+        "memory_bundle_version"
+      ],
+      "additionalProperties": false,
+      "title": "Freshness",
+      "description": "Freshness metadata required on every state-affecting envelope. Each field pins the agent run to a specific provider event, repo commit, policy version, memory bundle, Task Graph state version, and packet hash so the Supervisor can reject stale outputs."
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "scope_id": {
+      "type": "string",
+      "pattern": "^col-[a-z0-9]{4,}$"
+    },
+    "role_specific": {
+      "type": "object",
+      "properties": {
+        "proposed_tasks": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "proposed_task_id": {
+                "type": "string",
+                "pattern": "^col-[a-z0-9]{4,}\\.\\d+$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "acceptance_criteria": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "non_goals": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "suggested_role": {
+                "type": "string",
+                "enum": [
+                  "developer",
+                  "architect"
+                ]
+              },
+              "suggested_capabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "graph.read",
+                    "graph.write",
+                    "task.claim",
+                    "task.assign",
+                    "task.close",
+                    "provider.comment",
+                    "provider.issue.update",
+                    "provider.branch.push",
+                    "provider.mr.open",
+                    "provider.mr.approve",
+                    "provider.mr.merge",
+                    "memory.candidate.write",
+                    "memory.write",
+                    "decision.write",
+                    "sandbox.exec",
+                    "tool.call",
+                    "release.deploy",
+                    "policy.override",
+                    "provider.admin.bootstrap"
+                  ]
+                }
+              },
+              "estimated_effort_minutes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "proposed_task_id",
+              "title",
+              "description",
+              "acceptance_criteria",
+              "non_goals",
+              "suggested_role",
+              "suggested_capabilities"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "proposed_dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from_task_id": {
+                "type": "string",
+                "pattern": "^col-[a-z0-9]{4,}\\.\\d+$"
+              },
+              "to_task_id": {
+                "type": "string",
+                "pattern": "^col-[a-z0-9]{4,}\\.\\d+$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "blocks",
+                  "parent_child",
+                  "related"
+                ]
+              }
+            },
+            "required": [
+              "from_task_id",
+              "to_task_id",
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "proposed_tasks",
+        "proposed_dependencies",
+        "open_questions",
+        "assumptions"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "version",
+    "result",
+    "confidence",
+    "requires_human",
+    "risk_level",
+    "artifacts",
+    "policy_flags",
+    "next_action",
+    "freshness",
+    "rationale",
+    "scope_id",
+    "role_specific"
+  ],
+  "additionalProperties": false,
+  "title": "ArchitectDecompositionEnvelope",
+  "description": "Architect output proposing a scope decomposition. Supervisor consumes this to seed tasks + dependencies after the spec/DAG gate opens."
+}

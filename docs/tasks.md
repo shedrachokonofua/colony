@@ -149,7 +149,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.5 — Envelope And Packet Schemas
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.1, COL-0.4
 

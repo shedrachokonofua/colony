@@ -1,0 +1,57 @@
+import { z } from "zod";
+import { capabilitySchema, scopeIdSchema, taskIdSchema } from "../common.js";
+import { envelopeBaseShape } from "./base.js";
+
+const proposedDependencyKindSchema = z.enum([
+  "blocks",
+  "parent_child",
+  "related",
+]);
+
+const proposedTaskSchema = z
+  .object({
+    proposed_task_id: taskIdSchema,
+    title: z.string().min(1),
+    description: z.string().min(1),
+    acceptance_criteria: z.array(z.string().min(1)).min(1),
+    non_goals: z.array(z.string()),
+    suggested_role: z.enum(["developer", "architect"]),
+    suggested_capabilities: z.array(capabilitySchema),
+    estimated_effort_minutes: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const proposedDependencySchema = z
+  .object({
+    from_task_id: taskIdSchema,
+    to_task_id: taskIdSchema,
+    kind: proposedDependencyKindSchema,
+  })
+  .strict();
+
+export const architectDecompositionRoleSpecificSchema = z
+  .object({
+    proposed_tasks: z.array(proposedTaskSchema).min(1),
+    proposed_dependencies: z.array(proposedDependencySchema),
+    open_questions: z.array(z.string()),
+    assumptions: z.array(z.string()),
+  })
+  .strict();
+
+export const architectDecompositionEnvelopeSchema = z
+  .object({
+    ...envelopeBaseShape,
+    scope_id: scopeIdSchema,
+    role_specific: architectDecompositionRoleSpecificSchema,
+  })
+  .strict()
+  .meta({
+    id: "colony.envelope.architect.decomposition.v1",
+    title: "ArchitectDecompositionEnvelope",
+    description:
+      "Architect output proposing a scope decomposition. Supervisor consumes this to seed tasks + dependencies after the spec/DAG gate opens.",
+  });
+
+export type ArchitectDecompositionEnvelope = z.infer<
+  typeof architectDecompositionEnvelopeSchema
+>;
