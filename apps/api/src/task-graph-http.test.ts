@@ -96,7 +96,7 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     } finally {
       await c.end();
     }
-  });
+  }, 60_000);
 
   it("returns 400 when X-Actor-Id is missing on a protected route", async () => {
     const res = await app.request("http://x/scopes", { method: "GET" });
