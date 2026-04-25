@@ -122,6 +122,15 @@ tasks:
     cmds:
       - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase1'"
 
+  acceptance:phase2:
+    desc: Run Phase 2 acceptance against the homelab GitLab
+    summary: |
+      Creates a throwaway GitLab project, walks one task through Developer,
+      Reviewer, MR gate, merge, and close, then deletes the project group.
+      Requires GITLAB_BASE_URL and GITLAB_TOKEN from secrets/dev.yaml.
+    cmds:
+      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase2'"
+
   test:all:
     desc: All tests (unit + integration + live GitLab)
     cmds:

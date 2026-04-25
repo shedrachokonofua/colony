@@ -1,0 +1,5 @@
+# Pi Integration Research — Addendum (Embedded SDK Constraint)
+
+**For agent afc361a70bbd19eda.** Re-bias the in-flight Pi research per below.
+
+Embedded-SDK constraint: Colony will import the Pi SDK in-process, not shell out to a CLI. Re-bias every section of the report (especially #1 Packaging, #2 SDK shape, #3 Coding agent surface, #6 Cancel/timeout, #9 Sandbox/process model, and the PiRunner sketches) toward direct TypeScript imports. Drop the "spawn binary" framing. The fake adapter can stay process-internal as today; the real adapter calls into pi-mono/pi-coding-agent SDK functions. The sandbox isolation story changes: per-run isolation is now a Node process boundary (or k8s pod boundary at higher layers) wrapping an SDK call, not a CLI exec. AGENT_RUNTIME=fake|pi selection maps to which TS module gets imported, but both are in-process. Update the COL-2.15 acceptance to "imports the SDK and gets a schema-valid envelope from a synthetic packet," and rewrite the punch list accordingly.
