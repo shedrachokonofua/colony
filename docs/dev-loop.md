@@ -105,6 +105,7 @@ docker-compose down -v
 ```sh
 npm run typecheck   # tsc for apps+packages, svelte-check for apps/web
 npm test            # vitest across the repo
+npm run test:unit   # fast tests only; mirrors CI's unit stage
 npm run lint        # eslint
 npm run format:check
 ```
@@ -136,6 +137,15 @@ docker exec colony-postgres psql -U colony -d colony \
 COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test \
   npx vitest run packages/db
 ```
+
+The CI-style integration entrypoint is:
+
+```sh
+COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test \
+  npm run test:integration
+```
+
+Integration tests are organized per app/package as they land so failures map to the service that owns the behavior. Existing unit-level HTTP boundary tests are not duplicated in the integration stage.
 
 ## Kubernetes validation (Aether)
 

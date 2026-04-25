@@ -4,16 +4,20 @@ Colony's CI is a single `.gitlab-ci.yml` at the repo root. It builds per-app ima
 
 ## Pipeline shape
 
-Stages: `validate → build → plan → apply`.
+Stages: `validate → unit → integration → build → plan → apply`.
 
-| Stage    | Jobs (today)                                                                                                        | Jobs (deferred)                       |
-| -------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| validate | `flake-check`, `format-check`, `lint`, `typecheck`, `schemas-check`, `openapi-check`, `unit-tests`, `tofu-validate` | integration / E2E (COL-X.1a)          |
-| build    | `build:api`, `build:worker`, `build:webhook-dispatcher`, `build:tool-gateway`, `build:web`                          | image scan / signing (COL-X.1a)       |
-| plan     | `plan` (inline, kube-auth-aether + bao-auth)                                                                        | —                                     |
-| apply    | `apply` (`when: manual` on `main`)                                                                                  | post-apply migrate / smoke (COL-X.1a) |
+| Stage       | Jobs (today)                                                                                          | Jobs (deferred)                                                                                      |
+| ----------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| validate    | `flake-check`, `format-check`, `lint`, `typecheck`, `schemas-check`, `openapi-check`, `tofu-validate` | —                                                                                                    |
+| unit        | `unit-tests`                                                                                          | —                                                                                                    |
+| integration | `integration:db`, `integration:api`, `integration:provider-gitlab-contract`                           | app-specific real dependency tests for webhook dispatcher, worker, tool gateway; live provider / E2E |
+| build       | `build:api`, `build:worker`, `build:webhook-dispatcher`, `build:tool-gateway`, `build:web`            | image scan / signing (COL-X.1a)                                                                      |
+| plan        | `plan` (inline, kube-auth-aether + bao-auth)                                                          | —                                                                                                    |
+| apply       | `apply` (`when: manual` on `main`)                                                                    | post-apply migrate / smoke (COL-X.1a)                                                                |
 
 `tofu-validate`, `plan`, and `apply` are gated by `exists: tofu/main.tf` so they stay no-ops until the Tofu module lands in COL-1.9. The pipeline shape is stable from day one; only the existence of `tofu/main.tf` flips the deploy jobs on.
+
+The integration stage uses CI-local dependencies by default. Postgres-backed jobs run a `postgres:16-alpine` service and set `COLONY_TEST_DATABASE_URL`; provider contract tests use mocked GitLab API responses. Existing unit-level HTTP boundary tests are not duplicated in the integration stage. Live home-lab GitLab and deployed-environment tests belong in post-apply smoke jobs or explicit manual jobs, not default MR validation.
 
 ## Pipeline triggers
 
@@ -113,7 +117,9 @@ npm run format:check
 npm run lint
 npm run typecheck
 npm run schemas:check
-npm test
+npm run test:unit
+# Requires COLONY_TEST_DATABASE_URL for DB/API integration tests.
+npm run test:integration
 # Once tofu/ exists (COL-1.9):
 cd tofu && tofu fmt -check && tofu validate
 ```

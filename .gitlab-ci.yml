@@ -11,6 +11,8 @@
 
 stages:
   - validate
+  - unit
+  - integration
   - build
   - plan
   - apply
@@ -114,6 +116,18 @@ default:
     - buildah --version
     - echo "$CI_REGISTRY_PASSWORD" | buildah login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
 
+.integration-postgres:
+  stage: integration
+  extends: .with-deps
+  services:
+    - name: postgres:16-alpine
+      alias: postgres
+  variables:
+    POSTGRES_DB: colony_test
+    POSTGRES_USER: colony
+    POSTGRES_PASSWORD: colony
+    COLONY_TEST_DATABASE_URL: postgres://colony:colony@postgres:5432/colony_test
+
 # ---------------------------------------------------------------------------
 # validate stage — Nix-driven workspace checks + tofu validate
 # ---------------------------------------------------------------------------
@@ -157,10 +171,30 @@ openapi-check:
     - nix develop --command npm run openapi:check
 
 unit-tests:
-  stage: validate
+  stage: unit
   extends: .with-deps
   script:
-    - nix develop --command npm test
+    - nix develop --command npm run test:unit
+
+# ---------------------------------------------------------------------------
+# integration stage — per-app/service behavior against CI-local dependencies.
+# ---------------------------------------------------------------------------
+
+integration:db:
+  extends: .integration-postgres
+  script:
+    - nix develop --command bash -lc 'until pg_isready -h postgres -U colony -d colony_test; do sleep 1; done; npm run test:integration:db'
+
+integration:api:
+  extends: .integration-postgres
+  script:
+    - nix develop --command bash -lc 'until pg_isready -h postgres -U colony -d colony_test; do sleep 1; done; npm run test:integration:api'
+
+integration:provider-gitlab-contract:
+  stage: integration
+  extends: .with-deps
+  script:
+    - nix develop --command npm run test:integration:provider-gitlab-contract
 
 tofu-validate:
   stage: validate

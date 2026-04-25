@@ -6,6 +6,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "test:integration": "vitest --root ../.. run packages/provider-gitlab/src/index.test.ts"
+  },
   "dependencies": {
     "@colony/provider": "*"
   }
