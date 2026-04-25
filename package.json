@@ -18,6 +18,7 @@
     "dev:web": "npm --workspace @colony/web run dev",
     "typecheck": "tsc --noEmit -p tsconfig.json && npm --workspace @colony/web run typecheck",
     "test": "vitest run",
+    "acceptance:phase0": "tsx scripts/phase0-acceptance.ts",
     "schemas:generate": "tsx scripts/schemas-generate.ts",
     "schemas:check": "tsx scripts/schemas-generate.ts && git diff --exit-code -- schemas/envelopes schemas/packets",
     "openapi:generate": "tsx scripts/openapi-generate.ts",

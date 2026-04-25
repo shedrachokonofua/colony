@@ -337,7 +337,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.13 — Phase 0 End-To-End Acceptance
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.7, COL-0.9, COL-0.10, COL-0.11, COL-0.12, COL-0.3a
 

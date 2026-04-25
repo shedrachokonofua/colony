@@ -47,9 +47,15 @@ describe.runIf(TEST_URL)("PolicyRepository", () => {
   });
 
   beforeEach(async () => {
-    await pool.query(
-      `TRUNCATE tasks, events, audit_log, scopes, capability_grants, policies, provider_identities, idempotency_keys RESTART IDENTITY CASCADE`,
-    );
+    const c = new Client({ connectionString: url });
+    await c.connect();
+    try {
+      await c.query(
+        `TRUNCATE tasks, events, audit_log, scopes, capability_grants, policies, provider_identities, idempotency_keys RESTART IDENTITY CASCADE`,
+      );
+    } finally {
+      await c.end();
+    }
     await pool.query(
       `INSERT INTO policies (id, scope, target_id, version, protected_paths, security_labels, always_human_review, review_loop_cap, settings)
        VALUES ('pol-g', 'global', NULL, 1, '{}', '{}', false, 3, '{}'::jsonb)`,

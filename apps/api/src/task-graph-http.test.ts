@@ -60,12 +60,32 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
   });
 
   beforeEach(async () => {
-    await pool.query(
-      `TRUNCATE
-         task_dependencies, assignments, gates, reviews, approvals,
-         agent_runs, events, audit_log, artifacts, tasks, scopes, idempotency_keys
-       RESTART IDENTITY CASCADE`,
-    );
+    const c = new Client({ connectionString: url });
+    await c.connect();
+    try {
+      await c.query(
+        `TRUNCATE
+           task_dependencies, assignments, gates, reviews, approvals,
+           agent_runs, events, audit_log, artifacts, tasks, scopes, idempotency_keys
+         RESTART IDENTITY CASCADE`,
+      );
+      await c.query(
+        `INSERT INTO capability_grants (id, actor, role, capability, scope_id, task_id, granted_by)
+         VALUES
+           ('cgr-sv-01', 'svc:supervisor', 'supervisor', 'graph.read', NULL, NULL, 'human:op-1'),
+           ('cgr-sv-02', 'svc:supervisor', 'supervisor', 'graph.write', NULL, NULL, 'human:op-1'),
+           ('cgr-sv-03', 'svc:supervisor', 'supervisor', 'task.claim', NULL, NULL, 'human:op-1'),
+           ('cgr-hm-01', 'human:op-1', 'human', 'graph.read', NULL, NULL, 'human:op-1'),
+           ('cgr-hm-02', 'human:op-1', 'human', 'graph.write', NULL, NULL, 'human:op-1'),
+           ('cgr-hm-03', 'human:op-1', 'human', 'task.claim', NULL, NULL, 'human:op-1'),
+           ('cgr-hm-04', 'human:op-1', 'human', 'policy.override', NULL, NULL, 'human:op-1'),
+           ('cgr-dv-01', 'agent:dev-1', 'developer', 'graph.read', NULL, NULL, 'human:op-1'),
+           ('cgr-dv-02', 'agent:dev-1', 'developer', 'task.claim', NULL, NULL, 'human:op-1')
+         ON CONFLICT (id) DO NOTHING`,
+      );
+    } finally {
+      await c.end();
+    }
   });
 
   it("returns 400 when X-Actor-Id is missing on a protected route", async () => {
