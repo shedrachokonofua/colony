@@ -67,7 +67,7 @@ For environments where the bootstrap operation hasn't landed yet (i.e. before CO
 
 Once COL-1.1a ships, the same end state is reached with: `curl -X POST http://localhost:4000/admin/provider/bootstrap -H 'X-Admin-Token: <gitlab-admin-pat>' -d @bootstrap-dev.json` (one admin PAT, one call). The Web UI will surface the same operation as an "Set up provider" admin action once the cockpit lands.
 
-Note: the dispatcher currently records events to stdout as a COL-0.3 placeholder. The Task Graph `events` table lands in COL-0.6 and will be wired in then.
+Note: the dispatcher currently records events to stdout as a COL-0.3 placeholder. The Task Graph `events` table is now defined by the schema migration (COL-0.6); the dispatcher will write through the repository layer once COL-0.7 / COL-0.11 land.
 
 ## Running individual apps
 
@@ -97,6 +97,34 @@ npm run typecheck   # tsc for apps+packages, svelte-check for apps/web
 npm test            # vitest across the repo
 npm run lint        # eslint
 npm run format:check
+```
+
+## Database migrations
+
+Migrations live in `packages/db/migrations/` and are applied with `node-pg-migrate` (ADR-002).
+
+```sh
+# Apply all pending migrations to the database in DATABASE_URL.
+DATABASE_URL=postgres://colony:colony@localhost:5432/colony npm run db:migrate
+
+# Roll back the last migration (dev only — prod is forward-only).
+DATABASE_URL=postgres://colony:colony@localhost:5432/colony npm run db:migrate:down
+```
+
+The migration step is not run automatically by `npm run dev` — bring up Compose, then migrate, then start the apps. The `colony_writer` and `colony_reader` roles are created by the first migration; `audit_log` insert-only enforcement is in the third.
+
+## Database integration tests
+
+`packages/db/test/migrations.test.ts` runs against a real Postgres and proves that `audit_log` is insert-only under `colony_writer`. The test is gated on `COLONY_TEST_DATABASE_URL` so it skips when the var is unset (default for `npm test`). To run it:
+
+```sh
+# Recreate a clean test database, then run.
+docker exec colony-postgres psql -U colony -d colony \
+  -c "DROP DATABASE IF EXISTS colony_test;" \
+  -c "CREATE DATABASE colony_test;"
+
+COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test \
+  npx vitest run packages/db
 ```
 
 ## Kubernetes validation (Aether)

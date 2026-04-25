@@ -5,5 +5,20 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "migrate": "node-pg-migrate -m migrations -t pgmigrations --envPath ../../.env",
+    "migrate:up": "node-pg-migrate -m migrations -t pgmigrations --envPath ../../.env up",
+    "migrate:down": "node-pg-migrate -m migrations -t pgmigrations --envPath ../../.env down"
+  },
+  "dependencies": {
+    "@colony/config": "*",
+    "node-pg-migrate": "^8.0.4",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
   }
 }

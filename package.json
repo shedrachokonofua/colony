@@ -20,6 +20,8 @@
     "test": "vitest run",
     "schemas:generate": "tsx scripts/schemas-generate.ts",
     "schemas:check": "tsx scripts/schemas-generate.ts && git diff --exit-code -- schemas",
+    "db:migrate": "npm --workspace @colony/db run migrate:up",
+    "db:migrate:down": "npm --workspace @colony/db run migrate:down",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

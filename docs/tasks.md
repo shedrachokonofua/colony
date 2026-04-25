@@ -177,7 +177,7 @@ Goal: establish the TypeScript monorepo, persistence, core state model, audit, b
 
 ### COL-0.6 — Initial Postgres Schema
 
-- [ ]
+- [x]
 
 **Depends on:** COL-0.2, COL-0.4
 
