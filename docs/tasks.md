@@ -1048,7 +1048,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 ### COL-3.1 — Reconciliation Engine
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.13
 
@@ -1063,6 +1063,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - Reconcile detects stale commit approval.
 - Reconcile detects provider issue closed while MR is open.
 - Reconcile auto-corrects label drift.
+
+**Status:** complete. `createReconcileScope` checks provider issue/MR snapshots, active approvals, mirrored artifacts, and provider state labels. It reports stale commit approvals and issue-closed/MR-open conflicts with audit/event evidence, and auto-corrects Colony-owned state label drift.
 
 ### COL-3.2 — Periodic Reconciliation Timer
 

@@ -38,6 +38,11 @@ import {
   type MergeTaskInput,
   type MergeTaskResult,
 } from "./merge-flow.js";
+import {
+  createReconcileScope,
+  type ReconcileReport,
+  type ReconcileScopeInput,
+} from "./reconciliation.js";
 import type { AgentRuntimeAdapter } from "@colony/agent-runtime";
 import { env } from "@colony/config";
 import {
@@ -218,6 +223,17 @@ export async function closeTaskAfterMerge(
   input: CloseTaskAfterMergeInput,
 ): Promise<CloseTaskAfterMergeResult> {
   return createCloseTaskAfterMerge({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    providerAdapter: getProviderAdapter(),
+  })(input);
+}
+
+export async function reconcileScope(
+  input: ReconcileScopeInput,
+): Promise<ReconcileReport> {
+  return createReconcileScope({
     repo: getRepository(),
     providerProjects: getProviderProjects(),
     reviewGate: getReviewGateRepository(),
@@ -509,4 +525,5 @@ export const activities = {
   checkMrGate,
   mergeTask,
   closeTaskAfterMerge,
+  reconcileScope,
 };

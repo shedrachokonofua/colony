@@ -44,6 +44,7 @@ export interface ProviderMergeRequest extends ProviderRef {
   readonly source_branch: string;
   readonly target_branch: string;
   readonly state: "opened" | "closed" | "merged";
+  readonly head_commit_sha?: string;
 }
 
 export interface ProviderBranch extends ProviderRef {
@@ -284,6 +285,7 @@ export interface ProviderAdapter {
     getByPath(path: string): Promise<ProviderProjectInfo | null>;
   };
   readonly issues: {
+    get(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
     create(
       project: ProviderProjectRef,
       input: CreateIssueInput,
@@ -329,6 +331,10 @@ export interface ProviderAdapter {
     close(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
   };
   readonly mergeRequests: {
+    get(
+      project: ProviderProjectRef,
+      id: ProviderId,
+    ): Promise<ProviderMergeRequest>;
     open(
       project: ProviderProjectRef,
       input: {
@@ -559,6 +565,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 
   readonly issues: ProviderAdapter["issues"] = {
+    get: async (project, id) => this.requireIssue(project, id),
     create: async (project, input) => this.createIssue(project, "issue", input),
     update: async (project, id, input) => this.updateIssue(project, id, input),
     close: async (project, id) => this.setIssueState(project, id, "closed"),
@@ -595,6 +602,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   };
 
   readonly mergeRequests: ProviderAdapter["mergeRequests"] = {
+    get: async (_project, id) => this.requireMr(id),
     open: async (project, input) => {
       const id = `${project.id}:mr-${this.mrSeq++}`;
       const mr: ProviderMergeRequest = {

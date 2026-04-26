@@ -86,6 +86,10 @@ interface GitLabMergeRequest extends GitLabEntity {
   readonly source_branch?: string;
   readonly target_branch?: string;
   readonly state?: "opened" | "closed" | "merged" | "locked" | (string & {});
+  readonly sha?: string | null;
+  readonly diff_refs?: {
+    readonly head_sha?: string | null;
+  } | null;
 }
 
 interface GitLabBranch extends GitLabEntity {
@@ -236,6 +240,13 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   }
 
   readonly issues: ProviderAdapter["issues"] = {
+    get: async (project, id) => {
+      const issue = await this.projectApi<GitLabIssue>(
+        project.id,
+        `/issues/${encodePath(issueIid(project.id, id))}`,
+      );
+      return toIssue(this.provider, project.id, issue);
+    },
     create: async (project, input) => this.createIssue(project, input),
     update: async (project, id, input) => this.updateIssue(project, id, input),
     close: async (project, id) => this.updateIssueState(project, id, "close"),
@@ -261,6 +272,13 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   };
 
   readonly mergeRequests: ProviderAdapter["mergeRequests"] = {
+    get: async (project, id) => {
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        project.id,
+        `/merge_requests/${encodePath(mrIid(project.id, id))}`,
+      );
+      return toMergeRequest(this.provider, project.id, mr);
+    },
     open: async (project, input) => {
       const mr = await this.projectApi<GitLabMergeRequest>(
         project.id,
@@ -1055,6 +1073,7 @@ function toMergeRequest(
     source_branch: mr.source_branch ?? "",
     target_branch: mr.target_branch ?? "",
     state,
+    head_commit_sha: mr.sha ?? mr.diff_refs?.head_sha ?? undefined,
     metadata: { ...meta(provider, mr), id },
   };
 }
