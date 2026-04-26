@@ -8,6 +8,7 @@ export type TaskGraphAction =
   | "scope.read"
   | "scope.list"
   | "scope.transition"
+  | "scope.decomposition_request"
   | "task.create"
   | "task.read"
   | "task.list"

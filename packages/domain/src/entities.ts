@@ -146,6 +146,7 @@ export type EventKind =
   | "envelope_received"
   | "envelope_rejected"
   | "provider_event"
+  | "architect_decomposition_requested"
   | "review_requested"
   | "review_resolved"
   | "approval_recorded"

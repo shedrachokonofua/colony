@@ -272,6 +272,29 @@ type ProviderTargetInput = z.infer<typeof providerTargetSchema>;
 type ScopeMirrorInput = z.infer<typeof scopeMirrorSchema>;
 type TaskMirrorInput = z.infer<typeof taskMirrorSchema>;
 
+async function registerScopeTargets(
+  deps: TaskGraphDeps,
+  scope_id: ScopeId,
+  providerTargets: readonly ProviderTargetInput[],
+) {
+  for (const target of providerTargets) {
+    const project = await deps.providerProjects.getProject(
+      target.provider_project_id as ProviderProjectId,
+    );
+    if (!project) {
+      throw new RepositoryError("NOT_FOUND", "provider project not found", {
+        provider_project_id: target.provider_project_id,
+      });
+    }
+    await deps.providerProjects.linkScopeTarget({
+      scope_id,
+      provider_project_id: project.id,
+      role: target.role,
+    });
+  }
+  return deps.providerProjects.listScopeTargets(scope_id);
+}
+
 async function mirrorScopeIfRequested(
   deps: TaskGraphDeps,
   input: {
@@ -282,15 +305,11 @@ async function mirrorScopeIfRequested(
     readonly capability: Capability;
   },
 ): Promise<void> {
-  const linked = new Set<string>();
-  for (const target of input.providerTargets) {
-    await deps.providerProjects.linkScopeTarget({
-      scope_id: input.scope.id,
-      provider_project_id: target.provider_project_id as ProviderProjectId,
-      role: target.role,
-    });
-    linked.add(`${target.provider_project_id}:${target.role}`);
-  }
+  const targets = await registerScopeTargets(
+    deps,
+    input.scope.id,
+    input.providerTargets,
+  );
   if (!input.providerMirror) return;
 
   const project = await deps.providerProjects.getProject(
@@ -301,7 +320,12 @@ async function mirrorScopeIfRequested(
       provider_project_id: input.providerMirror.provider_project_id,
     });
   }
-  if (!linked.has(`${project.id}:primary`)) {
+  if (
+    !targets.some(
+      (target) =>
+        target.provider_project_id === project.id && target.role === "primary",
+    )
+  ) {
     await deps.providerProjects.linkScopeTarget({
       scope_id: input.scope.id,
       provider_project_id: project.id,
@@ -403,6 +427,84 @@ async function projectScopeStateIfMirrored(
       },
     });
   }
+}
+
+async function requestArchitectDecomposition(
+  deps: TaskGraphDeps,
+  input: {
+    readonly scope: Scope;
+    readonly providerTargets: readonly ProviderTargetInput[];
+    readonly actor: ActorId;
+    readonly capability: Capability;
+    readonly reason?: string;
+  },
+) {
+  if (input.scope.state !== "draft") {
+    return {
+      ok: false as const,
+      status: 409 as const,
+      body: jsonError(
+        "INVALID_SCOPE_STATE",
+        "architect decomposition can only be requested for a draft scope",
+        {
+          scope_id: input.scope.id,
+          state: input.scope.state,
+        },
+      ),
+    };
+  }
+  const targets = await registerScopeTargets(
+    deps,
+    input.scope.id,
+    input.providerTargets,
+  );
+  if (targets.length === 0) {
+    return {
+      ok: false as const,
+      status: 400 as const,
+      body: jsonError(
+        "MISSING_PROVIDER_TARGET",
+        "architect decomposition requires at least one provider target",
+        { scope_id: input.scope.id },
+      ),
+    };
+  }
+  const evidence = {
+    state: input.scope.state,
+    state_version: input.scope.state_version,
+    provider_targets: targets.map((target) => ({
+      provider_project_id: target.provider_project_id,
+      role: target.role,
+    })),
+  };
+  const audit_id = await deps.repo.writeAudit({
+    scope_id: input.scope.id,
+    actor: input.actor,
+    action: "scope.decomposition_request",
+    capability: input.capability,
+    target_kind: "scope",
+    target_id: input.scope.id,
+    reason: input.reason ?? "api",
+    evidence,
+  });
+  const event = await deps.repo.recordEvent({
+    scope_id: input.scope.id,
+    kind: "architect_decomposition_requested",
+    actor: input.actor,
+    payload: evidence,
+  });
+  return {
+    ok: true as const,
+    body: {
+      requested: true,
+      scope_id: input.scope.id,
+      state: input.scope.state,
+      state_version: input.scope.state_version,
+      provider_targets: evidence.provider_targets,
+      audit_id,
+      event_id: event.id,
+    },
+  };
 }
 
 async function mirrorTaskIfRequested(
@@ -898,6 +1000,98 @@ export function registerTaskGraph(
           },
           400,
         );
+      }
+      throw e;
+    }
+  });
+
+  const requestDecompositionRoute = createRoute({
+    method: "post",
+    path: "/scopes/{scopeId}/decomposition-request",
+    request: {
+      params: z.object({ scopeId: scopeIdParam }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              provider_targets: z.array(providerTargetSchema).optional(),
+              reason: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      202: {
+        description: "Accepted",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      400: {
+        description: "Invalid request",
+        content: { "application/json": { schema: errorBody } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Scope or provider project not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+      409: {
+        description: "Scope is not intake-ready",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(requestDecompositionRoute, async (c) => {
+    const { scopeId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const actor = c.get("actor") as ActorId;
+    const scope_id = scopeId as ScopeId;
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "scope.decomposition_request",
+      scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "scope.decomposition_request",
+        scope_id,
+        r.capability,
+        r.reason,
+        {},
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+    const scope = await deps.repo.getScope(scope_id);
+    if (!scope) {
+      return c.json(jsonError("NOT_FOUND", `scope not found: ${scopeId}`), 404);
+    }
+    try {
+      const result = await requestArchitectDecomposition(deps, {
+        scope,
+        providerTargets: body.provider_targets ?? [],
+        actor,
+        capability: r.capability,
+        reason: body.reason,
+      });
+      if (!result.ok) {
+        return c.json(result.body, result.status);
+      }
+      return c.json(result.body, 202);
+    } catch (e) {
+      if (e instanceof RepositoryError && e.code === "NOT_FOUND") {
+        return c.json(jsonError("NOT_FOUND", e.message, e.details), 404);
+      }
+      if (e instanceof RepositoryError && e.code === "UNIQUE_VIOLATION") {
+        return c.json(jsonError("CONFLICT", e.message, e.details), 409);
       }
       throw e;
     }

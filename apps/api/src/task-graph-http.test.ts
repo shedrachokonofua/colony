@@ -261,6 +261,106 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(body.error.code).toBe("INVALID_SCOPE_TRANSITION");
   });
 
+  it("requests architect decomposition for an intake-ready scope", async () => {
+    const project = await deps.providerProjects.upsertProject({
+      provider: "fake",
+      provider_id: "proj-decompose",
+      path: "colony/decompose",
+    });
+    await app.request("http://x/scopes", {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: SCOPE,
+        title: "Needs decomposition",
+        description: "d",
+      }),
+    });
+
+    const first = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-request`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider_targets: [
+            { provider_project_id: project.id, role: "primary" },
+          ],
+          reason: "operator_intake",
+        }),
+      },
+    );
+    const second = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-request`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider_targets: [
+            { provider_project_id: project.id, role: "primary" },
+          ],
+          reason: "operator_retry",
+        }),
+      },
+    );
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    const body = (await first.json()) as {
+      requested: boolean;
+      state: string;
+      provider_targets: Array<{ provider_project_id: string; role: string }>;
+    };
+    expect(body).toMatchObject({
+      requested: true,
+      state: "draft",
+      provider_targets: [{ provider_project_id: project.id, role: "primary" }],
+    });
+    const scope = await deps.repo.getScope(SCOPE);
+    expect(scope?.state).toBe("draft");
+    const targets = await deps.providerProjects.listScopeTargets(SCOPE);
+    expect(targets).toHaveLength(1);
+    const { rows: auditRows } = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n
+       FROM audit_log
+       WHERE scope_id = $1 AND action = 'scope.decomposition_request'`,
+      [SCOPE],
+    );
+    expect(Number(auditRows[0]?.n)).toBe(2);
+    const { rows: eventRows } = await pool.query<{ kind: string }>(
+      `SELECT kind FROM events WHERE scope_id = $1 ORDER BY recorded_at`,
+      [SCOPE],
+    );
+    expect(eventRows.map((row) => row.kind)).toContain(
+      "architect_decomposition_requested",
+    );
+  });
+
+  it("rejects decomposition requests without provider targets", async () => {
+    await app.request("http://x/scopes", {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: SCOPE,
+        title: "No targets",
+        description: "d",
+      }),
+    });
+
+    const res = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-request`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("MISSING_PROVIDER_TARGET");
+  });
+
   it("mirrors one scope and tasks into distinct provider projects", async () => {
     const frontend = await deps.providerProjects.upsertProject({
       provider: "fake",

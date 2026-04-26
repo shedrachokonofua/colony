@@ -225,6 +225,8 @@ export class ProviderProjectRepository {
       const { rows } = await this.pool.query<ScopeTargetRow>(
         `INSERT INTO scope_targets (id, scope_id, provider_project_id, role)
          VALUES ($1, $2, $3, $4)
+         ON CONFLICT ON CONSTRAINT scope_targets_role_unique DO UPDATE
+           SET scope_id = EXCLUDED.scope_id
          RETURNING *`,
         [id, input.scope_id, input.provider_project_id, input.role],
       );
