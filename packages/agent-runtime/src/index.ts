@@ -1,6 +1,7 @@
 export const COLONY_AGENT_RUNTIME_PACKAGE = "@colony/agent-runtime" as const;
 
 export * from "./adapter.js";
+export * from "./credential-broker.js";
 export * from "./hashing.js";
 export * from "./packet-builders.js";
 export * from "./pi-adapter.js";

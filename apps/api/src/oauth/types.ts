@@ -7,8 +7,9 @@ import type { OAuthProviderApi } from "@colony/db";
  * bake in `localhost:1455/auth/callback` and a manual-paste fallback —
  * they're CLI-shaped. Server-side OAuth in Colony (running inside a
  * container with no operator browser on its loopback) needs an alternate
- * orchestration: the driver yields the authorize URL to the operator,
- * waits on a manual code/URL paste, then resolves to OAuth credentials.
+ * orchestration: the driver yields the authorize URL to the operator, waits
+ * on Pi's localhost callback or a manual code/URL paste, then resolves to
+ * OAuth credentials.
  *
  * The interface here lets COL-2.14c land complete and testable with a
  * stub driver. COL-2.15 swaps in the production Pi-backed implementation
@@ -20,6 +21,8 @@ import type { OAuthProviderApi } from "@colony/db";
 export interface OAuthBeginInput {
   readonly providerKey: string;
   readonly providerApi: OAuthProviderApi;
+  /** Actor that initiated the flow; used when a driver can persist on callback. */
+  readonly initiator: string;
 }
 
 export interface OAuthBeginResult {
@@ -55,9 +58,9 @@ export interface OAuthCredentialsBlob {
 
 export interface OAuthDriver {
   /**
-   * Begin a server-side OAuth login session. The driver must continue
-   * running in the background (waiting for a code) and resolve `credentials`
-   * once submitCode is called for the same session.
+   * Begin a server-side OAuth login session. The driver must continue running
+   * in the background and resolve credentials after either the provider's
+   * localhost callback succeeds or submitCode supplies the manual fallback.
    */
   begin(input: OAuthBeginInput): Promise<{
     readonly result: OAuthBeginResult;

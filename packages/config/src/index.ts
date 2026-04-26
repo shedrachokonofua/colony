@@ -33,6 +33,10 @@ const envSchema = z.object({
   TEMPORAL_NAMESPACE: z.string().default("default"),
   TEMPORAL_TASK_QUEUE: z.string().default("colony-supervisor"),
 
+  // Agent runtime
+  AGENT_RUNTIME: z.enum(["fake", "pi"]).optional(),
+  COLONY_CONFIG_PATH: optionalNonEmptyString,
+
   // GitLab (home-lab provider)
   GITLAB_BASE_URL: z.string().default("http://gitlab.local"),
   GITLAB_TOKEN: z.string().default(""),

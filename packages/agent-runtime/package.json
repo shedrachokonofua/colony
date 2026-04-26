@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./pi-coding-agent-runner": "./src/pi-coding-agent-runner.ts",
+    "./pi-mono-runner": "./src/pi-mono-runner.ts"
   },
   "scripts": {
     "test": "vitest run --root ../.. src/*.test.ts"
@@ -12,6 +14,9 @@
   "dependencies": {
     "@colony/db": "*",
     "@colony/domain": "*",
-    "@colony/schemas": "*"
+    "@colony/schemas": "*",
+    "@mariozechner/pi-agent-core": "0.70.2",
+    "@mariozechner/pi-ai": "0.70.2",
+    "@mariozechner/pi-coding-agent": "0.70.2"
   }
 }

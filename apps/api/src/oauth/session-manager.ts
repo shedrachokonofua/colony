@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { OAuthProviderApi } from "@colony/db";
 import type { OAuthDriver, OAuthSessionHandle } from "./types.js";
 
 /**
@@ -20,7 +21,7 @@ interface SessionEntry {
   readonly handle: OAuthSessionHandle;
   readonly initiator: string;
   readonly providerKey: string;
-  readonly providerApi: string;
+  readonly providerApi: OAuthProviderApi;
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly authorizeUrl: string;
@@ -58,7 +59,8 @@ export class OAuthSessionManager {
     this.sweepExpired();
     const begun = await this.driver.begin({
       providerKey: input.providerKey,
-      providerApi: input.providerApi as never,
+      providerApi: input.providerApi,
+      initiator: input.initiator,
     });
     // Driver provides a handle; we assign a session id (UUID) the API client
     // uses on the wire. The handle.id and session id are intentionally

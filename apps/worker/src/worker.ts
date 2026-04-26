@@ -1,9 +1,10 @@
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { env } from "@colony/config";
-import { activities } from "./activities.js";
+import { activities, initializeAgentRuntime } from "./activities.js";
 
 async function main(): Promise<void> {
   const cfg = env();
+  await initializeAgentRuntime();
   const tls =
     cfg.TEMPORAL_TLS_SERVER_NAME !== undefined
       ? { serverNameOverride: cfg.TEMPORAL_TLS_SERVER_NAME }

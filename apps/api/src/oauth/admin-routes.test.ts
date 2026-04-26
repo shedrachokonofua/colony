@@ -46,13 +46,17 @@ function makeStubDriver() {
     }
   >();
   let nextHandleId = 1;
-  let lastBeginInput: { providerKey: string; providerApi: string } | null =
-    null;
+  let lastBeginInput: {
+    providerKey: string;
+    providerApi: string;
+    initiator: string;
+  } | null = null;
   const driver: OAuthDriver = {
     begin(input) {
       lastBeginInput = {
         providerKey: input.providerKey,
         providerApi: input.providerApi,
+        initiator: input.initiator,
       };
       const handle: OAuthSessionHandle = {
         id: `stub-${nextHandleId++}`,
@@ -249,6 +253,11 @@ describe.runIf(TEST)("OAuth admin routes", () => {
       authorize_url: string;
     };
     expect(start.authorize_url).toContain("openai_codex");
+    expect(driverHarness.getLastBeginInput()).toEqual({
+      providerKey: "openai_codex",
+      providerApi: "openai-codex-responses",
+      initiator: "human:op-1",
+    });
     expect(driverHarness.pendingHandleCount()).toBe(before + 1);
 
     const submitRes = await app.request(

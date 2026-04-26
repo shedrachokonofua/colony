@@ -5,6 +5,7 @@ build/
 .env
 .env.*
 !.env.example
+config/colony.yaml
 .DS_Store
 coverage/
 .nix-result

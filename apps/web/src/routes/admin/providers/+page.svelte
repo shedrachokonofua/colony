@@ -8,9 +8,10 @@
     return status;
   }
 
-  // When the start action just returned, surface the authorize URL +
-  // session id for the matching provider so the operator can finish the
-  // flow without leaving the page.
+  // When the start action just returned, surface the authorize URL + session id
+  // for the matching provider so the operator can finish the flow without
+  // leaving the page. The paste form is a fallback; Pi normally persists after
+  // the localhost callback succeeds.
   function pendingFor(providerKey: string): {
     sessionId: string;
     authorizeUrl: string;
@@ -149,11 +150,11 @@
         {#if pending}
           <div class="pending">
             <p>
-              Open the authorize URL in a new browser tab. After you consent,
-              the browser will be redirected to <code>localhost:1455</code>
-              (which fails to load) — copy the URL out of the address bar and
-              paste it (or just the <code>code</code> parameter) below. The
-              session expires at <code>{pending.expiresAt}</code>.
+              Open the authorize URL in a new browser tab. After you consent
+              and see <code>Authentication successful</code>, return here and
+              refresh; the connection should show active. If it does not change
+              before <code>{pending.expiresAt}</code>, paste the callback URL
+              or just the <code>code</code> parameter below.
             </p>
             {#if pending.instructions}
               <p class="hint">{pending.instructions}</p>

@@ -820,6 +820,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Run metadata stores sandbox ID, packet hash, output envelope hash.
 - Pi-specific integration lives in `packages/agent-runtime`, not in workflow code.
 
+**Status:** complete. The adapter shell, fake adapter, `PiAgentRuntimeAdapter`, concrete Pi runners, packet hashing, envelope capture/validation, and worker runtime selection are landed. Pi-specific code lives in `packages/agent-runtime`; runtime wiring lives in `apps/worker/src/agent-runtime-factory.ts`.
+
 ### COL-2.8 — Task And Review Packet Generation
 
 - [x]
@@ -841,7 +843,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.9 — Developer Execution Flow
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.2, COL-2.7, COL-2.8
 
@@ -857,6 +859,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Developer run can produce branch + MR for a task.
 - Completion envelope must reference MR and commit artifact.
 - Stale envelope freshness is rejected.
+
+**Status:** complete. The supervisor activity (`apps/worker/src/developer-run.ts`), branch/MR open through the provider adapter, completion-envelope ingestion, freshness check, and `claimed -> in_progress -> review_requested` transitions are landed. Live Pi/Kimi Developer execution has been exercised against home-lab GitLab; fake mode remains the deterministic CI default.
 
 ### COL-2.10 — GitLab Adapter: MR/PR, Commits, Pipelines
 
@@ -877,7 +881,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.11 — Reviewer Execution Flow
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.7, COL-2.8, COL-2.10
 
@@ -894,6 +898,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Reviewer approval moves task toward `merge_ready` when other gates pass.
 - Reviewer changes requested moves task to `changes_requested`.
 - Findings include severity, evidence, acceptance criterion reference, confidence.
+
+**Status:** complete. Review packet generation, Pi reviewer envelope capture/validation, provider review comments, finding persistence, and approval/changes-requested state effects are landed. Live Pi reviewer smoke has been exercised; fake mode remains the deterministic CI default.
 
 ### COL-2.12 — HITL Gate Enforcement
 
@@ -949,9 +955,11 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - Audit trail links provider event, workflow action, envelope hash, and resulting state version.
 - Developer envelope is produced by `pi-coding-agent`; reviewer envelope is produced by `pi-mono`. The fake adapter is reserved for CI determinism.
 
+**Status:** partially complete. The home-lab Phase 2 path has been exercised successfully with the current Pi runtime work, but this task stays open until the formal live acceptance target (COL-2.18) runs the documented real-pi path with the committed secret/binding model from COL-2.17.
+
 ### COL-2.15 — Pi Runner Implementation
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.7
 
@@ -975,7 +983,7 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.16 — Runtime Selection And Wiring
 
-- [ ]
+- [x]
 
 **Depends on:** COL-2.15
 
@@ -1012,6 +1020,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - A secret rotation in OpenBao causes the next run to use the rotated key without a worker restart.
 - `git grep` confirms no committed `.env` carries an LLM key, and `secrets/dev.yaml` decrypts to a populated map.
 
+**Status:** open. Local development currently uses gitignored `config/colony.yaml` plus environment variables for the OpenAI-compatible gateway, while Codex OAuth tokens are encrypted in Postgres. The SOPS/OpenBao binding and rotation path still needs to land before Phase 2 is formally complete.
+
 ### COL-2.18 — Live Pi Acceptance Target
 
 - [ ]
@@ -1029,6 +1039,8 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - A live run produces a real MR opened by an in-process `@mariozechner/pi-coding-agent` SDK envelope, a real review comment from an in-process `@mariozechner/pi-agent-core` SDK envelope, a green pipeline, a human `/approve`, and a merge — all on the home-lab GitLab.
 - Audit trail in Colony shows the real pi run IDs, sandbox IDs, packet hashes, and envelope hashes (no `fake-` prefixes).
 - Failure modes (Pi SDK import failure, missing LLM credential binding, envelope schema fail, LLM rate-limit) are observable in Colony's UI, not just stderr.
+
+**Status:** open. The ad hoc live Phase 2 script path has been used during development, but there is not yet a dedicated `acceptance:phase2:live` target with prerequisites, teardown, and observability documented.
 
 ## Phase 3 — Reconciliation, Conflicts, And Pending Sync
 

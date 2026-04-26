@@ -115,6 +115,9 @@ const agentSchema = z
   .object({
     provider: z.string().min(1),
     model: z.string().min(1),
+    thinking_level: z
+      .enum(["off", "minimal", "low", "medium", "high", "xhigh"])
+      .optional(),
     /** Optional: override the provider's auth for this agent only. */
     auth: authSchema.optional(),
     timeout_ms: z.number().int().positive().optional(),
@@ -181,6 +184,8 @@ export interface ResolvedAgentConfig {
   readonly role: AgentRole;
   readonly providerKey: string;
   readonly api: PiApiKind;
+  readonly baseUrl?: string;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly model: {
     readonly id: string;
     readonly name: string;
@@ -195,6 +200,13 @@ export interface ResolvedAgentConfig {
     };
   };
   readonly auth: ResolvedAuth;
+  readonly thinkingLevel?:
+    | "off"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh";
   readonly ceilings: {
     readonly timeoutMs: number;
     readonly maxTurns: number;
@@ -348,6 +360,8 @@ export function loadColonyConfig(
         role,
         providerKey: agentEntry.provider,
         api: provider.api,
+        baseUrl: provider.base_url,
+        headers: provider.headers,
         model: {
           id: model.id,
           name: model.name ?? model.id,
@@ -364,6 +378,7 @@ export function loadColonyConfig(
             : undefined,
         },
         auth,
+        thinkingLevel: agentEntry.thinking_level,
         ceilings: {
           timeoutMs: agentEntry.timeout_ms ?? defaults.timeoutMs,
           maxTurns: agentEntry.max_turns ?? defaults.maxTurns,

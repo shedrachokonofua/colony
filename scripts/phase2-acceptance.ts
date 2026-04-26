@@ -54,6 +54,7 @@ const databaseUrl =
   "postgres://colony:colony@localhost:5432/colony";
 const gitlabBaseUrl = mustEnv("GITLAB_BASE_URL");
 const gitlabToken = mustEnv("GITLAB_TOKEN");
+const gitlabReviewerToken = process.env["GITLAB_REVIEWER_TOKEN"];
 const webUrl = process.env["COLONY_WEB_URL"] ?? "http://localhost:3000";
 
 const stamp = Date.now().toString(36);
@@ -84,6 +85,10 @@ const adapter = new GitLabProviderAdapter({
   baseUrl: gitlabBaseUrl,
   token: gitlabToken,
 });
+const reviewerAdapter = new GitLabProviderAdapter({
+  baseUrl: gitlabBaseUrl,
+  token: gitlabReviewerToken || gitlabToken,
+});
 const agentRuntime = new FakeAgentRuntimeAdapter();
 
 function mustEnv(name: string): string {
@@ -94,6 +99,10 @@ function mustEnv(name: string): string {
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function rawApi<T>(args: {
@@ -181,6 +190,7 @@ try {
     visibility: projectInfo.visibility,
   });
   const providerIdentity = await adapter.identity();
+  const reviewerIdentity = await reviewerAdapter.identity();
   await policy.upsertProviderIdentity({
     actor: developer,
     provider: "gitlab",
@@ -190,15 +200,20 @@ try {
     is_bot: true,
     allowed_namespaces: [project.path],
   });
-  await policy.upsertProviderIdentity({
-    actor: reviewer,
-    provider: "gitlab",
-    provider_user_id: providerIdentity.user_id,
-    provider_username: providerIdentity.username,
-    role: "reviewer",
-    is_bot: true,
-    allowed_namespaces: [project.path],
-  });
+  if (
+    reviewer === developer ||
+    reviewerIdentity.user_id !== providerIdentity.user_id
+  ) {
+    await policy.upsertProviderIdentity({
+      actor: reviewer,
+      provider: "gitlab",
+      provider_user_id: reviewerIdentity.user_id,
+      provider_username: reviewerIdentity.username,
+      role: "reviewer",
+      is_bot: true,
+      allowed_namespaces: [project.path],
+    });
+  }
 
   // ---------------------------------------------------------------------
   // 2. Seed Colony view of the world.
@@ -389,8 +404,16 @@ try {
     reviewGate,
     providerAdapter: adapter,
   });
-  const mergeResult = await mergeTask({ task_id: task.id });
-  assert(mergeResult.merged, "merge failed");
+  let mergeResult = await mergeTask({ task_id: task.id });
+  for (let attempt = 1; !mergeResult.merged && attempt <= 6; attempt += 1) {
+    if (!mergeResult.reason.includes("returned 405")) break;
+    await sleep(attempt * 1000);
+    mergeResult = await mergeTask({ task_id: task.id });
+  }
+  assert(
+    mergeResult.merged,
+    `merge failed: ${(mergeResult as { reason?: string }).reason}`,
+  );
   if (!mergeResult.merged) throw new Error("unreachable");
   assert(
     mergeResult.final_state === "merged",

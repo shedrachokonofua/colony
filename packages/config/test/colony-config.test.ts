@@ -35,6 +35,7 @@ agents:
   developer:
     provider: openai_codex
     model: gpt-5-codex
+    thinking_level: high
     timeout_ms: 60000
     max_turns: 5
     max_usd_per_run: 1
@@ -63,6 +64,33 @@ describe("loadColonyConfig", () => {
     expect(reviewer.ceilings.maxTurns).toBe(20);
   });
 
+  it("preserves OpenAI-compatible base_url and arbitrary env var auth names", () => {
+    const path = tempConfig(`
+agent_runtime: pi
+providers:
+  openai_compatible:
+    api: openai-completions
+    base_url: https://litellm.home.shdr.ch/v1
+    auth: { kind: api_key, value: COLONY_OPENAI_COMPATIBLE_API_KEY }
+    models:
+      - id: anthropic/claude-sonnet-4.6
+        name: sonnet-4.6
+agents:
+  reviewer:
+    provider: openai_compatible
+    model: sonnet-4.6
+`);
+    const cfg = loadColonyConfig({
+      path,
+      env: { COLONY_OPENAI_COMPATIBLE_API_KEY: "sk-litellm-virtual" },
+    });
+    const reviewer = cfg.forAgent("reviewer");
+    expect(reviewer.providerKey).toBe("openai_compatible");
+    expect(reviewer.api).toBe("openai-completions");
+    expect(reviewer.baseUrl).toBe("https://litellm.home.shdr.ch/v1");
+    expect(reviewer.auth.kind).toBe("api_key");
+  });
+
   it("returns oauth auth with the provider key as the lookup handle", () => {
     const path = tempConfig(VALID_YAML);
     const cfg = loadColonyConfig({
@@ -71,6 +99,7 @@ describe("loadColonyConfig", () => {
     });
     const dev = cfg.forAgent("developer");
     expect(dev.api).toBe("openai-codex-responses");
+    expect(dev.thinkingLevel).toBe("high");
     expect(dev.auth.kind).toBe("oauth");
     if (dev.auth.kind === "oauth") {
       expect(dev.auth.providerKey).toBe("openai_codex");

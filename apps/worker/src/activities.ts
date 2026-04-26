@@ -7,7 +7,6 @@ import {
   type Pool,
 } from "@colony/db";
 import {
-  createDefaultAgentRuntime,
   createDeveloperRun,
   type StartDeveloperRunInput,
   type StartDeveloperRunResult,
@@ -42,6 +41,10 @@ import {
 import type { AgentRuntimeAdapter } from "@colony/agent-runtime";
 import { env } from "@colony/config";
 import {
+  createAgentRuntimeWiring,
+  type AgentRuntimeWiring,
+} from "./agent-runtime-factory.js";
+import {
   isScopeId,
   isTaskId,
   type ActorId,
@@ -70,7 +73,7 @@ let providerProjects: ProviderProjectRepository | undefined;
 let policyRepo: PolicyRepository | undefined;
 let reviewGateRepo: ReviewGateRepository | undefined;
 let providerAdapter: ProviderAdapter | undefined;
-let agentRuntime: AgentRuntimeAdapter | undefined;
+let agentRuntimeWiring: AgentRuntimeWiring | undefined;
 
 function getPool(): Pool {
   if (!pool) {
@@ -113,11 +116,15 @@ function getProviderAdapter(): ProviderAdapter {
   return providerAdapter;
 }
 
-function getAgentRuntime(): AgentRuntimeAdapter {
-  if (!agentRuntime) {
-    agentRuntime = createDefaultAgentRuntime();
-  }
-  return agentRuntime;
+async function getAgentRuntime(
+  role: "developer" | "reviewer",
+): Promise<AgentRuntimeAdapter> {
+  agentRuntimeWiring ??= await createAgentRuntimeWiring(env());
+  return agentRuntimeWiring[role];
+}
+
+export async function initializeAgentRuntime(): Promise<void> {
+  agentRuntimeWiring ??= await createAgentRuntimeWiring(env());
 }
 
 function getReviewGateRepository(): ReviewGateRepository {
@@ -134,7 +141,7 @@ export async function startDeveloperRun(
     repo: getRepository(),
     providerProjects: getProviderProjects(),
     providerAdapter: getProviderAdapter(),
-    agentRuntime: getAgentRuntime(),
+    agentRuntime: await getAgentRuntime("developer"),
   });
   return run(input);
 }
@@ -147,7 +154,7 @@ export async function startReviewerRun(
     providerProjects: getProviderProjects(),
     reviewGate: getReviewGateRepository(),
     providerAdapter: getProviderAdapter(),
-    agentRuntime: getAgentRuntime(),
+    agentRuntime: await getAgentRuntime("reviewer"),
   });
   return run(input);
 }

@@ -9,6 +9,7 @@ import { parseEnvelope } from "./adapter.js";
 import { hashEnvelope, hashPacket } from "./packet-builders.js";
 
 export interface PiRunRequest {
+  readonly runId: string;
   readonly packet: AgentRuntimePacket;
   readonly environment: AgentRunEnvironment;
 }
@@ -38,30 +39,58 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     runEnvironment: AgentRunEnvironment,
   ): Promise<AgentRunMetadata> {
     const runId = `${this.runner.kind}-${this.nextId++}`;
-    const result = await this.runner.run({
-      packet,
-      environment: runEnvironment,
-    });
-    const parsed = parseEnvelope(runEnvironment.role, result.envelope);
-    const output = parsed.ok
-      ? {
-          envelope: parsed.envelope,
-          envelopeHash: hashEnvelope(parsed.envelope),
-        }
-      : undefined;
-    const metadata: AgentRunMetadata = {
+    const running: AgentRunMetadata = {
       runId,
-      sandboxId: result.sandboxId,
+      sandboxId: `pending-${runId}`,
       role: runEnvironment.role,
-      status: parsed.ok ? "succeeded" : "envelope_rejected",
+      status: "running",
       packetHash: hashPacket(packet),
-      outputEnvelopeHash: output?.envelopeHash,
       runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
       runtimeBindingHash: runEnvironment.runtimeBinding.hash,
       toolProfileHash: runEnvironment.tools.manifest.profileHash,
     };
-    this.runs.set(runId, { ...metadata, output });
-    return metadata;
+    this.runs.set(runId, running);
+
+    try {
+      const result = await this.runner.run({
+        runId,
+        packet,
+        environment: runEnvironment,
+      });
+      const current = this.runs.get(runId);
+      if (current?.status === "canceled") {
+        return withoutOutput(current);
+      }
+      const parsed = parseEnvelope(runEnvironment.role, result.envelope);
+      const output = parsed.ok
+        ? {
+            envelope: parsed.envelope,
+            envelopeHash: hashEnvelope(parsed.envelope),
+          }
+        : undefined;
+      const metadata: AgentRunMetadata = {
+        runId,
+        sandboxId: result.sandboxId,
+        role: runEnvironment.role,
+        status: parsed.ok ? "succeeded" : "envelope_rejected",
+        packetHash: running.packetHash,
+        outputEnvelopeHash: output?.envelopeHash,
+        runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
+        runtimeBindingHash: runEnvironment.runtimeBinding.hash,
+        toolProfileHash: runEnvironment.tools.manifest.profileHash,
+      };
+      this.runs.set(runId, { ...metadata, output });
+      return metadata;
+    } catch {
+      const current = this.runs.get(runId);
+      const metadata: AgentRunMetadata = {
+        ...running,
+        sandboxId: current?.sandboxId ?? running.sandboxId,
+        status: current?.status === "canceled" ? "canceled" : "failed",
+      };
+      this.runs.set(runId, metadata);
+      return metadata;
+    }
   }
 
   getRunStatus(runId: string): Promise<AgentRunMetadata | null> {

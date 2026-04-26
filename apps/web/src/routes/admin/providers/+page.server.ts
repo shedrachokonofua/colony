@@ -15,11 +15,11 @@ import {
  * notice rather than failing the entire page.
  *
  * Form actions wrap the same admin API endpoints. Each one renders the
- * same page with `error` / `notice` banners; the UI does not block on
- * a long-running OAuth round-trip — `start` returns a session_id and
- * authorize_url synchronously, the operator opens the URL in a new
- * window, copies the code from the failed-redirect address bar, and
- * pastes it into the visible Submit Code form.
+ * same page with `error` / `notice` banners; the UI does not block on a
+ * long-running OAuth round-trip. `start` returns a session_id and authorize_url
+ * synchronously, the operator opens the URL in a new window, and Pi persists
+ * credentials when its localhost callback succeeds. The submit form remains as
+ * a fallback for providers that require manual code entry.
  */
 
 export const load: PageServerLoad = async ({ fetch }) => {
@@ -151,10 +151,9 @@ export const actions: Actions = {
 };
 
 /**
- * Pi's per-provider OAuth flows redirect the operator's browser to
- * `http://localhost:1455/auth/callback?code=...&state=...`. That URL
- * fails to load in the browser (no listener); the operator copies the
- * URL or just the code from the address bar. Accept either form.
+ * Pi's per-provider OAuth fallback may ask the operator to paste
+ * `http://localhost:1455/auth/callback?code=...&state=...`. Accept either the
+ * full callback URL or just the code.
  */
 function extractCode(raw: string): string {
   const trimmed = raw.trim();
