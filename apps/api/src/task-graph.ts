@@ -345,6 +345,66 @@ async function mirrorScopeIfRequested(
   });
 }
 
+async function projectScopeStateIfMirrored(
+  deps: TaskGraphDeps,
+  input: {
+    readonly scope: Scope;
+    readonly actor: ActorId;
+    readonly capability: Capability;
+  },
+): Promise<void> {
+  const mirrors = await deps.providerProjects.listMirrorsForColony({
+    colony_id: input.scope.id,
+    entity_kind: "scope",
+  });
+  if (mirrors.length === 0) return;
+  const adapter = requireProviderAdapter(deps);
+  for (const mirror of mirrors) {
+    if (!mirror.provider_project_id) continue;
+    const project = await deps.providerProjects.getProject(
+      mirror.provider_project_id,
+    );
+    if (!project || project.provider !== adapter.provider) continue;
+    const projectRef = { id: project.provider_id, path: project.path };
+    const issue = await adapter.issues.get(projectRef, mirror.provider_id);
+    const labels = [
+      ...issue.labels.filter((label) => !label.startsWith("state:")),
+      `state:${input.scope.state}`,
+    ];
+    const projected =
+      input.scope.state === "closed"
+        ? await adapter.issues.close(projectRef, mirror.provider_id)
+        : await adapter.issues.update(projectRef, mirror.provider_id, {
+            labels,
+          });
+    await deps.providerProjects.upsertMirror({
+      colony_id: input.scope.id,
+      entity_kind: "scope",
+      provider: project.provider,
+      provider_id: mirror.provider_id,
+      provider_project_id: project.id,
+      provider_project_path: project.path,
+      source_version: projected.metadata.version,
+      freshness_ttl_seconds: mirror.freshness_ttl_seconds,
+    });
+    await deps.repo.writeAudit({
+      scope_id: input.scope.id,
+      actor: input.actor,
+      action: "provider.project.scope_state",
+      capability: input.capability,
+      target_kind: "provider_mirror",
+      target_id: mirror.id,
+      reason: "scope_transition",
+      evidence: {
+        provider: project.provider,
+        provider_id: mirror.provider_id,
+        state: input.scope.state,
+        labels,
+      },
+    });
+  }
+}
+
 async function mirrorTaskIfRequested(
   deps: TaskGraphDeps,
   input: {
@@ -725,6 +785,122 @@ export function registerTaskGraph(
       return c.json(jsonError("NOT_FOUND", `scope not found: ${scopeId}`), 404);
     }
     return c.json(s, 200);
+  });
+
+  const patchScopeState = createRoute({
+    method: "post",
+    path: "/scopes/{scopeId}/state",
+    request: {
+      params: z.object({ scopeId: scopeIdParam }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              expected_state_version: z.number().int().nonnegative(),
+              state: scopeStateSchema,
+              reason: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Updated",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      400: {
+        description: "Invalid transition",
+        content: { "application/json": { schema: errorBody } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Scope not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+      409: {
+        description: "Version conflict",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(patchScopeState, async (c) => {
+    const { scopeId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const actor = c.get("actor") as ActorId;
+    const scope_id = scopeId as ScopeId;
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "scope.transition",
+      scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "scope.transition",
+        scope_id,
+        r.capability,
+        r.reason,
+        { next_state: body.state },
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+    try {
+      const scope = await deps.repo.updateScopeState(
+        scope_id,
+        body.expected_state_version,
+        body.state,
+        {
+          actor,
+          capability: r.capability,
+          reason: body.reason ?? "api",
+        },
+      );
+      await projectScopeStateIfMirrored(deps, {
+        scope,
+        actor,
+        capability: r.capability,
+      });
+      return c.json(scope, 200);
+    } catch (e) {
+      if (e instanceof RepositoryError) {
+        return c.json(
+          jsonError(
+            e.code,
+            e.message,
+            e.details,
+            e.code === "STATE_VERSION_MISMATCH",
+          ),
+          e.code === "NOT_FOUND"
+            ? 404
+            : e.code === "STATE_VERSION_MISMATCH"
+              ? 409
+              : 400,
+        );
+      }
+      if (e instanceof DomainStateError) {
+        return c.json(
+          {
+            error: {
+              code: e.code,
+              message: e.message,
+              details: e.details,
+              retriable: e.retriable,
+            },
+          },
+          400,
+        );
+      }
+      throw e;
+    }
   });
 
   // GET/POST /scopes/:id/tasks

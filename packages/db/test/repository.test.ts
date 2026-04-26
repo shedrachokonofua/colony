@@ -127,6 +127,53 @@ describe.runIf(TEST_URL)("TaskGraphRepository", () => {
       expect(ready.map((t) => t.id)).toEqual([TASK_A]);
     });
 
+    it("advances scope state with optimistic version and audits", async () => {
+      await repo.createScope(
+        { id: SCOPE_ID, title: "t", description: "d", state: "draft" },
+        { actor: SUPERVISOR },
+      );
+
+      const updated = await repo.updateScopeState(
+        SCOPE_ID,
+        0,
+        "decomposition_proposed",
+        {
+          actor: SUPERVISOR,
+          capability: "graph.write",
+          reason: "architect_envelope",
+        },
+      );
+
+      expect(updated.state).toBe("decomposition_proposed");
+      expect(updated.state_version).toBe(1);
+      const audit = await pool.query<{
+        action: string;
+        previous_state: string | null;
+        new_state: string | null;
+      }>(
+        `SELECT action, previous_state, new_state
+         FROM audit_log
+         WHERE scope_id = $1 AND action = 'scope.transition'`,
+        [SCOPE_ID],
+      );
+      expect(audit.rows[0]).toEqual({
+        action: "scope.transition",
+        previous_state: "draft",
+        new_state: "decomposition_proposed",
+      });
+    });
+
+    it("rejects invalid scope transitions", async () => {
+      await repo.createScope(
+        { id: SCOPE_ID, title: "t", description: "d", state: "draft" },
+        { actor: SUPERVISOR },
+      );
+
+      await expect(
+        repo.updateScopeState(SCOPE_ID, 0, "closed", { actor: SUPERVISOR }),
+      ).rejects.toThrow("scope cannot transition draft -> closed");
+    });
+
     it("rolls back the transaction when the audit row fails", async () => {
       // Force the audit insert to fail by passing an unsatisfiable FK
       // (task_id referencing a non-existent task). The enclosing scope insert

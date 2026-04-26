@@ -7,6 +7,7 @@ export type TaskGraphAction =
   | "scope.create"
   | "scope.read"
   | "scope.list"
+  | "scope.transition"
   | "task.create"
   | "task.read"
   | "task.list"

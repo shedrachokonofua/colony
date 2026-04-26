@@ -173,6 +173,94 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(err.error.code).toBe("CONFLICT");
   });
 
+  it("transitions scope state with audit and provider label projection", async () => {
+    const project = await deps.providerProjects.upsertProject({
+      provider: "fake",
+      provider_id: "proj-scope-state",
+      path: "colony/scope-state",
+    });
+    const create = await app.request("http://x/scopes", {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: SCOPE,
+        title: "Stateful scope",
+        description: "d",
+        provider_mirror: { provider_project_id: project.id },
+      }),
+    });
+    expect(create.status).toBe(201);
+
+    const res = await app.request(`http://x/scopes/${SCOPE}/state`, {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expected_state_version: 0,
+        state: "decomposition_proposed",
+        reason: "architect_envelope",
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      state: string;
+      state_version: number;
+    };
+    expect(body).toMatchObject({
+      state: "decomposition_proposed",
+      state_version: 1,
+    });
+    const mirror = (
+      await deps.providerProjects.listMirrorsForColony({
+        colony_id: SCOPE,
+        entity_kind: "scope",
+      })
+    )[0];
+    expect(mirror).toBeDefined();
+    const issue = await providerAdapter.issues.get(
+      { id: project.provider_id, path: project.path },
+      mirror!.provider_id,
+    );
+    expect(issue.labels).toContain("state:decomposition_proposed");
+    expect(issue.labels).not.toContain("state:draft");
+
+    const { rows } = await pool.query<{ action: string }>(
+      `SELECT action FROM audit_log WHERE scope_id = $1 ORDER BY recorded_at`,
+      [SCOPE],
+    );
+    expect(rows.map((row) => row.action)).toEqual(
+      expect.arrayContaining([
+        "scope.transition",
+        "provider.project.scope_state",
+      ]),
+    );
+  });
+
+  it("rejects invalid scope transitions with a structured error", async () => {
+    await app.request("http://x/scopes", {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: SCOPE,
+        title: "Invalid transition scope",
+        description: "d",
+      }),
+    });
+
+    const res = await app.request(`http://x/scopes/${SCOPE}/state`, {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expected_state_version: 0,
+        state: "closed",
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("INVALID_SCOPE_TRANSITION");
+  });
+
   it("mirrors one scope and tasks into distinct provider projects", async () => {
     const frontend = await deps.providerProjects.upsertProject({
       provider: "fake",

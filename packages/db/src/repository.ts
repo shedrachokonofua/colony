@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import {
+  assertScopeTransition,
   assertTaskTransition,
   type ActorId,
   type AuditId,
@@ -345,6 +346,17 @@ export class TaskGraphRepository {
     );
   }
 
+  async updateScopeState(
+    scope_id: ScopeId,
+    expected_state_version: number,
+    next_state: ScopeState,
+    ctx: ActorContext,
+  ): Promise<Scope> {
+    return this.withTransaction((tx) =>
+      tx.updateScopeState(scope_id, expected_state_version, next_state, ctx),
+    );
+  }
+
   // -------------------------------------------------------------------------
   // Dependencies.
   // -------------------------------------------------------------------------
@@ -634,6 +646,62 @@ export class TaskGraphTransaction {
     return task;
   }
 
+  async updateScopeState(
+    scope_id: ScopeId,
+    expected_state_version: number,
+    next_state: ScopeState,
+    ctx: ActorContext,
+  ): Promise<Scope> {
+    const current = await this.lockScopeRow(scope_id);
+    if (!current) {
+      throw new RepositoryError("NOT_FOUND", `scope not found: ${scope_id}`, {
+        scope_id,
+      });
+    }
+    if (current.state_version !== expected_state_version) {
+      throw new RepositoryError(
+        "STATE_VERSION_MISMATCH",
+        `scope ${scope_id}: expected state_version=${expected_state_version}, got ${current.state_version}`,
+        {
+          scope_id,
+          expected: expected_state_version,
+          actual: current.state_version,
+        },
+      );
+    }
+    assertScopeTransition(current.state, next_state);
+    const { rows } = await queryRows<ScopeRow>(
+      this.client,
+      `UPDATE scopes
+         SET state = $2,
+             state_version = state_version + 1,
+             updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [scope_id, next_state],
+    );
+    const scope = mapScope(rows[0]);
+    await this.writeAudit({
+      scope_id: scope.id,
+      actor: ctx.actor,
+      action: "scope.transition",
+      capability: ctx.capability,
+      target_kind: "scope",
+      target_id: scope.id,
+      previous_state: current.state,
+      new_state: next_state,
+      reason: ctx.reason,
+      evidence: { state_version: scope.state_version },
+    });
+    await this.recordEvent({
+      scope_id: scope.id,
+      kind: "scope_state_changed",
+      actor: ctx.actor,
+      payload: { from: current.state, to: next_state },
+    });
+    return scope;
+  }
+
   async addDependency(
     from_task_id: TaskId,
     to_task_id: TaskId,
@@ -803,6 +871,15 @@ export class TaskGraphTransaction {
       this.client,
       `SELECT * FROM tasks WHERE id = $1 FOR UPDATE`,
       [task_id],
+    );
+    return rows[0];
+  }
+
+  private async lockScopeRow(scope_id: ScopeId): Promise<ScopeRow | undefined> {
+    const { rows } = await queryRows<ScopeRow>(
+      this.client,
+      `SELECT * FROM scopes WHERE id = $1 FOR UPDATE`,
+      [scope_id],
     );
     return rows[0];
   }
