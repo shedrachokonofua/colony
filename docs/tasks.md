@@ -1068,7 +1068,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 ### COL-3.2 — Periodic Reconciliation Timer
 
-- [ ]
+- [x]
 
 **Depends on:** COL-3.1
 
@@ -1081,6 +1081,8 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 - Active scopes reconcile periodically.
 - Repeated reconcile with no drift is a no-op.
+
+**Status:** complete. The supervisor workflow waits up to 15 minutes for signals; on timeout it calls `reconcileScope` with a deterministic activity idempotency key and then retries the ready-task claim loop. The reconciliation engine remains idempotent for no-drift repeats.
 
 ### COL-3.3 — Provider Outage And Pending Sync
 

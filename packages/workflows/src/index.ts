@@ -160,6 +160,20 @@ export interface ClaimReadyTaskResult {
   readonly reason?: string;
 }
 
+export interface ReconcileScopeInput {
+  readonly scope_id: ScopeId;
+  readonly idempotency_key: string;
+}
+
+export interface ReconcileScopeResult {
+  readonly scope_id: ScopeId;
+  readonly checked_at: string;
+  readonly ok: boolean;
+  readonly auto_corrected: number;
+  readonly conflicts: number;
+  readonly warnings: number;
+}
+
 export interface SupervisorActivities {
   readonly readScopeState: (input: {
     readonly scope_id: ScopeId;
@@ -170,6 +184,9 @@ export interface SupervisorActivities {
   readonly claimReadyTask: (
     input: ClaimReadyTaskInput,
   ) => Promise<ClaimReadyTaskResult>;
+  readonly reconcileScope: (
+    input: ReconcileScopeInput,
+  ) => Promise<ReconcileScopeResult>;
 }
 
 export const providerEventSignal =
@@ -184,6 +201,17 @@ export const operatorOverrideSignal =
 
 export function supervisorWorkflowId(scope_id: ScopeId): string {
   return `supervisor-${scope_id}`;
+}
+
+export const RECONCILE_INTERVAL = "15 minutes" as const;
+
+export function reconcileActivityIdempotencyKey(input: {
+  readonly scope_id: ScopeId;
+  readonly workflow_id: string;
+  readonly run_id: string;
+  readonly sequence: number;
+}): string {
+  return `${input.workflow_id}:${input.run_id}:reconcile:${input.scope_id}:${input.sequence}`;
 }
 
 const activities = proxyActivities<SupervisorActivities>({
@@ -212,6 +240,7 @@ export async function scopeSupervisorWorkflow(
 ): Promise<void> {
   const queue: Array<SupervisorSignal & { readonly seq: number }> = [];
   let nextSignalSeq = 1;
+  let nextReconcileSeq = 1;
   const info = workflowInfo();
 
   setHandler(providerEventSignal, (payload) => {
@@ -234,7 +263,24 @@ export async function scopeSupervisorWorkflow(
   await activities.claimReadyTask({ scope_id, assignee: "bot:engine" });
 
   for (;;) {
-    await condition(() => queue.length > 0);
+    const signaled = await condition(
+      () => queue.length > 0,
+      RECONCILE_INTERVAL,
+    );
+
+    if (!signaled) {
+      await activities.reconcileScope({
+        scope_id,
+        idempotency_key: reconcileActivityIdempotencyKey({
+          scope_id,
+          workflow_id: info.workflowId,
+          run_id: info.runId,
+          sequence: nextReconcileSeq++,
+        }),
+      });
+      await activities.claimReadyTask({ scope_id, assignee: "bot:engine" });
+      continue;
+    }
 
     let signal = queue.shift();
     while (signal) {

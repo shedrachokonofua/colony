@@ -77,6 +77,7 @@ export interface ReconcileTaskReport {
 
 export interface ReconcileReport {
   readonly scope_id: string;
+  readonly idempotency_key?: string;
   readonly checked_at: string;
   readonly ok: boolean;
   readonly auto_corrected: number;
@@ -95,6 +96,7 @@ export interface ReconciliationDependencies {
 
 export interface ReconcileScopeInput {
   readonly scope_id: string;
+  readonly idempotency_key?: string;
 }
 
 export function createReconcileScope(deps: ReconciliationDependencies) {
@@ -102,7 +104,7 @@ export function createReconcileScope(deps: ReconciliationDependencies) {
     input: ReconcileScopeInput,
   ): Promise<ReconcileReport> {
     if (!isScopeId(input.scope_id)) {
-      return emptyReport(input.scope_id, [
+      return emptyReport(input.scope_id, input.idempotency_key, [
         {
           kind: "provider_read_failed",
           severity: "warning",
@@ -114,7 +116,7 @@ export function createReconcileScope(deps: ReconciliationDependencies) {
 
     const scope = await deps.repo.getScope(input.scope_id);
     if (!scope) {
-      return emptyReport(input.scope_id, [
+      return emptyReport(input.scope_id, input.idempotency_key, [
         {
           kind: "provider_read_failed",
           severity: "warning",
@@ -138,7 +140,7 @@ export function createReconcileScope(deps: ReconciliationDependencies) {
       allFindings.push(...findings);
     }
 
-    return report(scope.id, taskReports, allFindings);
+    return report(scope.id, input.idempotency_key, taskReports, allFindings);
   };
 }
 
@@ -464,13 +466,15 @@ function parseMirrorSource(
 
 function emptyReport(
   scope_id: string,
+  idempotency_key: string | undefined,
   findings: readonly ReconcileFinding[],
 ): ReconcileReport {
-  return report(scope_id, [], findings);
+  return report(scope_id, idempotency_key, [], findings);
 }
 
 function report(
   scope_id: string,
+  idempotency_key: string | undefined,
   tasks: readonly ReconcileTaskReport[],
   findings: readonly ReconcileFinding[],
 ): ReconcileReport {
@@ -478,6 +482,7 @@ function report(
   const warnings = findings.filter((f) => f.severity === "warning").length;
   return {
     scope_id,
+    idempotency_key,
     checked_at: new Date().toISOString(),
     ok: conflicts === 0 && warnings === 0,
     auto_corrected: findings.filter((f) => f.action === "auto_corrected")
