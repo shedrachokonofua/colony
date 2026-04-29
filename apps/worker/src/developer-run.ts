@@ -99,6 +99,7 @@ export type StartDeveloperRunResult =
         readonly target_branch: string;
         readonly url?: string;
       };
+      readonly developer_envelope?: DeveloperCompletionEnvelope;
       readonly reason?: string;
     };
 
@@ -372,6 +373,7 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
         target_branch: mr.target_branch,
         url: mr.metadata.web_url,
       },
+      developer_envelope: developerEnvelope,
     };
   };
 }

@@ -54,7 +54,8 @@ describe.runIf(TEST_URL)("TaskGraphRepository", () => {
     await pool.query(
       `TRUNCATE
          task_dependencies, assignments, gates, reviews, approvals,
-         agent_runs, events, audit_log, artifacts, tasks, scopes
+         agent_runs, events, audit_log, artifacts, decomposition_proposals,
+         tasks, scopes
        RESTART IDENTITY CASCADE`,
     );
   });

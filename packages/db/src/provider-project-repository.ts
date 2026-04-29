@@ -259,6 +259,8 @@ export class ProviderProjectRepository {
       const { rows } = await this.pool.query<TaskTargetRow>(
         `INSERT INTO task_targets (id, task_id, provider_project_id, role)
          VALUES ($1, $2, $3, $4)
+         ON CONFLICT ON CONSTRAINT task_targets_project_unique DO UPDATE
+           SET task_id = EXCLUDED.task_id
          RETURNING *`,
         [id, input.task_id, input.provider_project_id, input.role],
       );

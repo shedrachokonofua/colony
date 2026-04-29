@@ -19,6 +19,7 @@ const EXPECTED_TABLES = [
   "assignments",
   "audit_log",
   "capability_grants",
+  "decomposition_proposals",
   "events",
   "gates",
   "idempotency_keys",

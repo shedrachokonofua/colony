@@ -18,6 +18,7 @@
     "@colony/policy": "*",
     "@colony/provider": "*",
     "@colony/provider-gitlab": "*",
+    "@colony/schemas": "*",
     "@mariozechner/pi-ai": "0.70.2",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-openapi": "^1.2.2",

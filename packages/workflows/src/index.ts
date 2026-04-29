@@ -174,6 +174,110 @@ export interface ReconcileScopeResult {
   readonly warnings: number;
 }
 
+export type TaskLifecycleState =
+  | "created"
+  | "ready"
+  | "claimed"
+  | "in_progress"
+  | "review_requested"
+  | "changes_requested"
+  | "merge_ready"
+  | "merged"
+  | "closed"
+  | "blocked"
+  | "conflict"
+  | "failed"
+  | "canceled"
+  | "pending_sync";
+
+export type DeveloperRunResult =
+  | {
+      readonly started: false;
+      readonly task_id?: TaskId;
+      readonly reason: string;
+    }
+  | {
+      readonly started: true;
+      readonly task_id: TaskId;
+      readonly run_id: string;
+      readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly final_state: TaskLifecycleState;
+      readonly developer_envelope?: unknown;
+      readonly reason?: string;
+    };
+
+export type ReviewerRunResult =
+  | {
+      readonly started: false;
+      readonly task_id?: TaskId;
+      readonly reason: string;
+    }
+  | {
+      readonly started: true;
+      readonly task_id: TaskId;
+      readonly run_id: string;
+      readonly review_id: string;
+      readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly review_result?:
+        | "approved"
+        | "changes_requested"
+        | "blocked"
+        | "escalate";
+      readonly final_state: TaskLifecycleState;
+      readonly reason?: string;
+    };
+
+export type GateResult =
+  | { readonly opened: false; readonly reason?: string }
+  | {
+      readonly opened: true;
+      readonly gate_id?: string;
+      readonly reason?: string;
+    };
+
+export type HumanApprovalResult =
+  | { readonly recorded: false; readonly reason: string }
+  | { readonly recorded: true; readonly approval_id: string };
+
+export type PipelineStatusResult =
+  | { readonly recorded: false; readonly reason: string }
+  | { readonly recorded: true; readonly invalidated_approvals: number };
+
+export type CheckGateResult =
+  | { readonly checked: false; readonly reason: string }
+  | {
+      readonly checked: true;
+      readonly task_id: TaskId;
+      readonly final_state: TaskLifecycleState;
+      readonly gate_open: boolean;
+      readonly reasons: readonly string[];
+    };
+
+export type MergeResult =
+  | {
+      readonly merged: false;
+      readonly task_id?: TaskId;
+      readonly reason: string;
+    }
+  | {
+      readonly merged: true;
+      readonly task_id: TaskId;
+      readonly final_state: TaskLifecycleState;
+      readonly merge_commit_sha?: string;
+    };
+
+export type CloseResult =
+  | {
+      readonly closed: false;
+      readonly task_id?: TaskId;
+      readonly reason: string;
+    }
+  | {
+      readonly closed: true;
+      readonly task_id: TaskId;
+      readonly final_state: TaskLifecycleState;
+    };
+
 export interface SupervisorActivities {
   readonly readScopeState: (input: {
     readonly scope_id: ScopeId;
@@ -187,6 +291,43 @@ export interface SupervisorActivities {
   readonly reconcileScope: (
     input: ReconcileScopeInput,
   ) => Promise<ReconcileScopeResult>;
+  readonly startDeveloperRun: (input: {
+    readonly task_id: TaskId;
+    readonly assignee: string;
+  }) => Promise<DeveloperRunResult>;
+  readonly openMrGate: (input: {
+    readonly task_id: TaskId;
+  }) => Promise<GateResult>;
+  readonly startReviewerRun: (input: {
+    readonly task_id: TaskId;
+    readonly reviewer: string;
+    readonly developer_envelope: unknown;
+  }) => Promise<ReviewerRunResult>;
+  readonly recordHumanApproval: (input: {
+    readonly task_id: TaskId;
+    readonly actor: string;
+    readonly commit_sha?: string;
+    readonly pipeline_id?: string;
+    readonly evidence?: Readonly<Record<string, unknown>>;
+  }) => Promise<HumanApprovalResult>;
+  readonly recordPipelineStatus: (input: {
+    readonly task_id: TaskId;
+    readonly pipeline_id: string;
+    readonly commit_sha: string;
+    readonly status: string;
+  }) => Promise<PipelineStatusResult>;
+  readonly checkMrGate: (input: {
+    readonly task_id: TaskId;
+  }) => Promise<CheckGateResult>;
+  readonly mergeTask: (input: {
+    readonly task_id: TaskId;
+    readonly actor?: string;
+  }) => Promise<MergeResult>;
+  readonly closeTaskAfterMerge: (input: {
+    readonly task_id: TaskId;
+    readonly merge_commit_sha?: string;
+    readonly verified_by_webhook?: boolean;
+  }) => Promise<CloseResult>;
 }
 
 export const providerEventSignal =
@@ -220,6 +361,59 @@ const activities = proxyActivities<SupervisorActivities>({
     maximumAttempts: 1,
   },
 });
+
+const DEVELOPER_ASSIGNEE = "bot:engine" as const;
+const REVIEWER_ASSIGNEE = "bot:reviewer" as const;
+
+async function driveClaimedTask(input: {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+  readonly assignee: string;
+}): Promise<void> {
+  const dev = await activities.startDeveloperRun({
+    task_id: input.task_id,
+    assignee: input.assignee,
+  });
+  if (
+    !dev.started ||
+    dev.envelope_status !== "succeeded" ||
+    !dev.developer_envelope
+  ) {
+    return;
+  }
+
+  await activities.openMrGate({ task_id: input.task_id });
+  await activities.startReviewerRun({
+    task_id: input.task_id,
+    reviewer: REVIEWER_ASSIGNEE,
+    developer_envelope: dev.developer_envelope,
+  });
+}
+
+async function claimAndDriveReadyTask(scope_id: ScopeId): Promise<void> {
+  const claimed = await activities.claimReadyTask({
+    scope_id,
+    assignee: DEVELOPER_ASSIGNEE,
+  });
+  if (!claimed.claimed || !claimed.task_id) return;
+  await driveClaimedTask({
+    scope_id,
+    task_id: claimed.task_id,
+    assignee: claimed.assignee ?? DEVELOPER_ASSIGNEE,
+  });
+}
+
+async function evaluateAndAdvanceTask(task_id: TaskId): Promise<void> {
+  const gate = await activities.checkMrGate({ task_id });
+  if (!gate.checked || !gate.gate_open) return;
+  const merge = await activities.mergeTask({ task_id });
+  if (!merge.merged) return;
+  await activities.closeTaskAfterMerge({
+    task_id,
+    merge_commit_sha: merge.merge_commit_sha,
+    verified_by_webhook: false,
+  });
+}
 
 function eventKind(signal: SupervisorSignalName): string {
   switch (signal) {
@@ -260,7 +454,7 @@ export async function scopeSupervisorWorkflow(
   });
 
   await activities.readScopeState({ scope_id });
-  await activities.claimReadyTask({ scope_id, assignee: "bot:engine" });
+  await claimAndDriveReadyTask(scope_id);
 
   for (;;) {
     const signaled = await condition(
@@ -278,11 +472,12 @@ export async function scopeSupervisorWorkflow(
           sequence: nextReconcileSeq++,
         }),
       });
-      await activities.claimReadyTask({ scope_id, assignee: "bot:engine" });
+      await claimAndDriveReadyTask(scope_id);
       continue;
     }
 
     let signal = queue.shift();
+    const taskIdsToEvaluate: TaskId[] = [];
     while (signal) {
       await activities.recordWorkflowEvent({
         scope_id,
@@ -295,9 +490,38 @@ export async function scopeSupervisorWorkflow(
         run_id: info.runId,
         payload: signal.payload,
       });
+      if (signal.name === "approval" && signal.payload.task_id) {
+        await activities.recordHumanApproval({
+          task_id: signal.payload.task_id,
+          actor: signal.payload.actor,
+          commit_sha: signal.payload.commit_sha,
+          pipeline_id: signal.payload.pipeline_id,
+          evidence: {
+            artifact_id: signal.payload.artifact_id,
+            approval_id: signal.payload.approval_id,
+          },
+        });
+        taskIdsToEvaluate.push(signal.payload.task_id);
+      }
+      if (
+        signal.name === "pipeline_update" &&
+        signal.payload.task_id &&
+        signal.payload.commit_sha
+      ) {
+        await activities.recordPipelineStatus({
+          task_id: signal.payload.task_id,
+          pipeline_id: signal.payload.pipeline_id,
+          commit_sha: signal.payload.commit_sha,
+          status: signal.payload.status,
+        });
+        taskIdsToEvaluate.push(signal.payload.task_id);
+      }
       signal = queue.shift();
     }
 
-    await activities.claimReadyTask({ scope_id, assignee: "bot:engine" });
+    for (const task_id of taskIdsToEvaluate) {
+      await evaluateAndAdvanceTask(task_id);
+    }
+    await claimAndDriveReadyTask(scope_id);
   }
 }

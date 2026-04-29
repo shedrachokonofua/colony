@@ -78,8 +78,8 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
       await c.query(
         `TRUNCATE
            task_dependencies, assignments, gates, reviews, approvals,
-           agent_runs, events, audit_log, artifacts, provider_mirrors,
-           task_targets, scope_targets, provider_projects,
+           agent_runs, events, audit_log, artifacts, decomposition_proposals,
+           provider_mirrors, task_targets, scope_targets, provider_projects,
            tasks, scopes, idempotency_keys
          RESTART IDENTITY CASCADE`,
       );
@@ -359,6 +359,198 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe("MISSING_PROVIDER_TARGET");
+  });
+
+  it("persists an Architect proposal, gates it, and commits the approved DAG", async () => {
+    const project = await deps.providerProjects.upsertProject({
+      provider: "fake",
+      provider_id: "proj-dag",
+      path: "colony/dag",
+    });
+    await app.request("http://x/scopes", {
+      method: "POST",
+      headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: SCOPE,
+        title: "DAG scope",
+        description: "build a small DAG",
+        provider_targets: [
+          { provider_project_id: project.id, role: "primary" },
+        ],
+      }),
+    });
+
+    const envelope = {
+      version: 1,
+      scope_id: SCOPE,
+      result: "done",
+      confidence: 0.82,
+      requires_human: true,
+      risk_level: "medium",
+      artifacts: [],
+      policy_flags: [],
+      next_action: "propose_decomposition",
+      freshness: {
+        packet_hash: "sha256:architect-packet",
+        task_graph_version: "scope:0",
+        provider_event_ts: "2026-04-23T15:12:00Z",
+        commit_sha: "main",
+        policy_version: "policy:1",
+        memory_bundle_version: "memory:1",
+      },
+      rationale: "Split setup before implementation.",
+      role_specific: {
+        proposed_tasks: [
+          {
+            proposed_task_id: TASK,
+            title: "Prepare contract",
+            description: "Define the contract first.",
+            acceptance_criteria: ["contract is documented"],
+            non_goals: [],
+            suggested_role: "developer",
+            suggested_capabilities: ["graph.read"],
+          },
+          {
+            proposed_task_id: "col-http.2",
+            title: "Implement contract",
+            description: "Implement the approved contract.",
+            acceptance_criteria: ["implementation follows the contract"],
+            non_goals: [],
+            suggested_role: "developer",
+            suggested_capabilities: ["graph.read"],
+          },
+        ],
+        proposed_dependencies: [
+          { from_task_id: TASK, to_task_id: "col-http.2", kind: "blocks" },
+        ],
+        open_questions: [],
+        assumptions: ["single provider project"],
+      },
+    };
+
+    const proposed = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-proposals`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_scope_state_version: 0,
+          packet_hash: "sha256:architect-packet",
+          envelope,
+        }),
+      },
+    );
+    expect(proposed.status).toBe(201);
+    const proposedBody = (await proposed.json()) as {
+      proposal: { id: string; envelope_hash: string; status: string };
+      scope: { state: string; state_version: number };
+    };
+    expect(proposedBody.scope).toMatchObject({
+      state: "decomposition_proposed",
+      state_version: 1,
+    });
+    expect(proposedBody.proposal.status).toBe("proposed");
+    expect(await deps.repo.listTasks(SCOPE)).toHaveLength(0);
+
+    const review = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-proposals/${proposedBody.proposal.id}/review`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          envelope_hash: proposedBody.proposal.envelope_hash,
+          reviewer: "agent:reviewer-1",
+          result: "approved",
+        }),
+      },
+    );
+    expect(review.status).toBe(200);
+
+    const approve = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-proposals/${proposedBody.proposal.id}/approve`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_scope_state_version: 1,
+          envelope_hash: proposedBody.proposal.envelope_hash,
+        }),
+      },
+    );
+    expect(approve.status).toBe(200);
+    const approvedBody = (await approve.json()) as {
+      scope: { state: string; state_version: number };
+    };
+    expect(approvedBody.scope).toMatchObject({
+      state: "decomposition_approved",
+      state_version: 2,
+    });
+
+    const staleCommit = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-proposals/${proposedBody.proposal.id}/commit`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_scope_state_version: 2,
+          envelope_hash: "sha256:stale",
+        }),
+      },
+    );
+    expect(staleCommit.status).toBe(409);
+
+    const commit = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-proposals/${proposedBody.proposal.id}/commit`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": SUP, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          expected_scope_state_version: 2,
+          envelope_hash: proposedBody.proposal.envelope_hash,
+        }),
+      },
+    );
+    expect(commit.status, await commit.clone().text()).toBe(200);
+    const commitBody = (await commit.json()) as {
+      scope: { state: string };
+      tasks: Array<{ id: string; state: string }>;
+      dependencies: Array<{
+        from_task_id: string;
+        to_task_id: string;
+        kind: string;
+      }>;
+    };
+    expect(commitBody.scope.state).toBe("active");
+    expect(commitBody.tasks.map((task) => task.id)).toEqual([
+      TASK,
+      "col-http.2",
+    ]);
+    expect(commitBody.tasks.every((task) => task.state === "ready")).toBe(true);
+    expect(commitBody.dependencies).toEqual([
+      expect.objectContaining({
+        from_task_id: TASK,
+        to_task_id: "col-http.2",
+        kind: "blocks",
+      }),
+    ]);
+    expect((await deps.repo.readyTasks(SCOPE)).map((task) => task.id)).toEqual([
+      TASK,
+    ]);
+
+    const mirrors = await Promise.all(
+      [TASK, "col-http.2" as TaskId].map((taskId) =>
+        deps.providerProjects.listMirrorsForColony({
+          colony_id: taskId,
+          entity_kind: "task",
+        }),
+      ),
+    );
+    expect(mirrors.flat()).toHaveLength(2);
+    const { rows: gates } = await pool.query<{ status: string }>(
+      `SELECT status FROM gates WHERE scope_id = $1 AND kind = 'spec_dag'`,
+      [SCOPE],
+    );
+    expect(gates.map((gate) => gate.status)).toEqual(["closed"]);
   });
 
   it("mirrors one scope and tasks into distinct provider projects", async () => {

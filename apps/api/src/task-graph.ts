@@ -16,6 +16,10 @@ import type {
 import { DomainStateError } from "@colony/domain";
 import { evaluateAction, type TaskGraphAction } from "@colony/policy";
 import {
+  architectDecompositionEnvelopeSchema,
+  type ArchitectDecompositionEnvelope,
+} from "@colony/schemas";
+import {
   IdempotencyRepository,
   PolicyRepository,
   ProviderProjectRepository,
@@ -73,6 +77,10 @@ function jsonError(
 function routeFingerprint(method: string, path: string, body: unknown): string {
   const raw = JSON.stringify({ method, path, body });
   return createHash("sha256").update(raw).digest("hex");
+}
+
+function sha256Json(value: unknown): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
 function isPostgresUniqueViolation(e: unknown): e is { code: string } {
@@ -693,6 +701,54 @@ const taskStateSchema = z.enum([
   "pending_sync",
 ]);
 const eventKindSchema = z.string().min(1);
+const targetProjectMappingSchema = z.record(z.string(), z.string().min(1));
+const decompositionReviewResultSchema = z.enum([
+  "approved",
+  "changes_requested",
+  "blocked",
+  "escalate",
+]);
+
+function proposalTasks(
+  envelope: ArchitectDecompositionEnvelope,
+): Parameters<
+  TaskGraphRepository["submitDecompositionProposal"]
+>[0]["proposed_tasks"] {
+  return envelope.role_specific.proposed_tasks.map((task) => ({
+    proposed_task_id: task.proposed_task_id as TaskId,
+    title: task.title,
+    description: task.description,
+    acceptance_criteria: task.acceptance_criteria,
+    non_goals: task.non_goals,
+    suggested_role: task.suggested_role,
+    suggested_capabilities: task.suggested_capabilities,
+    estimated_effort_minutes: task.estimated_effort_minutes,
+  }));
+}
+
+function proposalDependencies(
+  envelope: ArchitectDecompositionEnvelope,
+): Parameters<
+  TaskGraphRepository["submitDecompositionProposal"]
+>[0]["proposed_dependencies"] {
+  return envelope.role_specific.proposed_dependencies.map((dep) => ({
+    from_task_id: dep.from_task_id as TaskId,
+    to_task_id: dep.to_task_id as TaskId,
+    kind: dep.kind,
+  }));
+}
+
+function repositoryErrorStatus(e: RepositoryError): 400 | 404 | 409 {
+  if (e.code === "NOT_FOUND") return 404;
+  if (
+    e.code === "STATE_VERSION_MISMATCH" ||
+    e.code === "STALE_DECOMPOSITION_ENVELOPE" ||
+    e.code === "DAG_ALREADY_COMMITTED"
+  ) {
+    return 409;
+  }
+  return 400;
+}
 
 export function registerTaskGraph(
   app: OpenAPIHono<{ Variables: { actor: string } }>,
@@ -1092,6 +1148,476 @@ export function registerTaskGraph(
       }
       if (e instanceof RepositoryError && e.code === "UNIQUE_VIOLATION") {
         return c.json(jsonError("CONFLICT", e.message, e.details), 409);
+      }
+      throw e;
+    }
+  });
+
+  const submitDecompositionProposalRoute = createRoute({
+    method: "post",
+    path: "/scopes/{scopeId}/decomposition-proposals",
+    request: {
+      params: z.object({ scopeId: scopeIdParam }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              expected_scope_state_version: z.number().int().nonnegative(),
+              scope_brief_version: z.string().min(1).default("brief:v1"),
+              packet_hash: z.string().min(1),
+              envelope: z.record(z.string(), z.unknown()),
+              target_project_mapping: targetProjectMappingSchema.optional(),
+              reason: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: "Decomposition proposed",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      400: {
+        description: "Invalid decomposition",
+        content: { "application/json": { schema: errorBody } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Scope not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+      409: {
+        description: "Version or stale-envelope conflict",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(submitDecompositionProposalRoute, async (c) => {
+    const { scopeId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const actor = c.get("actor") as ActorId;
+    const scope_id = scopeId as ScopeId;
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "scope.decomposition_submit",
+      scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "scope.decomposition_submit",
+        scope_id,
+        r.capability,
+        r.reason,
+        {},
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+    const parsed = architectDecompositionEnvelopeSchema.safeParse(
+      body.envelope,
+    );
+    if (!parsed.success) {
+      return c.json(
+        jsonError("INVALID_DECOMPOSITION_ENVELOPE", parsed.error.message),
+        400,
+      );
+    }
+    if (parsed.data.scope_id !== scope_id) {
+      return c.json(
+        jsonError("SCOPE_MISMATCH", "decomposition envelope scope mismatch", {
+          scope_id,
+          envelope_scope_id: parsed.data.scope_id,
+        }),
+        400,
+      );
+    }
+    try {
+      const proposal = await deps.repo.submitDecompositionProposal(
+        {
+          scope_id,
+          scope_state_version: body.expected_scope_state_version,
+          scope_brief_version: body.scope_brief_version,
+          proposed_tasks: proposalTasks(parsed.data),
+          proposed_dependencies: proposalDependencies(parsed.data),
+          target_project_mapping: body.target_project_mapping,
+          assumptions: parsed.data.role_specific.assumptions,
+          open_questions: parsed.data.role_specific.open_questions,
+          packet_hash: body.packet_hash,
+          envelope_hash: sha256Json(parsed.data),
+          envelope: parsed.data,
+        },
+        {
+          actor,
+          capability: r.capability,
+          reason: body.reason ?? "architect_envelope",
+        },
+      );
+      const scope = await deps.repo.getScope(scope_id);
+      await projectScopeStateIfMirrored(deps, {
+        scope: scope!,
+        actor,
+        capability: r.capability,
+      });
+      return c.json({ proposal, scope }, 201);
+    } catch (e) {
+      if (e instanceof RepositoryError) {
+        return c.json(
+          jsonError(
+            e.code,
+            e.message,
+            e.details,
+            e.code === "STATE_VERSION_MISMATCH",
+          ),
+          repositoryErrorStatus(e),
+        );
+      }
+      if (isPostgresUniqueViolation(e)) {
+        return c.json(
+          jsonError("CONFLICT", "decomposition already exists"),
+          409,
+        );
+      }
+      throw e;
+    }
+  });
+
+  const reviewDecompositionProposalRoute = createRoute({
+    method: "post",
+    path: "/scopes/{scopeId}/decomposition-proposals/{proposalId}/review",
+    request: {
+      params: z.object({
+        scopeId: scopeIdParam,
+        proposalId: z.string().min(1),
+      }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              envelope_hash: z.string().min(1),
+              reviewer: z.string().min(1),
+              result: decompositionReviewResultSchema,
+              reason: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Review recorded",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      400: {
+        description: "Invalid review",
+        content: { "application/json": { schema: errorBody } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Proposal not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+      409: {
+        description: "Stale proposal",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(reviewDecompositionProposalRoute, async (c) => {
+    const { scopeId, proposalId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const actor = c.get("actor") as ActorId;
+    const scope_id = scopeId as ScopeId;
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "scope.decomposition_review",
+      scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "scope.decomposition_review",
+        scope_id,
+        r.capability,
+        r.reason,
+        { proposal_id: proposalId },
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+    try {
+      const proposal = await deps.repo.recordDecompositionReview(
+        {
+          scope_id,
+          proposal_id: proposalId,
+          envelope_hash: body.envelope_hash,
+          reviewer: body.reviewer as ActorId,
+          result: body.result,
+        },
+        {
+          actor,
+          capability: r.capability,
+          reason: body.reason ?? "spec_dag_review",
+        },
+      );
+      const scope = await deps.repo.getScope(scope_id);
+      if (scope) {
+        await projectScopeStateIfMirrored(deps, {
+          scope,
+          actor,
+          capability: r.capability,
+        });
+      }
+      return c.json({ proposal, scope }, 200);
+    } catch (e) {
+      if (e instanceof RepositoryError) {
+        return c.json(
+          jsonError(
+            e.code,
+            e.message,
+            e.details,
+            e.code === "STALE_DECOMPOSITION_ENVELOPE",
+          ),
+          repositoryErrorStatus(e),
+        );
+      }
+      throw e;
+    }
+  });
+
+  const approveDecompositionProposalRoute = createRoute({
+    method: "post",
+    path: "/scopes/{scopeId}/decomposition-proposals/{proposalId}/approve",
+    request: {
+      params: z.object({
+        scopeId: scopeIdParam,
+        proposalId: z.string().min(1),
+      }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              expected_scope_state_version: z.number().int().nonnegative(),
+              envelope_hash: z.string().min(1),
+              reason: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Approved",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      400: {
+        description: "Invalid approval",
+        content: { "application/json": { schema: errorBody } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Proposal not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+      409: {
+        description: "Version or stale-envelope conflict",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(approveDecompositionProposalRoute, async (c) => {
+    const { scopeId, proposalId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const actor = c.get("actor") as ActorId;
+    const scope_id = scopeId as ScopeId;
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "scope.decomposition_approve",
+      scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "scope.decomposition_approve",
+        scope_id,
+        r.capability,
+        r.reason,
+        { proposal_id: proposalId },
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+    try {
+      const result = await deps.repo.approveDecompositionProposal(
+        {
+          scope_id,
+          proposal_id: proposalId,
+          expected_scope_state_version: body.expected_scope_state_version,
+          envelope_hash: body.envelope_hash,
+        },
+        {
+          actor,
+          capability: r.capability,
+          reason: body.reason ?? "human_spec_dag_approval",
+        },
+      );
+      await projectScopeStateIfMirrored(deps, {
+        scope: result.scope,
+        actor,
+        capability: r.capability,
+      });
+      return c.json(result, 200);
+    } catch (e) {
+      if (e instanceof RepositoryError) {
+        return c.json(
+          jsonError(
+            e.code,
+            e.message,
+            e.details,
+            e.code === "STATE_VERSION_MISMATCH",
+          ),
+          repositoryErrorStatus(e),
+        );
+      }
+      throw e;
+    }
+  });
+
+  const commitDecompositionProposalRoute = createRoute({
+    method: "post",
+    path: "/scopes/{scopeId}/decomposition-proposals/{proposalId}/commit",
+    request: {
+      params: z.object({
+        scopeId: scopeIdParam,
+        proposalId: z.string().min(1),
+      }),
+      body: {
+        content: {
+          "application/json": {
+            schema: z.object({
+              expected_scope_state_version: z.number().int().nonnegative(),
+              envelope_hash: z.string().min(1),
+              reason: z.string().min(1).optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Committed",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      400: {
+        description: "Invalid commit",
+        content: { "application/json": { schema: errorBody } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Proposal not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+      409: {
+        description: "Version or stale-envelope conflict",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(commitDecompositionProposalRoute, async (c) => {
+    const { scopeId, proposalId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const actor = c.get("actor") as ActorId;
+    const scope_id = scopeId as ScopeId;
+    const r = await assertPolicy(
+      deps.policyRepo,
+      actor,
+      "scope.decomposition_commit",
+      scope_id,
+    );
+    if (!r.allowed) {
+      await auditPolicyDeny(
+        deps.repo,
+        actor,
+        "scope.decomposition_commit",
+        scope_id,
+        r.capability,
+        r.reason,
+        { proposal_id: proposalId },
+      );
+      return c.json(
+        jsonError("POLICY_DENY", r.reason, { capability: r.capability }),
+        403,
+      );
+    }
+    try {
+      const result = await deps.repo.commitDecompositionProposal(
+        {
+          scope_id,
+          proposal_id: proposalId,
+          expected_scope_state_version: body.expected_scope_state_version,
+          envelope_hash: body.envelope_hash,
+        },
+        {
+          actor,
+          capability: r.capability,
+          reason: body.reason ?? "decomposition_commit",
+        },
+      );
+      for (const task of result.tasks) {
+        await mirrorTaskIfRequested(deps, {
+          task,
+          actor,
+          capability: r.capability,
+        });
+      }
+      await projectScopeStateIfMirrored(deps, {
+        scope: result.scope,
+        actor,
+        capability: r.capability,
+      });
+      return c.json(result, 200);
+    } catch (e) {
+      if (e instanceof RepositoryError) {
+        return c.json(
+          jsonError(
+            e.code,
+            e.message,
+            e.details,
+            e.code === "STATE_VERSION_MISMATCH",
+          ),
+          repositoryErrorStatus(e),
+        );
+      }
+      if (isPostgresUniqueViolation(e)) {
+        return c.json(
+          jsonError("CONFLICT", "DAG commit conflicts with existing rows"),
+          409,
+        );
       }
       throw e;
     }

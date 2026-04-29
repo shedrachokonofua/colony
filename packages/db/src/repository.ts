@@ -11,6 +11,7 @@ import {
   type Event,
   type EventKind,
   type Iso8601,
+  type ProviderProjectId,
   type Scope,
   type ScopeId,
   type ScopeState,
@@ -80,6 +81,88 @@ export interface WriteAuditInput {
   readonly new_state?: string;
   readonly reason?: string;
   readonly evidence?: Readonly<Record<string, unknown>>;
+}
+
+export interface ProposedDecompositionTaskInput {
+  readonly proposed_task_id: TaskId;
+  readonly title: string;
+  readonly description: string;
+  readonly acceptance_criteria: readonly string[];
+  readonly non_goals?: readonly string[];
+  readonly suggested_role?: string;
+  readonly suggested_capabilities?: readonly string[];
+  readonly estimated_effort_minutes?: number;
+}
+
+export interface ProposedDecompositionDependencyInput {
+  readonly from_task_id: TaskId;
+  readonly to_task_id: TaskId;
+  readonly kind: Extract<DependencyKind, "blocks" | "parent_child" | "related">;
+}
+
+export interface SubmitDecompositionProposalInput {
+  readonly scope_id: ScopeId;
+  readonly scope_state_version: number;
+  readonly scope_brief_version: string;
+  readonly proposed_tasks: readonly ProposedDecompositionTaskInput[];
+  readonly proposed_dependencies: readonly ProposedDecompositionDependencyInput[];
+  readonly target_project_mapping?: Readonly<Record<string, string>>;
+  readonly assumptions: readonly string[];
+  readonly open_questions: readonly string[];
+  readonly packet_hash: string;
+  readonly envelope_hash: string;
+  readonly envelope: Readonly<Record<string, unknown>>;
+}
+
+export interface RecordDecompositionReviewInput {
+  readonly scope_id: ScopeId;
+  readonly proposal_id: string;
+  readonly envelope_hash: string;
+  readonly reviewer: ActorId;
+  readonly result: "approved" | "changes_requested" | "blocked" | "escalate";
+}
+
+export interface ApproveDecompositionProposalInput {
+  readonly scope_id: ScopeId;
+  readonly proposal_id: string;
+  readonly expected_scope_state_version: number;
+  readonly envelope_hash: string;
+}
+
+export interface CommitDecompositionProposalInput {
+  readonly scope_id: ScopeId;
+  readonly proposal_id: string;
+  readonly expected_scope_state_version: number;
+  readonly envelope_hash: string;
+}
+
+export interface DecompositionProposal {
+  readonly id: string;
+  readonly scope_id: ScopeId;
+  readonly scope_state_version: number;
+  readonly scope_brief_version: string;
+  readonly status:
+    | "proposed"
+    | "review_approved"
+    | "changes_requested"
+    | "human_approved"
+    | "committed";
+  readonly proposed_tasks: readonly ProposedDecompositionTaskInput[];
+  readonly proposed_dependencies: readonly ProposedDecompositionDependencyInput[];
+  readonly target_project_mapping: Readonly<Record<string, string>>;
+  readonly assumptions: readonly string[];
+  readonly open_questions: readonly string[];
+  readonly packet_hash: string;
+  readonly envelope_hash: string;
+  readonly reviewer?: ActorId;
+  readonly reviewer_result?:
+    | "approved"
+    | "changes_requested"
+    | "blocked"
+    | "escalate";
+  readonly human_approved_by?: ActorId;
+  readonly created_at: Iso8601;
+  readonly updated_at: Iso8601;
 }
 
 /**
@@ -152,6 +235,26 @@ interface EventRow {
 
 interface AuditRow {
   id: string;
+}
+
+interface DecompositionProposalRow {
+  id: string;
+  scope_id: string;
+  scope_state_version: number;
+  scope_brief_version: string;
+  status: DecompositionProposal["status"];
+  proposed_tasks: ProposedDecompositionTaskInput[];
+  proposed_dependencies: ProposedDecompositionDependencyInput[];
+  target_project_mapping: Record<string, string>;
+  assumptions: string[];
+  open_questions: string[];
+  packet_hash: string;
+  envelope_hash: string;
+  reviewer: string | null;
+  reviewer_result: DecompositionProposal["reviewer_result"] | null;
+  human_approved_by: string | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 const toIso = (d: Date): Iso8601 => d.toISOString();
@@ -229,6 +332,30 @@ const mapAuditRow = (r: AuditRow): AuditRecord => ({
   reason: r.reason ?? undefined,
   evidence: r.evidence,
   recorded_at: toIso(r.recorded_at),
+});
+
+const mapDecompositionProposal = (
+  r: DecompositionProposalRow,
+): DecompositionProposal => ({
+  id: r.id,
+  scope_id: r.scope_id as ScopeId,
+  scope_state_version: r.scope_state_version,
+  scope_brief_version: r.scope_brief_version,
+  status: r.status,
+  proposed_tasks: r.proposed_tasks,
+  proposed_dependencies: r.proposed_dependencies,
+  target_project_mapping: r.target_project_mapping,
+  assumptions: r.assumptions,
+  open_questions: r.open_questions,
+  packet_hash: r.packet_hash,
+  envelope_hash: r.envelope_hash,
+  reviewer: r.reviewer ? (r.reviewer as ActorId) : undefined,
+  reviewer_result: r.reviewer_result ?? undefined,
+  human_approved_by: r.human_approved_by
+    ? (r.human_approved_by as ActorId)
+    : undefined,
+  created_at: toIso(r.created_at),
+  updated_at: toIso(r.updated_at),
 });
 
 // ---------------------------------------------------------------------------
@@ -492,6 +619,67 @@ export class TaskGraphRepository {
       blocked_by: upstream.map((r) => r.from_task_id as TaskId),
       blocks: downstream.map((r) => r.to_task_id as TaskId),
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Scope decomposition proposals.
+  // -------------------------------------------------------------------------
+
+  async submitDecompositionProposal(
+    input: SubmitDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<DecompositionProposal> {
+    return this.withTransaction((tx) =>
+      tx.submitDecompositionProposal(input, ctx),
+    );
+  }
+
+  async getDecompositionProposal(
+    scope_id: ScopeId,
+    proposal_id: string,
+  ): Promise<DecompositionProposal | null> {
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.pool,
+      `SELECT * FROM decomposition_proposals
+       WHERE scope_id = $1 AND id = $2`,
+      [scope_id, proposal_id],
+    );
+    return rows[0] ? mapDecompositionProposal(rows[0]) : null;
+  }
+
+  async recordDecompositionReview(
+    input: RecordDecompositionReviewInput,
+    ctx: ActorContext,
+  ): Promise<DecompositionProposal> {
+    return this.withTransaction((tx) =>
+      tx.recordDecompositionReview(input, ctx),
+    );
+  }
+
+  async approveDecompositionProposal(
+    input: ApproveDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<{
+    readonly scope: Scope;
+    readonly proposal: DecompositionProposal;
+  }> {
+    return this.withTransaction((tx) =>
+      tx.approveDecompositionProposal(input, ctx),
+    );
+  }
+
+  async commitDecompositionProposal(
+    input: CommitDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<{
+    readonly scope: Scope;
+    readonly proposal: DecompositionProposal;
+    readonly tasks: readonly Task[];
+    readonly dependencies: readonly TaskDependency[];
+  }> {
+    return this.withTransaction((tx) =>
+      tx.commitDecompositionProposal(input, ctx),
+    );
   }
 
   async listAuditForScope(
@@ -821,6 +1009,490 @@ export class TaskGraphTransaction {
     return task;
   }
 
+  async submitDecompositionProposal(
+    input: SubmitDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<DecompositionProposal> {
+    const scope = await this.lockScopeRow(input.scope_id);
+    if (!scope) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `scope not found: ${input.scope_id}`,
+        {
+          scope_id: input.scope_id,
+        },
+      );
+    }
+    if (scope.state !== "draft") {
+      throw new RepositoryError(
+        "INVALID_SCOPE_STATE",
+        "decomposition proposals can only be submitted for draft scopes",
+        { scope_id: input.scope_id, state: scope.state },
+      );
+    }
+    if (scope.state_version !== input.scope_state_version) {
+      throw new RepositoryError(
+        "STATE_VERSION_MISMATCH",
+        `scope ${input.scope_id}: expected state_version=${input.scope_state_version}, got ${scope.state_version}`,
+        {
+          scope_id: input.scope_id,
+          expected: input.scope_state_version,
+          actual: scope.state_version,
+        },
+      );
+    }
+    validateDecomposition(input);
+
+    const id = `decomp-${randomUUID()}`;
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.client,
+      `INSERT INTO decomposition_proposals
+         (id, scope_id, scope_state_version, scope_brief_version, status,
+          proposed_tasks, proposed_dependencies, target_project_mapping,
+          assumptions, open_questions, packet_hash, envelope_hash, envelope)
+       VALUES ($1, $2, $3, $4, 'proposed', $5::jsonb, $6::jsonb, $7::jsonb,
+               $8, $9, $10, $11, $12::jsonb)
+       RETURNING *`,
+      [
+        id,
+        input.scope_id,
+        input.scope_state_version,
+        input.scope_brief_version,
+        JSON.stringify(input.proposed_tasks),
+        JSON.stringify(input.proposed_dependencies),
+        JSON.stringify(input.target_project_mapping ?? {}),
+        [...input.assumptions],
+        [...input.open_questions],
+        input.packet_hash,
+        input.envelope_hash,
+        JSON.stringify(input.envelope),
+      ],
+    );
+    const proposal = mapDecompositionProposal(rows[0]);
+
+    await this.writeAudit({
+      scope_id: input.scope_id,
+      actor: ctx.actor,
+      action: "decomposition.proposed",
+      capability: ctx.capability,
+      target_kind: "decomposition_proposal",
+      target_id: proposal.id,
+      reason: ctx.reason,
+      evidence: {
+        scope_state_version: input.scope_state_version,
+        task_count: proposal.proposed_tasks.length,
+        dependency_count: proposal.proposed_dependencies.length,
+        packet_hash: proposal.packet_hash,
+        envelope_hash: proposal.envelope_hash,
+      },
+    });
+    await this.recordEvent({
+      scope_id: input.scope_id,
+      kind: "envelope_received",
+      actor: ctx.actor,
+      payload: {
+        role: "architect",
+        proposal_id: proposal.id,
+        packet_hash: proposal.packet_hash,
+        envelope_hash: proposal.envelope_hash,
+      },
+    });
+
+    await this.openSpecDagGate(input.scope_id);
+    await this.updateScopeState(
+      input.scope_id,
+      scope.state_version,
+      "decomposition_proposed",
+      {
+        ...ctx,
+        reason: ctx.reason ?? "architect_decomposition_envelope",
+      },
+    );
+    return proposal;
+  }
+
+  async recordDecompositionReview(
+    input: RecordDecompositionReviewInput,
+    ctx: ActorContext,
+  ): Promise<DecompositionProposal> {
+    const proposal = await this.lockDecompositionProposalRow(
+      input.scope_id,
+      input.proposal_id,
+    );
+    if (!proposal) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        "decomposition proposal not found",
+        {
+          scope_id: input.scope_id,
+          proposal_id: input.proposal_id,
+        },
+      );
+    }
+    if (proposal.envelope_hash !== input.envelope_hash) {
+      throw new RepositoryError(
+        "STALE_DECOMPOSITION_ENVELOPE",
+        "decomposition envelope hash mismatch",
+        {
+          expected: proposal.envelope_hash,
+          actual: input.envelope_hash,
+        },
+      );
+    }
+    if (proposal.status !== "proposed") {
+      throw new RepositoryError(
+        "INVALID_DECOMPOSITION_STATUS",
+        "proposal is not awaiting review",
+        {
+          status: proposal.status,
+        },
+      );
+    }
+
+    const status =
+      input.result === "approved" ? "review_approved" : "changes_requested";
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.client,
+      `UPDATE decomposition_proposals
+       SET status = $3,
+           reviewer = $4,
+           reviewer_result = $5,
+           reviewed_at = now(),
+           updated_at = now()
+       WHERE scope_id = $1 AND id = $2
+       RETURNING *`,
+      [input.scope_id, input.proposal_id, status, input.reviewer, input.result],
+    );
+    const updated = mapDecompositionProposal(rows[0]);
+    await this.writeAudit({
+      scope_id: input.scope_id,
+      actor: ctx.actor,
+      action:
+        input.result === "approved"
+          ? "decomposition.review.approved"
+          : "decomposition.review.changes_requested",
+      capability: ctx.capability,
+      target_kind: "decomposition_proposal",
+      target_id: input.proposal_id,
+      reason: ctx.reason,
+      evidence: {
+        reviewer: input.reviewer,
+        result: input.result,
+        envelope_hash: input.envelope_hash,
+      },
+    });
+    await this.recordEvent({
+      scope_id: input.scope_id,
+      kind: "review_resolved",
+      actor: input.reviewer,
+      payload: {
+        proposal_id: input.proposal_id,
+        result: input.result,
+        envelope_hash: input.envelope_hash,
+      },
+    });
+
+    if (input.result !== "approved") {
+      const scope = await this.lockScopeRow(input.scope_id);
+      if (scope?.state === "decomposition_proposed") {
+        await this.updateScopeState(
+          input.scope_id,
+          scope.state_version,
+          "draft",
+          {
+            ...ctx,
+            reason: "spec_dag_changes_requested",
+          },
+        );
+      }
+    }
+    return updated;
+  }
+
+  async approveDecompositionProposal(
+    input: ApproveDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<{
+    readonly scope: Scope;
+    readonly proposal: DecompositionProposal;
+  }> {
+    const scope = await this.lockScopeRow(input.scope_id);
+    if (!scope) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `scope not found: ${input.scope_id}`,
+        {
+          scope_id: input.scope_id,
+        },
+      );
+    }
+    if (scope.state_version !== input.expected_scope_state_version) {
+      throw new RepositoryError(
+        "STATE_VERSION_MISMATCH",
+        `scope ${input.scope_id}: expected state_version=${input.expected_scope_state_version}, got ${scope.state_version}`,
+        {
+          scope_id: input.scope_id,
+          expected: input.expected_scope_state_version,
+          actual: scope.state_version,
+        },
+      );
+    }
+    if (scope.state !== "decomposition_proposed") {
+      throw new RepositoryError(
+        "INVALID_SCOPE_STATE",
+        "scope is not awaiting decomposition approval",
+        {
+          scope_id: input.scope_id,
+          state: scope.state,
+        },
+      );
+    }
+    const proposal = await this.lockDecompositionProposalRow(
+      input.scope_id,
+      input.proposal_id,
+    );
+    if (!proposal) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        "decomposition proposal not found",
+        {
+          scope_id: input.scope_id,
+          proposal_id: input.proposal_id,
+        },
+      );
+    }
+    if (proposal.envelope_hash !== input.envelope_hash) {
+      throw new RepositoryError(
+        "STALE_DECOMPOSITION_ENVELOPE",
+        "decomposition envelope hash mismatch",
+        {
+          expected: proposal.envelope_hash,
+          actual: input.envelope_hash,
+        },
+      );
+    }
+    if (
+      proposal.status !== "review_approved" ||
+      proposal.reviewer_result !== "approved"
+    ) {
+      throw new RepositoryError(
+        "REVIEW_NOT_APPROVED",
+        "spec/DAG proposal needs reviewer approval before human approval",
+        {
+          status: proposal.status,
+          reviewer_result: proposal.reviewer_result,
+        },
+      );
+    }
+
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.client,
+      `UPDATE decomposition_proposals
+       SET status = 'human_approved',
+           human_approved_by = $3,
+           human_approved_at = now(),
+           updated_at = now()
+       WHERE scope_id = $1 AND id = $2
+       RETURNING *`,
+      [input.scope_id, input.proposal_id, ctx.actor],
+    );
+    const updatedProposal = mapDecompositionProposal(rows[0]);
+    await this.writeAudit({
+      scope_id: input.scope_id,
+      actor: ctx.actor,
+      action: "decomposition.human_approved",
+      capability: ctx.capability,
+      target_kind: "decomposition_proposal",
+      target_id: input.proposal_id,
+      reason: ctx.reason,
+      evidence: { envelope_hash: input.envelope_hash },
+    });
+    await this.recordEvent({
+      scope_id: input.scope_id,
+      kind: "approval_recorded",
+      actor: ctx.actor,
+      payload: {
+        proposal_id: input.proposal_id,
+        envelope_hash: input.envelope_hash,
+      },
+    });
+    const updatedScope = await this.updateScopeState(
+      input.scope_id,
+      scope.state_version,
+      "decomposition_approved",
+      { ...ctx, reason: ctx.reason ?? "spec_dag_human_approved" },
+    );
+    return { scope: updatedScope, proposal: updatedProposal };
+  }
+
+  async commitDecompositionProposal(
+    input: CommitDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<{
+    readonly scope: Scope;
+    readonly proposal: DecompositionProposal;
+    readonly tasks: readonly Task[];
+    readonly dependencies: readonly TaskDependency[];
+  }> {
+    const scope = await this.lockScopeRow(input.scope_id);
+    if (!scope) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `scope not found: ${input.scope_id}`,
+        {
+          scope_id: input.scope_id,
+        },
+      );
+    }
+    if (scope.state_version !== input.expected_scope_state_version) {
+      throw new RepositoryError(
+        "STATE_VERSION_MISMATCH",
+        `scope ${input.scope_id}: expected state_version=${input.expected_scope_state_version}, got ${scope.state_version}`,
+        {
+          scope_id: input.scope_id,
+          expected: input.expected_scope_state_version,
+          actual: scope.state_version,
+        },
+      );
+    }
+    if (scope.state !== "decomposition_approved") {
+      throw new RepositoryError(
+        "INVALID_SCOPE_STATE",
+        "scope is not approved for DAG commit",
+        {
+          scope_id: input.scope_id,
+          state: scope.state,
+        },
+      );
+    }
+    const proposalRow = await this.lockDecompositionProposalRow(
+      input.scope_id,
+      input.proposal_id,
+    );
+    if (!proposalRow) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        "decomposition proposal not found",
+        {
+          scope_id: input.scope_id,
+          proposal_id: input.proposal_id,
+        },
+      );
+    }
+    const proposal = mapDecompositionProposal(proposalRow);
+    if (proposal.envelope_hash !== input.envelope_hash) {
+      throw new RepositoryError(
+        "STALE_DECOMPOSITION_ENVELOPE",
+        "decomposition envelope hash mismatch",
+        {
+          expected: proposal.envelope_hash,
+          actual: input.envelope_hash,
+        },
+      );
+    }
+    if (proposal.status !== "human_approved") {
+      throw new RepositoryError(
+        "DECOMPOSITION_NOT_APPROVED",
+        "proposal needs human approval before commit",
+        {
+          status: proposal.status,
+        },
+      );
+    }
+    const { rows: existingTasks } = await queryRows<{ id: string }>(
+      this.client,
+      `SELECT id FROM tasks WHERE scope_id = $1 LIMIT 1`,
+      [input.scope_id],
+    );
+    if (existingTasks.length > 0) {
+      throw new RepositoryError(
+        "DAG_ALREADY_COMMITTED",
+        "scope already has task rows",
+        {
+          scope_id: input.scope_id,
+        },
+      );
+    }
+
+    const primaryTarget = await this.primaryScopeTarget(input.scope_id);
+    const tasks: Task[] = [];
+    for (const proposed of proposal.proposed_tasks) {
+      const task = await this.createTask(
+        {
+          id: proposed.proposed_task_id,
+          scope_id: input.scope_id,
+          title: proposed.title,
+          description: proposed.description,
+          acceptance_criteria: proposed.acceptance_criteria,
+          non_goals: proposed.non_goals ?? [],
+          state: "ready",
+        },
+        { ...ctx, reason: "decomposition_commit" },
+      );
+      tasks.push(task);
+      const projectId =
+        proposal.target_project_mapping[task.id] ?? primaryTarget;
+      if (!projectId) {
+        throw new RepositoryError(
+          "MISSING_TASK_TARGET",
+          "committed task has no provider project target",
+          {
+            task_id: task.id,
+          },
+        );
+      }
+      await this.linkTaskTarget(task.id, projectId as ProviderProjectId);
+    }
+
+    const dependencies: TaskDependency[] = [];
+    for (const dep of proposal.proposed_dependencies) {
+      dependencies.push(
+        await this.addDependency(dep.from_task_id, dep.to_task_id, dep.kind, {
+          ...ctx,
+          reason: "decomposition_commit",
+        }),
+      );
+    }
+
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.client,
+      `UPDATE decomposition_proposals
+       SET status = 'committed',
+           committed_at = now(),
+           updated_at = now()
+       WHERE scope_id = $1 AND id = $2
+       RETURNING *`,
+      [input.scope_id, input.proposal_id],
+    );
+    await this.closeSpecDagGate(input.scope_id);
+    await this.writeAudit({
+      scope_id: input.scope_id,
+      actor: ctx.actor,
+      action: "decomposition.committed",
+      capability: ctx.capability,
+      target_kind: "decomposition_proposal",
+      target_id: input.proposal_id,
+      reason: ctx.reason,
+      evidence: {
+        task_ids: tasks.map((task) => task.id),
+        dependency_count: dependencies.length,
+        envelope_hash: input.envelope_hash,
+      },
+    });
+    const activeScope = await this.updateScopeState(
+      input.scope_id,
+      scope.state_version,
+      "active",
+      { ...ctx, reason: ctx.reason ?? "decomposition_committed" },
+    );
+    return {
+      scope: activeScope,
+      proposal: mapDecompositionProposal(rows[0]),
+      tasks,
+      dependencies,
+    };
+  }
+
   async recordEvent(input: RecordEventInput): Promise<Event> {
     const id = randomUUID();
     const { rows } = await queryRows<EventRow>(
@@ -883,11 +1555,161 @@ export class TaskGraphTransaction {
     );
     return rows[0];
   }
+
+  private async lockDecompositionProposalRow(
+    scope_id: ScopeId,
+    proposal_id: string,
+  ): Promise<DecompositionProposalRow | undefined> {
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.client,
+      `SELECT * FROM decomposition_proposals
+       WHERE scope_id = $1 AND id = $2
+       FOR UPDATE`,
+      [scope_id, proposal_id],
+    );
+    return rows[0];
+  }
+
+  private async openSpecDagGate(scope_id: ScopeId): Promise<void> {
+    const existing = await queryRows<{ id: string }>(
+      this.client,
+      `SELECT id FROM gates
+       WHERE scope_id = $1
+         AND task_id IS NULL
+         AND kind = 'spec_dag'
+         AND status IN ('pending', 'open')
+       LIMIT 1`,
+      [scope_id],
+    );
+    if (existing.rows.length > 0) return;
+    await queryRows(
+      this.client,
+      `INSERT INTO gates
+         (id, scope_id, task_id, kind, status, required_approvals, opened_at)
+       VALUES ($1, $2, NULL, 'spec_dag', 'open', $3, now())`,
+      [`gate-${randomUUID()}`, scope_id, ["human"]],
+    );
+  }
+
+  private async closeSpecDagGate(scope_id: ScopeId): Promise<void> {
+    await queryRows(
+      this.client,
+      `UPDATE gates
+       SET status = 'closed',
+           closed_at = now()
+       WHERE scope_id = $1
+         AND task_id IS NULL
+         AND kind = 'spec_dag'
+         AND status IN ('pending', 'open')`,
+      [scope_id],
+    );
+  }
+
+  private async primaryScopeTarget(
+    scope_id: ScopeId,
+  ): Promise<ProviderProjectId | undefined> {
+    const { rows } = await queryRows<{ provider_project_id: string }>(
+      this.client,
+      `SELECT provider_project_id FROM scope_targets
+       WHERE scope_id = $1 AND role = 'primary'`,
+      [scope_id],
+    );
+    return rows[0]?.provider_project_id as ProviderProjectId | undefined;
+  }
+
+  private async linkTaskTarget(
+    task_id: TaskId,
+    provider_project_id: ProviderProjectId,
+  ): Promise<void> {
+    await queryRows(
+      this.client,
+      `INSERT INTO task_targets (id, task_id, provider_project_id, role)
+       VALUES ($1, $2, $3, 'primary')
+       ON CONFLICT ON CONSTRAINT task_targets_project_unique DO NOTHING`,
+      [randomUUID(), task_id, provider_project_id],
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Small typed query helper.
 // ---------------------------------------------------------------------------
+
+function validateDecomposition(input: SubmitDecompositionProposalInput): void {
+  if (input.proposed_tasks.length === 0) {
+    throw new RepositoryError(
+      "EMPTY_DECOMPOSITION",
+      "decomposition has no tasks",
+      {
+        scope_id: input.scope_id,
+      },
+    );
+  }
+  const ids = new Set<string>();
+  for (const task of input.proposed_tasks) {
+    if (ids.has(task.proposed_task_id)) {
+      throw new RepositoryError(
+        "DUPLICATE_TASK_ID",
+        "decomposition repeats a task id",
+        {
+          task_id: task.proposed_task_id,
+        },
+      );
+    }
+    ids.add(task.proposed_task_id);
+    if (!task.proposed_task_id.startsWith(`${input.scope_id}.`)) {
+      throw new RepositoryError(
+        "TASK_SCOPE_MISMATCH",
+        "proposed task id does not belong to scope",
+        {
+          scope_id: input.scope_id,
+          task_id: task.proposed_task_id,
+        },
+      );
+    }
+    if (task.acceptance_criteria.length === 0) {
+      throw new RepositoryError(
+        "MISSING_ACCEPTANCE_CRITERIA",
+        "proposed task has no acceptance criteria",
+        {
+          task_id: task.proposed_task_id,
+        },
+      );
+    }
+  }
+  for (const dep of input.proposed_dependencies) {
+    if (!ids.has(dep.from_task_id) || !ids.has(dep.to_task_id)) {
+      throw new RepositoryError(
+        "UNKNOWN_DEPENDENCY_TASK",
+        "dependency references a task outside the proposal",
+        {
+          from_task_id: dep.from_task_id,
+          to_task_id: dep.to_task_id,
+        },
+      );
+    }
+    if (dep.from_task_id === dep.to_task_id) {
+      throw new RepositoryError(
+        "SELF_DEPENDENCY",
+        "dependency cannot point at the same task",
+        {
+          task_id: dep.from_task_id,
+        },
+      );
+    }
+  }
+  for (const taskId of Object.keys(input.target_project_mapping ?? {})) {
+    if (!ids.has(taskId)) {
+      throw new RepositoryError(
+        "UNKNOWN_TARGET_TASK",
+        "target mapping references a task outside the proposal",
+        {
+          task_id: taskId,
+        },
+      );
+    }
+  }
+}
 
 async function queryRows<R>(
   exec: Executor,
