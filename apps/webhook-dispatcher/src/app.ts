@@ -2,8 +2,13 @@ import { timingSafeEqual } from "node:crypto";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Connection, Client as TemporalClient } from "@temporalio/client";
 import { env } from "@colony/config";
-import { createPool, IdempotencyRepository, type Pool } from "@colony/db";
-import { isScopeId, isTaskId } from "@colony/domain";
+import {
+  createPool,
+  IdempotencyRepository,
+  ProviderProjectRepository,
+  type Pool,
+} from "@colony/db";
+import { isScopeId, isTaskId, type ProviderEntityKind } from "@colony/domain";
 import {
   parseProviderCommand,
   type ProviderCommand,
@@ -97,10 +102,28 @@ export interface SupervisorSignalDispatcher {
   ) => Promise<{ readonly workflow_id: string }>;
 }
 
+/**
+ * Resolves a provider note's "noteable" (the issue/MR the comment is on)
+ * to a Colony mirror so the dispatcher can tell if a `/approve` was
+ * posted on a scope-level issue (decomposition gate) or a task-level
+ * one. Implementations query `provider_mirrors`.
+ */
+export interface MirrorLookup {
+  readonly findMirror: (input: {
+    readonly provider: string;
+    readonly provider_id: string;
+    readonly provider_project_id?: string;
+  }) => Promise<{
+    readonly entity_kind: ProviderEntityKind;
+    readonly colony_id: string;
+  } | null>;
+}
+
 export interface WebhookDispatcherDeps {
   readonly verifier: WebhookSignatureVerifier;
   readonly dedup: WebhookDedupStore;
   readonly supervisor: SupervisorSignalDispatcher;
+  readonly mirrors?: MirrorLookup;
 }
 
 interface GitLabWebhookBody {
@@ -197,10 +220,25 @@ function getDefaultDeps(): WebhookDispatcherDeps {
       connectionString: cfg.DATABASE_URL,
       role: "colony_writer",
     });
+    const providerProjects = new ProviderProjectRepository(pool);
     deps = {
       verifier: new GitLabTokenVerifier(cfg.GITLAB_WEBHOOK_SECRET),
       dedup: new IdempotencyRepository(pool),
       supervisor: new TemporalSupervisorSignalDispatcher(),
+      mirrors: {
+        async findMirror(input) {
+          const row = await providerProjects.findMirrorByProviderRef({
+            provider: input.provider,
+            provider_id: input.provider_id,
+            provider_project_id: input.provider_project_id,
+          });
+          if (!row) return null;
+          return {
+            entity_kind: row.entity_kind,
+            colony_id: row.colony_id,
+          };
+        },
+      },
     };
   }
   return deps;
@@ -400,6 +438,47 @@ function classificationForComment(
     attributes: {},
   };
 }
+
+/**
+ * After classification, look up the noteable's Colony mirror so a
+ * `/approve` posted on a scope-level issue routes to the decomposition
+ * gate, not a task gate. Mutates `signal.attributes` in place to keep
+ * the signal shape simple. Idempotent — calling twice is safe.
+ *
+ * Resolution order for the noteable's provider_id:
+ * 1. `signal.reference.object_id` (the noteable's ID, captured by
+ *    classifier from `objectAttributes.noteable_id`/`target_id` etc.)
+ * 2. `signal.object_id` as a last resort
+ */
+export async function enrichSignalWithMirrorContext(
+  signal: ProviderEventSignal,
+  mirrors: MirrorLookup,
+): Promise<void> {
+  const commandKind = signal.attributes?.command_kind;
+  if (typeof commandKind !== "string") return;
+  const noteableId =
+    signal.reference?.object_id ?? signal.object_id ?? undefined;
+  if (!noteableId) return;
+  const mirror = await mirrors.findMirror({
+    provider: signal.provider,
+    provider_id: noteableId,
+    provider_project_id: signal.provider_project_id,
+  });
+  if (!mirror) return;
+  const target =
+    mirror.entity_kind === "scope" ? "scope_decomposition" : mirror.entity_kind;
+  // attributes is readonly; rebuild the same object with the extra key.
+  // We reassign through `as` because the upstream type is a frozen
+  // Record; webhook dispatcher owns the only writes to it pre-dispatch.
+  const enriched: Record<string, JsonScalar> = {
+    ...(signal.attributes ?? {}),
+    command_target: target,
+    command_target_colony_id: mirror.colony_id,
+  };
+  (signal as { attributes: typeof enriched }).attributes = enriched;
+}
+
+type JsonScalar = string | number | boolean | null;
 
 export function classifyGitLabWebhook(input: {
   readonly headers: Headers;
@@ -616,6 +695,13 @@ export function buildApp(
           error: classified.reason,
         },
         400,
+      );
+    }
+
+    if (depsForRequest.mirrors) {
+      await enrichSignalWithMirrorContext(
+        classified.signal,
+        depsForRequest.mirrors,
       );
     }
 

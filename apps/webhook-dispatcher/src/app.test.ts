@@ -6,6 +6,8 @@ import {
 import {
   buildApp,
   classifyGitLabWebhook,
+  enrichSignalWithMirrorContext,
+  type MirrorLookup,
   type WebhookDispatcherDeps,
 } from "./app.js";
 
@@ -394,5 +396,61 @@ describe("@colony/webhook-dispatcher", () => {
     expect(approval.kind).toBe("approval");
     expect(mrUpdate.kind).toBe("context_update");
     expect(pipeline.kind).toBe("context_update");
+  });
+
+  describe("enrichSignalWithMirrorContext", () => {
+    function commandSignal(
+      overrides: Partial<ProviderEventSignal> = {},
+    ): ProviderEventSignal {
+      return {
+        provider: "gitlab",
+        event_type: "Note Hook",
+        event_id: "evt-cmd-1",
+        object_kind: "note",
+        object_id: "note-7",
+        provider_project_id: "49",
+        reference: { provider: "gitlab", object_id: "issue-100" },
+        attributes: { command_kind: "approve" },
+        ...overrides,
+      };
+    }
+    const stubMirrors = (
+      result: Awaited<ReturnType<MirrorLookup["findMirror"]>>,
+    ): MirrorLookup => ({ findMirror: () => Promise.resolve(result) });
+
+    it("tags scope-level commands with command_target=scope_decomposition", async () => {
+      const signal = commandSignal();
+      await enrichSignalWithMirrorContext(
+        signal,
+        stubMirrors({ entity_kind: "scope", colony_id: "col-rt" }),
+      );
+      expect(signal.attributes?.command_target).toBe("scope_decomposition");
+      expect(signal.attributes?.command_target_colony_id).toBe("col-rt");
+    });
+
+    it("tags task-level commands with command_target=task", async () => {
+      const signal = commandSignal();
+      await enrichSignalWithMirrorContext(
+        signal,
+        stubMirrors({ entity_kind: "task", colony_id: "col-rt.1" }),
+      );
+      expect(signal.attributes?.command_target).toBe("task");
+      expect(signal.attributes?.command_target_colony_id).toBe("col-rt.1");
+    });
+
+    it("is a no-op when the mirror lookup returns null", async () => {
+      const signal = commandSignal();
+      await enrichSignalWithMirrorContext(signal, stubMirrors(null));
+      expect(signal.attributes?.command_target).toBeUndefined();
+    });
+
+    it("is a no-op when the signal has no command_kind", async () => {
+      const signal = commandSignal({ attributes: {} });
+      await enrichSignalWithMirrorContext(
+        signal,
+        stubMirrors({ entity_kind: "scope", colony_id: "col-rt" }),
+      );
+      expect(signal.attributes?.command_target).toBeUndefined();
+    });
   });
 });

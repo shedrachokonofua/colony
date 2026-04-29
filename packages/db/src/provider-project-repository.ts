@@ -324,6 +324,36 @@ export class ProviderProjectRepository {
     return mapMirror(rows[0]);
   }
 
+  /**
+   * Resolve a provider reference (provider + provider_id, optionally
+   * scoped by provider_project_id for multi-repo disambiguation) to its
+   * Colony mirror row. The unique index on
+   * (provider, entity_kind, provider_id, COALESCE(provider_project_id,''))
+   * means in practice (provider, provider_id, project) is unique across
+   * entity_kinds for a single provider artifact, so this returns the
+   * single matching row regardless of entity_kind.
+   */
+  async findMirrorByProviderRef(input: {
+    readonly provider: string;
+    readonly provider_id: string;
+    readonly provider_project_id?: string;
+  }): Promise<ProviderMirror | null> {
+    const params: unknown[] = [input.provider, input.provider_id];
+    let projectClause = "";
+    if (input.provider_project_id) {
+      params.push(input.provider_project_id);
+      projectClause = `AND provider_project_id = $${params.length}`;
+    }
+    const { rows } = await this.pool.query<ProviderMirrorRow>(
+      `SELECT * FROM provider_mirrors
+       WHERE provider = $1 AND provider_id = $2 ${projectClause}
+       ORDER BY projected_at DESC NULLS LAST
+       LIMIT 1`,
+      params,
+    );
+    return rows[0] ? mapMirror(rows[0]) : null;
+  }
+
   async listMirrorsForColony(input: {
     readonly colony_id: string;
     readonly entity_kind?: ProviderEntityKind;

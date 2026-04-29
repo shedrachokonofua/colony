@@ -647,6 +647,36 @@ export class TaskGraphRepository {
     return rows[0] ? mapDecompositionProposal(rows[0]) : null;
   }
 
+  /**
+   * Latest active proposal for a scope, optionally filtered by status.
+   * "Active" = not in `committed` (committed proposals have already
+   * created tasks; we should never re-review a committed proposal).
+   * Used by the webhook -> workflow path that resolves a scope-level
+   * `/approve` or `/changes` to a specific proposal at command time.
+   */
+  async getLatestDecompositionProposal(
+    scope_id: ScopeId,
+    options: {
+      readonly status?: DecompositionProposal["status"];
+    } = {},
+  ): Promise<DecompositionProposal | null> {
+    const params: unknown[] = [scope_id];
+    let statusClause = "AND status <> 'committed'";
+    if (options.status) {
+      params.push(options.status);
+      statusClause = `AND status = $${params.length}`;
+    }
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.pool,
+      `SELECT * FROM decomposition_proposals
+       WHERE scope_id = $1 ${statusClause}
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      params,
+    );
+    return rows[0] ? mapDecompositionProposal(rows[0]) : null;
+  }
+
   async recordDecompositionReview(
     input: RecordDecompositionReviewInput,
     ctx: ActorContext,

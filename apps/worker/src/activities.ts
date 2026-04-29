@@ -27,6 +27,11 @@ import {
   type StartDecompositionReviewRunResult,
 } from "./decomposition-review-run.js";
 import {
+  createApplyDecompositionCommand,
+  type ApplyDecompositionCommandInput,
+  type ApplyDecompositionCommandResult,
+} from "./decomposition-command.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -193,6 +198,15 @@ export async function startDecompositionReviewRun(
     repo: getRepository(),
     providerProjects: getProviderProjects(),
     agentRuntime: await getAgentRuntime("reviewer"),
+  });
+  return run(input);
+}
+
+export async function applyDecompositionCommand(
+  input: ApplyDecompositionCommandInput,
+): Promise<ApplyDecompositionCommandResult> {
+  const run = createApplyDecompositionCommand({
+    repo: getRepository(),
   });
   return run(input);
 }
@@ -550,6 +564,7 @@ export const activities = {
   claimReadyTask,
   readScopeState,
   recordWorkflowEvent,
+  applyDecompositionCommand,
   startArchitectRun,
   startDecompositionReviewRun,
   startDeveloperRun,

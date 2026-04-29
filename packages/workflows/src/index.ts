@@ -278,6 +278,17 @@ export type CloseResult =
       readonly final_state: TaskLifecycleState;
     };
 
+export type DecompositionCommandResult =
+  | { readonly applied: false; readonly reason: string }
+  | {
+      readonly applied: true;
+      readonly proposal_id: string;
+      readonly action:
+        | "review_recorded"
+        | "human_approved"
+        | "changes_requested";
+    };
+
 export interface SupervisorActivities {
   readonly readScopeState: (input: {
     readonly scope_id: ScopeId;
@@ -328,6 +339,12 @@ export interface SupervisorActivities {
     readonly merge_commit_sha?: string;
     readonly verified_by_webhook?: boolean;
   }) => Promise<CloseResult>;
+  readonly applyDecompositionCommand: (input: {
+    readonly scope_id: ScopeId;
+    readonly action: "approve" | "changes";
+    readonly actor: string;
+    readonly reason?: string;
+  }) => Promise<DecompositionCommandResult>;
 }
 
 export const providerEventSignal =
@@ -515,6 +532,26 @@ export async function scopeSupervisorWorkflow(
           status: signal.payload.status,
         });
         taskIdsToEvaluate.push(signal.payload.task_id);
+      }
+      if (signal.name === "provider_event") {
+        const attrs = signal.payload.attributes;
+        const target = attrs?.command_target;
+        const kind = attrs?.command_kind;
+        if (
+          target === "scope_decomposition" &&
+          (kind === "approve" || kind === "changes")
+        ) {
+          const reason =
+            kind === "changes" && typeof attrs?.command_prose === "string"
+              ? attrs.command_prose
+              : undefined;
+          await activities.applyDecompositionCommand({
+            scope_id,
+            action: kind === "approve" ? "approve" : "changes",
+            actor: signal.payload.actor ?? "unknown",
+            reason,
+          });
+        }
       }
       signal = queue.shift();
     }
