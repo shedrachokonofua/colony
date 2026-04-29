@@ -41,7 +41,7 @@ Without a clear ownership split, two failure modes appear:
 
 ### What Aether owns (in `~/projects/aether`)
 
-- **The cluster** — Talos nodes, control plane, upgrades, Cilium, Istio Ambient, Gateway API main Gateway listening on `*.apps.home.shdr.ch`, cert-manager + step-issuer, Crossplane.
+- **The cluster** — Talos nodes, control plane, upgrades, Cilium, Istio Ambient, Gateway API main Gateway listening on `*.home.shdr.ch`, cert-manager + step-issuer, Crossplane.
 - **The `aether-k8s` GitLab Agent.** Already authorizes the `so` group (see `.gitlab/agents/aether-k8s/config.yaml`). Colony reads this — no Aether change required for deploy access.
 - **The GitLab Kubernetes runner pool (`gitlab-runner-k8s`)** tagged `buildah`. Colony's image-build jobs target it.
 - **OpenBao** at `bao.home.shdr.ch` (host-level deploy at `~/projects/aether/tofu/home/openbao_*.tf`). Colony depends on Aether adding a `vault_jwt_auth_backend` for Colony's CI OIDC tokens (modeled on `openbao_seven30.tf`) and a `kv/colony/*` mount path policy.

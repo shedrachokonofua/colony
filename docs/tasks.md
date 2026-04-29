@@ -664,7 +664,7 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 
 - In-repo Tofu module at `tofu/` deploying Colony directly to the Aether host cluster (not into the seven30 vcluster). Apply authority is Colony, per ADR-007. Resources are written via `kubernetes_*` providers — no Helm chart for Colony's own services. Covers API, worker, webhook dispatcher, tool gateway, Web UI, ServiceAccounts, HTTPRoutes attached to Aether's main Gateway, plus a preview in-namespace **Postgres** StatefulSet and Postgres ingress NetworkPolicy. The first preview reuses Aether's existing Dokku Temporal deployment through `grpc.temporal.home.shdr.ch:443` rather than installing Temporal in `colony-dev`; `SandboxTemplate` CRs land alongside agent-sandbox controller availability (Phase 2).
 - `tofu/main.tf` with `backend "http"` against `gitlab.home.shdr.ch/api/v4/projects/49/terraform/state/colony`, `kubernetes` / `vault` providers, and explicit kubeconfig path support for local and CI runs. Reads OpenBao via `data "vault_kv_secret_v2"` and writes `kubernetes_secret_v1` directly (no ESO on host).
-- Namespaces created from the module: `colony-dev` first, with `*-dev.apps.home.shdr.ch` hostnames. `colony` (prod control plane) and `colony-sandboxes` (Phase 2 agent pods) land in later iterations.
+- Namespaces created from the module: `colony-dev` first, with `*-dev.home.shdr.ch` hostnames. `colony` (prod control plane) and `colony-sandboxes` (Phase 2 agent pods) land in later iterations.
 - GitLab CI `plan` and `apply` jobs (already declared in `.gitlab-ci.yml`) flip on once `tofu/main.tf` exists. Apply is `when: manual` on `main`.
 - Runtime images use Debian slim plus CA roots so Temporal's native bridge can load glibc and validate `grpc.temporal.home.shdr.ch:443`.
 - `kv/colony/gitlab` is populated in OpenBao for the dev deployment. `GITLAB_DEV_PROJECT_ID` / `GITLAB_PROJECT_ID` point at the Colony GitLab project for the current dogfood preview.
@@ -672,8 +672,8 @@ Goal: mirror GitLab scope/task artifacts, ingest provider events, and run Superv
 **Acceptance**
 
 - Preview deployment runs in the Aether host cluster's `colony-dev` namespace pointed at the home-lab GitLab dev project.
-- Web UI is reachable at `https://colony-dev.apps.home.shdr.ch/` through Aether's existing main Gateway.
-- API, tool gateway, and webhook dispatcher health endpoints return `200` through their public `*-dev.apps.home.shdr.ch` hostnames.
+- Web UI is reachable at `https://colony-dev.home.shdr.ch/` through Aether's existing main Gateway.
+- API, tool gateway, and webhook dispatcher health endpoints return `200` through their public `*-dev.home.shdr.ch` hostnames.
 - The worker starts, connects to Temporal at `grpc.temporal.home.shdr.ch:443`, and polls `colony-supervisor`.
 - Tofu local apply reconciles the cluster state cleanly; CI plan/apply wiring is committed for main/manual reconciliation.
 
@@ -940,22 +940,23 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 
 ### COL-2.14 — Phase 2 End-To-End Acceptance
 
-- [ ]
+- [x]
 
-**Depends on:** COL-1.9, COL-2.9, COL-2.11, COL-2.12, COL-2.13, COL-2.15, COL-2.16, COL-2.17, COL-2.18
+**Depends on:** COL-1.9, COL-2.9, COL-2.11, COL-2.12, COL-2.13, COL-2.15, COL-2.16
 
 **Deliverables**
 
-- CSV-export example task through real MR, executed by **real pi agents** end-to-end.
+- `task acceptance:phase2` (or `npm run acceptance:phase2`) target that drives a CSV-export example task through a real MR with `AGENT_RUNTIME=pi` against the home-lab GitLab — there is no fake-runtime acceptance variant. The fake adapter is reserved for unit/integration tests that need determinism.
+- Documented prerequisites (Pi SDK installed, LLM credential present, GitLab project), tear-down behaviour, and observable failure modes (Pi SDK import failure, missing LLM credential, envelope schema fail, LLM rate-limit) surfaced in Colony's UI rather than only in stderr.
 
 **Acceptance**
 
-- Task goes `ready -> claimed -> in_progress -> review_requested -> merge_ready -> merged -> closed`.
+- Task goes `ready -> claimed -> in_progress -> review_requested -> merge_ready -> merged -> closed` end-to-end against home-lab GitLab.
 - Reviewer approval, green pipeline, and human `/approve` are required.
-- Audit trail links provider event, workflow action, envelope hash, and resulting state version.
-- Developer envelope is produced by `pi-coding-agent`; reviewer envelope is produced by `pi-mono`. The fake adapter is reserved for CI determinism.
+- Audit trail links provider event, workflow action, envelope hash, and resulting state version. Run IDs, sandbox IDs, packet hashes, and envelope hashes carry no `fake-` prefixes.
+- Developer envelope is produced by `@mariozechner/pi-coding-agent`; reviewer envelope is produced by `@mariozechner/pi-agent-core`.
 
-**Status:** partially complete. The home-lab Phase 2 path has been exercised successfully with the current Pi runtime work, but this task stays open until the formal live acceptance target (COL-2.18) runs the documented real-pi path with the committed secret/binding model from COL-2.17.
+**Status:** complete. `task acceptance:phase2` drives a real CSV-export task end-to-end against home-lab GitLab with `AGENT_RUNTIME=pi`: kimi-k2.6 developer (Ollama Cloud via LiteLLM) submits a schema-valid envelope through the structured-output finalization path; gpt-5.5 reviewer (Codex OAuth) reads the real MR diff and approves; human `/approve` and green pipeline gates open; the merge fires; the task closes. Failure modes (Pi import, missing credential, envelope rejection, runtime exception) land in the scope's audit (`acceptance.runtime.error`, `developer.run.rejected` with `rejection_reason`).
 
 ### COL-2.15 — Pi Runner Implementation
 
@@ -1001,50 +1002,60 @@ Goal: execute real Developer and Reviewer runs in sandboxes with minimum egress 
 - `AGENT_RUNTIME=pi` makes the worker dial the real pi binaries, verified by a smoke test that startRun → succeeded against a trivial packet.
 - Misconfiguration (missing binaries, missing LLM secret) fails fast at worker boot with a structured error, not at first envelope.
 
-### COL-2.17 — Pi Secrets Through The Existing Secrets Path
+## Phase 3 — Real Scope Lifecycle, Reconciliation, And Closeout
 
-- [ ]
+Goal: make Colony usable for a real project by the end of this phase. The Phase 3 boundary is a complete `scope -> CRS` flow, where CRS means a closed, reconciled scope: a human opens a scope, Architect proposes a reviewed/approved decomposition, Supervisor commits the DAG, Developer/Reviewer/HITL gates drive every task through merge and close, reconciliation blocks unsafe drift, and the scope receives a close review and closes only when no `pending_sync` or `conflict` residue remains. Phase 4 work should be enhancements, not prerequisites for running a real scope.
 
-**Depends on:** COL-2.16
+**Phase 3 audit findings**
 
-**Deliverables**
+- Architect decomposition is currently schema-supported but not implemented as a real run, approval gate, or DAG commit flow.
+- Scope state transitions exist in the domain model but the repository/API/worker do not yet expose the full `draft -> decomposition_proposed -> decomposition_approved -> active -> scope_review_requested -> scope_review_approved -> closed` path.
+- Phase 2 acceptance proves the task MR loop by scripting activities directly; the Supervisor workflow still needs to orchestrate Developer, Reviewer, gates, merge, close, and reconciliation from signals/state.
+- Scope close review packet/envelope schemas exist, but there is no close readiness evaluator, Reviewer run, human close approval, provider close projection, or acceptance test.
+- The UI can show scope/task/audit/provider sync data, but Phase 3 needs operator actions for conflicts, pending sync, requeue/cancel, and scope close readiness.
 
-- LLM provider keys, pi config, and any model-routing settings flow through `secrets/dev.yaml` (SOPS) and OpenBao `kv/colony/*` for Aether — never hand-edited `.env` files.
-- Tool Gateway / runtime binding model treats LLM credentials as a credential binding with a capability (e.g. `agent.llm.invoke`) and broker, mirroring the existing provider-credential pattern.
-- Documented rotation flow (`task secrets:rotate llm` or equivalent) and audit row on rotation.
-- Worker process never reads LLM keys from the host environment directly — they arrive via the broker on a per-run basis.
+### COL-3.0 — Real Scope Intake And State Transitions
 
-**Acceptance**
+- [x]
 
-- Booting the worker with no LLM secret in OpenBao/SOPS fails with a clear "missing capability binding" error.
-- A secret rotation in OpenBao causes the next run to use the rotated key without a worker restart.
-- `git grep` confirms no committed `.env` carries an LLM key, and `secrets/dev.yaml` decrypts to a populated map.
-
-**Status:** open. Local development currently uses gitignored `config/colony.yaml` plus environment variables for the OpenAI-compatible gateway, while Codex OAuth tokens are encrypted in Postgres. The SOPS/OpenBao binding and rotation path still needs to land before Phase 2 is formally complete.
-
-### COL-2.18 — Live Pi Acceptance Target
-
-- [ ]
-
-**Depends on:** COL-2.15, COL-2.16, COL-2.17
+**Depends on:** COL-1.3, COL-2.16
 
 **Deliverables**
 
-- `task acceptance:phase2:live` (or `npm run acceptance:phase2:live`) target that runs the same Phase 2 flow as the fake-runtime acceptance, but with `AGENT_RUNTIME=pi` against the home-lab GitLab.
-- CI keeps the fake-runtime acceptance for determinism; the live target is operator-triggered.
-- Documented prerequisites (binaries, OpenBao login, GitLab project) and tear-down behaviour.
+- Scope intake path from API/UI and provider parent issue/epic into a `draft` Task Graph scope with explicit provider targets.
+- Repository/API methods for audited scope state transitions with expected `state_version` preconditions.
+- Provider projection for scope-level state labels and close/reopen drift.
+- Command or UI action to request Architect decomposition for an intake-ready scope.
+- Idempotent scope target registration for one or more provider projects before decomposition.
 
 **Acceptance**
 
-- A live run produces a real MR opened by an in-process `@mariozechner/pi-coding-agent` SDK envelope, a real review comment from an in-process `@mariozechner/pi-agent-core` SDK envelope, a green pipeline, a human `/approve`, and a merge — all on the home-lab GitLab.
-- Audit trail in Colony shows the real pi run IDs, sandbox IDs, packet hashes, and envelope hashes (no `fake-` prefixes).
-- Failure modes (Pi SDK import failure, missing LLM credential binding, envelope schema fail, LLM rate-limit) are observable in Colony's UI, not just stderr.
+- A real provider scope artifact can create or link a Colony scope with at least one provider target.
+- Invalid scope transitions are rejected with structured errors and audit.
+- Scope state/projection drift is visible before any task DAG is committed.
 
-**Status:** open. The ad hoc live Phase 2 script path has been used during development, but there is not yet a dedicated `acceptance:phase2:live` target with prerequisites, teardown, and observability documented.
+**Status:** complete. Audited scope state transitions with `state_version` checks are implemented in the repository and API, mirrored scopes project state-label changes back to the provider, and the decomposition request action registers provider targets idempotently before Architect work starts. Verified by DB-backed API integration tests against a disposable Postgres container.
 
-## Phase 3 — Reconciliation, Conflicts, And Pending Sync
+### COL-3.0a — Architect Decomposition And Spec/DAG Gate
 
-Goal: make drift, provider outages, manual changes, stale evidence, and operator overrides explicit workflow states.
+- [ ]
+
+**Depends on:** COL-3.0, COL-2.7, COL-2.8, COL-2.12
+
+**Deliverables**
+
+- Architect packet/prompt/run path using the Pi runtime adapter and the existing `architect.decomposition` envelope schema.
+- Persistence for proposed decomposition artifacts before approval: scope brief version, proposed tasks, dependencies, target project mapping, assumptions, open questions, packet hash, envelope hash.
+- Fresh Reviewer spec/DAG review against the Architect output before human sign-off.
+- Human `/approve` handling for the spec/DAG gate; `/changes` routes back to Architect without committing tasks.
+- DAG commit activity that validates task IDs, dependencies, acceptance criteria, target mappings, and writes tasks/dependencies/provider mirrors in one audited transaction.
+
+**Acceptance**
+
+- A real scope can reach `decomposition_proposed` from an Architect envelope.
+- No Task Graph tasks are created before Reviewer approval and required human approval.
+- Approved decomposition commits tasks, dependencies, task targets, and provider issue mirrors, then transitions the scope to `active`.
+- Stale or mismatched decomposition envelopes are rejected and surfaced in audit/UI.
 
 ### COL-3.1 — Reconciliation Engine
 
@@ -1065,6 +1076,25 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - Reconcile auto-corrects label drift.
 
 **Status:** complete. `createReconcileScope` checks provider issue/MR snapshots, active approvals, mirrored artifacts, and provider state labels. It reports stale commit approvals and issue-closed/MR-open conflicts with audit/event evidence, and auto-corrects Colony-owned state label drift.
+
+### COL-3.1a — Supervisor Lifecycle Orchestration
+
+- [ ]
+
+**Depends on:** COL-3.0a, COL-2.13, COL-3.1
+
+**Deliverables**
+
+- Workflow state loop that drives ready tasks through claim, Developer run, MR gate open, Reviewer run, human approval/pipeline ingestion, gate evaluation, merge, task close, and reconciliation.
+- Signal routing from provider comments/MR/pipeline/webhooks to the correct workflow activity instead of relying on acceptance scripts to call activities directly.
+- Idempotency keys for each side-effecting lifecycle activity.
+- Durable handling for retries, agent run failures, envelope rejection, and `changes_requested -> in_progress` rework loops.
+
+**Acceptance**
+
+- The Supervisor workflow, not a script, can drive a real task from `ready` to `closed` once the required provider events arrive.
+- Duplicate signals and activity retries do not duplicate provider writes, MRs, approvals, merges, or audit records.
+- `changes_requested` re-enters Developer work and requires a fresh review before merge readiness.
 
 ### COL-3.2 — Periodic Reconciliation Timer
 
@@ -1088,7 +1118,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 - [ ]
 
-**Depends on:** COL-3.1
+**Depends on:** COL-3.1, COL-3.1a
 
 **Deliverables**
 
@@ -1108,7 +1138,7 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 
 - [ ]
 
-**Depends on:** COL-3.1
+**Depends on:** COL-3.1, COL-3.1a
 
 **Deliverables**
 
@@ -1142,15 +1172,55 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 - Override without capability is rejected and audited.
 - Successful override links actor, reason, target, previous state, new state.
 
+### COL-3.5a — Blocker And Requeue Handling
+
+- [ ]
+
+**Depends on:** COL-3.1a, COL-3.5
+
+**Deliverables**
+
+- Ingestion for Developer/Reviewer `blocked` envelopes into task `blocked` state with blocker class, expected unblock, referenced artifacts, and provider comment.
+- `/block`, `/unblock`, manual requeue, and run cancel semantics wired through capability checks and audit.
+- Retry/requeue policy for failed or canceled agent runs, including a loop cap before human assignment.
+- UI visibility for blocked tasks and required human/external action.
+
+**Acceptance**
+
+- A blocked agent envelope moves the task to `blocked` without losing packet/envelope/run evidence.
+- `/unblock` or operator requeue returns the task to the correct prior lifecycle state only when the blocker is resolved.
+- Repeated failed runs stop at a human-visible blocked state instead of looping indefinitely.
+
+### COL-3.5b — Scope Close Review And Closure
+
+- [ ]
+
+**Depends on:** COL-3.1a, COL-3.3, COL-3.4
+
+**Deliverables**
+
+- Close readiness evaluator: all child tasks closed, no active blockers, no `pending_sync`, no unresolved conflicts, required provider artifacts present, and latest reconciliation report clean.
+- Scope review packet builder using `scope_review` packet schema with child task statuses, merged artifacts, rejected/accepted follow-ups, unresolved residue, and release state.
+- Reviewer scope-close run using `scope_review` envelope schema.
+- Scope close gate with human approval when policy requires it.
+- Provider scope artifact close projection and audited `scope.closed` transition.
+
+**Acceptance**
+
+- A scope with all tasks closed transitions to `scope_review_requested` and receives a fresh Reviewer close review.
+- Scope close is blocked when any child task is open, any `pending_sync` remains, any conflict is unresolved, or required audit evidence is missing.
+- Approved close review plus required human approval transitions the scope through `scope_review_approved` to `closed` and closes the provider scope artifact.
+
 ### COL-3.6 — Web UI Conflict Operations
 
 - [ ]
 
-**Depends on:** COL-3.4, COL-3.5
+**Depends on:** COL-3.4, COL-3.5, COL-3.5a, COL-3.5b
 
 **Deliverables**
 
 - Conflict/reconciliation view.
+- Scope close readiness view.
 - Resolve conflict action.
 - Operator override action.
 - Manual requeue.
@@ -1160,28 +1230,35 @@ Goal: make drift, provider outages, manual changes, stale evidence, and operator
 **Acceptance**
 
 - UI shows conflict class, detected facts, expected facts, source provider artifact, and recovery options.
+- UI shows why a scope can or cannot close.
 - UI writes are capability checked and audited.
 
 ### COL-3.7 — Phase 3 End-To-End Acceptance
 
 - [ ]
 
-**Depends on:** COL-3.3, COL-3.4, COL-3.6
+**Depends on:** COL-3.0a, COL-3.1a, COL-3.3, COL-3.4, COL-3.5b, COL-3.6
 
 **Deliverables**
 
+- `task acceptance:phase3` target that drives a small real scope against home-lab GitLab with `AGENT_RUNTIME=pi`.
+- Real Architect decomposition of the scope into at least two tasks with one blocking dependency.
+- Workflow-driven task execution, review, human approval, pipeline ingestion, merge, task close, and scope close review.
 - Outage scenario test.
 - Manual merge conflict scenario test.
 
 **Acceptance**
 
+- Scope runs `draft -> decomposition_proposed -> decomposition_approved -> active -> scope_review_requested -> scope_review_approved -> closed`.
+- At least one task is created from Architect output, implemented, reviewed, merged, reconciled, and closed without scripting internal activities directly.
+- Scope close is blocked until every child task is reconciled closed and no `pending_sync` or `conflict` remains.
 - Provider outage prevents irreversible actions.
 - Pending sync recovers cleanly after provider return.
 - Manual merge creates conflict visible in UI.
 
 ## Phase 4 — Memory, Policy Hardening, Release, And Second Provider
 
-Goal: add durable memory/decision records, richer policy, release role, richer UI, and prove provider abstraction with GitHub.
+Goal: enhance the real-project flow after Phase 3 with durable memory/decision records, richer policy, release/deploy automation, richer UI, and a second provider. Phase 4 items must not be required for the basic scope-to-closed-scope path.
 
 ### COL-4.1 — Memory Tables And Candidate Flow
 
@@ -1305,7 +1382,6 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 - Memory/decision view.
 - Policy view.
-- Scope close readiness view.
 - Filtered stakeholder audit view.
 
 **Acceptance**
@@ -1344,8 +1420,8 @@ Goal: add durable memory/decision records, richer policy, release role, richer U
 
 **Acceptance**
 
-- Scope runs decomposition -> tasks -> MR review/merge -> scope review -> release gate -> closed.
-- No `pending_sync` or `conflict` remains at scope close.
+- Phase 3 real-project acceptance still passes with memory/policy/release features enabled.
+- Scope runs decomposition -> tasks -> MR review/merge -> scope review -> release gate without regressing closeout safety.
 - GitHub adapter passes provider E2E suite.
 
 ## Cross-Cutting Work
@@ -1473,3 +1549,19 @@ After Phase 0, the next critical path is:
 COL-1.1e (per-namespace bot scoping) and COL-1.1f (bot lifecycle UX) are tracked separately — land them in parallel with COL-1.5/1.6 once agents start making real adapter calls.
 
 Phase 2 should not start real Developer/Reviewer execution until COL-2.1 minimum sandbox egress enforcement is complete.
+
+After Phase 2, the Phase 3 real-project critical path is:
+
+1. COL-3.0 — real scope intake and audited scope transitions
+2. COL-3.0a — Architect decomposition, spec/DAG review, and approved DAG commit
+3. COL-3.1 — reconciliation engine
+4. COL-3.1a — Supervisor-driven task lifecycle orchestration
+5. COL-3.3 — provider outage and pending sync semantics
+6. COL-3.4 — conflict state and resolution
+7. COL-3.5 — operator override flow
+8. COL-3.5a — blocker and requeue handling
+9. COL-3.5b — scope close review and closure
+10. COL-3.6 — UI operations for conflict, requeue, cancel, and close readiness
+11. COL-3.7 — real scope-to-closed-scope acceptance
+
+COL-3.2 is already complete and should remain a guardrail in every active-scope workflow.

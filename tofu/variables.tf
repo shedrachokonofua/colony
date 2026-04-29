@@ -108,10 +108,10 @@ variable "hosts" {
     tool_gateway = string
   })
   default = {
-    web          = "colony-dev.apps.home.shdr.ch"
-    api          = "colony-api-dev.apps.home.shdr.ch"
-    webhook      = "colony-webhook-dev.apps.home.shdr.ch"
-    tool_gateway = "colony-tools-dev.apps.home.shdr.ch"
+    web          = "colony-dev.home.shdr.ch"
+    api          = "colony-api-dev.home.shdr.ch"
+    webhook      = "colony-webhook-dev.home.shdr.ch"
+    tool_gateway = "colony-tools-dev.home.shdr.ch"
   }
 }
 

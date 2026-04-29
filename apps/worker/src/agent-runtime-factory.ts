@@ -56,6 +56,7 @@ export async function createAgentRuntimeWiring(
     await import("@colony/agent-runtime/pi-coding-agent-runner");
   const { PiMonoRunner } = await import("@colony/agent-runtime/pi-mono-runner");
 
+  const logger = consoleLogger();
   return {
     developer: new PiAgentRuntimeAdapter(
       new PiCodingAgentRunner({
@@ -65,6 +66,7 @@ export async function createAgentRuntimeWiring(
         maxUsd: developer.ceilings.maxUsdPerRun,
         runTimeoutMs: developer.ceilings.timeoutMs,
         thinkingLevel: developer.thinkingLevel,
+        logger,
       }),
     ),
     reviewer: new PiAgentRuntimeAdapter(
@@ -75,8 +77,22 @@ export async function createAgentRuntimeWiring(
         maxUsd: reviewer.ceilings.maxUsdPerRun,
         runTimeoutMs: reviewer.ceilings.timeoutMs,
         thinkingLevel: reviewer.thinkingLevel,
+        logger,
       }),
     ),
+  };
+}
+
+function consoleLogger() {
+  const fmt = (level: string, fields: Record<string, unknown>, msg: string) =>
+    `[pi ${new Date().toISOString()} ${level}] ${msg} ${JSON.stringify(fields)}`;
+  return {
+    info: (f: Record<string, unknown>, m: string) =>
+      console.log(fmt("info", f, m)),
+    warn: (f: Record<string, unknown>, m: string) =>
+      console.warn(fmt("warn", f, m)),
+    error: (f: Record<string, unknown>, m: string) =>
+      console.error(fmt("error", f, m)),
   };
 }
 

@@ -123,11 +123,30 @@ tasks:
       - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase1'"
 
   acceptance:phase2:
-    desc: Run Phase 2 acceptance against the homelab GitLab
+    desc: Run Phase 2 live acceptance (AGENT_RUNTIME=pi) against the homelab GitLab
     summary: |
-      Creates a throwaway GitLab project, walks one task through Developer,
-      Reviewer, MR gate, merge, and close, then deletes the project group.
-      Requires GITLAB_BASE_URL and GITLAB_TOKEN from secrets/dev.yaml.
+      Live-by-default. Creates a throwaway GitLab project, walks one task
+      through Developer (pi-coding-agent) and Reviewer (pi-agent-core),
+      opens a real MR, records human approval + green pipeline, merges, and
+      closes — then deletes the project group.
+
+      Prerequisites:
+        - `task up` (Postgres + Temporal running locally).
+        - GITLAB_BASE_URL + GITLAB_TOKEN in secrets/dev.yaml.
+        - config/colony.yaml configured with developer + reviewer providers.
+          api_key providers need their referenced env var set; oauth
+          providers (Codex, Claude Pro) need an active connection in
+          provider_oauth_connections (Web UI → admin → providers).
+        - The script refuses AGENT_RUNTIME=fake — fake is reserved for
+          unit/integration tests.
+
+      Teardown: throwaway GitLab group is deleted in `finally` even on
+      failure; per-run Postgres rows are left for forensic inspection.
+
+      Failure modes audited on the scope (visible at /scopes/:id):
+        - acceptance.runtime.error  (Pi import / missing credential / rate
+          limit / runtime exception)
+        - developer.run.rejected, developer.envelope.stale (envelope path)
     cmds:
       - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase2'"
 

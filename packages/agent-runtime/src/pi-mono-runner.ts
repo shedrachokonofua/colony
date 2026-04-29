@@ -1,5 +1,6 @@
 import { Agent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Message } from "@mariozechner/pi-ai";
+import { reviewerReviewEnvelopeSchema } from "@colony/schemas";
 import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
@@ -8,9 +9,10 @@ import {
   buildReviewerSystemPrompt,
   createReviewerSubmitTool,
   createSandboxId,
-  forceSubmitToolStream,
+  finalizeEnvelopeWithStructuredOutput,
   installRunGuards,
   resolvePiModel,
+  reviewerReviewEnvelopeTypeBox,
   runnerBroker,
   withRunTimeout,
 } from "./pi-runner-common.js";
@@ -82,7 +84,6 @@ export class PiMonoRunner implements PiRunner {
         );
         return Promise.resolve(undefined);
       },
-      streamFn: forceSubmitToolStream(submitTool.name),
     });
 
     const unsubscribeGuards = installRunGuards(agent, runId, {
@@ -102,6 +103,34 @@ export class PiMonoRunner implements PiRunner {
     try {
       await agent.prompt(buildPacketPrompt(request.packet));
       await agent.waitForIdle();
+
+      if (capturedEnvelope === undefined) {
+        capturedEnvelope = await finalizeEnvelopeWithStructuredOutput({
+          model,
+          apiKey: await broker.resolve({
+            provider: model.provider,
+            capability: `agent.llm.${model.provider}.invoke`,
+            bindingName: request.environment.runtimeBinding.binding.name,
+            environment: request.environment,
+          }),
+          systemPrompt: buildReviewerSystemPrompt(),
+          messages: agent.state.messages,
+          finalUserMessage:
+            "Your review is complete. Submit exactly one schema-conforming reviewer_review envelope as JSON, including findings (or an empty array if approved).",
+          schemaName: "reviewer_review",
+          typeboxSchema: reviewerReviewEnvelopeTypeBox,
+          validate: (value) => {
+            const parsed = reviewerReviewEnvelopeSchema.safeParse(value);
+            if (parsed.success) return null;
+            return parsed.error.issues.map(
+              (i) =>
+                `${i.path.length ? i.path.join(".") : "<root>"}: ${i.message}`,
+            );
+          },
+          logger: this.options.logger,
+          runId,
+        });
+      }
     } finally {
       clearTimeoutGuard();
       unsubscribeGuards();

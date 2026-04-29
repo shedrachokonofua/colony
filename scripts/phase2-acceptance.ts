@@ -1,15 +1,36 @@
 #!/usr/bin/env -S tsx
-// Phase 2 acceptance demo against the configured home-lab GitLab.
+// Phase 2 acceptance against the configured home-lab GitLab — live by default.
 //
 // Walks a single CSV-export task through:
 //   ready -> claimed -> in_progress -> review_requested -> merge_ready
 //        -> merged -> closed
 //
-// Touches a real GitLab project (provisioned per-run, deleted at the end)
-// and a real Postgres `colony_test` database. The agent layer remains the
-// FakeAgentRuntimeAdapter — pi-coding-agent / pi-mono integration ships
-// behind a deployer-supplied adapter and is exercised in higher-level live
-// pilot environments, not the acceptance script.
+// The agent layer is wired through `createAgentRuntimeWiring` and runs with
+// `AGENT_RUNTIME=pi` against the real Pi SDKs (pi-coding-agent for the
+// developer, pi-agent-core for the reviewer). The fake adapter is reserved
+// for unit/integration tests; this script refuses to run with `fake`.
+//
+// Prerequisites:
+//   - Local stack up (`task up`) — Postgres + Temporal.
+//   - GITLAB_BASE_URL + GITLAB_TOKEN in env (sourced from secrets/dev.yaml
+//     when invoked via `task acceptance:phase2`).
+//   - `config/colony.yaml` configured with developer + reviewer providers,
+//     and any referenced credentials present (env API key for api_key
+//     providers; an active OAuth connection in `provider_oauth_connections`
+//     for oauth providers).
+//
+// Teardown:
+//   - The throwaway GitLab group is deleted in the `finally` block, even on
+//     failure. Postgres rows under the per-run `scope_id` are left in place
+//     for forensic inspection — drop them via the scope_id printed below.
+//
+// Failure modes that surface in the scope's audit trail (visible at
+// /scopes/:id):
+//   - Pi runtime construction failures (`acceptance.runtime.boot_failed`).
+//   - Mid-flow agent runtime exceptions (`acceptance.runtime.error`).
+//   - Envelope rejections, freshness mismatches (already audited by
+//     developer-run / reviewer-run as `developer.run.rejected`,
+//     `developer.envelope.stale`, etc.).
 
 import { config as loadDotenv } from "dotenv";
 import { fileURLToPath } from "node:url";
@@ -25,7 +46,7 @@ import {
   GitLabProviderAdapter,
   GitLabProviderError,
 } from "@colony/provider-gitlab";
-import { FakeAgentRuntimeAdapter } from "@colony/agent-runtime";
+import { ColonyConfigError, env as loadEnv } from "@colony/config";
 import {
   developerCompletionEnvelopeSchema,
   type DeveloperCompletionEnvelope,
@@ -33,6 +54,10 @@ import {
 import type { ActorId, ScopeId, TaskId } from "@colony/domain";
 import { createDeveloperRun } from "../apps/worker/src/developer-run.js";
 import { createReviewerRun } from "../apps/worker/src/reviewer-run.js";
+import {
+  createAgentRuntimeWiring,
+  type AgentRuntimeWiring,
+} from "../apps/worker/src/agent-runtime-factory.js";
 import {
   createCheckMrGate,
   createOpenMrGate,
@@ -49,9 +74,8 @@ loadDotenv({
   quiet: true,
 });
 
-const databaseUrl =
-  process.env["DATABASE_URL"] ??
-  "postgres://colony:colony@localhost:5432/colony";
+const env = loadEnv();
+const databaseUrl = env.DATABASE_URL;
 const gitlabBaseUrl = mustEnv("GITLAB_BASE_URL");
 const gitlabToken = mustEnv("GITLAB_TOKEN");
 const gitlabReviewerToken = process.env["GITLAB_REVIEWER_TOKEN"];
@@ -89,7 +113,37 @@ const reviewerAdapter = new GitLabProviderAdapter({
   baseUrl: gitlabBaseUrl,
   token: gitlabReviewerToken || gitlabToken,
 });
-const agentRuntime = new FakeAgentRuntimeAdapter();
+
+const agentRuntime = await bootAgentRuntime();
+
+async function bootAgentRuntime(): Promise<AgentRuntimeWiring> {
+  if (env.AGENT_RUNTIME === "fake") {
+    throw new Error(
+      "phase2 acceptance refuses AGENT_RUNTIME=fake — this target is live-only. " +
+        "Use unit/integration tests for fake-adapter coverage.",
+    );
+  }
+  try {
+    const wiring = await createAgentRuntimeWiring(env);
+    if (
+      wiring.developer.constructor.name === "FakeAgentRuntimeAdapter" ||
+      wiring.reviewer.constructor.name === "FakeAgentRuntimeAdapter"
+    ) {
+      throw new Error(
+        "agent runtime resolved to fake — check config/colony.yaml `agent_runtime: pi` and AGENT_RUNTIME env",
+      );
+    }
+    return wiring;
+  } catch (e) {
+    if (e instanceof ColonyConfigError) {
+      throw new Error(
+        `colony config error [${e.code}] ${e.message}` +
+          (e.details ? ` — ${JSON.stringify(e.details)}` : ""),
+      );
+    }
+    throw e;
+  }
+}
 
 function mustEnv(name: string): string {
   const value = process.env[name];
@@ -103,6 +157,48 @@ function assert(condition: unknown, message: string): asserts condition {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRuntimeAudit<T>(
+  args: {
+    readonly stage: "developer" | "reviewer";
+    readonly task_id: TaskId;
+    readonly scope_id: ScopeId;
+  },
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await repo
+      .writeAudit({
+        scope_id: args.scope_id,
+        task_id: args.task_id,
+        actor: supervisor,
+        action: "acceptance.runtime.error",
+        capability: "task.assign",
+        target_kind: "agent_run",
+        reason: classifyRuntimeError(message),
+        evidence: {
+          stage: args.stage,
+          message,
+          name: err instanceof Error ? err.name : "unknown",
+        },
+      })
+      .catch(() => {});
+    throw err;
+  }
+}
+
+function classifyRuntimeError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes("rate") && lower.includes("limit")) return "rate_limited";
+  if (lower.includes("missing capability binding")) return "missing_credential";
+  if (lower.includes("cannot find module") || lower.includes("err_module"))
+    return "pi_sdk_import_failed";
+  if (lower.includes("envelope")) return "envelope_invalid";
+  return "runtime_exception";
 }
 
 async function rawApi<T>(args: {
@@ -176,7 +272,38 @@ try {
         {
           action: "create",
           file_path: "src/csv.ts",
-          content: "export const csv = '';\n",
+          content:
+            "// Minimal CSV serializer: joins rows of strings into a CSV body.\n" +
+            "// Values are wrapped in quotes when they contain a quote, comma, or newline,\n" +
+            "// and embedded quotes are doubled per RFC 4180.\n" +
+            "export function toCsv(rows: ReadonlyArray<ReadonlyArray<string>>): string {\n" +
+            "  return rows\n" +
+            '    .map((row) => row.map(escapeField).join(","))\n' +
+            '    .join("\\n");\n' +
+            "}\n" +
+            "\n" +
+            "function escapeField(value: string): string {\n" +
+            '  if (/[",\\n]/.test(value)) {\n' +
+            '    return `"${value.replace(/"/g, \'""\')}"`;\n' +
+            "  }\n" +
+            "  return value;\n" +
+            "}\n",
+        },
+        {
+          action: "create",
+          file_path: "src/csv.test.ts",
+          content:
+            'import { describe, expect, it } from "vitest";\n' +
+            'import { toCsv } from "./csv.js";\n' +
+            "\n" +
+            'describe("toCsv", () => {\n' +
+            '  it("joins simple rows", () => {\n' +
+            '    expect(toCsv([["a", "b"], ["c", "d"]])).toBe("a,b\\nc,d");\n' +
+            "  });\n" +
+            '  it("escapes commas and quotes", () => {\n' +
+            '    expect(toCsv([["x,y", \'q"q\']])).toBe(\'"x,y","q""q"\');\n' +
+            "  });\n" +
+            "});\n",
         },
       ],
     },
@@ -239,9 +366,14 @@ try {
     {
       id: taskId,
       scope_id: scope.id,
-      title: "Add CSV export",
-      description: "Implement CSV export endpoint.",
-      acceptance_criteria: ["Endpoint returns CSV"],
+      title: "Add CSV export utility",
+      description:
+        "Add a `toCsv(rows)` utility under `src/csv.ts` that joins rows of strings into RFC4180-style CSV. Values that contain quotes, commas, or newlines must be quoted with embedded quotes doubled. Add a vitest covering the simple-rows and escape cases.",
+      acceptance_criteria: [
+        "src/csv.ts exports a `toCsv(rows: ReadonlyArray<ReadonlyArray<string>>): string` function",
+        "Values containing quote, comma, or newline are wrapped in double quotes; embedded quotes are doubled",
+        "src/csv.test.ts covers a simple-rows case and an escape case",
+      ],
       state: "ready",
     },
     {
@@ -286,17 +418,24 @@ try {
     capability: "task.claim",
   });
   assert(claimed?.state === "claimed", "task did not transition to claimed");
+  const phase = (label: string) =>
+    console.log(`[phase2 ${new Date().toISOString()}] ${label}`);
+  phase("claimed; constructing developer run");
 
   const startDeveloperRun = createDeveloperRun({
     repo,
     providerProjects,
     providerAdapter: adapter,
-    agentRuntime,
+    agentRuntime: agentRuntime.developer,
   });
-  const devResult = await startDeveloperRun({
-    task_id: task.id,
-    assignee: developer,
-  });
+  phase("calling startDeveloperRun");
+  const devResult = await withRuntimeAudit(
+    { stage: "developer", task_id: task.id, scope_id: scope.id },
+    () => startDeveloperRun({ task_id: task.id, assignee: developer }),
+  );
+  phase(
+    `developer run returned: started=${devResult.started} envelope_status=${(devResult as { envelope_status?: string }).envelope_status} final_state=${(devResult as { final_state?: string }).final_state}`,
+  );
   assert(devResult.started, "developer flow did not start");
   if (!devResult.started) throw new Error("unreachable");
   assert(
@@ -320,7 +459,7 @@ try {
   const gateOpen = await openMrGate({ task_id: task.id });
   assert(gateOpen.opened, "mr_pr gate did not open");
 
-  const devOutput = await agentRuntime.getRunOutput(devResult.run_id);
+  const devOutput = await agentRuntime.developer.getRunOutput(devResult.run_id);
   const developerEnvelope = developerCompletionEnvelopeSchema.parse(
     devOutput?.envelope,
   ) satisfies DeveloperCompletionEnvelope;
@@ -329,14 +468,18 @@ try {
     repo,
     providerProjects,
     reviewGate,
-    providerAdapter: adapter,
-    agentRuntime: new FakeAgentRuntimeAdapter(),
+    providerAdapter: reviewerAdapter,
+    agentRuntime: agentRuntime.reviewer,
   });
-  const revResult = await startReviewerRun({
-    task_id: task.id,
-    reviewer,
-    developer_envelope: developerEnvelope,
-  });
+  const revResult = await withRuntimeAudit(
+    { stage: "reviewer", task_id: task.id, scope_id: scope.id },
+    () =>
+      startReviewerRun({
+        task_id: task.id,
+        reviewer,
+        developer_envelope: developerEnvelope,
+      }),
+  );
   assert(revResult.started, "reviewer flow did not start");
   if (!revResult.started) throw new Error("unreachable");
   assert(revResult.review_result === "approved", "reviewer did not approve");

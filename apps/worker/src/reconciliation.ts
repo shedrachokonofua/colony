@@ -9,7 +9,6 @@ import {
   type Approval,
   type ProviderMirror,
   type ProviderProject,
-  type ScopeId,
   type Task,
   type TaskState,
 } from "@colony/domain";

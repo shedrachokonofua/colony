@@ -219,7 +219,7 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(mirror).toBeDefined();
     const issue = await providerAdapter.issues.get(
       { id: project.provider_id, path: project.path },
-      mirror!.provider_id,
+      mirror.provider_id,
     );
     expect(issue.labels).toContain("state:decomposition_proposed");
     expect(issue.labels).not.toContain("state:draft");

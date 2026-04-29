@@ -375,6 +375,10 @@ export interface ProviderAdapter {
       id: ProviderId,
       body: string,
     ): Promise<ProviderComment>;
+    diff(
+      project: ProviderProjectRef,
+      id: ProviderId,
+    ): Promise<readonly Readonly<Record<string, unknown>>[]>;
   };
   readonly branches: {
     create(
@@ -634,6 +638,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
       this.createComment("mr-comment", body),
     addReviewThread: async (_project, _id, body) =>
       this.createComment("review-thread", body),
+    diff: async () => [],
   };
 
   readonly branches: ProviderAdapter["branches"] = {

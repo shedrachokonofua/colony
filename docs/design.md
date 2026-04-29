@@ -1088,7 +1088,7 @@ Per the diagram in `seed.md` §Deployment:
 - **Platform prerequisites stay Aether-owned** and are not installed by the Colony chart: Temporal, Postgres (CNPG), cert-manager + step-issuer, Cilium, Gateway API, the kubernetes-sigs agent-sandbox controller + CRDs, OpenBao/SOPS, and observability. The chart assumes they are present; Aether is where they are installed.
 - **Tofu drives the apply.** Aether holds `tofu/home/kubernetes/colony.tf` with a `helm_release.colony` resource, values rendered via `yamlencode({ ... })`, secrets via `var.secrets["..."]`, and HTTPRoute/StepIssuer resources alongside, matching Aether's existing per-app pattern (`headlamp.tf`, `cert_manager.tf`).
 - **Chart distribution.** The chart is published to the GitLab OCI registry in CI; Tofu pulls it by version. During early iteration, `helm_release` may reference a local path for fast iteration against `colony-dev`.
-- **Environment progression.** `colony-dev` namespace first (isolated release name, `*-dev.apps.home.shdr.ch` hostnames, separate bot tokens, shares cluster-scoped CRDs/controllers with prod). Prod lands in `colony-system` + `colony-sandboxes` once the dev loop is stable.
+- **Environment progression.** `colony-dev` namespace first (isolated release name, `*-dev.home.shdr.ch` hostnames, separate bot tokens, shares cluster-scoped CRDs/controllers with prod). Prod lands in `colony-system` + `colony-sandboxes` once the dev loop is stable.
 
 ### Namespace strategy
 

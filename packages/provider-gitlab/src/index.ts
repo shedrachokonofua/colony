@@ -388,6 +388,49 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       }
       return toComment(this.provider, note);
     },
+    diff: async (project, id) => {
+      const iid = mrIid(project.id, id);
+      // GitLab 17+ deprecated `/changes` for `/diffs` (paginated array).
+      try {
+        const diffs = await this.projectApi<
+          readonly Readonly<Record<string, unknown>>[]
+        >(project.id, `/merge_requests/${encodePath(iid)}/diffs?per_page=50`);
+        if (diffs.length > 0) return diffs;
+      } catch {
+        // fall through
+      }
+      try {
+        const changes = await this.projectApi<{
+          readonly changes?: readonly Readonly<Record<string, unknown>>[];
+        }>(project.id, `/merge_requests/${encodePath(iid)}/changes`);
+        if (changes.changes && changes.changes.length > 0)
+          return changes.changes;
+      } catch {
+        // fall through
+      }
+      // Last resort: /merge_requests/<iid>/diffs and /changes can return
+      // empty briefly after MR creation while GitLab computes them.
+      // /repository/compare is independent of the MR object's diff cache
+      // and always reflects the current branch tips.
+      try {
+        const mr = await this.projectApi<{
+          readonly source_branch?: string;
+          readonly target_branch?: string;
+        }>(project.id, `/merge_requests/${encodePath(iid)}`);
+        if (mr.source_branch && mr.target_branch) {
+          const compare = await this.projectApi<{
+            readonly diffs?: readonly Readonly<Record<string, unknown>>[];
+          }>(
+            project.id,
+            `/repository/compare?from=${encodeURIComponent(mr.target_branch)}&to=${encodeURIComponent(mr.source_branch)}`,
+          );
+          return compare.diffs ?? [];
+        }
+      } catch {
+        // give up
+      }
+      return [];
+    },
   };
 
   readonly branches: ProviderAdapter["branches"] = {

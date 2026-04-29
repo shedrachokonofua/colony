@@ -237,12 +237,13 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
         capability: "task.assign",
         target_kind: "agent_run",
         target_id: metadata.runId,
-        reason: "envelope_rejected",
+        reason: metadata.rejectionReason ?? "envelope_rejected",
         evidence: {
           run_id: metadata.runId,
           status: metadata.status,
           packet_hash: metadata.packetHash,
           runtime_binding_hash: metadata.runtimeBindingHash,
+          rejection_reason: metadata.rejectionReason,
         },
       });
       return {

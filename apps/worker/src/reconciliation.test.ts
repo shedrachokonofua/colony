@@ -112,18 +112,18 @@ describe.runIf(liveEnabled)("COL-3.1 reconcileScope", () => {
 
     expect(report.ok).toBe(false);
     expect(report.conflicts).toBe(1);
-    expect(report.findings).toContainEqual(
-      expect.objectContaining({
-        kind: "provider_issue_closed_mr_open",
-        severity: "conflict",
-        task_id: fixture.task_id,
-        actual: expect.objectContaining({
-          issue_state: "closed",
-          mr_state: "opened",
-          mr_id: fixture.mr.id,
-        }),
-      }),
+    const finding = report.findings.find(
+      (f) => f.kind === "provider_issue_closed_mr_open",
     );
+    expect(finding).toMatchObject({
+      severity: "conflict",
+      task_id: fixture.task_id,
+    });
+    expect(finding?.actual).toMatchObject({
+      issue_state: "closed",
+      mr_state: "opened",
+      mr_id: fixture.mr.id,
+    });
     const audit = await repo.listAuditForScope(fixture.scope_id, {
       task_id: fixture.task_id,
       limit: 100,

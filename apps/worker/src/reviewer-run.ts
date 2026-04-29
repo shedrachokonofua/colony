@@ -254,7 +254,11 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
       time_budget_minutes: 30,
       mr_id: mrMirror.provider_id,
       commit_sha,
-      diff_summary: `Diff for MR ${mrMirror.provider_id} at ${commit_sha}`,
+      diff_summary: await fetchDiffSummary(
+        deps.providerAdapter,
+        { id: project.provider_id, path: project.path },
+        mrMirror.provider_id,
+      ),
       developer_envelope: input.developer_envelope,
       pipeline_artifacts: [],
       freshness,
@@ -273,12 +277,13 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         capability: "task.assign",
         target_kind: "agent_run",
         target_id: metadata.runId,
-        reason: "envelope_rejected",
+        reason: metadata.rejectionReason ?? "envelope_rejected",
         evidence: {
           run_id: metadata.runId,
           status: metadata.status,
           packet_hash: metadata.packetHash,
           review_id: review.id,
+          rejection_reason: metadata.rejectionReason,
         },
       });
       return {
@@ -433,6 +438,44 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
       comment_id: comment?.id,
     };
   };
+}
+
+async function fetchDiffSummary(
+  adapter: ProviderAdapter,
+  project: ProviderProjectRef,
+  mrId: string,
+): Promise<string> {
+  try {
+    const diff = await adapter.mergeRequests.diff(project, mrId);
+    if (!diff || diff.length === 0) {
+      return `No textual diff available for MR ${mrId}.`;
+    }
+    const MAX = 12_000;
+    const parts: string[] = [`MR ${mrId} diff (${diff.length} files):`];
+    let used = parts[0].length;
+    for (const file of diff) {
+      const path =
+        (file["new_path"] as string | undefined) ??
+        (file["old_path"] as string | undefined) ??
+        "<unknown>";
+      const body =
+        (file["diff"] as string | undefined) ??
+        (file["patch"] as string | undefined) ??
+        "";
+      const block = `\n--- ${path} ---\n${body.length > 4000 ? body.slice(0, 4000) + "\n[truncated]" : body}`;
+      if (used + block.length > MAX) {
+        parts.push(
+          `\n[diff truncated; ${diff.length - parts.length + 1} files omitted]`,
+        );
+        break;
+      }
+      parts.push(block);
+      used += block.length;
+    }
+    return parts.join("");
+  } catch (e) {
+    return `Diff for MR ${mrId} could not be fetched (${e instanceof Error ? e.message : String(e)}).`;
+  }
 }
 
 async function primaryMirror(

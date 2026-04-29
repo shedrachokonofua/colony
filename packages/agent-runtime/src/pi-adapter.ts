@@ -5,7 +5,7 @@ import type {
   AgentRunMetadata,
   AgentRunOutput,
 } from "./adapter.js";
-import { parseEnvelope } from "./adapter.js";
+import { parseEnvelope, truncate } from "./adapter.js";
 import { hashEnvelope, hashPacket } from "./packet-builders.js";
 
 export interface PiRunRequest {
@@ -78,15 +78,22 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
         runtimeBindingHash: runEnvironment.runtimeBinding.hash,
         toolProfileHash: runEnvironment.tools.manifest.profileHash,
+        rejectionReason: parsed.ok
+          ? undefined
+          : truncate(describeRejection(result.envelope, parsed.reason), 800),
       };
       this.runs.set(runId, { ...metadata, output });
       return metadata;
-    } catch {
+    } catch (err) {
       const current = this.runs.get(runId);
       const metadata: AgentRunMetadata = {
         ...running,
         sandboxId: current?.sandboxId ?? running.sandboxId,
         status: current?.status === "canceled" ? "canceled" : "failed",
+        rejectionReason:
+          current?.status === "canceled"
+            ? undefined
+            : truncate(err instanceof Error ? err.message : String(err)),
       };
       this.runs.set(runId, metadata);
       return metadata;
@@ -125,5 +132,13 @@ function withoutOutput(
     runtimeBindingName: run.runtimeBindingName,
     runtimeBindingHash: run.runtimeBindingHash,
     toolProfileHash: run.toolProfileHash,
+    rejectionReason: run.rejectionReason,
   };
+}
+
+function describeRejection(envelope: unknown, reason: string): string {
+  if (envelope && typeof envelope === "object" && "__unfinished" in envelope) {
+    return "agent did not call submit_developer_completion / submit_reviewer_review tool before terminating";
+  }
+  return reason;
 }

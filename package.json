@@ -36,6 +36,7 @@
     "db:migrate:down": "npm --workspace @colony/db run migrate:down",
     "acceptance:phase1": "tsx scripts/phase1-acceptance.ts",
     "acceptance:phase2": "tsx scripts/phase2-acceptance.ts",
+    "test:bash": "echo test",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

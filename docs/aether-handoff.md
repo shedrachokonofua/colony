@@ -9,7 +9,7 @@ Colony deploys directly to the Aether **host** cluster — not into the `seven30
 These exist on the host cluster today and Colony just consumes them:
 
 - **Talos Kubernetes cluster** at the cluster API. Cilium CNI, Istio Ambient mesh.
-- **Gateway API** with main Gateway listening on `*.apps.home.shdr.ch` (`tofu/home/kubernetes/gateway.tf`). cert-manager + step-issuer wired in for TLS. Colony writes HTTPRoutes that attach to this Gateway.
+- **Gateway API** with main Gateway listening on `*.home.shdr.ch` (`tofu/home/kubernetes/gateway.tf`). cert-manager + step-issuer wired in for TLS. Colony writes HTTPRoutes that attach to this Gateway.
 - **`aether-k8s` GitLab Agent** (`tofu/home/kubernetes/gitlab_agent.tf`, KAS at `wss://gitlab.home.shdr.ch/-/kubernetes-agent/`). The agent's `ci_access.groups` already authorizes the entire `so` group (`.gitlab/agents/aether-k8s/config.yaml`), so Colony's CI can use the k8s-proxy with no Aether change.
 - **`gitlab-runner-k8s` pool** in the `gitlab-runner` namespace, tagged `buildah`, accepts untagged jobs (`tofu/home/kubernetes/gitlab_runner.tf`). Colony's image-build jobs target it with `tags: [buildah]`; everything else picks it up untagged.
 - **OpenBao** at `https://bao.home.shdr.ch` (`tofu/home/openbao_*.tf`). Mount `kv` is KV-v2; cluster-wide.
@@ -27,7 +27,7 @@ These exist on the host cluster today and Colony just consumes them:
 | Kubernetes resources (Deployments, Services, ServiceAccounts, NetworkPolicies, HTTPRoutes, etc.) | Written via `kubernetes_*` / `kubectl_manifest` Tofu providers           | n/a                                                                       |
 | Postgres + Temporal                                                                              | Installed inside Colony's namespaces (CNPG `Cluster` CR, Temporal Helm)  | n/a (host doesn't run them as platform services)                          |
 | Namespaces (`colony`, `colony-dev`, `colony-sandboxes`)                                          | Created by Colony's Tofu (`kubernetes_namespace_v1`)                     | n/a                                                                       |
-| HTTPRoutes for `*.apps.home.shdr.ch`                                                             | Authors HTTPRoutes (attach to existing main Gateway)                     | Owns the main Gateway + listener + TLS                                    |
+| HTTPRoutes for `*.home.shdr.ch`                                                                  | Authors HTTPRoutes (attach to existing main Gateway)                     | Owns the main Gateway + listener + TLS                                    |
 | Secret values                                                                                    | Tofu reads OpenBao at apply time, writes `kubernetes_secret_v1` directly | Hosts OpenBao + the `jwt-gitlab-colony` mount + `colony-ci` role + policy |
 | GitLab Kubernetes Agent (`aether-k8s` context)                                                   | Consumer (CI extends `.kube-auth-aether`)                                | Owns Agent registration + `ci_access` (already permits `so/*`)            |
 | Cluster-scoped CRDs (agent-sandbox controller, ESO if/when added)                                | Documents what's needed                                                  | Owns cluster-wide installs via Aether MR                                  |

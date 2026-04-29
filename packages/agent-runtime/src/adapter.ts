@@ -43,6 +43,11 @@ export interface AgentRunMetadata {
   readonly runtimeBindingName: string;
   readonly runtimeBindingHash: string;
   readonly toolProfileHash: string;
+  /**
+   * Populated when status is `envelope_rejected` or `failed` — short reason
+   * suitable for audit evidence. Truncated to a few hundred characters.
+   */
+  readonly rejectionReason?: string;
 }
 
 export interface AgentRunOutput {
@@ -135,6 +140,7 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
       runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
       runtimeBindingHash: runEnvironment.runtimeBinding.hash,
       toolProfileHash: runEnvironment.tools.manifest.profileHash,
+      rejectionReason: parsed.ok ? undefined : truncate(parsed.reason),
     };
     this.runs.set(runId, { ...metadata, output });
     return Promise.resolve(metadata);
@@ -156,6 +162,10 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
     this.runs.set(runId, canceled);
     return Promise.resolve(withoutOutput(canceled));
   }
+}
+
+export function truncate(value: string, max = 400): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
 export type EnvelopeParseResult =
@@ -241,5 +251,6 @@ function withoutOutput(
     runtimeBindingName: run.runtimeBindingName,
     runtimeBindingHash: run.runtimeBindingHash,
     toolProfileHash: run.toolProfileHash,
+    rejectionReason: run.rejectionReason,
   };
 }
