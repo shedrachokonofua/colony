@@ -45,6 +45,14 @@ import {
   type MarkScopePendingSyncResult,
 } from "./provider-outage.js";
 import {
+  createRecordTaskConflict,
+  createResolveTaskConflict,
+  type RecordTaskConflictInput,
+  type RecordTaskConflictResult,
+  type ResolveTaskConflictInput,
+  type ResolveTaskConflictResult,
+} from "./task-conflict.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -251,6 +259,20 @@ export async function markScopePendingSync(
     repo: getRepository(),
     providerProjects: getProviderProjects(),
   });
+  return run(input);
+}
+
+export async function recordTaskConflict(
+  input: RecordTaskConflictInput,
+): Promise<RecordTaskConflictResult> {
+  const run = createRecordTaskConflict({ repo: getRepository() });
+  return run(input);
+}
+
+export async function resolveTaskConflict(
+  input: ResolveTaskConflictInput,
+): Promise<ResolveTaskConflictResult> {
+  const run = createResolveTaskConflict({ repo: getRepository() });
   return run(input);
 }
 
@@ -610,7 +632,9 @@ export const activities = {
   applyDecompositionCommand,
   checkProviderHealth,
   markScopePendingSync,
+  recordTaskConflict,
   requestTaskRework,
+  resolveTaskConflict,
   startArchitectRun,
   startDecompositionReviewRun,
   startDeveloperRun,
