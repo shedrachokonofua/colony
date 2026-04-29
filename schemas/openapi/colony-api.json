@@ -982,6 +982,72 @@
         }
       }
     },
+    "/scopes/{scopeId}/close-readiness": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^col-[a-z0-9]{4,}$"
+            },
+            "required": true,
+            "name": "scopeId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scope close readiness report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "nullable": true
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Scope not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "nullable": true
+                          }
+                        },
+                        "retriable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/scopes/{scopeId}/decomposition-proposals": {
       "get": {
         "parameters": [

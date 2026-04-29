@@ -52,6 +52,16 @@ export interface OAuthProviderSummary {
   readonly connection: OAuthProviderConnection | null;
 }
 
+export interface ScopeCloseReadinessSummary {
+  readonly scope_id: ScopeId;
+  readonly ready: boolean;
+  readonly reasons: readonly string[];
+  readonly open_task_ids: readonly TaskId[];
+  readonly blocked_task_ids: readonly TaskId[];
+  readonly pending_sync_task_ids: readonly TaskId[];
+  readonly conflict_task_ids: readonly TaskId[];
+}
+
 export interface DecompositionProposalSummary {
   readonly id: string;
   readonly scope_id: ScopeId;
@@ -110,6 +120,7 @@ export interface ApiClient {
   listDecompositionProposals(
     scopeId: ScopeId,
   ): Promise<readonly DecompositionProposalSummary[]>;
+  scopeCloseReadiness(scopeId: ScopeId): Promise<ScopeCloseReadinessSummary>;
   getTask(taskId: TaskId): Promise<Task | null>;
   taskProviderSync(taskId: TaskId): Promise<ProviderSyncItem | null>;
   getTaskDependencies(taskId: TaskId): Promise<{
@@ -227,6 +238,12 @@ export function createApiClient(opts: {
         proposals: DecompositionProposalSummary[];
       }>(`/scopes/${encodeURIComponent(scopeId)}/decomposition-proposals`);
       return body.proposals;
+    },
+    async scopeCloseReadiness(scopeId) {
+      const body = await req<{ readiness: ScopeCloseReadinessSummary }>(
+        `/scopes/${encodeURIComponent(scopeId)}/close-readiness`,
+      );
+      return body.readiness;
     },
     async getTask(taskId) {
       try {

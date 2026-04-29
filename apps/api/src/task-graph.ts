@@ -1153,6 +1153,63 @@ export function registerTaskGraph(
     }
   });
 
+  const closeReadinessRoute = createRoute({
+    method: "get",
+    path: "/scopes/{scopeId}/close-readiness",
+    request: {
+      params: z.object({ scopeId: scopeIdParam }),
+    },
+    responses: {
+      200: {
+        description: "Scope close readiness report",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      404: {
+        description: "Scope not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(closeReadinessRoute, async (c) => {
+    const { scopeId } = c.req.valid("param");
+    const scope_id = scopeId as ScopeId;
+    const scope = await deps.repo.getScope(scope_id);
+    if (!scope) {
+      return c.json(jsonError("NOT_FOUND", `scope not found: ${scopeId}`), 404);
+    }
+    const tasks = await deps.repo.listTasks(scope_id);
+    const open: TaskId[] = [];
+    const blocked: TaskId[] = [];
+    const pending: TaskId[] = [];
+    const conflict: TaskId[] = [];
+    for (const t of tasks) {
+      if (t.state === "closed" || t.state === "canceled") continue;
+      if (t.state === "blocked") blocked.push(t.id);
+      else if (t.state === "pending_sync") pending.push(t.id);
+      else if (t.state === "conflict") conflict.push(t.id);
+      else open.push(t.id);
+    }
+    const reasons: string[] = [];
+    if (open.length > 0) reasons.push(`open_tasks:${open.length}`);
+    if (blocked.length > 0) reasons.push(`blocked_tasks:${blocked.length}`);
+    if (pending.length > 0) reasons.push(`pending_sync:${pending.length}`);
+    if (conflict.length > 0) reasons.push(`conflict:${conflict.length}`);
+    return c.json(
+      {
+        readiness: {
+          scope_id,
+          ready: reasons.length === 0,
+          reasons,
+          open_task_ids: open,
+          blocked_task_ids: blocked,
+          pending_sync_task_ids: pending,
+          conflict_task_ids: conflict,
+        },
+      },
+      200,
+    );
+  });
+
   const listDecompositionProposalsRoute = createRoute({
     method: "get",
     path: "/scopes/{scopeId}/decomposition-proposals",

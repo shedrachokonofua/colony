@@ -4,7 +4,9 @@
   import AuditTimeline from "$lib/AuditTimeline.svelte";
 
   let { data }: { data: PageData } = $props();
-  let tab = $state<"tasks" | "decomposition" | "sync" | "audit">("tasks");
+  let tab = $state<
+    "tasks" | "decomposition" | "closure" | "sync" | "audit"
+  >("tasks");
 
   function taskSync(taskId: string) {
     return data.providerSync?.tasks.find((item) => item.colony_id === taskId);
@@ -47,6 +49,7 @@
         <Tabs.Trigger value="decomposition" class="tabs-trigger"
           >Decomposition ({data.proposals.length})</Tabs.Trigger
         >
+        <Tabs.Trigger value="closure" class="tabs-trigger">Closure</Tabs.Trigger>
         <Tabs.Trigger value="sync" class="tabs-trigger"
           >Provider Sync</Tabs.Trigger
         >
@@ -232,6 +235,104 @@
                 {/if}
               </div>
             {/each}
+          </div>
+        {/if}
+      </Tabs.Content>
+
+      <Tabs.Content value="closure">
+        {#if data.closeReadiness}
+          {@const r = data.closeReadiness}
+          <div class="card stack">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <h2 style="margin:0">Close readiness</h2>
+              <span class="badge state-{r.ready ? 'closed' : 'blocked'}">
+                {r.ready ? "ready to close" : "not ready"}
+              </span>
+            </div>
+            {#if r.reasons.length > 0}
+              <ul>
+                {#each r.reasons as reason}
+                  <li><code>{reason}</code></li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="muted" style="margin:0">
+                All child tasks are closed (or canceled). The scope is eligible
+                for <code>scope_review_requested</code>.
+              </p>
+            {/if}
+            {#if r.open_task_ids.length > 0}
+              <details open>
+                <summary>Open tasks ({r.open_task_ids.length})</summary>
+                <ul>
+                  {#each r.open_task_ids as taskId}
+                    <li>
+                      <a href="/scopes/{data.scope.id}/tasks/{taskId}"
+                        ><code>{taskId}</code></a
+                      >
+                    </li>
+                  {/each}
+                </ul>
+              </details>
+            {/if}
+            {#if r.blocked_task_ids.length > 0}
+              <details open>
+                <summary>Blocked tasks ({r.blocked_task_ids.length})</summary>
+                <ul>
+                  {#each r.blocked_task_ids as taskId}
+                    <li>
+                      <a href="/scopes/{data.scope.id}/tasks/{taskId}"
+                        ><code>{taskId}</code></a
+                      >
+                      — operator must <code>requeue</code> or
+                      <code>cancel</code> via the API/CLI before close can
+                      proceed.
+                    </li>
+                  {/each}
+                </ul>
+              </details>
+            {/if}
+            {#if r.pending_sync_task_ids.length > 0}
+              <details open>
+                <summary>
+                  Pending provider sync ({r.pending_sync_task_ids.length})
+                </summary>
+                <ul>
+                  {#each r.pending_sync_task_ids as taskId}
+                    <li>
+                      <a href="/scopes/{data.scope.id}/tasks/{taskId}"
+                        ><code>{taskId}</code></a
+                      >
+                      — provider was unhealthy when this task last advanced;
+                      reconciliation will republish on the next healthy tick.
+                    </li>
+                  {/each}
+                </ul>
+              </details>
+            {/if}
+            {#if r.conflict_task_ids.length > 0}
+              <details open>
+                <summary>
+                  Conflict tasks ({r.conflict_task_ids.length})
+                </summary>
+                <ul>
+                  {#each r.conflict_task_ids as taskId}
+                    <li>
+                      <a href="/scopes/{data.scope.id}/tasks/{taskId}"
+                        ><code>{taskId}</code></a
+                      >
+                      — see audit for the conflict class; resolve via
+                      <code>resolveTaskConflict</code> on the worker.
+                    </li>
+                  {/each}
+                </ul>
+              </details>
+            {/if}
+          </div>
+        {:else}
+          <div class="card muted">
+            Close readiness unavailable. Re-check after the next reconcile
+            tick.
           </div>
         {/if}
       </Tabs.Content>

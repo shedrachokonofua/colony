@@ -6,6 +6,7 @@ import {
   createApiClient,
   type ApiError,
   type DecompositionProposalSummary,
+  type ScopeCloseReadinessSummary,
   type ScopeProviderSync,
 } from "$lib/api";
 
@@ -20,6 +21,7 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
   let audit: readonly AuditRecord[] = [];
   let providerSync: ScopeProviderSync | null = null;
   let proposals: readonly DecompositionProposalSummary[] = [];
+  let closeReadiness: ScopeCloseReadinessSummary | null = null;
   let loadError: string | null = null;
 
   try {
@@ -27,18 +29,21 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
     if (!scope) {
       throw error(404, `scope not found: ${scopeId}`);
     }
-    const [taskList, ready, auditList, sync, proposalList] = await Promise.all([
-      api.listTasks(scopeId),
-      api.readyTasks(scopeId),
-      api.scopeAudit(scopeId, { limit: 50 }),
-      api.scopeProviderSync(scopeId),
-      api.listDecompositionProposals(scopeId).catch(() => []),
-    ]);
+    const [taskList, ready, auditList, sync, proposalList, readiness] =
+      await Promise.all([
+        api.listTasks(scopeId),
+        api.readyTasks(scopeId),
+        api.scopeAudit(scopeId, { limit: 50 }),
+        api.scopeProviderSync(scopeId),
+        api.listDecompositionProposals(scopeId).catch(() => []),
+        api.scopeCloseReadiness(scopeId).catch(() => null),
+      ]);
     tasks = taskList;
     readyTaskIds = new Set(ready.map((t) => t.id));
     audit = auditList;
     providerSync = sync;
     proposals = proposalList;
+    closeReadiness = readiness;
   } catch (e) {
     if ((e as { status?: number }).status === 404) throw e;
     const err = e as ApiError;
@@ -54,6 +59,7 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
     audit,
     providerSync,
     proposals,
+    closeReadiness,
     loadError,
   };
 };
