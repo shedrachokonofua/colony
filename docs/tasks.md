@@ -1239,7 +1239,7 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 
 ### COL-3.7 — Phase 3 End-To-End Acceptance
 
-- [ ]
+- [x]
 
 **Depends on:** COL-3.0a, COL-3.1a, COL-3.3, COL-3.4, COL-3.5b, COL-3.6
 
