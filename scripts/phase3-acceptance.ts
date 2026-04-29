@@ -689,9 +689,21 @@ async function driveTaskToClose(task: Task): Promise<void> {
     const taskNow = await repo.getTask(task.id);
     if (!taskNow) throw new Error(`task vanished after review: ${task.id}`);
     if (taskNow.state === "changes_requested") {
-      await repo.updateTaskState(
+      // State machine: changes_requested → in_progress → review_requested.
+      // Hop through in_progress to keep the transition valid.
+      const inProgress = await repo.updateTaskState(
         task.id,
         taskNow.state_version,
+        "in_progress",
+        {
+          actor: human,
+          capability: "task.assign",
+          reason: "phase3_acceptance_force_approve_after_changes_requested",
+        },
+      );
+      await repo.updateTaskState(
+        task.id,
+        inProgress.state_version,
         "review_requested",
         {
           actor: human,
