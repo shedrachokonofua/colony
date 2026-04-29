@@ -147,6 +147,29 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Retry a provider call on transient 5xx — homelab GitLab occasionally
+ * returns 502 under load. Up to 4 attempts with linear backoff.
+ */
+async function retry5xx<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      const status =
+        err instanceof GitLabProviderError ? err.status : undefined;
+      if (status === undefined || status < 500 || status >= 600) throw err;
+      console.log(
+        `[phase3 retry] ${label} attempt ${attempt} failed with ${status}; backing off`,
+      );
+      await sleep(attempt * 1500);
+    }
+  }
+  throw lastError;
+}
+
 const phase = (label: string): void =>
   console.log(`[phase3 ${new Date().toISOString()}] ${label}`);
 
@@ -523,13 +546,15 @@ async function driveTaskToClose(task: Task): Promise<void> {
   // run finds it.
   const taskMirror = await primaryTaskMirror(task.id);
   if (!taskMirror) {
-    const issue = await adapter.issues.create(
-      { id: project.provider_id, path: project.path },
-      {
-        title: task.title,
-        description: task.description,
-        labels: ["state:ready"],
-      },
+    const issue = await retry5xx(`issues.create ${task.id}`, () =>
+      adapter.issues.create(
+        { id: project.provider_id, path: project.path },
+        {
+          title: task.title,
+          description: task.description,
+          labels: ["state:ready"],
+        },
+      ),
     );
     await providerProjects.upsertMirror({
       colony_id: task.id,
@@ -555,30 +580,32 @@ async function driveTaskToClose(task: Task): Promise<void> {
   // developer doesn't have real git tools in this acceptance — its
   // envelope will reference these artifacts. Mirrors phase2-acceptance.
   const featureBranch = `colony/${task.id.replace(/[^a-zA-Z0-9._/-]/g, "-")}`;
-  await adapter.branches
-    .create(
+  await retry5xx(`branches.create ${featureBranch}`, () =>
+    adapter.branches.create(
       { id: project.provider_id, path: project.path },
       featureBranch,
       "main",
-    )
-    .catch(() => {});
-  await rawApi({
-    method: "POST",
-    path: `/projects/${encodeURIComponent(project.provider_id)}/repository/commits`,
-    body: {
-      branch: featureBranch,
-      commit_message: `feat: ${task.title}`,
-      actions: [
-        {
-          action: "create",
-          file_path: `notes/${task.id}.md`,
-          content:
-            `# ${task.title}\n\n${task.description}\n\n` +
-            "_Placeholder commit produced by Colony Phase 3 acceptance. The Pi developer envelope refers to this branch._\n",
-        },
-      ],
-    },
-  }).catch((err) => {
+    ),
+  ).catch(() => {});
+  await retry5xx(`commits.create ${featureBranch}`, () =>
+    rawApi({
+      method: "POST",
+      path: `/projects/${encodeURIComponent(project.provider_id)}/repository/commits`,
+      body: {
+        branch: featureBranch,
+        commit_message: `feat: ${task.title}`,
+        actions: [
+          {
+            action: "create",
+            file_path: `notes/${task.id}.md`,
+            content:
+              `# ${task.title}\n\n${task.description}\n\n` +
+              "_Placeholder commit produced by Colony Phase 3 acceptance. The Pi developer envelope refers to this branch._\n",
+          },
+        ],
+      },
+    }),
+  ).catch((err) => {
     // If the branch already has a commit (idempotent retry path), the
     // raw API will 400 with "branch already exists" — that's fine.
     if (err instanceof GitLabProviderError && err.message.includes("400")) {
