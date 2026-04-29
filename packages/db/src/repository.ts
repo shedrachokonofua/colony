@@ -648,6 +648,24 @@ export class TaskGraphRepository {
   }
 
   /**
+   * All decomposition proposals for a scope, newest first. Used by the
+   * web UI to render the proposal trail (including
+   * changes_requested/committed history).
+   */
+  async listDecompositionProposals(
+    scope_id: ScopeId,
+  ): Promise<readonly DecompositionProposal[]> {
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.pool,
+      `SELECT * FROM decomposition_proposals
+       WHERE scope_id = $1
+       ORDER BY created_at DESC`,
+      [scope_id],
+    );
+    return rows.map(mapDecompositionProposal);
+  }
+
+  /**
    * Latest active proposal for a scope, optionally filtered by status.
    * "Active" = not in `committed` (committed proposals have already
    * created tasks; we should never re-review a committed proposal).

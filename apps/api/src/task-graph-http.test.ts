@@ -452,6 +452,29 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
     expect(proposedBody.proposal.status).toBe("proposed");
     expect(await deps.repo.listTasks(SCOPE)).toHaveLength(0);
 
+    // GET /decomposition-proposals lists the freshly submitted proposal.
+    const listed = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-proposals`,
+      { method: "GET", headers: { "X-Actor-Id": SUP } },
+    );
+    expect(listed.status).toBe(200);
+    const listedBody = (await listed.json()) as {
+      proposals: Array<{ id: string; status: string }>;
+    };
+    expect(listedBody.proposals).toHaveLength(1);
+    expect(listedBody.proposals[0].id).toBe(proposedBody.proposal.id);
+
+    // GET /decomposition-proposals/{id} returns the single proposal.
+    const single = await app.request(
+      `http://x/scopes/${SCOPE}/decomposition-proposals/${proposedBody.proposal.id}`,
+      { method: "GET", headers: { "X-Actor-Id": SUP } },
+    );
+    expect(single.status).toBe(200);
+    const singleBody = (await single.json()) as {
+      proposal: { id: string };
+    };
+    expect(singleBody.proposal.id).toBe(proposedBody.proposal.id);
+
     const review = await app.request(
       `http://x/scopes/${SCOPE}/decomposition-proposals/${proposedBody.proposal.id}/review`,
       {

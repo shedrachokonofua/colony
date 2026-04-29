@@ -4,7 +4,7 @@
   import AuditTimeline from "$lib/AuditTimeline.svelte";
 
   let { data }: { data: PageData } = $props();
-  let tab = $state<"tasks" | "sync" | "audit">("tasks");
+  let tab = $state<"tasks" | "decomposition" | "sync" | "audit">("tasks");
 
   function taskSync(taskId: string) {
     return data.providerSync?.tasks.find((item) => item.colony_id === taskId);
@@ -43,6 +43,9 @@
       <Tabs.List class="tabs-list">
         <Tabs.Trigger value="tasks" class="tabs-trigger"
           >Tasks ({data.tasks.length})</Tabs.Trigger
+        >
+        <Tabs.Trigger value="decomposition" class="tabs-trigger"
+          >Decomposition ({data.proposals.length})</Tabs.Trigger
         >
         <Tabs.Trigger value="sync" class="tabs-trigger"
           >Provider Sync</Tabs.Trigger
@@ -108,6 +111,127 @@
                 {/each}
               </tbody>
             </table>
+          </div>
+        {/if}
+      </Tabs.Content>
+
+      <Tabs.Content value="decomposition">
+        {#if data.proposals.length === 0}
+          <div class="card muted">
+            No decomposition proposals yet. Architect runs land here as scope
+            moves through <code>draft → decomposition_proposed</code>.
+          </div>
+        {:else}
+          <div class="stack">
+            {#each data.proposals as proposal (proposal.id)}
+              <div class="card stack">
+                <div style="display:flex; justify-content:space-between; gap:1rem; align-items:flex-start;">
+                  <div>
+                    <h3 style="margin:0">
+                      <code>{proposal.id}</code>
+                    </h3>
+                    <p class="muted" style="margin:0.25rem 0">
+                      <span class="badge state-{proposal.status}"
+                        >{proposal.status}</span
+                      >
+                      &middot; submitted {new Date(
+                        proposal.created_at,
+                      ).toLocaleString()}
+                      &middot; brief <code>{proposal.scope_brief_version}</code>
+                      &middot; scope_state_version v{proposal.scope_state_version}
+                    </p>
+                  </div>
+                  <div class="muted" style="font-size:0.85em; text-align:right">
+                    <div>packet <code>{proposal.packet_hash.slice(0, 18)}…</code></div>
+                    <div>envelope <code>{proposal.envelope_hash.slice(0, 18)}…</code></div>
+                  </div>
+                </div>
+
+                <dl class="kv">
+                  {#if proposal.reviewer}
+                    <dt>Reviewer</dt>
+                    <dd>
+                      <code>{proposal.reviewer}</code>
+                      &middot;
+                      <span class="badge state-{proposal.reviewer_result}"
+                        >{proposal.reviewer_result}</span
+                      >
+                    </dd>
+                  {/if}
+                  {#if proposal.human_approved_by}
+                    <dt>Human approved by</dt>
+                    <dd><code>{proposal.human_approved_by}</code></dd>
+                  {/if}
+                  <dt>Proposed tasks</dt>
+                  <dd>{proposal.proposed_tasks.length}</dd>
+                  <dt>Dependencies</dt>
+                  <dd>{proposal.proposed_dependencies.length}</dd>
+                </dl>
+
+                {#if proposal.proposed_tasks.length > 0}
+                  <details>
+                    <summary>Proposed tasks</summary>
+                    <ol>
+                      {#each proposal.proposed_tasks as task (task.proposed_task_id)}
+                        <li>
+                          <code>{task.proposed_task_id}</code> &mdash;
+                          <strong>{task.title}</strong>
+                          {#if task.description}
+                            <p class="muted" style="margin:0.25rem 0; white-space:pre-wrap">
+                              {task.description}
+                            </p>
+                          {/if}
+                          {#if task.acceptance_criteria.length > 0}
+                            <ul>
+                              {#each task.acceptance_criteria as criterion}
+                                <li>{criterion}</li>
+                              {/each}
+                            </ul>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ol>
+                  </details>
+                {/if}
+
+                {#if proposal.proposed_dependencies.length > 0}
+                  <details>
+                    <summary>Dependencies</summary>
+                    <ul>
+                      {#each proposal.proposed_dependencies as dep, i (i)}
+                        <li>
+                          <code>{dep.from_task_id}</code> →
+                          <code>{dep.to_task_id}</code>
+                          <span class="muted">({dep.kind})</span>
+                        </li>
+                      {/each}
+                    </ul>
+                  </details>
+                {/if}
+
+                {#if proposal.assumptions.length > 0}
+                  <details>
+                    <summary>Architect assumptions</summary>
+                    <ul>
+                      {#each proposal.assumptions as a, i (i)}
+                        <li>{a}</li>
+                      {/each}
+                    </ul>
+                  </details>
+                {/if}
+
+                {#if proposal.open_questions.length > 0}
+                  <details open={proposal.status !== "committed"}>
+                    <summary>Open questions ({proposal.open_questions.length})</summary>
+                    <ul>
+                      {#each proposal.open_questions as q, i (i)}
+                        <li>{q}</li>
+                      {/each}
+                    </ul>
+                  </details>
+                {/if}
+              </div>
+            {/each}
           </div>
         {/if}
       </Tabs.Content>

@@ -52,6 +52,48 @@ export interface OAuthProviderSummary {
   readonly connection: OAuthProviderConnection | null;
 }
 
+export interface DecompositionProposalSummary {
+  readonly id: string;
+  readonly scope_id: ScopeId;
+  readonly scope_state_version: number;
+  readonly scope_brief_version: string;
+  readonly status:
+    | "proposed"
+    | "review_approved"
+    | "changes_requested"
+    | "human_approved"
+    | "committed";
+  readonly proposed_tasks: ReadonlyArray<{
+    readonly proposed_task_id: TaskId;
+    readonly title: string;
+    readonly description: string;
+    readonly acceptance_criteria: readonly string[];
+    readonly non_goals?: readonly string[];
+    readonly suggested_role?: string;
+    readonly suggested_capabilities?: readonly string[];
+    readonly estimated_effort_minutes?: number;
+  }>;
+  readonly proposed_dependencies: ReadonlyArray<{
+    readonly from_task_id: TaskId;
+    readonly to_task_id: TaskId;
+    readonly kind: string;
+  }>;
+  readonly target_project_mapping: Readonly<Record<string, string>>;
+  readonly assumptions: readonly string[];
+  readonly open_questions: readonly string[];
+  readonly packet_hash: string;
+  readonly envelope_hash: string;
+  readonly reviewer?: string;
+  readonly reviewer_result?:
+    | "approved"
+    | "changes_requested"
+    | "blocked"
+    | "escalate";
+  readonly human_approved_by?: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
 export interface OAuthBeginResponse {
   readonly session_id: string;
   readonly authorize_url: string;
@@ -65,6 +107,9 @@ export interface ApiClient {
   listTasks(scopeId: ScopeId): Promise<readonly Task[]>;
   readyTasks(scopeId: ScopeId): Promise<readonly Task[]>;
   scopeProviderSync(scopeId: ScopeId): Promise<ScopeProviderSync>;
+  listDecompositionProposals(
+    scopeId: ScopeId,
+  ): Promise<readonly DecompositionProposalSummary[]>;
   getTask(taskId: TaskId): Promise<Task | null>;
   taskProviderSync(taskId: TaskId): Promise<ProviderSyncItem | null>;
   getTaskDependencies(taskId: TaskId): Promise<{
@@ -176,6 +221,12 @@ export function createApiClient(opts: {
       return req<ScopeProviderSync>(
         `/scopes/${encodeURIComponent(scopeId)}/provider-sync`,
       );
+    },
+    async listDecompositionProposals(scopeId) {
+      const body = await req<{
+        proposals: DecompositionProposalSummary[];
+      }>(`/scopes/${encodeURIComponent(scopeId)}/decomposition-proposals`);
+      return body.proposals;
     },
     async getTask(taskId) {
       try {

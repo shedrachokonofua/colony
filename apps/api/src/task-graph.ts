@@ -1153,6 +1153,66 @@ export function registerTaskGraph(
     }
   });
 
+  const listDecompositionProposalsRoute = createRoute({
+    method: "get",
+    path: "/scopes/{scopeId}/decomposition-proposals",
+    request: {
+      params: z.object({ scopeId: scopeIdParam }),
+    },
+    responses: {
+      200: {
+        description: "List of proposals (newest first)",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      404: {
+        description: "Scope not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(listDecompositionProposalsRoute, async (c) => {
+    const { scopeId } = c.req.valid("param");
+    const scope_id = scopeId as ScopeId;
+    const scope = await deps.repo.getScope(scope_id);
+    if (!scope) {
+      return c.json(jsonError("NOT_FOUND", `scope not found: ${scopeId}`), 404);
+    }
+    const proposals = await deps.repo.listDecompositionProposals(scope_id);
+    return c.json({ proposals }, 200);
+  });
+
+  const getDecompositionProposalRoute = createRoute({
+    method: "get",
+    path: "/scopes/{scopeId}/decomposition-proposals/{proposalId}",
+    request: {
+      params: z.object({
+        scopeId: scopeIdParam,
+        proposalId: z.string().min(1),
+      }),
+    },
+    responses: {
+      200: {
+        description: "Proposal detail",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      404: {
+        description: "Not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+  app.openapi(getDecompositionProposalRoute, async (c) => {
+    const { scopeId, proposalId } = c.req.valid("param");
+    const proposal = await deps.repo.getDecompositionProposal(
+      scopeId as ScopeId,
+      proposalId,
+    );
+    if (!proposal) {
+      return c.json(jsonError("NOT_FOUND", "proposal not found"), 404);
+    }
+    return c.json({ proposal }, 200);
+  });
+
   const submitDecompositionProposalRoute = createRoute({
     method: "post",
     path: "/scopes/{scopeId}/decomposition-proposals",
