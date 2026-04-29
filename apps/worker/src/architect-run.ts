@@ -364,13 +364,18 @@ function defaultTaskTargetMapping(
   primaryProject: ProviderProject,
 ): Record<string, string> {
   // Repository-level validator (`validateDecomposition`) requires every key
-  // in `target_project_mapping` to be a proposed_task_id. Architect output
-  // doesn't carry a per-task project hint yet, so default every task to the
-  // scope's primary provider project; richer per-task target inference can
-  // come from envelope role_specific in a later iteration.
+  // in `target_project_mapping` to be a proposed_task_id. The *value* must
+  // be a Colony provider_projects.id (UUID) since
+  // commitDecompositionProposal feeds it straight into linkTaskTarget,
+  // which has a FK constraint against provider_projects.id. Using the
+  // provider's numeric id (e.g. GitLab "49") fails the FK at commit
+  // time. Architect output doesn't carry a per-task project hint yet,
+  // so default every task to the scope's primary provider project;
+  // richer per-task target inference can come from envelope role_specific
+  // in a later iteration.
   const mapping: Record<string, string> = {};
   for (const task of proposedTasks) {
-    mapping[task.proposed_task_id] = primaryProject.provider_id;
+    mapping[task.proposed_task_id] = primaryProject.id;
   }
   return mapping;
 }

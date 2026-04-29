@@ -110,8 +110,16 @@ describe.runIf(TEST_URL)("createArchitectRun integration", () => {
     expect(stored).not.toBeNull();
     expect(stored!.status).toBe("proposed");
     expect(stored!.proposed_tasks).toHaveLength(1);
+    // The mapping value is the Colony provider_projects.id (UUID) so
+    // task_targets FK lookups resolve. We don't pin to a literal — it's
+    // generated per-test — but we assert it matches the project we
+    // upserted via providerProjects.upsertProject.
+    const projectRow = await providerProjects.getProjectByProviderId(
+      "gitlab",
+      "gitlab-99",
+    );
     expect(stored!.target_project_mapping).toEqual({
-      [`${SCOPE_ID}.1`]: "gitlab-99",
+      [`${SCOPE_ID}.1`]: projectRow!.id,
     });
 
     const scope = await repo.getScope(SCOPE_ID);

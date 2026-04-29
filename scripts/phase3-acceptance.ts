@@ -510,6 +510,42 @@ async function driveTaskToClose(task: Task): Promise<void> {
     });
   }
 
+  // Pre-push the feature branch with a placeholder commit. The Pi
+  // developer doesn't have real git tools in this acceptance — its
+  // envelope will reference these artifacts. Mirrors phase2-acceptance.
+  const featureBranch = `colony/${task.id.replace(/[^a-zA-Z0-9._/-]/g, "-")}`;
+  await adapter.branches
+    .create(
+      { id: project.provider_id, path: project.path },
+      featureBranch,
+      "main",
+    )
+    .catch(() => {});
+  await rawApi({
+    method: "POST",
+    path: `/projects/${encodeURIComponent(project.provider_id)}/repository/commits`,
+    body: {
+      branch: featureBranch,
+      commit_message: `feat: ${task.title}`,
+      actions: [
+        {
+          action: "create",
+          file_path: `notes/${task.id}.md`,
+          content:
+            `# ${task.title}\n\n${task.description}\n\n` +
+            "_Placeholder commit produced by Colony Phase 3 acceptance. The Pi developer envelope refers to this branch._\n",
+        },
+      ],
+    },
+  }).catch((err) => {
+    // If the branch already has a commit (idempotent retry path), the
+    // raw API will 400 with "branch already exists" — that's fine.
+    if (err instanceof GitLabProviderError && err.message.includes("400")) {
+      return null;
+    }
+    throw err;
+  });
+
   // Claim.
   const claimed = await repo.claimTask(
     task.id,

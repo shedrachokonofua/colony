@@ -54,7 +54,7 @@ describe("createArchitectRun (fake runtime)", () => {
     // target_project_mapping must key each proposed_task_id (the repository
     // validator rejects role-keyed maps).
     expect(submitted.input.target_project_mapping).toEqual({
-      [`${SCOPE_ID}.1`]: "gitlab-99",
+      [`${SCOPE_ID}.1`]: PROJECT_ID,
     });
   });
 
