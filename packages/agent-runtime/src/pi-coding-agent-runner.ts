@@ -13,6 +13,7 @@ import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
+  buildDeveloperFinalizerPrompt,
   buildDeveloperSystemPrompt,
   buildPacketPrompt,
   createDeveloperSubmitTool,
@@ -202,8 +203,7 @@ export class PiCodingAgentRunner implements PiRunner {
           }),
           systemPrompt: buildDeveloperSystemPrompt(),
           messages: session.agent.state.messages,
-          finalUserMessage:
-            "Your work is complete. Submit exactly one schema-conforming developer_completion envelope as JSON, summarizing the artifacts and result of the work above.",
+          finalUserMessage: buildDeveloperFinalizerPrompt(request.packet),
           schemaName: "developer_completion",
           typeboxSchema: developerCompletionEnvelopeTypeBox,
           maxAttempts: 5,

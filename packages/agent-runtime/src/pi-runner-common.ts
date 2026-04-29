@@ -362,6 +362,108 @@ export function buildPacketPrompt(packet: AgentRuntimePacket): string {
   return `Colony packet JSON:\n${JSON.stringify(packet, null, 2)}`;
 }
 
+/**
+ * Finalizer prompt for the Developer envelope. The agent loop is skipped
+ * when no work-tools are registered (the default for kimi/glm-class
+ * models), so the finalizer's `messages` argument is empty — the model has
+ * no context for `freshness`, `task_id`, or what artifacts it should
+ * surface. We therefore inject the packet directly so the model can copy
+ * the deterministic plumbing fields verbatim and only invent the
+ * judgment-call fields (artifacts, rationale, tests_added).
+ */
+export function buildDeveloperFinalizerPrompt(
+  packet: AgentRuntimePacket,
+): string {
+  const taskId = (packet as { task_id?: string }).task_id ?? "<task_id>";
+  const freshness = JSON.stringify(packet.freshness, null, 2);
+  return [
+    "Your work is complete. Submit exactly one schema-conforming developer_completion envelope by calling submit_developer_completion.",
+    "",
+    "REQUIRED: copy these plumbing fields VERBATIM into the envelope. Do not invent values; do not omit fields.",
+    "",
+    `task_id (string): "${taskId}"`,
+    "",
+    `freshness (object — copy ALL six keys exactly):\n${freshness}`,
+    "",
+    "version: 1",
+    'result: "done" (or "blocked"/"escalate" if you genuinely could not finish)',
+    'next_action: "request_review" (or "report_blocked"/"escalate" matching result)',
+    "",
+    "JUDGMENT FIELDS (use your own values):",
+    "- confidence: number in [0, 1]",
+    "- requires_human: boolean",
+    '- risk_level: "low" | "medium" | "high"',
+    "- artifacts: array of {kind,id,uri,hash?} — at minimum the head commit and the MR you opened",
+    "- policy_flags: array of strings (use [] if none)",
+    "- rationale: 1-3 sentence summary of what you actually changed",
+    "- role_specific.tests_added: array of test names you added (use [] if none)",
+    "- role_specific.self_review_notes: 1-2 sentence self-review",
+    "",
+    "Acceptance criteria the reviewer will check:",
+    ...(
+      (packet as { acceptance_criteria?: readonly string[] })
+        .acceptance_criteria ?? []
+    ).map((c) => `- ${c}`),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Reviewer-side analogue. The reviewer DOES run the agent loop, so the
+ * agent has prior context, but Ollama-cloud models still benefit from
+ * being told exactly which freshness/task_id to copy. Used when the
+ * mid-loop submit tool was not called.
+ */
+export function buildReviewerFinalizerPrompt(
+  packet: AgentRuntimePacket,
+): string {
+  const taskId = (packet as { task_id?: string }).task_id ?? "<task_id>";
+  const freshness = JSON.stringify(packet.freshness, null, 2);
+  return [
+    "Your review is complete. Submit exactly one schema-conforming reviewer_review envelope by calling submit_reviewer_review.",
+    "",
+    "REQUIRED plumbing fields — copy verbatim:",
+    `task_id: "${taskId}"`,
+    `freshness:\n${freshness}`,
+    "version: 1",
+    'result: "approved" or "changes_requested" (or "blocked"/"escalate")',
+    'next_action: "merge" (when approved), "return_to_author" (when changes_requested), "request_human_review", "report_blocked", or "escalate"',
+    "",
+    "JUDGMENT FIELDS:",
+    "- confidence, requires_human, risk_level, artifacts, policy_flags, rationale",
+    "- role_specific.findings: [] when approved with no concerns; otherwise an array of {severity,evidence,acceptance_criterion_ref?,suggested_fix?,confidence}",
+    "- role_specific.summary: optional 1-2 sentence summary",
+  ].join("\n");
+}
+
+/**
+ * Architect finalizer prompt. Same shape — copy plumbing, invent
+ * judgment.
+ */
+export function buildArchitectFinalizerPrompt(
+  packet: AgentRuntimePacket,
+): string {
+  const scopeId = (packet as { scope_id?: string }).scope_id ?? "<scope_id>";
+  const freshness = JSON.stringify(packet.freshness, null, 2);
+  return [
+    "Decomposition is complete. Submit exactly one schema-conforming architect_decomposition envelope by calling submit_architect_decomposition.",
+    "",
+    "REQUIRED plumbing fields — copy verbatim:",
+    `scope_id: "${scopeId}"`,
+    `freshness:\n${freshness}`,
+    "version: 1",
+    'result: "done"',
+    'next_action: "propose_decomposition"',
+    "",
+    "JUDGMENT FIELDS:",
+    "- confidence, requires_human (true), risk_level, artifacts ([] is fine), policy_flags, rationale",
+    "- role_specific.proposed_tasks: at least one task with proposed_task_id of form `<scope_id>.<n>` (n>=1, unique within proposal)",
+    '- role_specific.proposed_dependencies: [] or {from_task_id,to_task_id,kind:"blocks"}',
+    "- role_specific.assumptions, role_specific.open_questions: arrays of strings",
+  ].join("\n");
+}
+
 const freshnessSchema = Type.Object(
   {
     packet_hash: Type.String({ minLength: 1 }),

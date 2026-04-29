@@ -6,6 +6,7 @@ import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
   architectDecompositionEnvelopeTypeBox,
+  buildArchitectFinalizerPrompt,
   buildArchitectSystemPrompt,
   buildPacketPrompt,
   createArchitectSubmitTool,
@@ -115,8 +116,7 @@ export class PiArchitectRunner implements PiRunner {
           }),
           systemPrompt: buildArchitectSystemPrompt(),
           messages: agent.state.messages,
-          finalUserMessage:
-            "Decomposition is complete. Submit exactly one schema-conforming architect_decomposition envelope as JSON, with at least one proposed task. Each proposed_task_id must be `<scope_id>.<n>` and unique within the proposal.",
+          finalUserMessage: buildArchitectFinalizerPrompt(request.packet),
           schemaName: "architect_decomposition",
           typeboxSchema: architectDecompositionEnvelopeTypeBox,
           validate: (value) => {

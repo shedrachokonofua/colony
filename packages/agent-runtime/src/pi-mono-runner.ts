@@ -6,6 +6,7 @@ import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
   buildPacketPrompt,
+  buildReviewerFinalizerPrompt,
   buildReviewerSystemPrompt,
   createReviewerSubmitTool,
   createSandboxId,
@@ -115,8 +116,7 @@ export class PiMonoRunner implements PiRunner {
           }),
           systemPrompt: buildReviewerSystemPrompt(),
           messages: agent.state.messages,
-          finalUserMessage:
-            "Your review is complete. Submit exactly one schema-conforming reviewer_review envelope as JSON, including findings (or an empty array if approved).",
+          finalUserMessage: buildReviewerFinalizerPrompt(request.packet),
           schemaName: "reviewer_review",
           typeboxSchema: reviewerReviewEnvelopeTypeBox,
           validate: (value) => {
