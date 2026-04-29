@@ -289,6 +289,21 @@ export type DecompositionCommandResult =
         | "changes_requested";
     };
 
+export type TaskReworkResult =
+  | {
+      readonly applied: false;
+      readonly task_id?: TaskId;
+      readonly reason: string;
+    }
+  | {
+      readonly applied: true;
+      readonly task_id: TaskId;
+      readonly previous_state: TaskLifecycleState;
+      readonly new_state: TaskLifecycleState;
+      readonly invalidated_approvals: number;
+      readonly rework_count: number;
+    };
+
 export interface SupervisorActivities {
   readonly readScopeState: (input: {
     readonly scope_id: ScopeId;
@@ -345,6 +360,11 @@ export interface SupervisorActivities {
     readonly actor: string;
     readonly reason?: string;
   }) => Promise<DecompositionCommandResult>;
+  readonly requestTaskRework: (input: {
+    readonly task_id: TaskId;
+    readonly actor: string;
+    readonly reason?: string;
+  }) => Promise<TaskReworkResult>;
 }
 
 export const providerEventSignal =
@@ -495,6 +515,7 @@ export async function scopeSupervisorWorkflow(
 
     let signal = queue.shift();
     const taskIdsToEvaluate: TaskId[] = [];
+    const taskIdsToRework: TaskId[] = [];
     while (signal) {
       await activities.recordWorkflowEvent({
         scope_id,
@@ -552,12 +573,38 @@ export async function scopeSupervisorWorkflow(
             reason,
           });
         }
+        // Task-level /changes: kick the task back into developer rework
+        // and queue it to re-drive after the signal batch drains.
+        if (target === "task" && kind === "changes" && signal.payload.task_id) {
+          const reason =
+            typeof attrs?.command_prose === "string"
+              ? attrs.command_prose
+              : undefined;
+          const result = await activities.requestTaskRework({
+            task_id: signal.payload.task_id,
+            actor: signal.payload.actor ?? "unknown",
+            reason,
+          });
+          if (result.applied) {
+            taskIdsToRework.push(signal.payload.task_id);
+          }
+        }
       }
       signal = queue.shift();
     }
 
     for (const task_id of taskIdsToEvaluate) {
       await evaluateAndAdvanceTask(task_id);
+    }
+    // Re-drive developer + reviewer for any task that was just kicked
+    // back into rework. This forces a fresh review on the new head;
+    // requestTaskRework already invalidated stale approvals.
+    for (const task_id of taskIdsToRework) {
+      await driveClaimedTask({
+        scope_id,
+        task_id,
+        assignee: DEVELOPER_ASSIGNEE,
+      });
     }
     await claimAndDriveReadyTask(scope_id);
   }

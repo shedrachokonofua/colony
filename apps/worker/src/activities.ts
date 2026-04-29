@@ -32,6 +32,11 @@ import {
   type ApplyDecompositionCommandResult,
 } from "./decomposition-command.js";
 import {
+  createRequestTaskRework,
+  type RequestTaskReworkInput,
+  type RequestTaskReworkResult,
+} from "./task-rework.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -207,6 +212,17 @@ export async function applyDecompositionCommand(
 ): Promise<ApplyDecompositionCommandResult> {
   const run = createApplyDecompositionCommand({
     repo: getRepository(),
+  });
+  return run(input);
+}
+
+export async function requestTaskRework(
+  input: RequestTaskReworkInput,
+): Promise<RequestTaskReworkResult> {
+  const run = createRequestTaskRework({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
   });
   return run(input);
 }
@@ -565,6 +581,7 @@ export const activities = {
   readScopeState,
   recordWorkflowEvent,
   applyDecompositionCommand,
+  requestTaskRework,
   startArchitectRun,
   startDecompositionReviewRun,
   startDeveloperRun,
