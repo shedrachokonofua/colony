@@ -8,6 +8,15 @@ resource "random_password" "postgres" {
   special = false
 }
 
+# Master key for COLONY_SECRET_ENCRYPTION_KEY (OAuth credential store and other
+# at-rest encryption boundaries in `packages/db/src/secret-encryption.ts`).
+# 32 bytes base64-encoded — `SecretEncryption.fromString` expects exactly that.
+# random_id is stateful in tofu so re-applies don't rotate it; rotate by
+# tainting this resource explicitly when needed.
+resource "random_id" "secret_encryption_key" {
+  byte_length = 32
+}
+
 locals {
   postgres_user = "colony"
   postgres_db   = "colony"
@@ -50,6 +59,8 @@ resource "kubernetes_secret_v1" "app_env" {
     NODE_ENV = "production"
 
     DATABASE_URL = local.database_url
+
+    COLONY_SECRET_ENCRYPTION_KEY = random_id.secret_encryption_key.b64_std
 
     TEMPORAL_ADDRESS         = var.temporal_address
     TEMPORAL_TLS             = tostring(var.temporal_tls)
