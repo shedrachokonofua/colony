@@ -390,6 +390,17 @@ export interface SupervisorActivities {
     readonly already_pending: number;
     readonly task_ids: readonly string[];
   }>;
+  readonly scopeHeartbeatTick: (input: {
+    readonly scope_id: ScopeId;
+    readonly stall_threshold_ms: number;
+    readonly idempotency_key: string;
+  }) => Promise<{
+    readonly scope_id: ScopeId;
+    readonly status: "healthy" | "stalled" | "recovered" | "scope_terminal";
+    readonly classifier?: string;
+    readonly recovery?: string;
+    readonly last_progress_age_ms?: number;
+  }>;
 }
 
 export const providerEventSignal =
@@ -408,6 +419,22 @@ export function supervisorWorkflowId(scope_id: ScopeId): string {
 
 export const RECONCILE_INTERVAL = "15 minutes" as const;
 
+/**
+ * Per-scope heartbeat cadence — the supervisor's "am I making forward
+ * progress?" tick. Three heartbeats fit inside one reconcile window so
+ * a stalled scope surfaces well before drift detection runs.
+ */
+export const HEARTBEAT_INTERVAL = "5 minutes" as const;
+
+/**
+ * After this much wall time without any audit/event/agent_run/task
+ * update on the scope, the heartbeat activity classifies the scope as
+ * stalled and tries to recover. Default keeps a tight enough window
+ * for active scopes (architect run takes ~5 min) but doesn't trip on
+ * normal-cadence developer runs.
+ */
+export const HEARTBEAT_STALL_THRESHOLD_MS = 10 * 60 * 1000; // 10 min
+
 export function reconcileActivityIdempotencyKey(input: {
   readonly scope_id: ScopeId;
   readonly workflow_id: string;
@@ -415,6 +442,15 @@ export function reconcileActivityIdempotencyKey(input: {
   readonly sequence: number;
 }): string {
   return `${input.workflow_id}:${input.run_id}:reconcile:${input.scope_id}:${input.sequence}`;
+}
+
+export function heartbeatActivityIdempotencyKey(input: {
+  readonly scope_id: ScopeId;
+  readonly workflow_id: string;
+  readonly run_id: string;
+  readonly sequence: number;
+}): string {
+  return `${input.workflow_id}:${input.run_id}:heartbeat:${input.scope_id}:${input.sequence}`;
 }
 
 const activities = proxyActivities<SupervisorActivities>({
@@ -518,39 +554,68 @@ export async function scopeSupervisorWorkflow(
   await activities.readScopeState({ scope_id });
   await claimAndDriveReadyTask(scope_id);
 
+  let nextHeartbeatSeq = 1;
+  let heartbeatTickCount = 0;
+
   for (;;) {
     const signaled = await condition(
       () => queue.length > 0,
-      RECONCILE_INTERVAL,
+      HEARTBEAT_INTERVAL,
     );
 
     if (!signaled) {
-      const health = await activities.checkProviderHealth({});
-      if (!health.ok) {
-        // Provider is down: freeze the DAG so partially completed work
-        // can finish internally but cannot advance into provider-visible
-        // actions until the next reconcile finds the provider healthy.
-        await activities.markScopePendingSync({
-          scope_id,
-          reason: `provider_unhealthy:${health.error ?? "unknown"}`,
-          health: {
-            ok: health.ok,
-            checked_at: health.checked_at,
-            error: health.error,
-          },
-        });
-        // Skip claim+drive — provider writes would fail anyway.
-        continue;
-      }
-      await activities.reconcileScope({
+      // Per-scope liveness tick — fires every HEARTBEAT_INTERVAL when
+      // no signals have arrived. Detects stalled scopes (architect run
+      // never started, claimed task without a developer envelope, MR
+      // gate open but unmerged, etc.) and triggers targeted recovery
+      // via the scopeHeartbeatTick activity.
+      const heartbeat = await activities.scopeHeartbeatTick({
         scope_id,
-        idempotency_key: reconcileActivityIdempotencyKey({
+        stall_threshold_ms: HEARTBEAT_STALL_THRESHOLD_MS,
+        idempotency_key: heartbeatActivityIdempotencyKey({
           scope_id,
           workflow_id: info.workflowId,
           run_id: info.runId,
-          sequence: nextReconcileSeq++,
+          sequence: nextHeartbeatSeq++,
         }),
       });
+      if (heartbeat.status === "scope_terminal") {
+        // Scope reached closed/canceled — exit the workflow loop.
+        return;
+      }
+
+      heartbeatTickCount += 1;
+      // Reconcile every 3rd heartbeat tick (5 min × 3 = 15 min, matching
+      // the documented RECONCILE_INTERVAL). Drift checks remain on their
+      // own cadence; the heartbeat handles liveness.
+      if (heartbeatTickCount % 3 === 0) {
+        const health = await activities.checkProviderHealth({});
+        if (!health.ok) {
+          // Provider down: freeze the DAG so partially completed work
+          // can finish internally but cannot advance into provider-
+          // visible actions until the next reconcile finds the provider
+          // healthy.
+          await activities.markScopePendingSync({
+            scope_id,
+            reason: `provider_unhealthy:${health.error ?? "unknown"}`,
+            health: {
+              ok: health.ok,
+              checked_at: health.checked_at,
+              error: health.error,
+            },
+          });
+          continue;
+        }
+        await activities.reconcileScope({
+          scope_id,
+          idempotency_key: reconcileActivityIdempotencyKey({
+            scope_id,
+            workflow_id: info.workflowId,
+            run_id: info.runId,
+            sequence: nextReconcileSeq++,
+          }),
+        });
+      }
       await claimAndDriveReadyTask(scope_id);
       continue;
     }

@@ -77,6 +77,11 @@ import {
   type ScopeCloseReadiness,
 } from "./scope-close.js";
 import {
+  createScopeHeartbeatTick,
+  type ScopeHeartbeatTickInput,
+  type ScopeHeartbeatTickResult,
+} from "./scope-heartbeat.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -343,6 +348,13 @@ export async function closeScope(
   input: CloseScopeInput,
 ): Promise<CloseScopeResult> {
   const run = createCloseScope({ repo: getRepository() });
+  return run(input);
+}
+
+export async function scopeHeartbeatTick(
+  input: ScopeHeartbeatTickInput,
+): Promise<ScopeHeartbeatTickResult> {
+  const run = createScopeHeartbeatTick({ repo: getRepository() });
   return run(input);
 }
 
@@ -711,6 +723,7 @@ export const activities = {
   requestTaskRework,
   requeueBlockedTask,
   resolveTaskConflict,
+  scopeHeartbeatTick,
   startArchitectRun,
   startDecompositionReviewRun,
   startDeveloperRun,
