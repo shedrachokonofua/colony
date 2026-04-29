@@ -66,6 +66,17 @@ import {
   type RequeueBlockedTaskResult,
 } from "./blocker-ingest.js";
 import {
+  createCloseScope,
+  createEvaluateScopeCloseReadiness,
+  createRequestScopeReview,
+  type CloseScopeInput,
+  type CloseScopeResult,
+  type EvaluateScopeCloseReadinessInput,
+  type RequestScopeReviewInput,
+  type RequestScopeReviewResult,
+  type ScopeCloseReadiness,
+} from "./scope-close.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -310,6 +321,27 @@ export async function requeueBlockedTask(
   input: RequeueBlockedTaskInput,
 ): Promise<RequeueBlockedTaskResult> {
   const run = createRequeueBlockedTask({ repo: getRepository() });
+  return run(input);
+}
+
+export async function evaluateScopeCloseReadiness(
+  input: EvaluateScopeCloseReadinessInput,
+): Promise<ScopeCloseReadiness> {
+  const run = createEvaluateScopeCloseReadiness({ repo: getRepository() });
+  return run(input);
+}
+
+export async function requestScopeReview(
+  input: RequestScopeReviewInput,
+): Promise<RequestScopeReviewResult> {
+  const run = createRequestScopeReview({ repo: getRepository() });
+  return run(input);
+}
+
+export async function closeScope(
+  input: CloseScopeInput,
+): Promise<CloseScopeResult> {
+  const run = createCloseScope({ repo: getRepository() });
   return run(input);
 }
 
@@ -669,9 +701,12 @@ export const activities = {
   applyDecompositionCommand,
   applyOperatorOverride,
   checkProviderHealth,
+  closeScope,
+  evaluateScopeCloseReadiness,
   ingestBlockedEnvelope,
   markScopePendingSync,
   recordTaskConflict,
+  requestScopeReview,
   requestTaskRework,
   requeueBlockedTask,
   resolveTaskConflict,
