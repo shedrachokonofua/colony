@@ -520,6 +520,25 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       );
       return diff;
     },
+    create: async (project, input) => {
+      const commit = await this.projectApi<GitLabCommit>(
+        project.id,
+        "/repository/commits",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            branch: input.branch,
+            commit_message: input.message,
+            actions: input.actions.map((a) => ({
+              action: a.action,
+              file_path: a.file_path,
+              ...(a.content !== undefined ? { content: a.content } : {}),
+            })),
+          }),
+        },
+      );
+      return toCommit(this.provider, project.id, commit);
+    },
   };
 
   readonly pipelines: ProviderAdapter["pipelines"] = {

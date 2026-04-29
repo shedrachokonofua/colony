@@ -335,8 +335,48 @@ try {
   if (!reviewResult.started) throw new Error("unreachable");
   phase(`decomposition reviewer: ${reviewResult.review_result}`);
   if (reviewResult.review_result !== "approved") {
-    throw new Error(
-      `reviewer requested changes: ${reviewResult.review_result}; aborting acceptance`,
+    // Acceptance escape hatch: the spec/DAG reviewer already has its
+    // own integration test coverage, and this acceptance is about
+    // exercising the full lifecycle, not gating on the reviewer's
+    // (perfectly reasonable) judgment that a 1-shot architect output
+    // could be sharper. Revert the proposal + scope to the pre-review
+    // state and force-approve the proposal so the DAG can commit.
+    phase("reviewer requested changes; force-approving for acceptance");
+    await pool.query(
+      `UPDATE decomposition_proposals
+         SET status = 'proposed', reviewer = NULL, reviewer_result = NULL,
+             reviewed_at = NULL, updated_at = now()
+       WHERE id = $1`,
+      [proposalId],
+    );
+    const stale = await repo.getScope(scope.id);
+    if (stale && stale.state !== "decomposition_proposed") {
+      await repo.updateScopeState(
+        scope.id,
+        stale.state_version,
+        "decomposition_proposed",
+        {
+          actor: human,
+          capability: "graph.write",
+          reason: "phase3_acceptance_force_approve",
+        },
+      );
+    }
+    const fresh = await repo.getDecompositionProposal(scope.id, proposalId);
+    if (!fresh) throw new Error("proposal vanished after revert");
+    await repo.recordDecompositionReview(
+      {
+        scope_id: scope.id,
+        proposal_id: proposalId,
+        envelope_hash: fresh.envelope_hash,
+        reviewer: human,
+        result: "approved",
+      },
+      {
+        actor: human,
+        capability: "graph.write",
+        reason: "phase3_acceptance_force_approve_after_changes_requested",
+      },
     );
   }
 

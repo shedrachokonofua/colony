@@ -413,6 +413,25 @@ export interface ProviderAdapter {
       project: ProviderProjectRef,
       sha: string,
     ): Promise<readonly Readonly<Record<string, unknown>>[]>;
+    /**
+     * Push a multi-file commit to a branch. Used by the Architect
+     * activity to materialize the proposed decomposition as a spec MR
+     * (spec.md + decomposition.json) so reviewers and humans can read
+     * + comment on the architect's output through GitLab's standard MR
+     * UX. `actions` follows GitLab's `repository/commits` shape.
+     */
+    create(
+      project: ProviderProjectRef,
+      input: {
+        readonly branch: string;
+        readonly message: string;
+        readonly actions: readonly {
+          readonly action: "create" | "update" | "delete";
+          readonly file_path: string;
+          readonly content?: string;
+        }[];
+      },
+    ): Promise<ProviderCommit>;
   };
   readonly pipelines: {
     getStatus(
@@ -721,6 +740,14 @@ export class FakeProviderAdapter implements ProviderAdapter {
       metadata: this.meta(`${project.id}:${sha}`),
     }),
     diff: async () => [],
+    create: async (project, input) => {
+      const sha = `fake-sha-${Date.now()}-${input.branch.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      return {
+        id: `${project.id}:${sha}`,
+        sha,
+        metadata: this.meta(`${project.id}:${sha}`),
+      };
+    },
   };
 
   readonly pipelines: ProviderAdapter["pipelines"] = {

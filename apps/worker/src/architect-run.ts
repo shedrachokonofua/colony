@@ -71,6 +71,7 @@ export type StartArchitectRunResult =
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
       readonly proposal_id?: string;
       readonly reason?: string;
+      readonly spec_mr?: { readonly id: string; readonly url?: string };
     };
 
 export function createArchitectRun(deps: ArchitectRunDependencies) {
@@ -318,14 +319,236 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
       },
     );
 
+    // Open a spec MR carrying the proposal so reviewers (agent + human)
+    // can read the architect's output as a real GitLab MR diff and post
+    // /approve or /changes via comments. The webhook-dispatcher's
+    // mirror lookup picks this up as `entity_kind=mr_pr` linked to the
+    // *scope* (not a task), and the supervisor workflow's
+    // command_target=scope_decomposition routing fires the existing
+    // applyDecompositionCommand path. Best-effort: if the provider
+    // adapter doesn't support commit/MR open we return success on the
+    // proposal alone — the API path still exposes the proposal for
+    // direct approval.
+    let architectMr: { readonly id: string; readonly url?: string } | undefined;
+    try {
+      architectMr = await openSpecMergeRequest({
+        adapter: deps.providerAdapter,
+        primaryProject,
+        scope,
+        proposal,
+        proposedTasks,
+        proposedDependencies: envelope.role_specific.proposed_dependencies,
+        assumptions: envelope.role_specific.assumptions,
+        openQuestions: envelope.role_specific.open_questions,
+      });
+      if (architectMr) {
+        await deps.providerProjects.upsertMirror({
+          colony_id: scope.id,
+          entity_kind: "mr_pr",
+          provider: primaryProject.provider,
+          provider_id: architectMr.id,
+          provider_project_id: primaryProject.id,
+          provider_project_path: primaryProject.path,
+          source_version: proposal.envelope_hash,
+        });
+        await deps.repo.writeAudit({
+          scope_id: scope.id,
+          actor,
+          action: "architect.spec_mr.opened",
+          capability: "graph.write",
+          target_kind: "merge_request",
+          target_id: architectMr.id,
+          reason: "architect_run_submission",
+          evidence: {
+            proposal_id: proposal.id,
+            mr_url: architectMr.url,
+            provider: primaryProject.provider,
+            provider_project_id: primaryProject.id,
+          },
+        });
+      }
+    } catch (err) {
+      await deps.repo.writeAudit({
+        scope_id: scope.id,
+        actor: SUPERVISOR_ACTOR,
+        action: "architect.spec_mr.failed",
+        capability: "graph.write",
+        target_kind: "decomposition_proposal",
+        target_id: proposal.id,
+        reason: "spec_mr_open_failed",
+        evidence: {
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+
     return {
       started: true,
       scope_id: scope.id,
       run_id: metadata.runId,
       envelope_status: "succeeded",
       proposal_id: proposal.id,
+      spec_mr: architectMr,
     };
   };
+}
+
+async function openSpecMergeRequest(args: {
+  readonly adapter: ProviderAdapter;
+  readonly primaryProject: ProviderProject;
+  readonly scope: Scope;
+  readonly proposal: { readonly id: string; readonly envelope_hash: string };
+  readonly proposedTasks: ReadonlyArray<{
+    readonly proposed_task_id: TaskId;
+    readonly title: string;
+    readonly description: string;
+    readonly acceptance_criteria: readonly string[];
+    readonly non_goals?: readonly string[];
+    readonly suggested_role?: string;
+  }>;
+  readonly proposedDependencies: ReadonlyArray<{
+    readonly from_task_id: string;
+    readonly to_task_id: string;
+    readonly kind: string;
+  }>;
+  readonly assumptions: readonly string[];
+  readonly openQuestions: readonly string[];
+}): Promise<{ readonly id: string; readonly url?: string } | undefined> {
+  const projectRef = {
+    id: args.primaryProject.provider_id,
+    path: args.primaryProject.path,
+  };
+  const branchName = `colony/spec-${args.scope.id}-${args.proposal.id.slice(-8)}`;
+  // create branch off the project default; ignore if it already exists.
+  await args.adapter.branches
+    .create(projectRef, branchName, args.primaryProject.default_branch)
+    .catch(() => {});
+  await args.adapter.commits.create(projectRef, {
+    branch: branchName,
+    message: `feat(scope): propose decomposition ${args.proposal.id}`,
+    actions: [
+      {
+        action: "create",
+        file_path: `colony/scopes/${args.scope.id}/SPEC.md`,
+        content: renderSpecMarkdown(args),
+      },
+      {
+        action: "create",
+        file_path: `colony/scopes/${args.scope.id}/decomposition.json`,
+        content: JSON.stringify(
+          {
+            proposal_id: args.proposal.id,
+            envelope_hash: args.proposal.envelope_hash,
+            proposed_tasks: args.proposedTasks,
+            proposed_dependencies: args.proposedDependencies,
+            assumptions: args.assumptions,
+            open_questions: args.openQuestions,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  });
+  const mr = await args.adapter.mergeRequests.open(projectRef, {
+    title: `[SPEC] ${args.scope.title}`,
+    description: renderMrDescription(args),
+    source_branch: branchName,
+    target_branch: args.primaryProject.default_branch,
+  });
+  return { id: mr.id, url: mr.metadata?.web_url };
+}
+
+function renderSpecMarkdown(args: {
+  readonly scope: Scope;
+  readonly proposal: { readonly id: string };
+  readonly proposedTasks: ReadonlyArray<{
+    readonly proposed_task_id: TaskId;
+    readonly title: string;
+    readonly description: string;
+    readonly acceptance_criteria: readonly string[];
+    readonly non_goals?: readonly string[];
+    readonly suggested_role?: string;
+  }>;
+  readonly proposedDependencies: ReadonlyArray<{
+    readonly from_task_id: string;
+    readonly to_task_id: string;
+    readonly kind: string;
+  }>;
+  readonly assumptions: readonly string[];
+  readonly openQuestions: readonly string[];
+}): string {
+  const lines: string[] = [];
+  lines.push(`# Spec: ${args.scope.title}`);
+  lines.push("");
+  lines.push(`Scope: \`${args.scope.id}\``);
+  lines.push(`Proposal: \`${args.proposal.id}\``);
+  lines.push("");
+  lines.push("## Brief");
+  lines.push(args.scope.description);
+  lines.push("");
+  lines.push("## Proposed tasks");
+  for (const task of args.proposedTasks) {
+    lines.push("");
+    lines.push(`### \`${task.proposed_task_id}\` ${task.title}`);
+    lines.push("");
+    lines.push(task.description);
+    if (task.acceptance_criteria.length > 0) {
+      lines.push("");
+      lines.push("Acceptance criteria:");
+      for (const c of task.acceptance_criteria) lines.push(`- ${c}`);
+    }
+    if (task.non_goals && task.non_goals.length > 0) {
+      lines.push("");
+      lines.push("Non-goals:");
+      for (const ng of task.non_goals) lines.push(`- ${ng}`);
+    }
+    if (task.suggested_role) {
+      lines.push("");
+      lines.push(`Suggested role: \`${task.suggested_role}\``);
+    }
+  }
+  if (args.proposedDependencies.length > 0) {
+    lines.push("");
+    lines.push("## Dependencies");
+    for (const dep of args.proposedDependencies) {
+      lines.push(`- \`${dep.from_task_id}\` ${dep.kind} \`${dep.to_task_id}\``);
+    }
+  }
+  if (args.assumptions.length > 0) {
+    lines.push("");
+    lines.push("## Assumptions");
+    for (const a of args.assumptions) lines.push(`- ${a}`);
+  }
+  if (args.openQuestions.length > 0) {
+    lines.push("");
+    lines.push("## Open questions");
+    for (const q of args.openQuestions) lines.push(`- ${q}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+function renderMrDescription(args: {
+  readonly scope: Scope;
+  readonly proposal: { readonly id: string };
+  readonly proposedTasks: ReadonlyArray<unknown>;
+  readonly openQuestions: readonly string[];
+}): string {
+  const lines: string[] = [];
+  lines.push(`Spec MR for scope \`${args.scope.id}\`.`);
+  lines.push("");
+  lines.push(`- proposal: \`${args.proposal.id}\``);
+  lines.push(`- proposed tasks: ${args.proposedTasks.length}`);
+  if (args.openQuestions.length > 0) {
+    lines.push("");
+    lines.push("**Open questions** (resolve before approving):");
+    for (const q of args.openQuestions) lines.push(`- ${q}`);
+  }
+  lines.push("");
+  lines.push(
+    "Comment `/approve` to lock this decomposition in for DAG commit, or `/changes <prose>` to send the architect back to the brief.",
+  );
+  return lines.join("\n");
 }
 
 function parseArchitectEnvelope(
