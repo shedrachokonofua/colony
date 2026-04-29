@@ -73,6 +73,10 @@ default:
   before_script:
     - apk add --no-cache -q curl jq kubectl
     - |
+      mkdir -p "$CI_PROJECT_DIR/.kube"
+      export KUBECONFIG="$CI_PROJECT_DIR/.kube/config"
+      export KUBE_CONFIG_PATH="$KUBECONFIG"
+      export TF_VAR_kubeconfig_path="$KUBECONFIG"
       kubectl config set-cluster aether \
         --server="${GITLAB_KAS_PROXY}" \
         --insecure-skip-tls-verify=true
@@ -81,8 +85,6 @@ default:
       kubectl config set-context aether \
         --cluster=aether --user=agent
       kubectl config use-context aether
-      export KUBECONFIG="$HOME/.kube/config"
-      export KUBE_CONFIG_PATH="$KUBECONFIG"
 
 # Exchanges the GitLab OIDC JWT for a VAULT_TOKEN on Aether's OpenBao.
 # Depends on the `jwt-gitlab-colony` mount + `colony-ci` role landing in
@@ -115,6 +117,10 @@ default:
   before_script:
     - apk add --no-cache -q curl jq kubectl
     - |
+      mkdir -p "$CI_PROJECT_DIR/.kube"
+      export KUBECONFIG="$CI_PROJECT_DIR/.kube/config"
+      export KUBE_CONFIG_PATH="$KUBECONFIG"
+      export TF_VAR_kubeconfig_path="$KUBECONFIG"
       kubectl config set-cluster aether \
         --server="${GITLAB_KAS_PROXY}" \
         --insecure-skip-tls-verify=true
@@ -123,8 +129,6 @@ default:
       kubectl config set-context aether \
         --cluster=aether --user=agent
       kubectl config use-context aether
-      export KUBECONFIG="$HOME/.kube/config"
-      export KUBE_CONFIG_PATH="$KUBECONFIG"
     - |
       BAO_RESP=$(curl -s --fail-with-body --request POST \
         --data "{\"jwt\":\"$BAO_JWT\",\"role\":\"colony-ci\"}" \
