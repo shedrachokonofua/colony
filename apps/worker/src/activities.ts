@@ -242,6 +242,7 @@ export async function startDecompositionReviewRun(
   const run = createDecompositionReviewRun({
     repo: getRepository(),
     providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("reviewer"),
   });
   return run(input);

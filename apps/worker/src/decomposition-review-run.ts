@@ -22,6 +22,7 @@ import {
   type Scope,
   type TaskId,
 } from "@colony/domain";
+import type { ProviderAdapter, ProviderProjectRef } from "@colony/provider";
 
 /**
  * COL-3.0a Reviewer spec/DAG run.
@@ -65,6 +66,13 @@ export interface DecompositionReviewRunDependencies {
   readonly repo: TaskGraphRepository;
   readonly providerProjects: ProviderProjectRepository;
   readonly agentRuntime: AgentRuntimeAdapter;
+  /**
+   * Optional. When provided, the activity also posts the reviewer's
+   * verdict + findings as a comment on the architect's spec MR (and
+   * calls mergeRequests.approve when result=approved) so the GitLab
+   * MR view reflects the agent's decision.
+   */
+  readonly providerAdapter?: ProviderAdapter;
   readonly buildRunEnvironment?: (
     scope: Scope,
   ) => Promise<AgentRunEnvironment> | AgentRunEnvironment;
@@ -340,6 +348,65 @@ export function createDecompositionReviewRun(
       },
     );
 
+    // Surface the reviewer's verdict on the architect's spec MR (if one
+    // exists) — comment with rationale + findings, and on `approved`
+    // also call mergeRequests.approve so GitLab's MR view shows a real
+    // approval. This closes the loop the user expects: human-readable
+    // reviewer feedback on the MR + a green checkmark when the agent
+    // approves.
+    if (deps.providerAdapter && primary) {
+      const specMrMirror = await deps.providerProjects.listMirrorsForColony({
+        colony_id: scopeId,
+        entity_kind: "mr_pr",
+      });
+      const specMr = specMrMirror[0];
+      if (specMr) {
+        try {
+          await postSpecReviewComment({
+            adapter: deps.providerAdapter,
+            project: { id: primary.provider_id, path: primary.path },
+            mrId: specMr.provider_id,
+            envelope,
+            reviewResult,
+          });
+          if (reviewResult === "approved") {
+            await deps.providerAdapter.mergeRequests
+              .approve(
+                { id: primary.provider_id, path: primary.path },
+                specMr.provider_id,
+              )
+              .catch(() => {
+                // Approval API is best-effort; the colony-side review row
+                // is the source of truth for the gate.
+              });
+            await deps.repo.writeAudit({
+              scope_id: scopeId,
+              actor: reviewer,
+              action: "architect.spec_mr.approved",
+              capability: "provider.mr.approve",
+              target_kind: "merge_request",
+              target_id: specMr.provider_id,
+              reason: "decomposition_review_approved",
+              evidence: { proposal_id: proposalId },
+            });
+          }
+        } catch (err) {
+          await deps.repo.writeAudit({
+            scope_id: scopeId,
+            actor: SUPERVISOR_ACTOR,
+            action: "architect.spec_mr.review_comment_failed",
+            capability: "graph.write",
+            target_kind: "merge_request",
+            target_id: specMr.provider_id,
+            reason: "spec_mr_comment_failed",
+            evidence: {
+              message: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      }
+    }
+
     return {
       started: true,
       scope_id: scopeId,
@@ -349,6 +416,51 @@ export function createDecompositionReviewRun(
       review_result: reviewResult,
     };
   };
+}
+
+async function postSpecReviewComment(args: {
+  readonly adapter: ProviderAdapter;
+  readonly project: ProviderProjectRef;
+  readonly mrId: string;
+  readonly envelope: ReviewerReviewEnvelope;
+  readonly reviewResult:
+    | "approved"
+    | "changes_requested"
+    | "blocked"
+    | "escalate";
+}): Promise<void> {
+  const lines: string[] = [];
+  const verb =
+    args.reviewResult === "approved"
+      ? "approves"
+      : args.reviewResult === "changes_requested"
+        ? "requests changes"
+        : args.reviewResult;
+  lines.push(`**Spec/DAG reviewer ${verb}.**`);
+  if (args.envelope.role_specific.summary) {
+    lines.push("");
+    lines.push(args.envelope.role_specific.summary);
+  }
+  if (args.envelope.role_specific.findings.length > 0) {
+    lines.push("");
+    lines.push("Findings:");
+    for (const f of args.envelope.role_specific.findings) {
+      lines.push(
+        `- **${f.severity}**: ${f.evidence}${f.suggested_fix ? ` — _${f.suggested_fix}_` : ""}`,
+      );
+    }
+  }
+  lines.push("");
+  lines.push(
+    args.reviewResult === "approved"
+      ? "Reply `/approve` to commit the DAG."
+      : "Reply `/changes <prose>` after the architect addresses the findings.",
+  );
+  await args.adapter.mergeRequests.comment(
+    args.project,
+    args.mrId,
+    lines.join("\n"),
+  );
 }
 
 const SPEC_DAG_ACCEPTANCE_CRITERIA: readonly string[] = [
