@@ -53,6 +53,11 @@ import {
   type ResolveTaskConflictResult,
 } from "./task-conflict.js";
 import {
+  createApplyOperatorOverride,
+  type ApplyOperatorOverrideInput,
+  type ApplyOperatorOverrideResult,
+} from "./operator-override.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -273,6 +278,16 @@ export async function resolveTaskConflict(
   input: ResolveTaskConflictInput,
 ): Promise<ResolveTaskConflictResult> {
   const run = createResolveTaskConflict({ repo: getRepository() });
+  return run(input);
+}
+
+export async function applyOperatorOverride(
+  input: ApplyOperatorOverrideInput,
+): Promise<ApplyOperatorOverrideResult> {
+  const run = createApplyOperatorOverride({
+    repo: getRepository(),
+    policy: getPolicyRepository(),
+  });
   return run(input);
 }
 
@@ -630,6 +645,7 @@ export const activities = {
   readScopeState,
   recordWorkflowEvent,
   applyDecompositionCommand,
+  applyOperatorOverride,
   checkProviderHealth,
   markScopePendingSync,
   recordTaskConflict,
