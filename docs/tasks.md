@@ -1038,7 +1038,7 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 
 ### COL-3.0a — Architect Decomposition And Spec/DAG Gate
 
-- [ ]
+- [x]
 
 **Depends on:** COL-3.0, COL-2.7, COL-2.8, COL-2.12
 
@@ -1057,7 +1057,7 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 - Approved decomposition commits tasks, dependencies, task targets, and provider issue mirrors, then transitions the scope to `active`.
 - Stale or mismatched decomposition envelopes are rejected and surfaced in audit/UI.
 
-**Status:** in progress. Commit `1b60d62` added durable decomposition proposal storage, API submission/review/approval/commit endpoints, spec/DAG gate persistence, stale envelope rejection, and audited DAG commit that creates tasks, dependencies, task targets, and provider mirrors only after reviewer + human approval. Architect packet schema/builder, `PiArchitectRunner`, and `startArchitectRun` worker activity now drive a real Pi architect run end-to-end against a draft scope: load scope brief + target projects + scope mirror, build packet, run Pi agent (or fake adapter in tests), validate envelope freshness/scope_id, and submit through `repo.submitDecompositionProposal` so the existing reviewer/human gate path picks it up. Remaining work before marking complete: fresh Reviewer spec/DAG run wired to the proposal artifact (Reviewer activity that pulls the proposal envelope and posts a decomposition review), provider `/approve` and `/changes` command routing for scope-level approval, and UI surfacing for rejected/stale proposals.
+**Status:** complete. Architect run path (`packages/agent-runtime` schema + builder + `PiArchitectRunner`, `apps/worker/src/architect-run.ts` activity), Reviewer spec/DAG run (`apps/worker/src/decomposition-review-run.ts` with synthetic `<scope_id>.0` task_id + proposal serialized into provider_context), provider `/approve` + `/changes` routing (webhook dispatcher mirror lookup tags `command_target=scope_decomposition`, supervisor workflow dispatches to `applyDecompositionCommand` activity that approves `review_approved` proposals or records human-side changes_requested), and Web UI Decomposition tab on the scope detail page surfacing every proposal with reviewer/human-approval status, proposed tasks/dependencies, architect assumptions, and open questions (expanded by default for non-committed proposals).
 
 ### COL-3.1 — Reconciliation Engine
 
@@ -1098,7 +1098,7 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 - Duplicate signals and activity retries do not duplicate provider writes, MRs, approvals, merges, or audit records.
 - `changes_requested` re-enters Developer work and requires a fresh review before merge readiness.
 
-**Status:** in progress. Commit `1b60d62` moved the happy-path task loop into `scopeSupervisorWorkflow`: claim ready task, run Developer, open MR gate, run Reviewer, record approval/pipeline signals, evaluate the gate, merge, close, and continue claiming ready work. Remaining work before marking complete: provider webhook/comment command routing for all signal types, idempotency keys around every lifecycle side effect, durable retry/failure handling, and `changes_requested -> in_progress` rework with fresh review enforcement.
+**Status:** in progress. Commit `1b60d62` moved the happy-path task loop into `scopeSupervisorWorkflow`. Commit `a7c55c0` added the `changes_requested -> in_progress` refinement loop: webhook dispatcher tags task-level `/changes` comments with `command_target=task`, the supervisor workflow dispatches to `requestTaskRework` which transitions the task back through `changes_requested` to `in_progress`, invalidates every active approval on the task's MR artifact (fresh review required), and the workflow re-drives `driveClaimedTask` after the signal batch. `review_loop_cap` enforces the loop ceiling. Provider command routing covers `provider_event` (scope-decomposition + task-rework), `approval`, `pipeline_update`, `changes_requested` (workflow-level via the rework path), and the reconciliation timer. Remaining work for the deep version of this task before marking complete: explicit idempotency keys threaded through every lifecycle activity invocation (current activities are naturally idempotent via state-machine guards but don't dedupe at the audit layer), durable retry tuning beyond `maximumAttempts: 1`, and an `operator_override` workflow handler. These are defense-in-depth and tracked under COL-3.5/COL-3.7 acceptance.
 
 ### COL-3.2 — Periodic Reconciliation Timer
 

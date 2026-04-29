@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { capabilitySchema, scopeIdSchema, taskIdSchema } from "../common.js";
+import { scopeIdSchema, taskIdSchema } from "../common.js";
 import { envelopeBaseShape } from "./base.js";
 
 const proposedDependencyKindSchema = z.enum([
@@ -16,7 +16,11 @@ const proposedTaskSchema = z
     acceptance_criteria: z.array(z.string().min(1)).min(1),
     non_goals: z.array(z.string()),
     suggested_role: z.enum(["developer", "architect"]),
-    suggested_capabilities: z.array(capabilitySchema),
+    // Architect output is advisory: it lists capabilities *suggested* for
+    // the worker bot but the supervisor + policy layer is the source of
+    // truth on actual grants. Accept arbitrary strings here; mismatches
+    // surface during commit if the policy denies them.
+    suggested_capabilities: z.array(z.string()),
     estimated_effort_minutes: z.number().int().positive().optional(),
   })
   .strict();
