@@ -105,6 +105,37 @@ default:
       export VAULT_TOKEN=$(echo "$BAO_RESP" | jq -r '.auth.client_token')
       [ -n "$VAULT_TOKEN" ] && [ "$VAULT_TOKEN" != "null" ] || { echo "empty token"; exit 1; }
 
+# GitLab does not concatenate before_script arrays across multiple extends.
+# Tofu jobs need both kubeconfig and Bao auth, so keep the combined setup in
+# one parent instead of extending .kube-auth-aether and .bao-auth separately.
+.aether-tofu-auth:
+  id_tokens:
+    BAO_JWT:
+      aud: https://bao.home.shdr.ch
+  before_script:
+    - apk add --no-cache -q curl jq kubectl
+    - |
+      kubectl config set-cluster aether \
+        --server="${GITLAB_KAS_PROXY}" \
+        --insecure-skip-tls-verify=true
+      kubectl config set-credentials agent \
+        --token="ci:${AETHER_AGENT_ID}:${CI_JOB_TOKEN}"
+      kubectl config set-context aether \
+        --cluster=aether --user=agent
+      kubectl config use-context aether
+      export KUBECONFIG="$HOME/.kube/config"
+      export KUBE_CONFIG_PATH="$KUBECONFIG"
+    - |
+      BAO_RESP=$(curl -s --fail-with-body --request POST \
+        --data "{\"jwt\":\"$BAO_JWT\",\"role\":\"colony-ci\"}" \
+        "$VAULT_ADDR/v1/auth/jwt-gitlab-colony/login") || {
+          echo "ERROR: OpenBao JWT login failed:"
+          echo "$BAO_RESP" | jq . 2>/dev/null || echo "$BAO_RESP"
+          exit 1
+        }
+      export VAULT_TOKEN=$(echo "$BAO_RESP" | jq -r '.auth.client_token')
+      [ -n "$VAULT_TOKEN" ] && [ "$VAULT_TOKEN" != "null" ] || { echo "empty token"; exit 1; }
+
 # Buildah base. Image builds run on the buildah-tagged Aether k8s runner.
 .image-build:
   stage: build
@@ -242,9 +273,7 @@ plan:
     name: ghcr.io/opentofu/opentofu:1.11
     entrypoint: [""]
   cache: []
-  extends:
-    - .kube-auth-aether
-    - .bao-auth
+  extends: .aether-tofu-auth
   script:
     - cd ${TF_ROOT}
     - tofu init
@@ -283,9 +312,7 @@ apply:
     name: ghcr.io/opentofu/opentofu:1.11
     entrypoint: [""]
   cache: []
-  extends:
-    - .kube-auth-aether
-    - .bao-auth
+  extends: .aether-tofu-auth
   script:
     - cd ${TF_ROOT}
     - tofu init
