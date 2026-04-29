@@ -37,6 +37,14 @@ import {
   type RequestTaskReworkResult,
 } from "./task-rework.js";
 import {
+  createCheckProviderHealth,
+  createMarkScopePendingSync,
+  type CheckProviderHealthInput,
+  type CheckProviderHealthResult,
+  type MarkScopePendingSyncInput,
+  type MarkScopePendingSyncResult,
+} from "./provider-outage.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -223,6 +231,25 @@ export async function requestTaskRework(
     repo: getRepository(),
     providerProjects: getProviderProjects(),
     reviewGate: getReviewGateRepository(),
+  });
+  return run(input);
+}
+
+export async function checkProviderHealth(
+  input: CheckProviderHealthInput,
+): Promise<CheckProviderHealthResult> {
+  const run = createCheckProviderHealth({
+    providerAdapter: getProviderAdapter(),
+  });
+  return run(input);
+}
+
+export async function markScopePendingSync(
+  input: MarkScopePendingSyncInput,
+): Promise<MarkScopePendingSyncResult> {
+  const run = createMarkScopePendingSync({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
   });
   return run(input);
 }
@@ -581,6 +608,8 @@ export const activities = {
   readScopeState,
   recordWorkflowEvent,
   applyDecompositionCommand,
+  checkProviderHealth,
+  markScopePendingSync,
   requestTaskRework,
   startArchitectRun,
   startDecompositionReviewRun,

@@ -365,6 +365,31 @@ export interface SupervisorActivities {
     readonly actor: string;
     readonly reason?: string;
   }) => Promise<TaskReworkResult>;
+  readonly checkProviderHealth: (input: {
+    readonly provider?: string;
+  }) => Promise<{
+    readonly provider: string;
+    readonly ok: boolean;
+    readonly checked_at: string;
+    readonly latency_ms?: number;
+    readonly error?: string;
+    readonly version?: string;
+  }>;
+  readonly markScopePendingSync: (input: {
+    readonly scope_id: ScopeId;
+    readonly reason?: string;
+    readonly health?: {
+      readonly ok: boolean;
+      readonly checked_at: string;
+      readonly error?: string;
+    };
+  }) => Promise<{
+    readonly scope_id: ScopeId;
+    readonly transitioned: number;
+    readonly skipped: number;
+    readonly already_pending: number;
+    readonly task_ids: readonly string[];
+  }>;
 }
 
 export const providerEventSignal =
@@ -500,6 +525,23 @@ export async function scopeSupervisorWorkflow(
     );
 
     if (!signaled) {
+      const health = await activities.checkProviderHealth({});
+      if (!health.ok) {
+        // Provider is down: freeze the DAG so partially completed work
+        // can finish internally but cannot advance into provider-visible
+        // actions until the next reconcile finds the provider healthy.
+        await activities.markScopePendingSync({
+          scope_id,
+          reason: `provider_unhealthy:${health.error ?? "unknown"}`,
+          health: {
+            ok: health.ok,
+            checked_at: health.checked_at,
+            error: health.error,
+          },
+        });
+        // Skip claim+drive — provider writes would fail anyway.
+        continue;
+      }
       await activities.reconcileScope({
         scope_id,
         idempotency_key: reconcileActivityIdempotencyKey({

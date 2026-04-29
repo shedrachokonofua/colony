@@ -249,6 +249,15 @@ export interface ProviderProjectRef {
   readonly path?: string;
 }
 
+export interface ProviderHealth {
+  readonly ok: boolean;
+  /** ISO-8601 timestamp; provider package keeps it as plain string. */
+  readonly checked_at: string;
+  readonly latency_ms?: number;
+  readonly error?: string;
+  readonly version?: string;
+}
+
 export interface ProviderAdapter {
   readonly provider: ProviderName;
   /**
@@ -267,6 +276,15 @@ export interface ProviderAdapter {
    * are even possible.
    */
   identity(): Promise<ProviderIdentitySnapshot>;
+  /**
+   * Cheap reachability check used by the supervisor before issuing
+   * provider-visible writes. Should never throw; always returns a
+   * `ProviderHealth` snapshot with `ok=false` + `error` on failure.
+   * Implementations: GitLab hits `/api/v4/version`; the fake adapter
+   * returns ok unless `setHealthOverride({ ok: false, error })` was
+   * called.
+   */
+  health(): Promise<ProviderHealth>;
   readonly groups: {
     create(input: CreateProviderGroupInput): Promise<ProviderGroup>;
     delete(id: ProviderId): Promise<void>;
@@ -566,6 +584,28 @@ export class FakeProviderAdapter implements ProviderAdapter {
       default_namespace: "fake-bot",
       accessible_namespaces: ["fake-bot", ...this.groupsByPath.keys()],
     };
+  }
+
+  /**
+   * Test/dogfood lever: forces subsequent `health()` calls to return
+   * `{ ok: false, error }`. Pass `null` to clear the override and resume
+   * always-healthy responses.
+   */
+  setHealthOverride(override: { ok: boolean; error?: string } | null): void {
+    this.healthOverride = override;
+  }
+  private healthOverride: { ok: boolean; error?: string } | null = null;
+
+  async health(): Promise<ProviderHealth> {
+    const checked_at = new Date().toISOString();
+    if (this.healthOverride && !this.healthOverride.ok) {
+      return {
+        ok: false,
+        checked_at,
+        error: this.healthOverride.error ?? "fake_provider_unhealthy",
+      };
+    }
+    return { ok: true, checked_at, latency_ms: 0, version: "fake-1.0.0" };
   }
 
   readonly issues: ProviderAdapter["issues"] = {

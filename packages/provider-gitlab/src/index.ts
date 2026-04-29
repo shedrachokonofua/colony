@@ -16,6 +16,7 @@ import {
   type ProviderCommit,
   type ProviderGroup,
   type ProviderId,
+  type ProviderHealth,
   type ProviderIdentitySnapshot,
   type ProviderIssue,
   type ProviderMergeRequest,
@@ -216,6 +217,29 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       return project ? toProjectInfo(this.provider, project) : null;
     },
   };
+
+  async health(): Promise<ProviderHealth> {
+    const checked_at = new Date().toISOString();
+    const started = Date.now();
+    try {
+      const v = await this.api<{ version?: string; revision?: string }>(
+        "/version",
+      );
+      return {
+        ok: true,
+        checked_at,
+        latency_ms: Date.now() - started,
+        version: v.version ?? v.revision,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        checked_at,
+        latency_ms: Date.now() - started,
+        error: e instanceof Error ? e.message : String(e),
+      };
+    }
+  }
 
   async identity(): Promise<ProviderIdentitySnapshot> {
     const me = await this.api<GitLabUser>("/user");
