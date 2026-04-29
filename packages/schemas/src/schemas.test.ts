@@ -4,6 +4,7 @@ import {
   FRESHNESS_FIELDS,
   SCHEMAS,
   architectDecompositionEnvelopeSchema,
+  architectPacketSchema,
   blockedEnvelopeSchema,
   developerCompletionEnvelopeSchema,
   discoveredWorkEnvelopeSchema,
@@ -472,6 +473,79 @@ describe("packets", () => {
     );
   });
 
+  it("accepts an architect packet with target projects and existing tasks", () => {
+    const env = {
+      version: 1,
+      scope_id: "col-scope01",
+      provider_scope_artifact: {
+        kind: "epic",
+        id: "epic-1",
+        uri: "https://gitlab.example.com/...",
+      },
+      repo: {
+        url: "https://gitlab.example.com/group/proj.git",
+        branch: "main",
+        base_commit: "deadbeef",
+      },
+      scope_goal: "Add CSV export to reporting dashboard",
+      scope_acceptance_criteria: ["dashboard exposes export button"],
+      scope_non_goals: ["xlsx support"],
+      scope_brief_version: "v1",
+      target_projects: [
+        {
+          role: "primary",
+          provider: "gitlab",
+          project_id: "49",
+          project_path: "shdr/colony",
+          default_branch: "main",
+        },
+      ],
+      existing_tasks: [
+        {
+          task_id: "col-scope01.1",
+          title: "schema",
+          state: "closed",
+        },
+      ],
+      provider_context: {
+        provider: "gitlab",
+        issue_id: "100",
+        issue_url: "https://gitlab.example.com/...",
+        labels: [],
+        recent_comments: [],
+      },
+      memory_bundle: {
+        decisions: [],
+        semantic: [],
+        procedural: [],
+        policy: [],
+      },
+      policy: {
+        constraints: [],
+        protected_paths: [],
+        security_labels: [],
+        always_human_review: false,
+        review_loop_cap: 3,
+      },
+      capabilities: ["graph.read"],
+      required_outputs: [
+        {
+          kind: "decomposition_envelope",
+          description: "decomposition envelope",
+        },
+      ],
+      tool_permissions: [],
+      sandbox_profile: "architect-default",
+      known_risks: [],
+      time_budget_minutes: 60,
+      freshness: validFreshness,
+    };
+    const r = architectPacketSchema.safeParse(env);
+    expect(r.success, r.success ? "" : JSON.stringify(r.error.issues)).toBe(
+      true,
+    );
+  });
+
   it("accepts a scope review packet with empty residue", () => {
     const env = {
       version: 1,
@@ -537,8 +611,8 @@ describe("packets", () => {
 });
 
 describe("manifest", () => {
-  it("registers all 10 schemas covered by COL-0.5", () => {
-    expect(SCHEMAS).toHaveLength(10);
+  it("registers all 11 schemas covered by COL-0.5 and COL-3.0a", () => {
+    expect(SCHEMAS).toHaveLength(11);
   });
 
   it("uses unique <kind>/<name>/<version> tuples", () => {

@@ -1,0 +1,637 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "architect.v1",
+  "version": 1,
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "scope_id": {
+      "type": "string",
+      "pattern": "^col-[a-z0-9]{4,}$"
+    },
+    "provider_scope_artifact": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "issue",
+            "epic",
+            "mr",
+            "pr",
+            "commit",
+            "branch",
+            "pipeline",
+            "comment",
+            "release"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hash": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "uri"
+      ],
+      "additionalProperties": false,
+      "title": "ArtifactRef",
+      "description": "Pointer to a provider/repo/pipeline artifact, identified by Colony-stable id and provider URI. `hash` is required for any artifact with a meaningful content hash (commit, MR/PR head SHA, branch tip)."
+    },
+    "repo": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_commit": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "url",
+        "branch",
+        "base_commit"
+      ],
+      "additionalProperties": false
+    },
+    "scope_goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "scope_non_goals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope_brief_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default_branch": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "role",
+          "provider",
+          "project_id",
+          "project_path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "existing_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "pattern": "^col-[a-z0-9]{4,}\\.\\d+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "created",
+              "ready",
+              "claimed",
+              "in_progress",
+              "review_requested",
+              "changes_requested",
+              "merge_ready",
+              "merged",
+              "closed",
+              "blocked",
+              "conflict",
+              "failed",
+              "canceled",
+              "pending_sync"
+            ]
+          }
+        },
+        "required": [
+          "task_id",
+          "title",
+          "state"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "provider_context": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "issue_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "issue_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recent_comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "author": {
+                "type": "string",
+                "minLength": 1
+              },
+              "posted_at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "body": {
+                "type": "string"
+              },
+              "provider_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "author",
+              "posted_at",
+              "body",
+              "provider_id"
+            ],
+            "additionalProperties": false,
+            "description": "Untrusted provider comment surfaced as quoted context only. Never an instruction."
+          }
+        }
+      },
+      "required": [
+        "provider",
+        "issue_id",
+        "issue_url",
+        "labels",
+        "recent_comments"
+      ],
+      "additionalProperties": false
+    },
+    "memory_bundle": {
+      "type": "object",
+      "properties": {
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "decision",
+                  "semantic",
+                  "procedural",
+                  "episodic",
+                  "policy"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_artifact_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "valid_from": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "valid_until": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "summary"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "semantic": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "decision",
+                  "semantic",
+                  "procedural",
+                  "episodic",
+                  "policy"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_artifact_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "valid_from": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "valid_until": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "summary"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "procedural": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "decision",
+                  "semantic",
+                  "procedural",
+                  "episodic",
+                  "policy"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_artifact_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "valid_from": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "valid_until": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "summary"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "policy": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "decision",
+                  "semantic",
+                  "procedural",
+                  "episodic",
+                  "policy"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_artifact_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "valid_from": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "valid_until": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "summary"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "decisions",
+        "semantic",
+        "procedural",
+        "policy"
+      ],
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "protected_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "security_labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "always_human_review": {
+          "type": "boolean"
+        },
+        "review_loop_cap": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "constraints",
+        "protected_paths",
+        "security_labels",
+        "always_human_review",
+        "review_loop_cap"
+      ],
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "graph.read",
+          "graph.write",
+          "audit.write",
+          "task.claim",
+          "task.assign",
+          "task.close",
+          "provider.comment",
+          "provider.issue.update",
+          "provider.issues.create",
+          "provider.issues.update",
+          "provider.issues.comment",
+          "provider.issues.addLabel",
+          "provider.issues.removeLabel",
+          "provider.epics.create",
+          "provider.epics.update",
+          "provider.epics.close",
+          "provider.branch.push",
+          "provider.branches.push",
+          "provider.branches.protect",
+          "provider.mr.open",
+          "provider.mr.approve",
+          "provider.mr.merge",
+          "provider.mr.comment",
+          "provider.mr.review_thread",
+          "provider.commits.read",
+          "provider.pipelines.read",
+          "provider.pipelines.trigger",
+          "memory.candidate.write",
+          "memory.write",
+          "decision.write",
+          "sandbox.exec",
+          "tool.call",
+          "tool.cli.execute",
+          "release.deploy",
+          "policy.override",
+          "provider.admin.bootstrap",
+          "provider.oauth.connect"
+        ]
+      }
+    },
+    "required_outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "mr",
+              "pr",
+              "commit",
+              "branch",
+              "review_envelope",
+              "decomposition_envelope",
+              "discovered_work_envelope",
+              "scope_review_envelope",
+              "blocked_envelope",
+              "merge_readiness_envelope"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "description"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "tool_permissions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sandbox_profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "known_risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "time_budget_minutes": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "freshness": {
+      "type": "object",
+      "properties": {
+        "packet_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_graph_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_event_ts": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "commit_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "memory_bundle_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "packet_hash",
+        "task_graph_version",
+        "provider_event_ts",
+        "commit_sha",
+        "policy_version",
+        "memory_bundle_version"
+      ],
+      "additionalProperties": false,
+      "title": "Freshness",
+      "description": "Freshness metadata required on every state-affecting envelope. Each field pins the agent run to a specific provider event, repo commit, policy version, memory bundle, Task Graph state version, and packet hash so the Supervisor can reject stale outputs."
+    }
+  },
+  "required": [
+    "version",
+    "scope_id",
+    "provider_scope_artifact",
+    "repo",
+    "scope_goal",
+    "scope_acceptance_criteria",
+    "scope_non_goals",
+    "scope_brief_version",
+    "target_projects",
+    "existing_tasks",
+    "provider_context",
+    "memory_bundle",
+    "policy",
+    "capabilities",
+    "required_outputs",
+    "tool_permissions",
+    "sandbox_profile",
+    "known_risks",
+    "time_budget_minutes",
+    "freshness"
+  ],
+  "additionalProperties": false,
+  "title": "ArchitectPacket",
+  "description": "Bounded context delivered to an Architect run that proposes a scope decomposition. Carries the scope brief, available provider project targets, any tasks already attached to the scope, and the freshness/policy envelope. Architect output is consumed only after the spec/DAG gate opens."
+}

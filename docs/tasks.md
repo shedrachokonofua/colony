@@ -1057,6 +1057,8 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 - Approved decomposition commits tasks, dependencies, task targets, and provider issue mirrors, then transitions the scope to `active`.
 - Stale or mismatched decomposition envelopes are rejected and surfaced in audit/UI.
 
+**Status:** in progress. Commit `1b60d62` added durable decomposition proposal storage, API submission/review/approval/commit endpoints, spec/DAG gate persistence, stale envelope rejection, and audited DAG commit that creates tasks, dependencies, task targets, and provider mirrors only after reviewer + human approval. Architect packet schema/builder, `PiArchitectRunner`, and `startArchitectRun` worker activity now drive a real Pi architect run end-to-end against a draft scope: load scope brief + target projects + scope mirror, build packet, run Pi agent (or fake adapter in tests), validate envelope freshness/scope_id, and submit through `repo.submitDecompositionProposal` so the existing reviewer/human gate path picks it up. Remaining work before marking complete: fresh Reviewer spec/DAG run wired to the proposal artifact (Reviewer activity that pulls the proposal envelope and posts a decomposition review), provider `/approve` and `/changes` command routing for scope-level approval, and UI surfacing for rejected/stale proposals.
+
 ### COL-3.1 — Reconciliation Engine
 
 - [x]
@@ -1095,6 +1097,8 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 - The Supervisor workflow, not a script, can drive a real task from `ready` to `closed` once the required provider events arrive.
 - Duplicate signals and activity retries do not duplicate provider writes, MRs, approvals, merges, or audit records.
 - `changes_requested` re-enters Developer work and requires a fresh review before merge readiness.
+
+**Status:** in progress. Commit `1b60d62` moved the happy-path task loop into `scopeSupervisorWorkflow`: claim ready task, run Developer, open MR gate, run Reviewer, record approval/pipeline signals, evaluate the gate, merge, close, and continue claiming ready work. Remaining work before marking complete: provider webhook/comment command routing for all signal types, idempotency keys around every lifecycle side effect, durable retry/failure handling, and `changes_requested -> in_progress` rework with fresh review enforcement.
 
 ### COL-3.2 — Periodic Reconciliation Timer
 

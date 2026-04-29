@@ -1,9 +1,12 @@
 import type { Role } from "@colony/domain";
 import {
+  type ArchitectDecompositionEnvelope,
+  type ArchitectPacket,
   type DeveloperCompletionEnvelope,
   type ReviewPacket,
   type ReviewerReviewEnvelope,
   type TaskPacket,
+  architectDecompositionEnvelopeSchema,
   developerCompletionEnvelopeSchema,
   reviewerReviewEnvelopeSchema,
 } from "@colony/schemas";
@@ -12,10 +15,11 @@ import type { RuntimeBindingSelection } from "./runtime-bindings.js";
 import type { PreparedSandboxToolEnvironment } from "./tool-materialization.js";
 import { hashEnvelope, hashPacket } from "./packet-builders.js";
 
-export type AgentRuntimePacket = TaskPacket | ReviewPacket;
+export type AgentRuntimePacket = TaskPacket | ReviewPacket | ArchitectPacket;
 export type AgentRuntimeEnvelope =
   | DeveloperCompletionEnvelope
-  | ReviewerReviewEnvelope;
+  | ReviewerReviewEnvelope
+  | ArchitectDecompositionEnvelope;
 
 export type AgentRunRuntimeStatus =
   | "queued"
@@ -26,7 +30,7 @@ export type AgentRunRuntimeStatus =
   | "envelope_rejected";
 
 export interface AgentRunEnvironment {
-  readonly role: Extract<Role, "developer" | "reviewer">;
+  readonly role: Extract<Role, "developer" | "reviewer" | "architect">;
   readonly sandboxProfile: string;
   readonly runtimeBinding: RuntimeBindingSelection;
   readonly runExtensions: SandboxRunExtensions;
@@ -179,7 +183,9 @@ export function parseEnvelope(
   const schema =
     role === "developer"
       ? developerCompletionEnvelopeSchema
-      : reviewerReviewEnvelopeSchema;
+      : role === "reviewer"
+        ? reviewerReviewEnvelopeSchema
+        : architectDecompositionEnvelopeSchema;
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     return { ok: false, reason: parsed.error.message };
@@ -191,6 +197,43 @@ function defaultEnvelope(
   packet: AgentRuntimePacket,
   role: AgentRunEnvironment["role"],
 ): AgentRuntimeEnvelope {
+  if (role === "architect") {
+    const scopeId = packet.scope_id;
+    return architectDecompositionEnvelopeSchema.parse({
+      version: 1,
+      result: "done",
+      confidence: 0.7,
+      requires_human: true,
+      risk_level: "medium",
+      artifacts: [],
+      policy_flags: [],
+      next_action: "propose_decomposition",
+      freshness: packet.freshness,
+      rationale: "Fake architect run proposed a single-task decomposition.",
+      scope_id: scopeId,
+      role_specific: {
+        proposed_tasks: [
+          {
+            proposed_task_id: `${scopeId}.1`,
+            title: "Initial scope task",
+            description: "Placeholder task produced by fake architect run.",
+            acceptance_criteria: ["scope produces at least one task"],
+            non_goals: [],
+            suggested_role: "developer",
+            suggested_capabilities: [],
+          },
+        ],
+        proposed_dependencies: [],
+        open_questions: [],
+        assumptions: [],
+      },
+    });
+  }
+
+  // Both developer and reviewer envelopes carry task_id; only task/review
+  // packets reach this branch, and both expose `task_id`.
+  const taskId = (packet as TaskPacket).task_id;
+
   if (role === "developer") {
     return developerCompletionEnvelopeSchema.parse({
       version: 1,
@@ -211,7 +254,7 @@ function defaultEnvelope(
       next_action: "request_review",
       freshness: packet.freshness,
       rationale: "Fake developer run completed.",
-      task_id: packet.task_id,
+      task_id: taskId,
       role_specific: {
         tests_added: [],
         self_review_notes: "Fake run.",
@@ -230,7 +273,7 @@ function defaultEnvelope(
     next_action: "merge",
     freshness: packet.freshness,
     rationale: "Fake reviewer run approved.",
-    task_id: packet.task_id,
+    task_id: taskId,
     role_specific: {
       findings: [],
       summary: "No findings.",

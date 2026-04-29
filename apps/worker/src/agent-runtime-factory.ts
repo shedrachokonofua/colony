@@ -22,9 +22,16 @@ import {
   type ResolvedAgentConfig,
 } from "@colony/config";
 
+const ARCHITECT_FALLBACK_CEILINGS = {
+  timeoutMs: 1_800_000,
+  maxTurns: 80,
+  maxUsdPerRun: 25,
+};
+
 export interface AgentRuntimeWiring {
   readonly developer: AgentRuntimeAdapter;
   readonly reviewer: AgentRuntimeAdapter;
+  readonly architect: AgentRuntimeAdapter;
 }
 
 export async function createAgentRuntimeWiring(
@@ -38,7 +45,7 @@ export async function createAgentRuntimeWiring(
 
   if (choice === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
-    return { developer: fake, reviewer: fake };
+    return { developer: fake, reviewer: fake, architect: fake };
   }
 
   if (!config) {
@@ -47,14 +54,20 @@ export async function createAgentRuntimeWiring(
 
   const developer = config.forAgent("developer");
   const reviewer = config.forAgent("reviewer");
+  // Architect is optional in older configs. Fall back to the developer
+  // entry's provider/model wiring with architect-role ceilings — both roles
+  // run a Pi agent against the same LLM today.
+  const architect = resolveArchitectAgent(config, developer);
   const broker = createConfigCredentialBroker(
-    [developer, reviewer],
+    [developer, reviewer, architect],
     env,
     rawEnv,
   );
   const { PiCodingAgentRunner } =
     await import("@colony/agent-runtime/pi-coding-agent-runner");
   const { PiMonoRunner } = await import("@colony/agent-runtime/pi-mono-runner");
+  const { PiArchitectRunner } =
+    await import("@colony/agent-runtime/pi-architect-runner");
 
   const logger = consoleLogger();
   return {
@@ -80,6 +93,17 @@ export async function createAgentRuntimeWiring(
         logger,
       }),
     ),
+    architect: new PiAgentRuntimeAdapter(
+      new PiArchitectRunner({
+        broker,
+        model: modelFromConfig(architect),
+        maxTurns: architect.ceilings.maxTurns,
+        maxUsd: architect.ceilings.maxUsdPerRun,
+        runTimeoutMs: architect.ceilings.timeoutMs,
+        thinkingLevel: architect.thinkingLevel,
+        logger,
+      }),
+    ),
   };
 }
 
@@ -94,6 +118,27 @@ function consoleLogger() {
     error: (f: Record<string, unknown>, m: string) =>
       console.error(fmt("error", f, m)),
   };
+}
+
+function resolveArchitectAgent(
+  config: ColonyConfig,
+  developer: ResolvedAgentConfig,
+): ResolvedAgentConfig {
+  try {
+    return config.forAgent("architect");
+  } catch (error) {
+    if (
+      error instanceof ColonyConfigError &&
+      error.code === "UNRESOLVED_AGENT_PROVIDER"
+    ) {
+      return {
+        ...developer,
+        role: "architect",
+        ceilings: ARCHITECT_FALLBACK_CEILINGS,
+      };
+    }
+    throw error;
+  }
 }
 
 function loadRuntimeConfig(

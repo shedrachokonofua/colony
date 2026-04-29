@@ -221,7 +221,10 @@ export class PiCodingAgentRunner implements PiRunner {
         trace(
           `finalization done; rawArgs=${rawArgs === undefined ? "missing" : "present"}`,
         );
-        capturedEnvelope = completeDeveloperEnvelope(rawArgs, request.packet);
+        capturedEnvelope = completeDeveloperEnvelope(
+          rawArgs,
+          request.packet as import("@colony/schemas").TaskPacket,
+        );
         trace(
           `envelope completion done; valid=${developerCompletionEnvelopeSchema.safeParse(capturedEnvelope).success}`,
         );
@@ -254,7 +257,7 @@ export class PiCodingAgentRunner implements PiRunner {
  */
 function completeDeveloperEnvelope(
   rawArgs: unknown,
-  packet: import("./adapter.js").AgentRuntimePacket,
+  packet: import("@colony/schemas").TaskPacket,
 ): unknown {
   const isObject = (v: unknown): v is Record<string, unknown> =>
     !!v && typeof v === "object" && !Array.isArray(v);

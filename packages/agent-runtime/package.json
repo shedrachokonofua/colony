@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./pi-coding-agent-runner": "./src/pi-coding-agent-runner.ts",
-    "./pi-mono-runner": "./src/pi-mono-runner.ts"
+    "./pi-mono-runner": "./src/pi-mono-runner.ts",
+    "./pi-architect-runner": "./src/pi-architect-runner.ts"
   },
   "scripts": {
     "test": "vitest run --root ../.. src/*.test.ts"

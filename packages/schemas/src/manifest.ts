@@ -7,6 +7,7 @@ import { discoveredWorkEnvelopeSchema } from "./envelopes/discovered-work.js";
 import { mergeReadinessEnvelopeSchema } from "./envelopes/merge-readiness.js";
 import { reviewerReviewEnvelopeSchema } from "./envelopes/reviewer-review.js";
 import { scopeReviewEnvelopeSchema } from "./envelopes/scope-review.js";
+import { architectPacketSchema } from "./packets/architect-packet.js";
 import { reviewPacketSchema } from "./packets/review-packet.js";
 import { scopeReviewPacketSchema } from "./packets/scope-review-packet.js";
 import { taskPacketSchema } from "./packets/task-packet.js";
@@ -38,6 +39,12 @@ export const SCHEMAS: ReadonlyArray<SchemaSpec> = [
     name: "scope_review",
     version: 1,
     schema: scopeReviewPacketSchema,
+  },
+  {
+    kind: "packet",
+    name: "architect",
+    version: 1,
+    schema: architectPacketSchema,
   },
   {
     kind: "envelope",

@@ -5,6 +5,7 @@ export * from "./manifest.js";
 export * from "./packets/task-packet.js";
 export * from "./packets/review-packet.js";
 export * from "./packets/scope-review-packet.js";
+export * from "./packets/architect-packet.js";
 
 export * from "./envelopes/base.js";
 export * from "./envelopes/architect-decomposition.js";

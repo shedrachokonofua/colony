@@ -11,3 +11,12 @@ export * from "./sandbox-profile.js";
 export * from "./skill-registry.js";
 export * from "./tool-materialization.js";
 export * from "./oauth-auth-storage.js";
+
+// Re-export pi-runner-common helpers needed by Architect run path. Other
+// runner packages keep their large LLM-side dependencies behind dynamic
+// imports in the worker, so we surface only the lightweight pieces here.
+export {
+  buildArchitectSystemPrompt,
+  createArchitectSubmitTool,
+  architectDecompositionEnvelopeTypeBox,
+} from "./pi-runner-common.js";

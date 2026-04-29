@@ -20,7 +20,7 @@ export interface PiRunResult {
 }
 
 export interface PiRunner {
-  readonly kind: "pi-coding-agent" | "pi-mono";
+  readonly kind: "pi-coding-agent" | "pi-mono" | "pi-architect";
   run(request: PiRunRequest): Promise<PiRunResult>;
   cancel?(runId: string): Promise<void>;
 }
@@ -138,7 +138,7 @@ function withoutOutput(
 
 function describeRejection(envelope: unknown, reason: string): string {
   if (envelope && typeof envelope === "object" && "__unfinished" in envelope) {
-    return "agent did not call submit_developer_completion / submit_reviewer_review tool before terminating";
+    return "agent did not call its terminal submit_* envelope tool before terminating";
   }
   return reason;
 }

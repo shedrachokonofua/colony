@@ -17,6 +17,11 @@ import {
   type StartReviewerRunResult,
 } from "./reviewer-run.js";
 import {
+  createArchitectRun,
+  type StartArchitectRunInput,
+  type StartArchitectRunResult,
+} from "./architect-run.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -122,7 +127,7 @@ function getProviderAdapter(): ProviderAdapter {
 }
 
 async function getAgentRuntime(
-  role: "developer" | "reviewer",
+  role: "developer" | "reviewer" | "architect",
 ): Promise<AgentRuntimeAdapter> {
   agentRuntimeWiring ??= await createAgentRuntimeWiring(env());
   return agentRuntimeWiring[role];
@@ -160,6 +165,18 @@ export async function startReviewerRun(
     reviewGate: getReviewGateRepository(),
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("reviewer"),
+  });
+  return run(input);
+}
+
+export async function startArchitectRun(
+  input: StartArchitectRunInput,
+): Promise<StartArchitectRunResult> {
+  const run = createArchitectRun({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
+    agentRuntime: await getAgentRuntime("architect"),
   });
   return run(input);
 }
@@ -517,6 +534,7 @@ export const activities = {
   claimReadyTask,
   readScopeState,
   recordWorkflowEvent,
+  startArchitectRun,
   startDeveloperRun,
   startReviewerRun,
   openMrGate,
