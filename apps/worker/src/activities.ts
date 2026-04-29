@@ -58,6 +58,14 @@ import {
   type ApplyOperatorOverrideResult,
 } from "./operator-override.js";
 import {
+  createIngestBlockedEnvelope,
+  createRequeueBlockedTask,
+  type IngestBlockedEnvelopeInput,
+  type IngestBlockedEnvelopeResult,
+  type RequeueBlockedTaskInput,
+  type RequeueBlockedTaskResult,
+} from "./blocker-ingest.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -288,6 +296,20 @@ export async function applyOperatorOverride(
     repo: getRepository(),
     policy: getPolicyRepository(),
   });
+  return run(input);
+}
+
+export async function ingestBlockedEnvelope(
+  input: IngestBlockedEnvelopeInput,
+): Promise<IngestBlockedEnvelopeResult> {
+  const run = createIngestBlockedEnvelope({ repo: getRepository() });
+  return run(input);
+}
+
+export async function requeueBlockedTask(
+  input: RequeueBlockedTaskInput,
+): Promise<RequeueBlockedTaskResult> {
+  const run = createRequeueBlockedTask({ repo: getRepository() });
   return run(input);
 }
 
@@ -647,9 +669,11 @@ export const activities = {
   applyDecompositionCommand,
   applyOperatorOverride,
   checkProviderHealth,
+  ingestBlockedEnvelope,
   markScopePendingSync,
   recordTaskConflict,
   requestTaskRework,
+  requeueBlockedTask,
   resolveTaskConflict,
   startArchitectRun,
   startDecompositionReviewRun,
