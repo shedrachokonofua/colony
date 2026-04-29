@@ -771,9 +771,10 @@ async function driveTaskToClose(task: Task): Promise<void> {
       );
     }
 
-    // The gate also needs a reviewer-approved approval row on the MR
-    // artifact. Record one now under the human actor so checkMrGate can
-    // open. Real production override would call applyOperatorOverride
+    // The gate matches required_approvals by *role* via the actor
+    // prefix (bot:<role> or human:<id>). Record an approval under the
+    // reviewer bot so the gate's "missing reviewer approval" reason
+    // clears. Real production override would call applyOperatorOverride
     // with policy.override; this acceptance shortcuts.
     const mrMirror = (
       await providerProjects.listMirrorsForColony({
@@ -790,7 +791,7 @@ async function driveTaskToClose(task: Task): Promise<void> {
       if (artifact) {
         await reviewGate.recordApproval({
           artifact_id: artifact.id,
-          actor: human,
+          actor: reviewerActor,
           commit_sha: developerEnvelope.freshness.commit_sha,
         });
       }
