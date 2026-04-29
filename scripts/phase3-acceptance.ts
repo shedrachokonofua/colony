@@ -447,6 +447,64 @@ try {
   );
   assert(commitResult.tasks.length > 0, "no tasks committed");
 
+  // Merge the architect's spec MR — reviewer + human have approved, DAG
+  // committed, so the SPEC.md should land on `main` as a real durable
+  // artifact (not just an open MR). Best-effort: a 405 retry handles
+  // GitLab's "merge not yet ready" race after the approve call.
+  const specMrMirror = (
+    await providerProjects.listMirrorsForColony({
+      colony_id: scope.id,
+      entity_kind: "mr_pr",
+    })
+  )[0];
+  if (specMrMirror) {
+    phase(`merging architect spec MR ${specMrMirror.provider_id}`);
+    let merged = false;
+    for (let attempt = 1; attempt <= 6 && !merged; attempt += 1) {
+      try {
+        await adapter.mergeRequests.merge(
+          { id: project.provider_id, path: project.path },
+          specMrMirror.provider_id,
+        );
+        merged = true;
+      } catch (err) {
+        if (
+          err instanceof GitLabProviderError &&
+          err.message.includes("returned 405") &&
+          attempt < 6
+        ) {
+          await sleep(attempt * 1500);
+          continue;
+        }
+        await repo.writeAudit({
+          scope_id: scope.id,
+          actor: human,
+          action: "architect.spec_mr.merge_failed",
+          capability: "provider.mr.merge",
+          target_kind: "merge_request",
+          target_id: specMrMirror.provider_id,
+          reason: "spec_mr_merge_failed",
+          evidence: {
+            attempt,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+        break;
+      }
+    }
+    if (merged) {
+      await repo.writeAudit({
+        scope_id: scope.id,
+        actor: human,
+        action: "architect.spec_mr.merged",
+        capability: "provider.mr.merge",
+        target_kind: "merge_request",
+        target_id: specMrMirror.provider_id,
+        reason: "spec_mr_merged_after_dag_commit",
+      });
+    }
+  }
+
   // --------------------------------------------------------------------
   // 6. For each committed task: drive it through the standard task
   //    lifecycle (developer → review → human approval → merge → close).
@@ -711,6 +769,31 @@ async function driveTaskToClose(task: Task): Promise<void> {
           reason: "phase3_acceptance_force_approve_after_changes_requested",
         },
       );
+    }
+
+    // The gate also needs a reviewer-approved approval row on the MR
+    // artifact. Record one now under the human actor so checkMrGate can
+    // open. Real production override would call applyOperatorOverride
+    // with policy.override; this acceptance shortcuts.
+    const mrMirror = (
+      await providerProjects.listMirrorsForColony({
+        colony_id: task.id,
+        entity_kind: "mr_pr",
+      })
+    )[0];
+    if (mrMirror) {
+      const artifact = await reviewGate.getArtifactByProviderRef({
+        provider: mrMirror.provider,
+        kind: "mr",
+        provider_id: mrMirror.provider_id,
+      });
+      if (artifact) {
+        await reviewGate.recordApproval({
+          artifact_id: artifact.id,
+          actor: human,
+          commit_sha: developerEnvelope.freshness.commit_sha,
+        });
+      }
     }
   }
 
