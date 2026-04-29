@@ -22,6 +22,11 @@ import {
   type StartArchitectRunResult,
 } from "./architect-run.js";
 import {
+  createDecompositionReviewRun,
+  type StartDecompositionReviewRunInput,
+  type StartDecompositionReviewRunResult,
+} from "./decomposition-review-run.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -177,6 +182,17 @@ export async function startArchitectRun(
     providerProjects: getProviderProjects(),
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("architect"),
+  });
+  return run(input);
+}
+
+export async function startDecompositionReviewRun(
+  input: StartDecompositionReviewRunInput,
+): Promise<StartDecompositionReviewRunResult> {
+  const run = createDecompositionReviewRun({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    agentRuntime: await getAgentRuntime("reviewer"),
   });
   return run(input);
 }
@@ -535,6 +551,7 @@ export const activities = {
   readScopeState,
   recordWorkflowEvent,
   startArchitectRun,
+  startDecompositionReviewRun,
   startDeveloperRun,
   startReviewerRun,
   openMrGate,
