@@ -165,7 +165,7 @@ function loadRuntimeConfig(
   }
 }
 
-function createConfigCredentialBroker(
+export function createConfigCredentialBroker(
   agents: readonly ResolvedAgentConfig[],
   env: Env,
   rawEnv: Readonly<Record<string, string | undefined>>,
@@ -265,7 +265,7 @@ function secretEncryptionKey(
   );
 }
 
-function modelFromConfig(config: ResolvedAgentConfig): Model<Api> {
+export function modelFromConfig(config: ResolvedAgentConfig): Model<Api> {
   const provider = piProviderIdForAgent(config);
   const baseUrl =
     config.baseUrl ??
