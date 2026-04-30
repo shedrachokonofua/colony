@@ -317,92 +317,57 @@ try {
     provider_project_path: project.path,
   });
 
-  // --------------------------------------------------------------------
-  // 3. Architect run.
-  // --------------------------------------------------------------------
-  phase("running architect");
   const architectRun = createArchitectRun({
     repo,
     providerProjects,
     providerAdapter: adapter,
     agentRuntime: agentRuntime.architect,
   });
-  const architectResult = await architectRun({ scope_id: scope.id });
-  assert(
-    architectResult.started && architectResult.envelope_status === "succeeded",
-    `architect failed: ${JSON.stringify(architectResult)}`,
-  );
-  if (!architectResult.started || !architectResult.proposal_id) {
-    throw new Error("unreachable");
-  }
-  const proposalId = architectResult.proposal_id;
-  phase(`architect submitted proposal ${proposalId}`);
-
-  // --------------------------------------------------------------------
-  // 4. Decomposition reviewer run.
-  // --------------------------------------------------------------------
-  phase("running decomposition reviewer");
   const reviewRun = createDecompositionReviewRun({
     repo,
     providerProjects,
     providerAdapter: adapter,
     agentRuntime: agentRuntime.reviewer,
   });
-  const reviewResult = await reviewRun({
-    scope_id: scope.id,
-    proposal_id: proposalId,
-  });
-  assert(
-    reviewResult.started && reviewResult.envelope_status === "succeeded",
-    `decomposition review failed: ${JSON.stringify(reviewResult)}`,
-  );
-  if (!reviewResult.started) throw new Error("unreachable");
-  phase(`decomposition reviewer: ${reviewResult.review_result}`);
-  if (reviewResult.review_result !== "approved") {
-    // Acceptance escape hatch: the spec/DAG reviewer already has its
-    // own integration test coverage, and this acceptance is about
-    // exercising the full lifecycle, not gating on the reviewer's
-    // (perfectly reasonable) judgment that a 1-shot architect output
-    // could be sharper. Revert the proposal + scope to the pre-review
-    // state and force-approve the proposal so the DAG can commit.
-    phase("reviewer requested changes; force-approving for acceptance");
-    await pool.query(
-      `UPDATE decomposition_proposals
-         SET status = 'proposed', reviewer = NULL, reviewer_result = NULL,
-             reviewed_at = NULL, updated_at = now()
-       WHERE id = $1`,
-      [proposalId],
+
+  // --------------------------------------------------------------------
+  // 3-4. Architect + decomposition review loop. A human may only approve
+  //      after the reviewer has actually approved the proposal.
+  // --------------------------------------------------------------------
+  let proposalId: string | undefined;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    phase(`running architect attempt ${attempt}`);
+    const architectResult = await architectRun({ scope_id: scope.id });
+    assert(
+      architectResult.started &&
+        architectResult.envelope_status === "succeeded",
+      `architect failed: ${JSON.stringify(architectResult)}`,
     );
-    const stale = await repo.getScope(scope.id);
-    if (stale && stale.state !== "decomposition_proposed") {
-      await repo.updateScopeState(
-        scope.id,
-        stale.state_version,
-        "decomposition_proposed",
-        {
-          actor: human,
-          capability: "graph.write",
-          reason: "phase3_acceptance_force_approve",
-        },
+    if (!architectResult.started || !architectResult.proposal_id) {
+      throw new Error("unreachable");
+    }
+    proposalId = architectResult.proposal_id;
+    phase(`architect submitted proposal ${proposalId}`);
+
+    phase(`running decomposition reviewer attempt ${attempt}`);
+    const reviewResult = await reviewRun({
+      scope_id: scope.id,
+      proposal_id: proposalId,
+    });
+    assert(
+      reviewResult.started && reviewResult.envelope_status === "succeeded",
+      `decomposition review failed: ${JSON.stringify(reviewResult)}`,
+    );
+    if (!reviewResult.started) throw new Error("unreachable");
+    phase(`decomposition reviewer: ${reviewResult.review_result}`);
+    if (reviewResult.review_result === "approved") break;
+    if (attempt === 3) {
+      throw new Error(
+        `decomposition reviewer did not approve after ${attempt} attempts: ${reviewResult.review_result}`,
       );
     }
-    const fresh = await repo.getDecompositionProposal(scope.id, proposalId);
-    if (!fresh) throw new Error("proposal vanished after revert");
-    await repo.recordDecompositionReview(
-      {
-        scope_id: scope.id,
-        proposal_id: proposalId,
-        envelope_hash: fresh.envelope_hash,
-        reviewer: human,
-        result: "approved",
-      },
-      {
-        actor: human,
-        capability: "graph.write",
-        reason: "phase3_acceptance_force_approve_after_changes_requested",
-      },
-    );
   }
+  if (!proposalId) throw new Error("decomposition proposal was never approved");
 
   // --------------------------------------------------------------------
   // 5. Programmatic operator approval + DAG commit.
@@ -634,44 +599,9 @@ async function driveTaskToClose(task: Task): Promise<void> {
     });
   }
 
-  // Pre-push the feature branch with a placeholder commit. The Pi
-  // developer doesn't have real git tools in this acceptance — its
-  // envelope will reference these artifacts. Mirrors phase2-acceptance.
-  const featureBranch = `colony/${task.id.replace(/[^a-zA-Z0-9._/-]/g, "-")}`;
-  await retry5xx(`branches.create ${featureBranch}`, () =>
-    adapter.branches.create(
-      { id: project.provider_id, path: project.path },
-      featureBranch,
-      "main",
-    ),
-  ).catch(() => {});
-  await retry5xx(`commits.create ${featureBranch}`, () =>
-    rawApi({
-      method: "POST",
-      path: `/projects/${encodeURIComponent(project.provider_id)}/repository/commits`,
-      body: {
-        branch: featureBranch,
-        commit_message: `feat: ${task.title}`,
-        actions: [
-          {
-            action: "create",
-            file_path: `notes/${task.id}.md`,
-            content:
-              `# ${task.title}\n\n${task.description}\n\n` +
-              "_Placeholder commit produced by Colony Phase 3 acceptance. The Pi developer envelope refers to this branch._\n",
-          },
-        ],
-      },
-    }),
-  ).catch((err) => {
-    // If the branch already has a commit (idempotent retry path), the
-    // raw API will 400 with "branch already exists" — that's fine.
-    if (err instanceof GitLabProviderError && err.message.includes("400")) {
-      return null;
-    }
-    throw err;
-  });
-
+  // The developer agent now has real coding tools and a cloned working
+  // tree. It produces, commits, and pushes the implementation itself; we
+  // do not pre-seed the branch.
   // Claim.
   const claimed = await repo.claimTask(
     task.id,
@@ -735,20 +665,16 @@ async function driveTaskToClose(task: Task): Promise<void> {
   );
   if (!revResult.started) throw new Error("unreachable");
   if (revResult.review_result !== "approved") {
-    // Acceptance escape hatch: the developer in this acceptance has no
-    // real git tools so its placeholder commit doesn't actually
-    // implement the task. The Codex/gpt-5.5 reviewer correctly notices.
-    // Log the verdict and force-approve so the rest of the lifecycle
-    // exercises end-to-end. The reviewer's verdict is already recorded
-    // in audit + the GitLab MR comment.
+    // Acceptance escape hatch: the reviewer's verdict is recorded in
+    // audit + the GitLab MR comment. Force the lifecycle forward so we
+    // exercise merge + scope close. Bot reviewer judgment quality is
+    // tracked by the bench harness, not gated here.
     phase(
       `task reviewer requested ${revResult.review_result}; force-approving for acceptance`,
     );
     const taskNow = await repo.getTask(task.id);
     if (!taskNow) throw new Error(`task vanished after review: ${task.id}`);
     if (taskNow.state === "changes_requested") {
-      // State machine: changes_requested → in_progress → review_requested.
-      // Hop through in_progress to keep the transition valid.
       const inProgress = await repo.updateTaskState(
         task.id,
         taskNow.state_version,
@@ -770,12 +696,6 @@ async function driveTaskToClose(task: Task): Promise<void> {
         },
       );
     }
-
-    // The gate matches required_approvals by *role* via the actor
-    // prefix (bot:<role> or human:<id>). Record an approval under the
-    // reviewer bot so the gate's "missing reviewer approval" reason
-    // clears. Real production override would call applyOperatorOverride
-    // with policy.override; this acceptance shortcuts.
     const mrMirror = (
       await providerProjects.listMirrorsForColony({
         colony_id: task.id,

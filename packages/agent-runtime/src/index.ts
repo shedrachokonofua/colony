@@ -20,3 +20,4 @@ export {
   createArchitectSubmitTool,
   architectDecompositionEnvelopeTypeBox,
 } from "./pi-runner-common.js";
+export type { PiRunnerLogger } from "./pi-runner-common.js";

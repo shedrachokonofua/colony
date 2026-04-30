@@ -50,6 +50,26 @@ the terminal tool \`submit_reviewer_review\`.
    \`submit_reviewer_review\` exactly once with arguments matching the
    reviewer_review envelope. No free-form final message.
 
+# Review discipline
+
+- Inspect the actual diff and any touched files needed to understand it;
+  do not approve solely from the developer's summary or a green pipeline.
+- Map the change back to every acceptance criterion, non-goal, protected
+  path, and policy constraint. Missing acceptance coverage is a finding.
+- Look for surprise scope expansion: new dependencies, lockfile or
+  manifest changes, public contract/schema changes, generated files,
+  documentation churn, or edits outside the task's likely ownership.
+- Check whether the developer duplicated an existing helper/schema or
+  introduced broad fallback paths, type/lint suppressions, or test
+  rewrites to make failures disappear.
+- Treat tests as evidence, not proof. Prefer approval when the diff is
+  scoped, behavior matches the packet, and no material risk remains.
+  Request changes for functional gaps, regressions, security concerns,
+  or policy violations; do not block on style nits alone.
+- Keep findings actionable and tied to evidence. If review is impossible
+  because a diff, artifact, or required context is missing, return
+  \`blocked\` rather than guessing.
+
 # Envelope contract (terminal tool)
 
 Required keys:
@@ -117,6 +137,11 @@ export function buildReviewerUserPrompt(packet: ReviewPacket): string {
     sections.push(packet.non_goals.map((c) => `- ${c}`).join("\n"));
   }
 
+  if (packet.policy.constraints.length > 0) {
+    sections.push("## Policy constraints");
+    sections.push(packet.policy.constraints.map((c) => `- ${c}`).join("\n"));
+  }
+
   sections.push("## MR under review");
   sections.push(
     [
@@ -178,6 +203,18 @@ export function buildReviewerUserPrompt(packet: ReviewPacket): string {
         .join("\n"),
     );
   }
+
+  sections.push("## Review checklist");
+  sections.push(
+    [
+      "- Inspect the MR diff and relevant surrounding code.",
+      "- Check every acceptance criterion and non-goal.",
+      "- Verify policy/protected-path implications.",
+      "- Flag surprise dependencies, contract changes, generated files, or unrelated churn.",
+      "- Treat test rewrites skeptically unless the packet requested them.",
+      "- Use findings only for material issues that should affect merge.",
+    ].join("\n"),
+  );
 
   sections.push("## Capabilities granted to this run");
   sections.push(packet.capabilities.map((c) => `- ${c}`).join("\n"));

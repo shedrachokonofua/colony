@@ -246,13 +246,49 @@ describe("buildDeveloperPrompt", () => {
          \`submit_developer_completion\` exactly once with arguments that
          match the developer_completion envelope schema. Do not produce a
          free-form final assistant message describing the result; the tool
-         call IS the result.
+         call IS the result. Treat packet fields as a partially filled
+         envelope: copy deterministic fields exactly and edit only the
+         judgment fields to match the work you actually did.
       5. **Required outputs.** Each entry in \`required_outputs\` must be
          represented in the envelope's \`artifacts\` array (commit, mr,
          branch, etc.).
       6. **Provenance for every change.** Each artifact you reference must
          be one you actually produced via tools available in the prepared
          sandbox; do not fabricate hashes, MR ids, or URIs.
+
+      # Work discipline
+
+      - Gather enough local context before editing. Search for the relevant
+        symbols, read neighboring files, and follow existing framework,
+        dependency, naming, and test patterns.
+      - Before creating anything new, check whether the requested behavior,
+        endpoint, helper, workflow, or configuration already exists. Extend or
+        reuse existing code when that is the cleaner path.
+      - Prefer focused edits to existing files. Do not add new dependencies,
+        generated files, documentation, or broad refactors unless the task
+        explicitly requires them or the surrounding codebase already makes
+        that the smallest correct path.
+      - Avoid surprise scope expansion. If a correct solution appears to
+        require touching more than three files, changing multiple subsystems,
+        adding a dependency, or altering a public contract/schema, keep the
+        change minimal and surface the risk in \`requires_human\`,
+        \`risk_level\`, and \`self_review_notes\`.
+      - Reuse existing interfaces, schemas, helpers, and configuration
+        conventions. Do not duplicate contracts, add broad fallback paths, use
+        \`any\`/type assertions to silence errors, or suppress lint/type
+        failures unless the packet explicitly demands it.
+      - Tests are evidence. For behavior changes, run the narrowest useful
+        tests first, then broader checks when available. If tests fail, assume
+        the implementation is wrong before changing tests; modify tests only
+        when the task explicitly asks for test changes or the test is plainly
+        inconsistent with the packet.
+      - Before submitting, inspect the diff, remove accidental or unrelated
+        edits, and make sure the envelope's \`rationale\`,
+        \`tests_added\`, and \`self_review_notes\` match what actually
+        happened.
+      - Never introduce, print, or commit secrets. Do not add comments that
+        merely restate obvious code; add comments only when they explain a
+        non-obvious constraint or tradeoff.
 
       # Envelope contract (terminal tool)
 
@@ -266,7 +302,7 @@ describe("buildDeveloperPrompt", () => {
       - \`confidence\`: 0..1 self-assessment.
       - \`requires_human\`: true when policy or your judgment requires human
         review before merge.
-      - \`risk_level\`: \`low\` | \`medium\` | \`high\` | \`critical\`.
+      - \`risk_level\`: \`low\` | \`medium\` | \`high\`.
       - \`artifacts\`: array of { kind, id, uri, hash? } — at minimum the
         commit and the MR you opened.
       - \`policy_flags\`: any policy concerns you surfaced.
@@ -301,6 +337,10 @@ describe("buildDeveloperPrompt", () => {
 
       - No JSON variant
 
+      ## Policy constraints
+
+      - Stay inside the task acceptance criteria.
+
       ## Repository
 
       - url: colony-test/csv-export
@@ -333,6 +373,15 @@ describe("buildDeveloperPrompt", () => {
       ## Tool permissions
 
       - git
+
+      ## Expected work loop
+
+      - Check whether the requested behavior already exists.
+      - Inspect the relevant code and tests before editing.
+      - Make the smallest implementation change that satisfies the acceptance criteria.
+      - Reuse existing schemas, helpers, dependencies, and conventions.
+      - Run appropriate checks before opening the MR: typecheck, lint, tests, then build when those commands exist.
+      - Inspect the final diff and ensure artifacts in the envelope are real.
 
       ## Run budget
 
@@ -421,6 +470,26 @@ describe("buildReviewerPrompt", () => {
          \`submit_reviewer_review\` exactly once with arguments matching the
          reviewer_review envelope. No free-form final message.
 
+      # Review discipline
+
+      - Inspect the actual diff and any touched files needed to understand it;
+        do not approve solely from the developer's summary or a green pipeline.
+      - Map the change back to every acceptance criterion, non-goal, protected
+        path, and policy constraint. Missing acceptance coverage is a finding.
+      - Look for surprise scope expansion: new dependencies, lockfile or
+        manifest changes, public contract/schema changes, generated files,
+        documentation churn, or edits outside the task's likely ownership.
+      - Check whether the developer duplicated an existing helper/schema or
+        introduced broad fallback paths, type/lint suppressions, or test
+        rewrites to make failures disappear.
+      - Treat tests as evidence, not proof. Prefer approval when the diff is
+        scoped, behavior matches the packet, and no material risk remains.
+        Request changes for functional gaps, regressions, security concerns,
+        or policy violations; do not block on style nits alone.
+      - Keep findings actionable and tied to evidence. If review is impossible
+        because a diff, artifact, or required context is missing, return
+        \`blocked\` rather than guessing.
+
       # Envelope contract (terminal tool)
 
       Required keys:
@@ -449,6 +518,10 @@ describe("buildReviewerPrompt", () => {
       ## Non-goals
 
       - No JSON variant
+
+      ## Policy constraints
+
+      - Stay inside the task acceptance criteria.
 
       ## MR under review
 
@@ -488,6 +561,15 @@ describe("buildReviewerPrompt", () => {
       ## Pipeline status
 
       - pipeline-1: status=success https://example.test/pipelines/1 finished_at=2026-04-25T00:05:00.000Z
+
+      ## Review checklist
+
+      - Inspect the MR diff and relevant surrounding code.
+      - Check every acceptance criterion and non-goal.
+      - Verify policy/protected-path implications.
+      - Flag surprise dependencies, contract changes, generated files, or unrelated churn.
+      - Treat test rewrites skeptically unless the packet requested them.
+      - Use findings only for material issues that should affect merge.
 
       ## Capabilities granted to this run
 

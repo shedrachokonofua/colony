@@ -150,6 +150,20 @@ tasks:
     cmds:
       - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase2'"
 
+  acceptance:phase3:
+    desc: Run Phase 3 live acceptance (architect → reviewer → developer → merge → scope close)
+    summary: |
+      Live-by-default. Bootstraps a throwaway GitLab group/project, drives a
+      draft scope through architect decomposition, decomposition review, DAG
+      commit, and per-task developer/reviewer/merge/close, then closes the
+      scope. The developer agent does its own coding, commit, and push using
+      the Pi coding-agent runner against a cloned working tree.
+
+      Prerequisites: same as acceptance:phase2 plus an active Codex (or
+      configured) OAuth connection in provider_oauth_connections.
+    cmds:
+      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase3'"
+
   test:all:
     desc: All tests (unit + integration + live GitLab)
     cmds:

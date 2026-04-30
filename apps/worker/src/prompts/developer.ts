@@ -52,13 +52,49 @@ the loop by calling the terminal tool \`submit_developer_completion\`.
    \`submit_developer_completion\` exactly once with arguments that
    match the developer_completion envelope schema. Do not produce a
    free-form final assistant message describing the result; the tool
-   call IS the result.
+   call IS the result. Treat packet fields as a partially filled
+   envelope: copy deterministic fields exactly and edit only the
+   judgment fields to match the work you actually did.
 5. **Required outputs.** Each entry in \`required_outputs\` must be
    represented in the envelope's \`artifacts\` array (commit, mr,
    branch, etc.).
 6. **Provenance for every change.** Each artifact you reference must
    be one you actually produced via tools available in the prepared
    sandbox; do not fabricate hashes, MR ids, or URIs.
+
+# Work discipline
+
+- Gather enough local context before editing. Search for the relevant
+  symbols, read neighboring files, and follow existing framework,
+  dependency, naming, and test patterns.
+- Before creating anything new, check whether the requested behavior,
+  endpoint, helper, workflow, or configuration already exists. Extend or
+  reuse existing code when that is the cleaner path.
+- Prefer focused edits to existing files. Do not add new dependencies,
+  generated files, documentation, or broad refactors unless the task
+  explicitly requires them or the surrounding codebase already makes
+  that the smallest correct path.
+- Avoid surprise scope expansion. If a correct solution appears to
+  require touching more than three files, changing multiple subsystems,
+  adding a dependency, or altering a public contract/schema, keep the
+  change minimal and surface the risk in \`requires_human\`,
+  \`risk_level\`, and \`self_review_notes\`.
+- Reuse existing interfaces, schemas, helpers, and configuration
+  conventions. Do not duplicate contracts, add broad fallback paths, use
+  \`any\`/type assertions to silence errors, or suppress lint/type
+  failures unless the packet explicitly demands it.
+- Tests are evidence. For behavior changes, run the narrowest useful
+  tests first, then broader checks when available. If tests fail, assume
+  the implementation is wrong before changing tests; modify tests only
+  when the task explicitly asks for test changes or the test is plainly
+  inconsistent with the packet.
+- Before submitting, inspect the diff, remove accidental or unrelated
+  edits, and make sure the envelope's \`rationale\`,
+  \`tests_added\`, and \`self_review_notes\` match what actually
+  happened.
+- Never introduce, print, or commit secrets. Do not add comments that
+  merely restate obvious code; add comments only when they explain a
+  non-obvious constraint or tradeoff.
 
 # Envelope contract (terminal tool)
 
@@ -72,7 +108,7 @@ developer_completion envelope. Required keys:
 - \`confidence\`: 0..1 self-assessment.
 - \`requires_human\`: true when policy or your judgment requires human
   review before merge.
-- \`risk_level\`: \`low\` | \`medium\` | \`high\` | \`critical\`.
+- \`risk_level\`: \`low\` | \`medium\` | \`high\`.
 - \`artifacts\`: array of { kind, id, uri, hash? } — at minimum the
   commit and the MR you opened.
 - \`policy_flags\`: any policy concerns you surfaced.
@@ -145,6 +181,11 @@ export function buildDeveloperUserPrompt(packet: TaskPacket): string {
     sections.push(packet.non_goals.map((c) => `- ${c}`).join("\n"));
   }
 
+  if (packet.policy.constraints.length > 0) {
+    sections.push("## Policy constraints");
+    sections.push(packet.policy.constraints.map((c) => `- ${c}`).join("\n"));
+  }
+
   if (packet.dependencies.length > 0) {
     sections.push("## Dependencies");
     sections.push(
@@ -196,6 +237,18 @@ export function buildDeveloperUserPrompt(packet: TaskPacket): string {
     sections.push("## Known risks");
     sections.push(packet.known_risks.map((r) => `- ${r}`).join("\n"));
   }
+
+  sections.push("## Expected work loop");
+  sections.push(
+    [
+      "- Check whether the requested behavior already exists.",
+      "- Inspect the relevant code and tests before editing.",
+      "- Make the smallest implementation change that satisfies the acceptance criteria.",
+      "- Reuse existing schemas, helpers, dependencies, and conventions.",
+      "- Run appropriate checks before opening the MR: typecheck, lint, tests, then build when those commands exist.",
+      "- Inspect the final diff and ensure artifacts in the envelope are real.",
+    ].join("\n"),
+  );
 
   if (
     packet.memory_bundle.decisions.length +

@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   AuthStorage,
   ModelRegistry,
@@ -29,7 +33,18 @@ import {
 
 export interface PiCodingAgentRunnerOptions extends PiRunnerBaseOptions {
   readonly developerTools?: readonly string[];
+  readonly logToolArgs?: boolean;
 }
+
+export const DEFAULT_DEVELOPER_TOOLS = [
+  "read",
+  "write",
+  "edit",
+  "bash",
+  "grep",
+  "find",
+  "ls",
+] as const;
 
 export class PiCodingAgentRunner implements PiRunner {
   readonly kind = "pi-coding-agent" as const;
@@ -50,11 +65,12 @@ export class PiCodingAgentRunner implements PiRunner {
     const broker = runnerBroker(this.options);
     const model = await resolvePiModel(request, this.options.model);
     trace(`model resolved: ${model.id}@${model.baseUrl}`);
-    const cwd = provisionScratchDir(
-      runId,
-      request.packet,
-      this.options.scratchDir,
-    );
+    const developerTools =
+      this.options.developerTools ?? DEFAULT_DEVELOPER_TOOLS;
+    const cwd =
+      developerTools.length > 0
+        ? provisionDeveloperWorkspace(runId, request.packet, this.options)
+        : provisionScratchDir(runId, request.packet, this.options.scratchDir);
     trace(`cwd ready: ${cwd}`);
     let capturedEnvelope: unknown;
     let session: AgentSession | undefined;
@@ -88,15 +104,7 @@ export class PiCodingAgentRunner implements PiRunner {
       compaction: { enabled: false },
       retry: { enabled: true, maxRetries: 1 },
     });
-    // Until Colony provisions a real working tree + git-restricted bash
-    // sandbox for the developer, the default toolset is just the submit
-    // tool. Kimi-class models given read/write/edit/ls in an empty
-    // scratch dir burn turns inventing files instead of submitting. With
-    // only submit_developer_completion registered the agent has no
-    // alternative action and produces an envelope immediately.
-    // Callers that want a richer toolset (real working tree, sandboxed
-    // bash, etc.) pass developerTools explicitly.
-    const toolNames = [...(this.options.developerTools ?? []), submitTool.name];
+    const toolNames = [...developerTools, submitTool.name];
 
     const clearTimeoutGuard = withRunTimeout(
       runId,
@@ -162,6 +170,7 @@ export class PiCodingAgentRunner implements PiRunner {
             runId,
             sandboxId,
             tool: context.toolCall.name,
+            args: this.options.logToolArgs ? context.args : undefined,
             isError: context.isError,
           },
           "pi_tool_call",
@@ -169,7 +178,7 @@ export class PiCodingAgentRunner implements PiRunner {
         return base;
       };
 
-      const hasWorkTools = (this.options.developerTools?.length ?? 0) > 0;
+      const hasWorkTools = developerTools.length > 0;
       try {
         if (hasWorkTools) {
           trace("calling session.prompt with packet");
@@ -221,6 +230,12 @@ export class PiCodingAgentRunner implements PiRunner {
         trace(
           `finalization done; rawArgs=${rawArgs === undefined ? "missing" : "present"}`,
         );
+        const rawArgsValid =
+          developerCompletionEnvelopeSchema.safeParse(rawArgs).success;
+        this.options.logger?.info?.(
+          { runId, rawArgsValid },
+          "developer_defaults_helper_applied",
+        );
         capturedEnvelope = completeDeveloperEnvelope(
           rawArgs,
           request.packet as import("@colony/schemas").TaskPacket,
@@ -244,6 +259,131 @@ export class PiCodingAgentRunner implements PiRunner {
   async cancel(runId: string): Promise<void> {
     await this.activeRuns.get(runId)?.abort();
   }
+}
+
+function provisionDeveloperWorkspace(
+  runId: string,
+  packet: PiRunRequest["packet"],
+  options: PiCodingAgentRunnerOptions,
+): string {
+  if (options.scratchDir) {
+    return provisionScratchDir(runId, packet, options.scratchDir);
+  }
+
+  const repo = developerRepo(packet);
+  if (!repo) {
+    return provisionScratchDir(runId, packet);
+  }
+  const clone = resolveCloneUrl(repo.url);
+
+  const dir = join(tmpdir(), "colony-pi-runs", runId);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dirname(dir), { recursive: true });
+    git(
+      ["clone", "--quiet", "--no-single-branch", clone.cloneUrl, dir],
+      dirname(dir),
+    );
+    try {
+      git(["checkout", "--quiet", repo.branch], dir);
+    } catch {
+      git(["checkout", "--quiet", "-B", repo.branch, repo.base_commit], dir);
+    }
+    writeFileSync(join(dir, "PACKET.json"), JSON.stringify(packet, null, 2), {
+      encoding: "utf8",
+    });
+    return dir;
+  } catch (err) {
+    options.logger?.warn?.(
+      {
+        runId,
+        repoUrl: clone.displayUrl,
+        branch: repo.branch,
+        baseCommit: repo.base_commit,
+        error: sanitizeSecret(
+          err instanceof Error ? err.message : String(err),
+          clone.secret,
+        ),
+      },
+      "developer_workspace_clone_failed",
+    );
+    rmSync(dir, { recursive: true, force: true });
+    return provisionScratchDir(runId, packet, dir);
+  }
+}
+
+function resolveCloneUrl(repoUrl: string): {
+  readonly cloneUrl: string;
+  readonly displayUrl: string;
+  readonly secret?: string;
+} {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repoUrl) || repoUrl.startsWith("git@")) {
+    return { cloneUrl: repoUrl, displayUrl: repoUrl };
+  }
+
+  const baseUrl = process.env["GITLAB_BASE_URL"];
+  if (!baseUrl) {
+    return { cloneUrl: repoUrl, displayUrl: repoUrl };
+  }
+
+  const path = repoUrl.replace(/^\/+/, "").replace(/\/+$/, "");
+  const suffix = path.endsWith(".git") ? "" : ".git";
+  const url = new URL(`${baseUrl.replace(/\/+$/, "")}/${path}${suffix}`);
+  const token =
+    process.env["GITLAB_TOKEN"] ?? process.env["GITLAB_BOT_ENGINE_TOKEN"];
+  if (token && (url.protocol === "https:" || url.protocol === "http:")) {
+    url.username = "oauth2";
+    url.password = token;
+  }
+
+  const display = new URL(url.href);
+  display.username = "";
+  display.password = "";
+  return {
+    cloneUrl: url.href,
+    displayUrl: display.href,
+    secret: token,
+  };
+}
+
+function sanitizeSecret(value: string, secret: string | undefined): string {
+  if (!secret) return value;
+  return value
+    .replaceAll(secret, "[redacted]")
+    .replaceAll(encodeURIComponent(secret), "[redacted]");
+}
+
+function developerRepo(packet: PiRunRequest["packet"]):
+  | {
+      readonly url: string;
+      readonly branch: string;
+      readonly base_commit: string;
+    }
+  | undefined {
+  const candidate = packet as {
+    repo?: { url?: unknown; branch?: unknown; base_commit?: unknown };
+  };
+  if (
+    typeof candidate.repo?.url === "string" &&
+    typeof candidate.repo.branch === "string" &&
+    typeof candidate.repo.base_commit === "string"
+  ) {
+    return {
+      url: candidate.repo.url,
+      branch: candidate.repo.branch,
+      base_commit: candidate.repo.base_commit,
+    };
+  }
+  return undefined;
+}
+
+function git(args: readonly string[], cwd: string): string {
+  return execFileSync("git", [...args], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
+  });
 }
 
 /**
@@ -352,10 +492,18 @@ function completeDeveloperEnvelope(
   const testsAdded = Array.isArray(role["tests_added"])
     ? (role["tests_added"] as unknown[]).filter((x) => typeof x === "string")
     : [];
+  const testsModified = Array.isArray(role["tests_modified"])
+    ? (role["tests_modified"] as unknown[]).filter((x) => typeof x === "string")
+    : [];
   const selfReviewNotes =
     typeof role["self_review_notes"] === "string"
       ? role["self_review_notes"]
       : "";
+  const followUpProposals = Array.isArray(role["follow_up_proposals"])
+    ? (role["follow_up_proposals"] as unknown[]).filter(
+        (x) => typeof x === "string",
+      )
+    : [];
   return {
     version: 1,
     result,
@@ -370,7 +518,11 @@ function completeDeveloperEnvelope(
     task_id: packet.task_id,
     role_specific: {
       tests_added: testsAdded,
+      ...(testsModified.length > 0 ? { tests_modified: testsModified } : {}),
       self_review_notes: selfReviewNotes,
+      ...(followUpProposals.length > 0
+        ? { follow_up_proposals: followUpProposals }
+        : {}),
     },
   };
 }

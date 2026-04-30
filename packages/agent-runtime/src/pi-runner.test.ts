@@ -22,6 +22,10 @@ import {
   reviewerReviewEnvelopeSchema,
   type DeveloperCompletionEnvelope,
 } from "@colony/schemas";
+import {
+  buildDeveloperCompletionEnvelopeTemplate,
+  buildDeveloperFinalizerPrompt,
+} from "./pi-runner-common.js";
 
 const SCOPE_ID = "col-pirun" as ScopeId;
 const TASK_ID = "col-pirun.15" as TaskId;
@@ -71,6 +75,32 @@ const localBinding: DeployerRuntimeBinding = {
 };
 
 describe("pi runners", () => {
+  it("builds a schema-shaped developer completion template for finalization", () => {
+    const packet = taskPacket();
+    const template = buildDeveloperCompletionEnvelopeTemplate(packet);
+
+    expect(developerCompletionEnvelopeSchema.safeParse(template).success).toBe(
+      true,
+    );
+    expect(template).toMatchObject({
+      version: 1,
+      task_id: packet.task_id,
+      freshness: packet.freshness,
+      next_action: "request_review",
+      role_specific: {
+        tests_added: [],
+      },
+    });
+
+    const prompt = buildDeveloperFinalizerPrompt(packet);
+    expect(prompt).toContain("canonical developer_completion envelope");
+    expect(prompt).toContain(`"task_id": "${packet.task_id}"`);
+    expect(prompt).toContain(
+      `"packet_hash": "${packet.freshness.packet_hash}"`,
+    );
+    expect(prompt).toContain("Do not add wrapper keys");
+  });
+
   it("imports pi-coding-agent in-process and captures a developer envelope", async () => {
     const registration = registerFauxProvider({
       provider: "colony-faux-dev",
