@@ -184,6 +184,26 @@ export interface TaskPacketStub {
   readonly claim_version: number;
 }
 
+export interface RecordTaskAgentTokenInput {
+  readonly task_id: TaskId;
+  readonly provider_project_id: string;
+  readonly token_id: string;
+  readonly expires_at: Date | string;
+}
+
+export interface RevokeTaskAgentTokenInput {
+  readonly task_id: TaskId;
+  readonly token_id: string;
+}
+
+export interface TaskAgentTokenRecord {
+  readonly task_id: TaskId;
+  readonly scope_id: ScopeId;
+  readonly provider_project_id: string;
+  readonly token_id: string;
+  readonly expires_at: Iso8601;
+}
+
 type Executor = Pool | PoolClient;
 
 // ---------------------------------------------------------------------------
@@ -211,6 +231,10 @@ interface TaskRow {
   state_version: number;
   claim_version: number;
   assignee: string | null;
+  agent_token_project_id: string | null;
+  agent_token_id: string | null;
+  agent_token_expires_at: Date | null;
+  agent_token_revoked_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -280,6 +304,14 @@ const mapTask = (r: TaskRow): Task => ({
   state_version: r.state_version,
   claim_version: r.claim_version,
   assignee: r.assignee ? (r.assignee as ActorId) : undefined,
+  agent_token_project_id: r.agent_token_project_id ?? undefined,
+  agent_token_id: r.agent_token_id ?? undefined,
+  agent_token_expires_at: r.agent_token_expires_at
+    ? toIso(r.agent_token_expires_at)
+    : undefined,
+  agent_token_revoked_at: r.agent_token_revoked_at
+    ? toIso(r.agent_token_revoked_at)
+    : undefined,
   created_at: toIso(r.created_at),
   updated_at: toIso(r.updated_at),
 });
@@ -471,6 +503,61 @@ export class TaskGraphRepository {
     return this.withTransaction((tx) =>
       tx.updateTaskState(task_id, expected_state_version, next_state, ctx),
     );
+  }
+
+  async recordTaskAgentToken(
+    input: RecordTaskAgentTokenInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    return this.withTransaction((tx) => tx.recordTaskAgentToken(input, ctx));
+  }
+
+  async markTaskAgentTokenRevoked(
+    input: RevokeTaskAgentTokenInput,
+    ctx: ActorContext,
+  ): Promise<Task | null> {
+    return this.withTransaction((tx) =>
+      tx.markTaskAgentTokenRevoked(input, ctx),
+    );
+  }
+
+  async listActiveTaskAgentTokens(
+    input: {
+      readonly states?: readonly TaskState[];
+    } = {},
+  ): Promise<TaskAgentTokenRecord[]> {
+    const params: unknown[] = [];
+    const where = [
+      `agent_token_id IS NOT NULL`,
+      `agent_token_project_id IS NOT NULL`,
+      `agent_token_revoked_at IS NULL`,
+    ];
+    if (input.states && input.states.length > 0) {
+      params.push(input.states);
+      where.push(`state = ANY($${params.length}::text[])`);
+    }
+    const { rows } = await queryRows<{
+      id: string;
+      scope_id: string;
+      agent_token_project_id: string;
+      agent_token_id: string;
+      agent_token_expires_at: Date;
+    }>(
+      this.pool,
+      `SELECT id, scope_id, agent_token_project_id, agent_token_id,
+              agent_token_expires_at
+       FROM tasks
+       WHERE ${where.join(" AND ")}
+       ORDER BY updated_at`,
+      params,
+    );
+    return rows.map((r) => ({
+      task_id: r.id as TaskId,
+      scope_id: r.scope_id as ScopeId,
+      provider_project_id: r.agent_token_project_id,
+      token_id: r.agent_token_id,
+      expires_at: toIso(r.agent_token_expires_at),
+    }));
   }
 
   async updateScopeState(
@@ -1052,6 +1139,115 @@ export class TaskGraphTransaction {
         assignee,
         claim_version: task.claim_version,
         state_version: task.state_version,
+      },
+    });
+    return task;
+  }
+
+  async recordTaskAgentToken(
+    input: RecordTaskAgentTokenInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    const { rows } = await queryRows<TaskRow>(
+      this.client,
+      `UPDATE tasks
+         SET agent_token_project_id = $2,
+             agent_token_id = $3,
+             agent_token_expires_at = $4,
+             agent_token_revoked_at = NULL,
+             updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        input.task_id,
+        input.provider_project_id,
+        input.token_id,
+        input.expires_at,
+      ],
+    );
+    const row = rows[0];
+    if (!row) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `task not found: ${input.task_id}`,
+        {
+          task_id: input.task_id,
+        },
+      );
+    }
+    const task = mapTask(row);
+    await this.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: ctx.actor,
+      action: "task.agent_token.minted",
+      capability: ctx.capability,
+      target_kind: "provider_access_token",
+      target_id: input.token_id,
+      reason: ctx.reason,
+      evidence: {
+        provider_project_id: input.provider_project_id,
+        expires_at:
+          input.expires_at instanceof Date
+            ? input.expires_at.toISOString()
+            : input.expires_at,
+      },
+    });
+    return task;
+  }
+
+  async markTaskAgentTokenRevoked(
+    input: RevokeTaskAgentTokenInput,
+    ctx: ActorContext,
+  ): Promise<Task | null> {
+    const { rows } = await queryRows<TaskRow>(
+      this.client,
+      `UPDATE tasks
+         SET agent_token_revoked_at = now(),
+             updated_at = now()
+       WHERE id = $1
+         AND agent_token_id = $2
+         AND agent_token_revoked_at IS NULL
+       RETURNING *`,
+      [input.task_id, input.token_id],
+    );
+    const row = rows[0];
+    if (!row) {
+      const { rows: existing } = await queryRows<TaskRow>(
+        this.client,
+        `SELECT * FROM tasks WHERE id = $1`,
+        [input.task_id],
+      );
+      const task = existing[0] ? mapTask(existing[0]) : null;
+      await this.writeAudit({
+        scope_id: task?.scope_id,
+        task_id: input.task_id,
+        actor: ctx.actor,
+        action: "task.agent_token.revoke_skipped",
+        capability: ctx.capability,
+        target_kind: "provider_access_token",
+        target_id: input.token_id,
+        reason: ctx.reason,
+        evidence: {
+          current_token_id: task?.agent_token_id,
+          already_revoked: task?.agent_token_revoked_at !== undefined,
+        },
+      });
+      return null;
+    }
+    const task = mapTask(row);
+    await this.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: ctx.actor,
+      action: "task.agent_token.revoked",
+      capability: ctx.capability,
+      target_kind: "provider_access_token",
+      target_id: input.token_id,
+      reason: ctx.reason,
+      evidence: {
+        provider_project_id: task.agent_token_project_id,
+        revoked_at: task.agent_token_revoked_at,
       },
     });
     return task;

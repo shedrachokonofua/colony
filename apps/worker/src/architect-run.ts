@@ -24,6 +24,10 @@ import {
   type TaskId,
 } from "@colony/domain";
 import type { ProviderAdapter } from "@colony/provider";
+import {
+  mintEphemeralProjectAgentToken,
+  revokeEphemeralProjectAgentToken,
+} from "./task-agent-tokens.js";
 
 const SUPERVISOR_ACTOR = "svc:supervisor" as ActorId;
 const ARCHITECT_ACTOR = "bot:architect" as ActorId;
@@ -139,6 +143,38 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
     const primary =
       targetProjects.find((t) => t.role === "primary") ?? targetProjects[0];
     const primaryProject = primary.project;
+    const primaryProjectRef = {
+      id: primaryProject.provider_id,
+      path: primaryProject.path,
+    };
+
+    let agentToken: Awaited<
+      ReturnType<typeof mintEphemeralProjectAgentToken>
+    > | null = null;
+    try {
+      agentToken = await mintEphemeralProjectAgentToken(
+        {
+          repo: deps.repo,
+          providerAdapter: deps.providerAdapter,
+        },
+        {
+          project: primaryProjectRef,
+          audit: {
+            scope_id: scope.id,
+            actor: SUPERVISOR_ACTOR,
+            capability: "graph.read",
+            reason: "architect_run_token_minted",
+            purpose: "architect",
+          },
+        },
+      );
+    } catch (err) {
+      return {
+        started: false,
+        scope_id: scope.id,
+        reason: `agent_token_mint_failed:${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
 
     const existingTasks = await deps.repo.listTasks(scope.id);
 
@@ -157,6 +193,7 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
         url: primaryProject.path,
         branch: primaryProject.default_branch,
         base_commit: primaryProject.default_branch,
+        ...(agentToken ? { credentials: { token: agentToken.token } } : {}),
       },
       scope_goal: scope.title,
       scope_acceptance_criteria: deriveAcceptanceCriteria(scope.description),
@@ -188,6 +225,7 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
         constraints: [
           "Each proposed_task_id must be `<scope_id>.<n>` and unique within the proposal.",
           "Prefer small, independently mergeable tasks over a single large task.",
+          "For proposed_dependencies with kind=blocks, from_task_id is the prerequisite/blocker that must land first and to_task_id is the dependent task that is blocked.",
         ],
         protected_paths: [],
         security_labels: [],
@@ -212,7 +250,28 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
       (await deps.buildRunEnvironment?.(scope)) ??
       (await defaultArchitectEnvironment());
 
-    const metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+    let metadata;
+    try {
+      metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+    } finally {
+      await revokeEphemeralProjectAgentToken(
+        {
+          repo: deps.repo,
+          providerAdapter: deps.providerAdapter,
+        },
+        {
+          project: primaryProjectRef,
+          token: agentToken,
+          audit: {
+            scope_id: scope.id,
+            actor: SUPERVISOR_ACTOR,
+            capability: "graph.read",
+            reason: "architect_run_finished",
+            purpose: "architect",
+          },
+        },
+      );
+    }
 
     if (metadata.status !== "succeeded") {
       await deps.repo.writeAudit({

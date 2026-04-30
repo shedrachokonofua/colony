@@ -55,11 +55,23 @@ export const dependencyRefSchema = z
   })
   .strict();
 
+const repoCredentialsSchema = z
+  .object({
+    token: z.string().min(1),
+  })
+  .strict()
+  .meta({
+    title: "RepoCredentials",
+    description:
+      "Ephemeral credentials for this run's repository operations. Secrets are scoped to the packet's target project and task window.",
+  });
+
 export const repoRefSchema = z
   .object({
     url: z.string().min(1),
     branch: z.string().min(1),
     base_commit: z.string().min(1),
+    credentials: repoCredentialsSchema.optional(),
   })
   .strict();
 

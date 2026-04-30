@@ -212,6 +212,18 @@ Suggested first session:
 - Don't push to a real shared GitLab project while testing — homelab only. The mint flow burns project-token quota even if the task fails.
 - The runner's `bash` tool is unconstrained inside the cwd. The agent could in principle exfil the per-task token via the comment tool to itself. That's fine — same blast radius as if it pushed a malicious commit. The threat model is "compromised model output," not "trusted agent enforcing the boundary."
 
+## Related: agentic architect + reviewers
+
+Today only the developer is agentic (cloned working tree + read/write/edit/bash/grep/find/ls — landed in `ad09f92`). The architect and both reviewers are one-shot envelope-only. They get the packet as data, no tools to clone, read, grep, or run anything. Concretely:
+
+- **Architect**: receives a scope brief; emits one `architect_decomposition` envelope. Cannot read the target repo, cannot check what already exists, cannot verify dependencies are real.
+- **Decomposition reviewer**: reads the spec MR (SPEC.md + decomposition.json the architect produced); emits one review envelope. Cannot independently clone or check the codebase.
+- **Task reviewer**: gets the diff in the packet; emits one review envelope. Cannot clone, run tests, or inspect surrounding files. The reviewer prompt (hardened in `ad09f92`) says "Inspect the actual diff and relevant surrounding files" — that's aspirational; the reviewer literally can't.
+
+Result: the structural honest-checking (architect ↔ decomp reviewer at DAG level, developer ↔ task reviewer at diff level) is weaker than it should be. One-shot reviewers judge what the proposer wrote rather than independently re-deriving.
+
+This pairs cleanly with the scoped-token work above: a read-only-scoped per-task token (`read_repository` + `read_api`) for reviewer/architect runners, the full per-task token for developer. Same mint/revoke plumbing, narrower scopes. Natural sequencing: ship Piece A + B first, then make architect/reviewers agentic on top.
+
 ## Open punch list (not blocking either piece)
 
 - Token rotation for the supervisor's master mint credential — out of scope here, but worth noting that shrinking the agent's blast radius makes the supervisor's master token the new juicy target. Consider a Vault-issued short-lived credential for the worker process itself, separate effort.

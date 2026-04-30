@@ -15,7 +15,11 @@ const proposedTaskSchema = z
     description: z.string().min(1),
     acceptance_criteria: z.array(z.string().min(1)).min(1),
     non_goals: z.array(z.string()),
-    suggested_role: z.enum(["developer", "architect"]),
+    // Architect output is advisory: this is a free-form hint. The supervisor
+    // routes work to the developer runner today; reviewer/architect roles are
+    // chosen separately. Generic decompositions naturally want labels like
+    // "qa", "frontend", "ops" — accept any non-empty string.
+    suggested_role: z.string().min(1),
     // Architect output is advisory: it lists capabilities *suggested* for
     // the worker bot but the supervisor + policy layer is the source of
     // truth on actual grants. Accept arbitrary strings here; mismatches

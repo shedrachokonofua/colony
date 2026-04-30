@@ -183,10 +183,7 @@
               },
               "suggested_role": {
                 "type": "string",
-                "enum": [
-                  "developer",
-                  "architect"
-                ]
+                "minLength": 1
               },
               "suggested_capabilities": {
                 "type": "array",

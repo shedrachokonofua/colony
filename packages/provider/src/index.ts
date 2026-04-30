@@ -75,6 +75,14 @@ export interface ProviderWebhook extends ProviderRef {
   readonly events: readonly string[];
 }
 
+export interface ProviderAccessToken extends ProviderRef {
+  readonly project_id: ProviderId;
+  readonly name: string;
+  readonly token: string;
+  readonly scopes: readonly string[];
+  readonly expires_at: string;
+}
+
 /**
  * Provider-side view of a project. Distinct from the Colony domain
  * `ProviderProject` (which adds DB-side timestamps); this is what an adapter
@@ -249,6 +257,13 @@ export interface ProviderProjectRef {
   readonly path?: string;
 }
 
+export interface CreateProviderAccessTokenInput {
+  readonly name: string;
+  readonly scopes: readonly string[];
+  readonly access_level?: number;
+  readonly expires_at: string;
+}
+
 export interface ProviderHealth {
   readonly ok: boolean;
   /** ISO-8601 timestamp; provider package keeps it as plain string. */
@@ -301,6 +316,13 @@ export interface ProviderAdapter {
     delete(id: ProviderId): Promise<void>;
     getById(id: ProviderId): Promise<ProviderProjectInfo | null>;
     getByPath(path: string): Promise<ProviderProjectInfo | null>;
+  };
+  readonly accessTokens?: {
+    mint(
+      project: ProviderProjectRef,
+      input: CreateProviderAccessTokenInput,
+    ): Promise<ProviderAccessToken>;
+    revoke(project: ProviderProjectRef, id: ProviderId): Promise<void>;
   };
   readonly issues: {
     get(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
@@ -520,6 +542,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   private commentSeq = 1;
   private mrSeq = 1;
   private projectSeq = 1;
+  private accessTokenSeq = 1;
   private readonly issuesById = new Map<ProviderId, ProviderIssue>();
   private readonly usersById = new Map<ProviderId, ProviderUser>();
   private readonly usersByUsername = new Map<string, ProviderUser>();
@@ -533,6 +556,10 @@ export class FakeProviderAdapter implements ProviderAdapter {
   private readonly projectsByPath = new Map<string, ProviderProjectInfo>();
   private readonly groupsById = new Map<ProviderId, ProviderGroup>();
   private readonly groupsByPath = new Map<string, ProviderGroup>();
+  private readonly accessTokensById = new Map<
+    ProviderId,
+    ProviderAccessToken
+  >();
   private groupSeq = 1;
 
   readonly groups: ProviderAdapter["groups"] = {
@@ -594,6 +621,26 @@ export class FakeProviderAdapter implements ProviderAdapter {
     },
     getById: async (id) => this.projectsById.get(id) ?? null,
     getByPath: async (path) => this.projectsByPath.get(path) ?? null,
+  };
+
+  readonly accessTokens: NonNullable<ProviderAdapter["accessTokens"]> = {
+    mint: async (project, input) => {
+      const id = `${project.id}:access-token-${this.accessTokenSeq++}`;
+      const token: ProviderAccessToken = {
+        id,
+        project_id: project.id,
+        name: input.name,
+        token: `fake-agent-token-${id}`,
+        scopes: [...input.scopes],
+        expires_at: input.expires_at,
+        metadata: this.meta(id),
+      };
+      this.accessTokensById.set(id, token);
+      return token;
+    },
+    revoke: async (_project, id) => {
+      this.accessTokensById.delete(id);
+    },
   };
 
   async identity(): Promise<ProviderIdentitySnapshot> {

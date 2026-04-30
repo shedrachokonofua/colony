@@ -11,6 +11,7 @@ import {
   type Task,
 } from "@colony/domain";
 import type { ProviderAdapter, ProviderProjectRef } from "@colony/provider";
+import { revokeTaskAgentToken } from "./task-agent-tokens.js";
 
 /**
  * COL-2.13 — Merge and close flow.
@@ -284,6 +285,14 @@ export function createCloseTaskAfterMerge(deps: MergeDependencies) {
         actor: SUPERVISOR_ACTOR,
         capability: "task.assign",
         reason: "merged_provider_issue_closed",
+      },
+    );
+    await revokeTaskAgentToken(
+      { repo: deps.repo, providerAdapter: deps.providerAdapter },
+      {
+        task,
+        project: projectRef,
+        reason: "task_closed",
       },
     );
     await deps.repo.writeAudit({

@@ -1,3 +1,6 @@
+import { mkdirSync, appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Agent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Message } from "@mariozechner/pi-ai";
 import { architectDecompositionEnvelopeSchema } from "@colony/schemas";
@@ -10,6 +13,7 @@ import {
   buildArchitectSystemPrompt,
   buildPacketPrompt,
   createArchitectSubmitTool,
+  createPostProgressNoteTool,
   createSandboxId,
   finalizeEnvelopeWithStructuredOutput,
   installRunGuards,
@@ -40,13 +44,18 @@ export class PiArchitectRunner implements PiRunner {
     const submitTool = createArchitectSubmitTool((value) => {
       capturedEnvelope = value;
     });
+    const progressNote = createPostProgressNoteTool({
+      packet: request.packet,
+      baseUrl: process.env["GITLAB_BASE_URL"],
+    });
+    const tools = [...(progressNote ? [progressNote.tool] : []), submitTool];
 
     const agent = new Agent({
       initialState: {
         systemPrompt: buildArchitectSystemPrompt(),
         model,
         thinkingLevel: this.options.thinkingLevel ?? "medium",
-        tools: [submitTool],
+        tools,
         messages: [],
       },
       convertToLlm: (messages) => messages.filter(isLlmMessage),
@@ -101,6 +110,32 @@ export class PiArchitectRunner implements PiRunner {
       abort: () => agent.abort(),
     });
 
+    const transcriptPath = join(
+      tmpdir(),
+      "colony-pi-runs",
+      `${runId}.transcript.jsonl`,
+    );
+    mkdirSync(join(tmpdir(), "colony-pi-runs"), { recursive: true });
+    const dumpMessage = (event: string, payload: unknown) => {
+      try {
+        appendFileSync(
+          transcriptPath,
+          `${JSON.stringify({ ts: new Date().toISOString(), event, payload })}\n`,
+        );
+      } catch {
+        /* best-effort */
+      }
+    };
+    const unsubscribeTranscript = agent.subscribe((evt) => {
+      if (evt.type === "message_end") {
+        dumpMessage("message_end", evt.message);
+      }
+    });
+    this.options.logger?.info?.(
+      { runId, transcriptPath },
+      "pi_transcript_path",
+    );
+
     try {
       await agent.prompt(buildPacketPrompt(request.packet));
       await agent.waitForIdle();
@@ -133,6 +168,7 @@ export class PiArchitectRunner implements PiRunner {
         });
       }
     } finally {
+      unsubscribeTranscript();
       clearTimeoutGuard();
       unsubscribeGuards();
       agent.abort();

@@ -16,3 +16,5 @@ coverage/
 *.tfplan
 *.tfplan.*
 plan.cache
+.claude/
+logs/

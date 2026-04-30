@@ -44,6 +44,10 @@ export interface Task {
   readonly state_version: number;
   readonly claim_version: number;
   readonly assignee?: ActorId;
+  readonly agent_token_project_id?: string;
+  readonly agent_token_id?: string;
+  readonly agent_token_expires_at?: Iso8601;
+  readonly agent_token_revoked_at?: Iso8601;
   readonly created_at: Iso8601;
   readonly updated_at: Iso8601;
 }

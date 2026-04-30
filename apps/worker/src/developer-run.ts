@@ -27,6 +27,10 @@ import {
 } from "@colony/domain";
 import type { ProviderAdapter, ProviderProjectRef } from "@colony/provider";
 import type { Freshness } from "@colony/schemas";
+import {
+  mintTaskAgentToken,
+  revokeTaskAgentToken,
+} from "./task-agent-tokens.js";
 
 /**
  * COL-2.9 Developer execution flow.
@@ -168,6 +172,37 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
       };
     }
 
+    const projectRef: ProviderProjectRef = {
+      id: project.provider_id,
+      path: project.path,
+    };
+    let taskForTokenCleanup: Task | null = null;
+    let agentToken: Awaited<ReturnType<typeof mintTaskAgentToken>> | null =
+      null;
+    try {
+      agentToken = await mintTaskAgentToken(
+        {
+          repo: deps.repo,
+          providerAdapter: deps.providerAdapter,
+        },
+        { task, project: projectRef },
+      );
+      if (agentToken) {
+        taskForTokenCleanup = {
+          ...task,
+          agent_token_project_id: agentToken.provider_project_id,
+          agent_token_id: agentToken.token_id,
+          agent_token_expires_at: agentToken.expires_at,
+        };
+      }
+    } catch (err) {
+      return {
+        started: false,
+        task_id: task.id,
+        reason: `agent_token_mint_failed:${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
     const sourceBranch = developerBranchName(task.id);
     const freshness = freshnessFor(task, project);
     const packet = buildTaskPacket({
@@ -184,6 +219,7 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
         url: project.path,
         branch: sourceBranch,
         base_commit: freshness.commit_sha,
+        ...(agentToken ? { credentials: { token: agentToken.token } } : {}),
       },
       goal: task.title,
       acceptance_criteria: task.acceptance_criteria,
@@ -227,7 +263,24 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
       (await deps.buildRunEnvironment?.(task)) ??
       (await defaultRunEnvironment());
 
-    const metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+    let metadata: AgentRunMetadata;
+    try {
+      metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+    } finally {
+      if (taskForTokenCleanup) {
+        await revokeTaskAgentToken(
+          {
+            repo: deps.repo,
+            providerAdapter: deps.providerAdapter,
+          },
+          {
+            task: taskForTokenCleanup,
+            project: projectRef,
+            reason: "developer_run_finished",
+          },
+        );
+      }
+    }
 
     if (metadata.status !== "succeeded") {
       await deps.repo.writeAudit({
@@ -301,11 +354,6 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
         reason: "developer_run_started",
       },
     );
-
-    const projectRef: ProviderProjectRef = {
-      id: project.provider_id,
-      path: project.path,
-    };
 
     const mr = await openOrFindMergeRequest({
       adapter: deps.providerAdapter,

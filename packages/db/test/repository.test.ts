@@ -486,6 +486,80 @@ describe.runIf(TEST_URL)("TaskGraphRepository", () => {
     });
   });
 
+  describe("task agent token metadata", () => {
+    beforeEach(async () => {
+      await repo.createScope(
+        { id: SCOPE_ID, title: "t", description: "d" },
+        { actor: SUPERVISOR },
+      );
+      await repo.createTask(
+        {
+          id: TASK_A,
+          scope_id: SCOPE_ID,
+          title: "a",
+          description: "d",
+          state: "claimed",
+        },
+        { actor: SUPERVISOR },
+      );
+    });
+
+    it("records and revokes task-scoped provider token metadata", async () => {
+      const recorded = await repo.recordTaskAgentToken(
+        {
+          task_id: TASK_A,
+          provider_project_id: "20",
+          token_id: "901",
+          expires_at: "2026-05-02T23:59:59.999Z",
+        },
+        {
+          actor: SUPERVISOR,
+          capability: "task.assign",
+          reason: "test_mint",
+        },
+      );
+      expect(recorded.agent_token_project_id).toBe("20");
+      expect(recorded.agent_token_id).toBe("901");
+      expect(recorded.agent_token_revoked_at).toBeUndefined();
+
+      await expect(
+        repo.listActiveTaskAgentTokens({ states: ["claimed"] }),
+      ).resolves.toMatchObject([
+        {
+          task_id: TASK_A,
+          scope_id: SCOPE_ID,
+          provider_project_id: "20",
+          token_id: "901",
+        },
+      ]);
+
+      const revoked = await repo.markTaskAgentTokenRevoked(
+        { task_id: TASK_A, token_id: "901" },
+        {
+          actor: SUPERVISOR,
+          capability: "task.assign",
+          reason: "test_revoke",
+        },
+      );
+      expect(revoked?.agent_token_revoked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      await expect(
+        repo.listActiveTaskAgentTokens({ states: ["claimed"] }),
+      ).resolves.toEqual([]);
+
+      const audit = await repo.listAuditForScope(SCOPE_ID, {
+        task_id: TASK_A,
+        limit: 20,
+      });
+      expect(new Set(audit.map((a) => a.action))).toEqual(
+        new Set([
+          "task.create",
+          "task.agent_token.minted",
+          "task.agent_token.revoked",
+        ]),
+      );
+    });
+  });
+
   describe("audit invariant", () => {
     it("every mutation writes at least one audit row", async () => {
       await repo.createScope(

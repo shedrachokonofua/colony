@@ -1,7 +1,3 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
 import {
   AuthStorage,
   ModelRegistry,
@@ -11,6 +7,7 @@ import {
   createExtensionRuntime,
   type AgentSession,
   type ResourceLoader,
+  type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { developerCompletionEnvelopeSchema } from "@colony/schemas";
 import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
@@ -21,10 +18,12 @@ import {
   buildDeveloperSystemPrompt,
   buildPacketPrompt,
   createDeveloperSubmitTool,
+  createPostProgressNoteTool,
   createSandboxId,
   developerCompletionEnvelopeTypeBox,
   finalizeEnvelopeWithStructuredOutput,
   installRunGuards,
+  provisionRepoWorkspace,
   provisionScratchDir,
   resolvePiModel,
   runnerBroker,
@@ -78,6 +77,10 @@ export class PiCodingAgentRunner implements PiRunner {
     const submitTool = createDeveloperSubmitTool((value) => {
       capturedEnvelope = value;
     });
+    const progressNote = createPostProgressNoteTool({
+      packet: request.packet,
+      baseUrl: process.env["GITLAB_BASE_URL"],
+    });
 
     const authStorage = AuthStorage.inMemory();
     const initialApiKey = await broker.resolve({
@@ -104,7 +107,14 @@ export class PiCodingAgentRunner implements PiRunner {
       compaction: { enabled: false },
       retry: { enabled: true, maxRetries: 1 },
     });
-    const toolNames = [...developerTools, submitTool.name];
+    const customTools: ToolDefinition[] = progressNote
+      ? [submitTool, progressNote.tool as ToolDefinition]
+      : [submitTool];
+    const toolNames = [
+      ...developerTools,
+      ...(progressNote ? [progressNote.tool.name] : []),
+      submitTool.name,
+    ];
 
     const clearTimeoutGuard = withRunTimeout(
       runId,
@@ -128,7 +138,7 @@ export class PiCodingAgentRunner implements PiRunner {
         settingsManager,
         resourceLoader: noOpResourceLoader(buildDeveloperSystemPrompt()),
         sessionManager: SessionManager.inMemory(cwd),
-        customTools: [submitTool],
+        customTools,
         tools: toolNames,
       });
       session = result.session;
@@ -266,123 +276,9 @@ function provisionDeveloperWorkspace(
   packet: PiRunRequest["packet"],
   options: PiCodingAgentRunnerOptions,
 ): string {
-  if (options.scratchDir) {
-    return provisionScratchDir(runId, packet, options.scratchDir);
-  }
-
-  const repo = developerRepo(packet);
-  if (!repo) {
-    return provisionScratchDir(runId, packet);
-  }
-  const clone = resolveCloneUrl(repo.url);
-
-  const dir = join(tmpdir(), "colony-pi-runs", runId);
-  try {
-    rmSync(dir, { recursive: true, force: true });
-    mkdirSync(dirname(dir), { recursive: true });
-    git(
-      ["clone", "--quiet", "--no-single-branch", clone.cloneUrl, dir],
-      dirname(dir),
-    );
-    try {
-      git(["checkout", "--quiet", repo.branch], dir);
-    } catch {
-      git(["checkout", "--quiet", "-B", repo.branch, repo.base_commit], dir);
-    }
-    writeFileSync(join(dir, "PACKET.json"), JSON.stringify(packet, null, 2), {
-      encoding: "utf8",
-    });
-    return dir;
-  } catch (err) {
-    options.logger?.warn?.(
-      {
-        runId,
-        repoUrl: clone.displayUrl,
-        branch: repo.branch,
-        baseCommit: repo.base_commit,
-        error: sanitizeSecret(
-          err instanceof Error ? err.message : String(err),
-          clone.secret,
-        ),
-      },
-      "developer_workspace_clone_failed",
-    );
-    rmSync(dir, { recursive: true, force: true });
-    return provisionScratchDir(runId, packet, dir);
-  }
-}
-
-function resolveCloneUrl(repoUrl: string): {
-  readonly cloneUrl: string;
-  readonly displayUrl: string;
-  readonly secret?: string;
-} {
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repoUrl) || repoUrl.startsWith("git@")) {
-    return { cloneUrl: repoUrl, displayUrl: repoUrl };
-  }
-
-  const baseUrl = process.env["GITLAB_BASE_URL"];
-  if (!baseUrl) {
-    return { cloneUrl: repoUrl, displayUrl: repoUrl };
-  }
-
-  const path = repoUrl.replace(/^\/+/, "").replace(/\/+$/, "");
-  const suffix = path.endsWith(".git") ? "" : ".git";
-  const url = new URL(`${baseUrl.replace(/\/+$/, "")}/${path}${suffix}`);
-  const token =
-    process.env["GITLAB_TOKEN"] ?? process.env["GITLAB_BOT_ENGINE_TOKEN"];
-  if (token && (url.protocol === "https:" || url.protocol === "http:")) {
-    url.username = "oauth2";
-    url.password = token;
-  }
-
-  const display = new URL(url.href);
-  display.username = "";
-  display.password = "";
-  return {
-    cloneUrl: url.href,
-    displayUrl: display.href,
-    secret: token,
-  };
-}
-
-function sanitizeSecret(value: string, secret: string | undefined): string {
-  if (!secret) return value;
-  return value
-    .replaceAll(secret, "[redacted]")
-    .replaceAll(encodeURIComponent(secret), "[redacted]");
-}
-
-function developerRepo(packet: PiRunRequest["packet"]):
-  | {
-      readonly url: string;
-      readonly branch: string;
-      readonly base_commit: string;
-    }
-  | undefined {
-  const candidate = packet as {
-    repo?: { url?: unknown; branch?: unknown; base_commit?: unknown };
-  };
-  if (
-    typeof candidate.repo?.url === "string" &&
-    typeof candidate.repo.branch === "string" &&
-    typeof candidate.repo.base_commit === "string"
-  ) {
-    return {
-      url: candidate.repo.url,
-      branch: candidate.repo.branch,
-      base_commit: candidate.repo.base_commit,
-    };
-  }
-  return undefined;
-}
-
-function git(args: readonly string[], cwd: string): string {
-  return execFileSync("git", [...args], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 120_000,
+  return provisionRepoWorkspace(runId, packet, {
+    ...options,
+    requireCredentials: true,
   });
 }
 

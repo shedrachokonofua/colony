@@ -23,6 +23,10 @@ import {
   type TaskId,
 } from "@colony/domain";
 import type { ProviderAdapter, ProviderProjectRef } from "@colony/provider";
+import {
+  mintEphemeralProjectAgentToken,
+  revokeEphemeralProjectAgentToken,
+} from "./task-agent-tokens.js";
 
 /**
  * COL-3.0a Reviewer spec/DAG run.
@@ -162,6 +166,55 @@ export function createDecompositionReviewRun(
     });
     const scopeMirror = scopeMirrors[0];
 
+    const specMrMirrors = await deps.providerProjects.listMirrorsForColony({
+      colony_id: scopeId,
+      entity_kind: "mr_pr",
+    });
+    const specMrMirror = specMrMirrors[0];
+    const primaryProjectRef =
+      primary && deps.providerAdapter
+        ? { id: primary.provider_id, path: primary.path }
+        : null;
+    const specMr =
+      primaryProjectRef && specMrMirror
+        ? await deps
+            .providerAdapter!.mergeRequests.get(
+              primaryProjectRef,
+              specMrMirror.provider_id,
+            )
+            .catch(() => null)
+        : null;
+    let agentToken: Awaited<
+      ReturnType<typeof mintEphemeralProjectAgentToken>
+    > | null = null;
+    if (primaryProjectRef && deps.providerAdapter) {
+      try {
+        agentToken = await mintEphemeralProjectAgentToken(
+          {
+            repo: deps.repo,
+            providerAdapter: deps.providerAdapter,
+          },
+          {
+            project: primaryProjectRef,
+            audit: {
+              scope_id: scopeId,
+              actor: SUPERVISOR_ACTOR,
+              capability: "graph.read",
+              reason: "decomposition_review_run_token_minted",
+              purpose: "decomposition-reviewer",
+            },
+          },
+        );
+      } catch (err) {
+        return {
+          started: false,
+          scope_id: scopeId,
+          proposal_id: proposalId,
+          reason: `agent_token_mint_failed:${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+
     const synthTaskId = `${scopeId}.0` as TaskId;
     const freshness = freshnessFor(scope, primary);
 
@@ -180,8 +233,10 @@ export function createDecompositionReviewRun(
         : { kind: "issue", id: scopeId, uri: scopeId },
       repo: {
         url: primary?.path ?? "internal",
-        branch: primary?.default_branch ?? "main",
-        base_commit: primary?.default_branch ?? "main",
+        branch: specMr?.source_branch ?? primary?.default_branch ?? "main",
+        base_commit:
+          specMr?.head_commit_sha ?? primary?.default_branch ?? "main",
+        ...(agentToken ? { credentials: { token: agentToken.token } } : {}),
       },
       goal: buildReviewGoal(scope, proposal),
       acceptance_criteria: SPEC_DAG_ACCEPTANCE_CRITERIA,
@@ -245,7 +300,30 @@ export function createDecompositionReviewRun(
       (await deps.buildRunEnvironment?.(scope)) ??
       (await defaultReviewerEnvironment());
 
-    const metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+    let metadata;
+    try {
+      metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+    } finally {
+      if (primaryProjectRef && deps.providerAdapter) {
+        await revokeEphemeralProjectAgentToken(
+          {
+            repo: deps.repo,
+            providerAdapter: deps.providerAdapter,
+          },
+          {
+            project: primaryProjectRef,
+            token: agentToken,
+            audit: {
+              scope_id: scopeId,
+              actor: SUPERVISOR_ACTOR,
+              capability: "graph.read",
+              reason: "decomposition_review_run_finished",
+              purpose: "decomposition-reviewer",
+            },
+          },
+        );
+      }
+    }
     if (metadata.status !== "succeeded") {
       await deps.repo.writeAudit({
         scope_id: scopeId,
@@ -355,17 +433,12 @@ export function createDecompositionReviewRun(
     // reviewer feedback on the MR + a green checkmark when the agent
     // approves.
     if (deps.providerAdapter && primary) {
-      const specMrMirror = await deps.providerProjects.listMirrorsForColony({
-        colony_id: scopeId,
-        entity_kind: "mr_pr",
-      });
-      const specMr = specMrMirror[0];
-      if (specMr) {
+      if (specMrMirror) {
         try {
           await postSpecReviewComment({
             adapter: deps.providerAdapter,
             project: { id: primary.provider_id, path: primary.path },
-            mrId: specMr.provider_id,
+            mrId: specMrMirror.provider_id,
             envelope,
             reviewResult,
           });
@@ -373,7 +446,7 @@ export function createDecompositionReviewRun(
             await deps.providerAdapter.mergeRequests
               .approve(
                 { id: primary.provider_id, path: primary.path },
-                specMr.provider_id,
+                specMrMirror.provider_id,
               )
               .catch(() => {
                 // Approval API is best-effort; the colony-side review row
@@ -385,7 +458,7 @@ export function createDecompositionReviewRun(
               action: "architect.spec_mr.approved",
               capability: "provider.mr.approve",
               target_kind: "merge_request",
-              target_id: specMr.provider_id,
+              target_id: specMrMirror.provider_id,
               reason: "decomposition_review_approved",
               evidence: { proposal_id: proposalId },
             });
@@ -397,7 +470,7 @@ export function createDecompositionReviewRun(
             action: "architect.spec_mr.review_comment_failed",
             capability: "graph.write",
             target_kind: "merge_request",
-            target_id: specMr.provider_id,
+            target_id: specMrMirror.provider_id,
             reason: "spec_mr_comment_failed",
             evidence: {
               message: err instanceof Error ? err.message : String(err),
@@ -467,6 +540,7 @@ const SPEC_DAG_ACCEPTANCE_CRITERIA: readonly string[] = [
   "Each proposed task has a unique proposed_task_id of the form <scope_id>.<n> with n >= 1.",
   "Acceptance criteria for each proposed task are specific and testable.",
   "Dependencies form a DAG with no cycles.",
+  "For proposed_dependencies with kind=blocks, from_task_id is the prerequisite/blocker that must land first and to_task_id is the dependent task that is blocked.",
   "The proposed decomposition covers the scope's stated goal and acceptance criteria.",
   "Open questions and assumptions are realistic and not load-bearing without human resolution.",
 ];
@@ -481,6 +555,7 @@ function buildReviewGoal(
     `Review the proposed decomposition for scope ${scope.id} ("${scope.title}").`,
     `Proposal id: ${proposal.id}.`,
     "Approve when the proposed_tasks + proposed_dependencies form a sound, complete plan that matches the scope brief.",
+    "Dependency orientation: for kind=blocks, from_task_id is the prerequisite/blocker that must land first; to_task_id is the dependent task that is blocked.",
     "Request changes when any task is missing, ambiguous, miswired, or has unverifiable acceptance criteria.",
   ].join(" ");
 }
@@ -498,6 +573,7 @@ function serializeProposalForReview(
     JSON.stringify(proposal.proposed_tasks, null, 2),
     "",
     "proposed_dependencies:",
+    "For kind=blocks, read each entry as `from_task_id` blocks `to_task_id`; the `from_task_id` task must land first.",
     JSON.stringify(proposal.proposed_dependencies, null, 2),
     "",
     "target_project_mapping:",

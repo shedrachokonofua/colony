@@ -225,6 +225,19 @@ describe.runIf(liveEnabled)("createDeveloperRun live", () => {
     expect(result.mr?.source_branch).toBe(featureBranch);
     expect(result.mr?.target_branch).toBe("main");
     expect(result.mr?.url).toMatch(/merge_requests/);
+    const taskAfterRun = await repo.getTask(task_id);
+    expect(taskAfterRun?.agent_token_id).toBeTruthy();
+    expect(taskAfterRun?.agent_token_project_id).toBe(project.id);
+    expect(taskAfterRun?.agent_token_revoked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    await expect(
+      rawApi({
+        baseUrl: GITLAB_BASE_URL!,
+        token: GITLAB_TOKEN!,
+        path: `/projects/${encodeURIComponent(project.id)}/access_tokens/${encodeURIComponent(
+          taskAfterRun?.agent_token_id ?? "",
+        )}`,
+      }),
+    ).rejects.toThrow(/-> 404:/);
 
     // 5. The MR must exist in real GitLab and must round-trip through
     //    `provider_mirrors`. Fetch raw to avoid mutating the live MR.

@@ -254,6 +254,104 @@ describe("GitLabProviderAdapter projects", () => {
   });
 });
 
+describe("GitLabProviderAdapter accessTokens", () => {
+  it("mints and revokes project access tokens", async () => {
+    const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+    const fetchMock: typeof fetch = (url, init) => {
+      const method = init?.method ?? "GET";
+      const rawBody = typeof init?.body === "string" ? init.body : undefined;
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      const body = rawBody ? (JSON.parse(rawBody) as unknown) : undefined;
+      calls.push({ url: urlText, method, body });
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+      if (method === "POST" && path === "/projects/20/access_tokens") {
+        return Promise.resolve(
+          json({
+            id: 901,
+            project_id: 20,
+            name: "colony-task-col-demo.1",
+            token: "glpat-task-token",
+            scopes: ["api", "write_repository"],
+            expires_at: "2026-05-02",
+          }),
+        );
+      }
+      if (method === "DELETE" && path === "/projects/20/access_tokens/901") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+    const project = { id: "20", path: "colony/dev" } as const;
+
+    const minted = await adapter.accessTokens.mint(project, {
+      name: "colony-task-col-demo.1",
+      scopes: ["api", "write_repository"],
+      access_level: 30,
+      expires_at: "2026-05-02",
+    });
+    expect(minted).toMatchObject({
+      id: "901",
+      project_id: "20",
+      token: "glpat-task-token",
+      scopes: ["api", "write_repository"],
+      expires_at: "2026-05-02",
+    });
+    await expect(adapter.accessTokens.revoke(project, minted.id)).resolves.toBe(
+      undefined,
+    );
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "POST https://gitlab.test/api/v4/projects/20/access_tokens",
+      "DELETE https://gitlab.test/api/v4/projects/20/access_tokens/901",
+    ]);
+    expect(calls[0]?.body).toEqual({
+      name: "colony-task-col-demo.1",
+      scopes: ["api", "write_repository"],
+      access_level: 30,
+      expires_at: "2026-05-02",
+    });
+  });
+
+  it("treats revoke 404 as already revoked", async () => {
+    const fetchMock: typeof fetch = (url, init) => {
+      const method = init?.method ?? "GET";
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+      if (method === "DELETE" && path === "/projects/20/access_tokens/901") {
+        return Promise.resolve(json({ message: "404 Token Not Found" }, 404));
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+
+    await expect(
+      adapter.accessTokens.revoke({ id: "20" }, "901"),
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe("GitLabProviderAdapter issues", () => {
   it("creates, updates, labels, comments, assigns, closes, reopens, and resolves users", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = [];

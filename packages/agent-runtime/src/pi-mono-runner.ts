@@ -8,6 +8,7 @@ import {
   buildPacketPrompt,
   buildReviewerFinalizerPrompt,
   buildReviewerSystemPrompt,
+  createPostProgressNoteTool,
   createReviewerSubmitTool,
   createSandboxId,
   finalizeEnvelopeWithStructuredOutput,
@@ -40,13 +41,18 @@ export class PiMonoRunner implements PiRunner {
     const submitTool = createReviewerSubmitTool((value) => {
       capturedEnvelope = value;
     });
+    const progressNote = createPostProgressNoteTool({
+      packet: request.packet,
+      baseUrl: process.env["GITLAB_BASE_URL"],
+    });
+    const tools = [...(progressNote ? [progressNote.tool] : []), submitTool];
 
     const agent = new Agent({
       initialState: {
         systemPrompt: buildReviewerSystemPrompt(),
         model,
         thinkingLevel: this.options.thinkingLevel ?? "low",
-        tools: [submitTool],
+        tools,
         messages: [],
       },
       convertToLlm: (messages) => messages.filter(isLlmMessage),

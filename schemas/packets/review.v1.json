@@ -69,6 +69,21 @@
         "base_commit": {
           "type": "string",
           "minLength": 1
+        },
+        "credentials": {
+          "type": "object",
+          "properties": {
+            "token": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "token"
+          ],
+          "additionalProperties": false,
+          "title": "RepoCredentials",
+          "description": "Ephemeral credentials for this run's repository operations. Secrets are scoped to the packet's target project and task window."
         }
       },
       "required": [

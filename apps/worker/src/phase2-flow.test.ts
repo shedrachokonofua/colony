@@ -194,6 +194,14 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     expect(devResult.final_state).toBe("review_requested");
     const mrId = devResult.mr?.id;
     if (!mrId) throw new Error("expected MR id");
+    const tokenAfterDeveloper = await repo.getTask(task.id);
+    expect(tokenAfterDeveloper?.agent_token_id).toMatch(/access-token-/);
+    expect(tokenAfterDeveloper?.agent_token_project_id).toBe(
+      project.provider_id,
+    );
+    expect(tokenAfterDeveloper?.agent_token_revoked_at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T/,
+    );
 
     // 4. Open the mr_pr gate.
     const openMrGate = createOpenMrGate({

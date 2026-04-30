@@ -82,6 +82,11 @@ import {
   type ScopeHeartbeatTickResult,
 } from "./scope-heartbeat.js";
 import {
+  createSweepOrphanTaskAgentTokens,
+  type SweepOrphanTaskAgentTokensInput,
+  type SweepOrphanTaskAgentTokensResult,
+} from "./sweep-orphan-tokens.js";
+import {
   createCheckMrGate,
   createOpenMrGate,
   createRecordHumanApproval,
@@ -424,6 +429,15 @@ export async function closeTaskAfterMerge(
   })(input);
 }
 
+export async function sweepOrphanTaskAgentTokens(
+  input: SweepOrphanTaskAgentTokensInput = {},
+): Promise<SweepOrphanTaskAgentTokensResult> {
+  return createSweepOrphanTaskAgentTokens({
+    repo: getRepository(),
+    providerAdapter: getProviderAdapter(),
+  })(input);
+}
+
 export async function reconcileScope(
   input: ReconcileScopeInput,
 ): Promise<ReconcileReport> {
@@ -734,5 +748,6 @@ export const activities = {
   checkMrGate,
   mergeTask,
   closeTaskAfterMerge,
+  sweepOrphanTaskAgentTokens,
   reconcileScope,
 };

@@ -6,8 +6,10 @@ import {
   normalizeBootstrapBots,
   type BootstrapAction,
   type BootstrapBotSpec,
+  type CreateProviderAccessTokenInput,
   type CreateIssueInput,
   type CreateProviderProjectInput,
+  type ProviderAccessToken,
   type ProviderAdapter,
   type ProviderBootstrapResult,
   type ProviderBootstrapSpec,
@@ -106,6 +108,15 @@ interface GitLabCommit extends GitLabEntity {
 
 interface GitLabUser extends GitLabEntity {
   readonly bot?: boolean;
+}
+
+interface GitLabProjectAccessToken extends GitLabEntity {
+  readonly name?: string;
+  readonly token?: string;
+  readonly scopes?: readonly string[];
+  readonly expires_at?: string;
+  readonly access_level?: number;
+  readonly project_id?: number | string;
 }
 
 export class GitLabProviderError extends Error {
@@ -215,6 +226,35 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         404,
       );
       return project ? toProjectInfo(this.provider, project) : null;
+    },
+  };
+
+  readonly accessTokens: NonNullable<ProviderAdapter["accessTokens"]> = {
+    mint: async (project, input) => {
+      const body = accessTokenInputBody(input);
+      const token = await this.projectApi<GitLabProjectAccessToken>(
+        project.id,
+        "/access_tokens",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+      );
+      return toAccessToken(this.provider, project.id, token);
+    },
+    revoke: async (project, id) => {
+      try {
+        await this.projectApi<unknown>(
+          project.id,
+          `/access_tokens/${encodePath(id)}`,
+          {
+            method: "DELETE",
+          },
+        );
+      } catch (err) {
+        if (err instanceof GitLabProviderError && err.status === 404) return;
+        throw err;
+      }
     },
   };
 
@@ -1019,6 +1059,40 @@ function issueInputBody(
       ? input.remove_labels.join(",")
       : undefined,
     assignee_ids: input.assignee_ids,
+  };
+}
+
+function accessTokenInputBody(
+  input: CreateProviderAccessTokenInput,
+): Record<string, unknown> {
+  return {
+    name: input.name,
+    scopes: input.scopes,
+    access_level: input.access_level,
+    expires_at: input.expires_at,
+  };
+}
+
+function toAccessToken(
+  provider: "gitlab",
+  projectId: ProviderId,
+  token: GitLabProjectAccessToken,
+): ProviderAccessToken {
+  if (!token.token) {
+    throw new GitLabProviderError(
+      "GitLab did not return a project access token secret",
+      500,
+      token,
+    );
+  }
+  return {
+    id: String(token.id),
+    project_id: String(token.project_id ?? projectId),
+    name: token.name ?? String(token.id),
+    token: token.token,
+    scopes: [...(token.scopes ?? [])],
+    expires_at: token.expires_at ?? "",
+    metadata: meta(provider, token),
   };
 }
 

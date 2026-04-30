@@ -1,8 +1,8 @@
 #!/usr/bin/env -S tsx
-// Phase 3 acceptance — drives a real scope from `draft` through `closed`
+// Phase 3 acceptance/demo — drives a real scope from `draft` through `closed`
 // against the home-lab GitLab. Live by default (AGENT_RUNTIME=fake is
-// refused). One task by default; pass COLONY_PHASE3_TASK_COUNT to
-// scale up once you've verified the wiring.
+// refused). The default scope is intentionally app-shaped and should
+// decompose into a real multi-task DAG without requiring a fixed task count.
 //
 // Lifecycle covered:
 //   draft
@@ -25,8 +25,9 @@
 //   - config/colony.yaml configured for AGENT_RUNTIME=pi
 //   - active OAuth connection in provider_oauth_connections (Codex)
 //
-// Teardown: throwaway GitLab group is deleted in the finally block.
-// Postgres rows are left for forensic inspection.
+// Teardown: throwaway GitLab group is deleted in the finally block unless
+// COLONY_PHASE3_KEEP_GROUP=1 or COLONY_PHASE3_DEMO=1. Postgres rows are left
+// for forensic inspection.
 
 import { config as loadDotenv } from "dotenv";
 import { fileURLToPath } from "node:url";
@@ -47,7 +48,14 @@ import {
   developerCompletionEnvelopeSchema,
   type DeveloperCompletionEnvelope,
 } from "@colony/schemas";
-import type { ActorId, ScopeId, Task, TaskId } from "@colony/domain";
+import type {
+  ActorId,
+  ProviderMirror,
+  ScopeId,
+  Task,
+  TaskDependency,
+  TaskId,
+} from "@colony/domain";
 import { createArchitectRun } from "../apps/worker/src/architect-run.js";
 import { createDecompositionReviewRun } from "../apps/worker/src/decomposition-review-run.js";
 import { createDeveloperRun } from "../apps/worker/src/developer-run.js";
@@ -92,8 +100,12 @@ const reviewerActor = (process.env["COLONY_PHASE3_REVIEWER"] ??
   "bot:reviewer") as ActorId;
 const human = (process.env["COLONY_PHASE3_HUMAN"] ?? "human:op-1") as ActorId;
 const groupPath = `colony-phase3-${stamp}`;
-const projectPath = process.env["COLONY_PHASE3_PROJECT_PATH"] ?? "csv-export";
-
+const projectPath = process.env["COLONY_PHASE3_PROJECT_PATH"] ?? "echopress";
+const keepGroup =
+  process.env["COLONY_PHASE3_DEMO"] === "1" ||
+  ["1", "true", "yes"].includes(
+    process.env["COLONY_PHASE3_KEEP_GROUP"]?.toLowerCase() ?? "",
+  );
 const pool = createPool({
   connectionString: databaseUrl,
   role: "colony_writer",
@@ -229,7 +241,31 @@ try {
         {
           action: "create",
           file_path: "README.md",
-          content: "# csv-export\n\nA tiny CSV utility produced by Colony.\n",
+          content: [
+            "# EchoPress",
+            "",
+            "An end-to-end web app: HTTP API + browser UI + persistence,",
+            "built incrementally by Colony agents from this empty scaffold.",
+            "",
+            "The architect picks the stack. Subsequent tasks add the toolchain,",
+            "the API, the UI, the data layer, and tests.",
+            "",
+          ].join("\n"),
+        },
+        {
+          action: "create",
+          file_path: ".gitignore",
+          content: [
+            "node_modules/",
+            "dist/",
+            "build/",
+            ".cache/",
+            ".env",
+            ".env.local",
+            "*.log",
+            ".DS_Store",
+            "",
+          ].join("\n"),
         },
       ],
     },
@@ -279,13 +315,19 @@ try {
   const scope = await repo.createScope(
     {
       id: scopeId,
-      title: "Build a tiny CSV export utility",
+      title: "Build EchoPress, a small full-stack social blogging app",
       description: [
-        "Build a small TypeScript module exporting a `toCsv(rows)` function.",
+        "Build EchoPress: a working full-stack social blogging web app — HTTP API, browser UI, persistence that survives restart, and authentication. The repo is empty except for a README and .gitignore. The architect picks the stack, the layout, the feature set, and how to slice the work.",
         "",
-        "- src/csv.ts exports `toCsv(rows: ReadonlyArray<ReadonlyArray<string>>): string`",
-        "- Values containing quote, comma, or newline are wrapped in double quotes; embedded quotes doubled (RFC4180)",
-        "- src/csv.test.ts covers a simple-rows case and an escape case using vitest",
+        "Constraints:",
+        "- One stack, one repo. Whatever the architect picks in task 1, every later task uses.",
+        "- Decompose into independently reviewable, independently mergeable tasks with explicit dependencies.",
+        "- For proposed_dependencies with kind=blocks, from_task_id is the prerequisite that lands first; to_task_id is the dependent task that is blocked.",
+        "- A new task can assume only what prior merged tasks provide. Task 1 must leave the repo with a working `npm test` (or equivalent) that subsequent tasks extend.",
+        "- Each task adds or extends tests for its own slice. No task may delete, skip, or rewrite previously merged tests to make its own changes pass.",
+        "- No external paid services; everything the app talks to must run in CI or on a dev box.",
+        "",
+        "What 'social blogging app' covers is the architect's call — pick a feature set that's interesting to build but realistic to finish in a handful of tasks.",
       ].join("\n"),
       // Stay in draft so the architect run is the entry point.
     },
@@ -411,6 +453,12 @@ try {
     `DAG committed; ${commitResult.tasks.length} tasks, ${commitResult.dependencies.length} deps`,
   );
   assert(commitResult.tasks.length > 0, "no tasks committed");
+
+  phase("eagerly projecting committed tasks to provider issues");
+  await syncCommittedTasksToProvider(
+    commitResult.tasks,
+    commitResult.dependencies,
+  );
 
   // Merge the architect's spec MR — reviewer + human have approved, DAG
   // committed, so the SPEC.md should land on `main` as a real durable
@@ -552,8 +600,10 @@ try {
   console.log(`tasks committed: ${commitResult.tasks.length}`);
   console.log(`scope UI: ${webUrl}/scopes/${scope.id}`);
 } finally {
-  if (cleanupGroupId) {
+  if (cleanupGroupId && !keepGroup) {
     await adapter.groups.delete(cleanupGroupId).catch(() => {});
+  } else if (cleanupGroupId) {
+    phase(`keeping GitLab group ${groupPath} for inspection`);
   }
   await pool.end();
 }
@@ -562,6 +612,99 @@ try {
 // driveTaskToClose: phase2-style execution for a single task. Re-used
 // here for each task the architect produced.
 // --------------------------------------------------------------------
+async function syncCommittedTasksToProvider(
+  tasks: readonly Task[],
+  dependencies: readonly TaskDependency[],
+): Promise<void> {
+  const blockingDepsByTask = new Map<string, string[]>();
+  for (const dep of dependencies) {
+    if (dep.kind !== "blocks") continue;
+    const existing = blockingDepsByTask.get(dep.to_task_id) ?? [];
+    existing.push(dep.from_task_id);
+    blockingDepsByTask.set(dep.to_task_id, existing);
+  }
+
+  for (const task of tasks) {
+    const project = await primaryProject(task.id);
+    const existing = await primaryTaskMirror(task.id);
+    if (existing) continue;
+
+    const blockers = blockingDepsByTask.get(task.id) ?? [];
+    const issue = await retry5xx(`issues.create ${task.id}`, () =>
+      adapter.issues.create(
+        { id: project.provider_id, path: project.path },
+        {
+          title: task.title,
+          description: renderTaskIssueDescription(task, blockers),
+          labels: [
+            "colony:task",
+            blockers.length > 0 ? "state:blocked" : "state:ready",
+            `scope:${scopeId}`,
+          ],
+        },
+      ),
+    );
+    await providerProjects.upsertMirror({
+      colony_id: task.id,
+      entity_kind: "task",
+      provider: "gitlab",
+      provider_id: issue.id,
+      provider_project_id: project.id,
+      provider_project_path: project.path,
+    });
+    await repo.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: supervisor,
+      action: "provider.task.issue_projected",
+      capability: "provider.issues.create",
+      target_kind: "issue",
+      target_id: issue.id,
+      reason: "decomposition_commit_eager_sync",
+      evidence: {
+        provider_project_id: project.id,
+        provider_project_path: project.path,
+        blocked_by: blockers,
+        labels: [
+          "colony:task",
+          blockers.length > 0 ? "state:blocked" : "state:ready",
+        ],
+      },
+    });
+  }
+}
+
+function renderTaskIssueDescription(
+  task: Task,
+  blockedBy: readonly string[],
+): string {
+  const lines = [
+    `Colony task: ${task.id}`,
+    "",
+    task.description,
+    "",
+    "## Acceptance criteria",
+  ];
+  if (task.acceptance_criteria.length === 0) {
+    lines.push("- (none specified)");
+  } else {
+    for (const criterion of task.acceptance_criteria) {
+      lines.push(`- ${criterion}`);
+    }
+  }
+  if (task.non_goals.length > 0) {
+    lines.push("", "## Non-goals");
+    for (const nonGoal of task.non_goals) {
+      lines.push(`- ${nonGoal}`);
+    }
+  }
+  if (blockedBy.length > 0) {
+    lines.push("", "## Blocked by");
+    for (const blocker of blockedBy) lines.push(`- ${blocker}`);
+  }
+  return lines.join("\n");
+}
+
 async function driveTaskToClose(task: Task): Promise<void> {
   const tStamp = Date.now().toString(36);
   const project = await primaryProject(task.id);
@@ -587,6 +730,21 @@ async function driveTaskToClose(task: Task): Promise<void> {
       provider_project_id: project.id,
       provider_project_path: project.path,
     });
+  } else {
+    await adapter.issues
+      .removeLabel(
+        { id: project.provider_id, path: project.path },
+        taskMirror.provider_id,
+        "state:blocked",
+      )
+      .catch(() => {});
+    await adapter.issues
+      .addLabel(
+        { id: project.provider_id, path: project.path },
+        taskMirror.provider_id,
+        "state:ready",
+      )
+      .catch(() => {});
   }
 
   // Task target.
@@ -613,6 +771,23 @@ async function driveTaskToClose(task: Task): Promise<void> {
     },
   );
   assert(claimed?.state === "claimed", `claim failed for ${task.id}`);
+  const claimedMirror = await primaryTaskMirror(task.id);
+  if (claimedMirror) {
+    await adapter.issues
+      .removeLabel(
+        { id: project.provider_id, path: project.path },
+        claimedMirror.provider_id,
+        "state:ready",
+      )
+      .catch(() => {});
+    await adapter.issues
+      .addLabel(
+        { id: project.provider_id, path: project.path },
+        claimedMirror.provider_id,
+        "state:claimed",
+      )
+      .catch(() => {});
+  }
 
   // Developer.
   const startDeveloperRun = createDeveloperRun({
@@ -630,6 +805,16 @@ async function driveTaskToClose(task: Task): Promise<void> {
     `developer failed for ${task.id}: ${JSON.stringify(devResult)}`,
   );
   if (!devResult.started) throw new Error("unreachable");
+  const progressMirror = await primaryTaskMirror(task.id);
+  assert(
+    progressMirror,
+    `task mirror missing for progress-note check ${task.id}`,
+  );
+  await assertAgentProgressNoteOnIssue(
+    project.provider_id,
+    progressMirror.provider_id,
+    task.id,
+  );
 
   // Open MR gate.
   const openMrGate = createOpenMrGate({
@@ -709,10 +894,17 @@ async function driveTaskToClose(task: Task): Promise<void> {
         provider_id: mrMirror.provider_id,
       });
       if (artifact) {
+        const forcedCommit = developerEnvelope.artifacts.find(
+          (a) => a.kind === "commit",
+        );
+        const forcedHeadSha =
+          forcedCommit?.hash ??
+          forcedCommit?.id ??
+          developerEnvelope.freshness.commit_sha;
         await reviewGate.recordApproval({
           artifact_id: artifact.id,
           actor: reviewerActor,
-          commit_sha: developerEnvelope.freshness.commit_sha,
+          commit_sha: forcedHeadSha,
         });
       }
     }
@@ -813,10 +1005,44 @@ async function primaryProject(taskId: TaskId): Promise<{
   return project;
 }
 
-async function primaryTaskMirror(taskId: TaskId): Promise<unknown> {
+async function primaryTaskMirror(
+  taskId: TaskId,
+): Promise<ProviderMirror | null> {
   const mirrors = await providerProjects.listMirrorsForColony({
     colony_id: taskId,
     entity_kind: "task",
   });
   return mirrors[0] ?? null;
+}
+
+async function assertAgentProgressNoteOnIssue(
+  projectId: string,
+  issueId: string,
+  taskId: TaskId,
+): Promise<void> {
+  const iid = providerLocalId(issueId);
+  const url = `${gitlabBaseUrl.replace(/\/+$/, "")}/api/v4/projects/${encodeURIComponent(
+    projectId,
+  )}/issues/${encodeURIComponent(iid)}/notes?per_page=100`;
+  const response = await fetch(url, {
+    headers: { "PRIVATE-TOKEN": gitlabToken },
+  });
+  assert(
+    response.ok,
+    `failed to read issue notes for ${taskId}: ${response.status}`,
+  );
+  const notes = (await response.json()) as readonly {
+    readonly body?: string;
+  }[];
+  const prefix = `[colony:${taskId}]`;
+  assert(
+    notes.some((note) => note.body?.startsWith(prefix)),
+    `missing agent progress note with prefix ${prefix}`,
+  );
+  phase(`agent progress note observed for ${taskId}`);
+}
+
+function providerLocalId(id: string): string {
+  const index = id.lastIndexOf(":");
+  return index === -1 ? id : id.slice(index + 1);
 }

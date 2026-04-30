@@ -25,6 +25,7 @@ import {
 import {
   buildDeveloperCompletionEnvelopeTemplate,
   buildDeveloperFinalizerPrompt,
+  createPostProgressNoteTool,
 } from "./pi-runner-common.js";
 
 const SCOPE_ID = "col-pirun" as ScopeId;
@@ -229,6 +230,86 @@ describe("pi runners", () => {
       registration.unregister();
     }
   }, 10_000);
+
+  it("posts sanitized progress notes to the issue and MR with a rate limit", async () => {
+    const token = "task-token-secret";
+    const shapedToken = `glpat-${"A".repeat(24)}`;
+    const packet = {
+      ...reviewPacket(),
+      provider_issue: {
+        ...provider_issue,
+        id: "20:15",
+      },
+      provider_context: {
+        ...reviewPacket().provider_context,
+        issue_id: "20:15",
+      },
+      repo: {
+        ...repo,
+        credentials: { token },
+      },
+      mr_id: "20:5",
+    };
+    const calls: {
+      readonly url: string;
+      readonly token: string | null;
+      readonly body: string;
+    }[] = [];
+    const fetchMock: typeof fetch = (input, init) => {
+      const body = fetchBodyText(init);
+      calls.push({
+        url: fetchInputUrl(input),
+        token: new Headers(init?.headers).get("PRIVATE-TOKEN"),
+        body,
+      });
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: calls.length,
+            body: parsedNoteBody(body),
+          }),
+          {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      );
+    };
+
+    const handle = createPostProgressNoteTool({
+      packet,
+      baseUrl: "https://gitlab.test",
+      fetch: fetchMock,
+      maxNotes: 1,
+    });
+    expect(handle).not.toBeNull();
+    if (!handle) throw new Error("progress note tool was not created");
+
+    const posted = await handle.tool.execute("note-1", {
+      body: `Checking clone auth ${token} ${encodeURIComponent(token)} ${shapedToken}`,
+    });
+    expect(posted.details).toMatchObject({ ok: true, remaining: 0 });
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://gitlab.test/api/v4/projects/20/issues/15/notes",
+      "https://gitlab.test/api/v4/projects/20/merge_requests/5/notes",
+    ]);
+    expect(calls.every((call) => call.token === token)).toBe(true);
+    const postedBody = parsedNoteBody(calls[0]?.body ?? "");
+    expect(postedBody).toContain("[colony:col-pirun.15]");
+    expect(postedBody).not.toContain(token);
+    expect(postedBody).not.toContain(encodeURIComponent(token));
+    expect(postedBody).not.toContain(shapedToken);
+
+    const limited = await handle.tool.execute("note-2", {
+      body: "another update",
+    });
+    expect(limited.details).toMatchObject({
+      ok: false,
+      error: "rate_limited",
+    });
+    expect(calls).toHaveLength(2);
+  });
 });
 
 function taskPacket() {
@@ -343,4 +424,19 @@ async function runEnvironment(
     },
     tools,
   };
+}
+
+function fetchInputUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function fetchBodyText(init: Parameters<typeof fetch>[1]): string {
+  return typeof init?.body === "string" ? init.body : "";
+}
+
+function parsedNoteBody(body: string): string {
+  const parsed = JSON.parse(body) as { readonly body?: unknown };
+  return typeof parsed.body === "string" ? parsed.body : "";
 }

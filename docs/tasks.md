@@ -1260,6 +1260,163 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 - Pending sync recovers cleanly after provider return.
 - Manual merge creates conflict visible in UI.
 
+## Phase 3.5 — Output Quality, Operator UX, And Sandboxing
+
+Goal: between the working scope-to-closed-scope flow (Phase 3) and the operational maturity work (Phase 4), close the gaps that surface as soon as Colony is pointed at a real project and run unattended: weak code review, no replan when the DAG is wrong, no operator UI, and unsandboxed agent execution on the host. Phase 3.5 items must keep the Phase 3 acceptance flow green and additively improve it.
+
+### COL-3.5.1 — Multi-Model Role Wiring
+
+- [ ]
+
+**Depends on:** COL-3.7
+
+**Deliverables**
+
+- Developer role on a coding-tuned non-Codex model (kimi-k2.6 / glm-5.1 / deepseek / qwen) via the existing `openai_compatible` provider in `config/colony.yaml`.
+- Architect and reviewer roles stay on Codex/gpt-5.5.
+- Prompt validation pass against the non-Codex developer model: tool-call adherence, envelope shape, schema conformance.
+- Bench-runners harness updated so the developer benchmark covers the new model.
+
+**Acceptance**
+
+- Phase 3 acceptance passes end-to-end with developer on the non-Codex model.
+- Per-run developer cost on the EchoPress demo drops at least 5x versus gpt-5.5 thinking:high.
+- Bench numbers recorded for the new model in `docs/research/`.
+
+### COL-3.5.2 — Sandbox Every Agent Run
+
+- [ ]
+
+**Depends on:** COL-3.7
+
+**Deliverables**
+
+- A real deployer behind `AgentRunEnvironment.runtimeBinding` that launches a per-run sandbox (container locally, agent-sandbox CR on Aether) instead of the current `local-permissive` host execution.
+- Every runner (`pi-coding-agent-runner`, `pi-mono-runner`, `pi-architect-runner`, plus any future runner) executes inside the sandbox uniformly. Role-specific tools gate at registration, not at the sandbox boundary.
+- Default-deny egress: per-run network policy allows only the LLM provider, GitLab API for the run's project, and (for developer) the package registry. Anything else is refused at the network layer.
+- Token isolation: the per-task scoped GitLab token lives only in the sandbox env; master `GITLAB_TOKEN` and any host secrets stay out of every agent run.
+- No host filesystem leakage: sandbox cwd is a per-run volume; existing `/tmp/colony-pi-runs/<runId>` host clones are removed.
+- Audit records for sandbox start, network egress decisions, and sandbox stop, joined to the existing `agent_run` rows.
+
+**Acceptance**
+
+- Phase 3 acceptance passes end-to-end with all roles sandboxed.
+- Bash inside any runner cannot read host-side colony source, the master `GITLAB_TOKEN`, or any other host secret.
+- Network requests to non-allowlisted hosts are refused and audited; the test harness asserts at least one such denial is recorded.
+- Sandbox lifecycle (start/stop) is audited per run.
+
+### COL-3.5.3 — Reviewer With Workspace And Diff Inspection
+
+- [ ]
+
+**Depends on:** COL-3.5.2
+
+**Deliverables**
+
+- Code reviewer (`pi-mono-runner`) gets `read`, `grep`, `find`, `ls`, and `bash` tools against the sandboxed clone of the MR head.
+- Reviewer ceilings tightened relative to the developer (~30 turns, ~$5) so it inspects, not rewrites.
+- Reviewer system prompt updated to expect a real working tree (rolling back the "reason from packet only" wording added during Phase 3 debugging).
+- `prepareArguments` zod-validation on submit tools stays in place so reviewer envelope errors remain self-correcting.
+
+**Acceptance**
+
+- Phase 3 acceptance passes with the workspace-enabled reviewer.
+- Reviewer detects at least one class of issue invisible from `diff_summary` alone (e.g., a duplicated helper, a stale test that wasn't updated, a public type contract change). Captured in a regression test.
+- Reviewer does not regress into thinking-only churn the way Phase 3 debug runs did; the bench harness records a turn distribution.
+
+### COL-3.5.4 — Operator UX For Real Projects
+
+- [ ]
+
+**Depends on:** COL-3.5.2
+
+**Deliverables**
+
+- Admin-side flow to register an existing GitLab project against `provider_projects` (UI form + API endpoint) so Colony can be pointed at a repo without hand-rolling DB inserts.
+- "New scope" UI on `/scopes` with title, description, and project picker; calls existing `POST /scopes` and the supervisor mirroring path.
+- "Run architect" action on draft scopes that triggers `POST /scopes/:id/decomposition-request` from the UI.
+- Documentation (`docs/dev-loop.md` or new) describing the end-to-end UI path: register project → create scope → run architect → review → approve → watch tasks merge.
+
+**Acceptance**
+
+- An operator can drive a scope from draft to closed without running any script, only via the web UI and provider comments.
+- Existing `acceptance:phase3` target keeps passing unchanged.
+
+### COL-3.5.5 — Temporal-Driven End-To-End Harness
+
+- [ ]
+
+**Depends on:** COL-3.5.2
+
+**Deliverables**
+
+- New acceptance target (`acceptance:phase3-temporal` or replace the bypass path in `acceptance:phase3`) that drives a scope through `scopeSupervisorWorkflow` instead of calling activity functions directly.
+- Provider webhook events drive workflow signals end-to-end (no direct repo activity calls in the harness).
+- Heartbeat, retry, and signal-driven state transitions are exercised at least once in the run.
+
+**Acceptance**
+
+- Acceptance target passes against home-lab GitLab.
+- Run produces Temporal workflow history showing every state transition, signal, and activity retry.
+- Killing the worker mid-run and restarting it does not corrupt scope state; the workflow resumes from history.
+
+### COL-3.5.6 — Per-Task Planning Gate
+
+- [ ]
+
+**Depends on:** COL-3.5.3
+
+**Deliverables**
+
+- New `developer_plan` envelope schema: brief approach, files to touch, tests to add, risks. Mirrors the architect/reviewer envelope shape.
+- New `plan_review` envelope schema (specialized reviewer per phase, not a merged omni-reviewer).
+- New plan reviewer runner + prompt; reuses the sandboxed runner pattern.
+- New task states: `claimed -> plan_proposed -> plan_review -> in_progress` (with `changes_requested` looping back to `plan_proposed`).
+- DB columns + repository helpers for the plan envelope artifact.
+- Plan review loop cap (mirror existing `review_loop_cap`).
+
+**Acceptance**
+
+- Developer cannot write code before the plan envelope is reviewer-approved.
+- A failing plan review routes back to the developer for revision; loop terminates at the cap.
+- Phase 3 acceptance passes with the new gate inserted.
+
+### COL-3.5.7 — Architect Re-Plan On Developer Escalation
+
+- [ ]
+
+**Depends on:** COL-3.5.6
+
+**Deliverables**
+
+- Supervisor activity that, given (current DAG state, developer escalation/blocker envelope, completed and in-flight tasks), invokes the architect with a delta-mode packet.
+- Extension to architect envelope (or new `architect_replan` variant) that adds, removes, or rewrites _remaining_ tasks without disturbing merged ones.
+- State-machine support for inserting new tasks mid-scope and retiring/redirecting blocked tasks; reuses the planning gate's transitions where applicable.
+- Audit trail recording the trigger envelope, the architect's delta, and the resulting DAG diff.
+
+**Acceptance**
+
+- A developer escalation that names "task N depends on something not in the DAG" produces a re-plan that adds the missing prerequisite and retargets task N.
+- In-flight tasks not affected by the delta keep running uninterrupted.
+- Re-plan attempts are bounded; runaway re-plans are audited and blocked.
+
+### COL-3.5.8 — Phase 3.5 End-To-End Acceptance
+
+- [ ]
+
+**Depends on:** COL-3.5.1, COL-3.5.2, COL-3.5.3, COL-3.5.4, COL-3.5.5, COL-3.5.6, COL-3.5.7
+
+**Deliverables**
+
+- A target that drives a real scope on an existing GitLab project from the operator UI, through Temporal, through sandboxed runs of architect → developer plan → plan review → developer code → code review → merge, with at least one architect re-plan triggered by a developer escalation.
+- Multi-model wiring active (developer on non-Codex, architect/reviewer on Codex).
+- Egress denial assertion (sandbox refuses an off-allowlist call recorded in audit).
+
+**Acceptance**
+
+- All other Phase 3 and 3.5 acceptance targets continue to pass.
+- The target completes in a single operator session without any direct script-driven activity calls.
+
 ## Phase 4 — Memory, Policy Hardening, Release, And Second Provider
 
 Goal: enhance the real-project flow after Phase 3 with durable memory/decision records, richer policy, release/deploy automation, richer UI, and a second provider. Phase 4 items must not be required for the basic scope-to-closed-scope path.
