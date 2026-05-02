@@ -7,7 +7,7 @@ import {
 
 describe("@colony/workflows reconciliation timer helpers", () => {
   it("uses the Phase 3 periodic reconciliation cadence", () => {
-    expect(RECONCILE_INTERVAL).toBe("15 minutes");
+    expect(RECONCILE_INTERVAL).toBe("5 minutes");
   });
 
   it("builds deterministic reconcile activity idempotency keys", () => {

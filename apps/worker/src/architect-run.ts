@@ -131,13 +131,48 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
       colony_id: scope.id,
       entity_kind: "scope",
     });
-    const scopeMirror = scopeMirrors[0];
+    let scopeMirror = scopeMirrors[0];
     if (!scopeMirror) {
-      return {
-        started: false,
+      // Self-bootstrap: scopes created via the API don't get an
+      // automatic provider issue. Project the scope as a GitLab issue
+      // on the primary target so the architect has an anchor to
+      // attach the spec MR + child task issues to. Recovery (heartbeat)
+      // hits this same path.
+      const bootstrapPrimary =
+        targetProjects.find((t) => t.role === "primary") ?? targetProjects[0];
+      const bootstrapProject = bootstrapPrimary.project;
+      const issue = await deps.providerAdapter.issues.create(
+        {
+          id: bootstrapProject.provider_id,
+          path: bootstrapProject.path,
+        },
+        {
+          title: scope.title,
+          description: scope.description,
+          labels: ["state:draft", "scope:parent"],
+        },
+      );
+      scopeMirror = await deps.providerProjects.upsertMirror({
+        colony_id: scope.id,
+        entity_kind: "scope",
+        provider: bootstrapProject.provider,
+        provider_id: issue.id,
+        provider_project_id: bootstrapProject.id,
+        provider_project_path: bootstrapProject.path,
+      });
+      await deps.repo.writeAudit({
         scope_id: scope.id,
-        reason: "scope_has_no_provider_mirror",
-      };
+        actor: SUPERVISOR_ACTOR,
+        action: "provider.scope.issue_projected",
+        capability: "provider.issues.create",
+        target_kind: "issue",
+        target_id: issue.id,
+        reason: "architect_run_bootstrap",
+        evidence: {
+          provider_project_id: bootstrapProject.id,
+          provider_project_path: bootstrapProject.path,
+        },
+      });
     }
 
     const primary =
@@ -378,19 +413,32 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
       },
     );
 
-    // Open a spec MR carrying the proposal so reviewers (agent + human)
-    // can read the architect's output as a real GitLab MR diff and post
-    // /approve or /changes via comments. The webhook-dispatcher's
-    // mirror lookup picks this up as `entity_kind=mr_pr` linked to the
-    // *scope* (not a task), and the supervisor workflow's
-    // command_target=scope_decomposition routing fires the existing
-    // applyDecompositionCommand path. Best-effort: if the provider
-    // adapter doesn't support commit/MR open we return success on the
-    // proposal alone — the API path still exposes the proposal for
-    // direct approval.
+    // Open or update a spec MR carrying the proposal so reviewers
+    // (agent + human) can read the architect's output as a real GitLab
+    // MR diff and post /approve or /changes via comments. The
+    // webhook-dispatcher's mirror lookup picks this up as
+    // `entity_kind=mr_pr` linked to the *scope* (not a task), and the
+    // supervisor workflow's command_target=scope_decomposition routing
+    // fires the existing applyDecompositionCommand path. Best-effort:
+    // if the provider adapter doesn't support commit/MR open we return
+    // success on the proposal alone — the API path still exposes the
+    // proposal for direct approval.
+    //
+    // Rework semantics: when an architect run produces a fresh
+    // proposal for a scope that already has an open spec MR (e.g.
+    // reviewer requested changes and the architect re-decomposed),
+    // push a new commit to the same branch and update the existing
+    // mirror instead of opening a parallel MR. One MR thread per
+    // scope = one place for review comments.
+    const existingSpecMrMirror = (
+      await deps.providerProjects.listMirrorsForColony({
+        colony_id: scope.id,
+        entity_kind: "mr_pr",
+      })
+    )[0];
     let architectMr: { readonly id: string; readonly url?: string } | undefined;
     try {
-      architectMr = await openSpecMergeRequest({
+      architectMr = await openOrUpdateSpecMergeRequest({
         adapter: deps.providerAdapter,
         primaryProject,
         scope,
@@ -399,6 +447,7 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
         proposedDependencies: envelope.role_specific.proposed_dependencies,
         assumptions: envelope.role_specific.assumptions,
         openQuestions: envelope.role_specific.open_questions,
+        existingMrId: existingSpecMrMirror?.provider_id,
       });
       if (architectMr) {
         await deps.providerProjects.upsertMirror({
@@ -413,11 +462,15 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
         await deps.repo.writeAudit({
           scope_id: scope.id,
           actor,
-          action: "architect.spec_mr.opened",
+          action: existingSpecMrMirror
+            ? "architect.spec_mr.updated"
+            : "architect.spec_mr.opened",
           capability: "graph.write",
           target_kind: "merge_request",
           target_id: architectMr.id,
-          reason: "architect_run_submission",
+          reason: existingSpecMrMirror
+            ? "architect_rework_submission"
+            : "architect_run_submission",
           evidence: {
             proposal_id: proposal.id,
             mr_url: architectMr.url,
@@ -452,7 +505,7 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
   };
 }
 
-async function openSpecMergeRequest(args: {
+async function openOrUpdateSpecMergeRequest(args: {
   readonly adapter: ProviderAdapter;
   readonly primaryProject: ProviderProject;
   readonly scope: Scope;
@@ -472,27 +525,42 @@ async function openSpecMergeRequest(args: {
   }>;
   readonly assumptions: readonly string[];
   readonly openQuestions: readonly string[];
+  readonly existingMrId?: string;
 }): Promise<{ readonly id: string; readonly url?: string } | undefined> {
   const projectRef = {
     id: args.primaryProject.provider_id,
     path: args.primaryProject.path,
   };
-  const branchName = `colony/spec-${args.scope.id}-${args.proposal.id.slice(-8)}`;
-  // create branch off the project default; ignore if it already exists.
-  await args.adapter.branches
-    .create(projectRef, branchName, args.primaryProject.default_branch)
-    .catch(() => {});
+  // Stable branch per scope so reworks land as new commits on the
+  // same branch instead of spawning parallel MRs.
+  const branchName = `colony/spec-${args.scope.id}`;
+  let branchExisted = true;
+  try {
+    await args.adapter.branches.create(
+      projectRef,
+      branchName,
+      args.primaryProject.default_branch,
+    );
+    branchExisted = false;
+  } catch {
+    // Branch already exists — we'll push an update commit. Use
+    // action=update so GitLab finds the existing files on the branch.
+  }
+  const fileAction = branchExisted ? "update" : "create";
+  const commitMessage = branchExisted
+    ? `feat(scope): refine decomposition ${args.proposal.id}`
+    : `feat(scope): propose decomposition ${args.proposal.id}`;
   await args.adapter.commits.create(projectRef, {
     branch: branchName,
-    message: `feat(scope): propose decomposition ${args.proposal.id}`,
+    message: commitMessage,
     actions: [
       {
-        action: "create",
+        action: fileAction,
         file_path: `colony/scopes/${args.scope.id}/SPEC.md`,
         content: renderSpecMarkdown(args),
       },
       {
-        action: "create",
+        action: fileAction,
         file_path: `colony/scopes/${args.scope.id}/decomposition.json`,
         content: JSON.stringify(
           {
@@ -509,6 +577,20 @@ async function openSpecMergeRequest(args: {
       },
     ],
   });
+  if (args.existingMrId) {
+    // Reuse the open MR. The new commit shows up automatically; we
+    // just refresh the description to point at the latest proposal id.
+    try {
+      const refreshed = await args.adapter.mergeRequests.get(
+        projectRef,
+        args.existingMrId,
+      );
+      return { id: refreshed.id, url: refreshed.metadata?.web_url };
+    } catch {
+      // MR was closed/deleted out of band — fall through to open a
+      // fresh one so the chain doesn't stall.
+    }
+  }
   const mr = await args.adapter.mergeRequests.open(projectRef, {
     title: `[SPEC] ${args.scope.title}`,
     description: renderMrDescription(args),

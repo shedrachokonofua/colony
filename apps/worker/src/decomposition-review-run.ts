@@ -84,7 +84,12 @@ export interface DecompositionReviewRunDependencies {
 
 export interface StartDecompositionReviewRunInput {
   readonly scope_id: string;
-  readonly proposal_id: string;
+  /**
+   * Optional. When omitted, the activity reviews the most recent
+   * `proposed` proposal on the scope — used by recovery paths
+   * (heartbeat tick, manual retry) that don't carry the proposal id.
+   */
+  readonly proposal_id?: string;
   readonly reviewer?: string;
 }
 
@@ -119,7 +124,24 @@ export function createDecompositionReviewRun(
       return { started: false, reason: "invalid_scope_id" };
     }
     const scopeId = input.scope_id;
-    const proposalId = input.proposal_id;
+    let proposalId = input.proposal_id;
+    if (!proposalId) {
+      const candidates = await deps.repo.listDecompositionProposals(scopeId);
+      const latestProposed = [...candidates]
+        .filter((p) => p.status === "proposed")
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        )[0];
+      if (!latestProposed) {
+        return {
+          started: false,
+          scope_id: scopeId,
+          reason: "no_proposal_awaiting_review",
+        };
+      }
+      proposalId = latestProposed.id;
+    }
     const proposal = await deps.repo.getDecompositionProposal(
       scopeId,
       proposalId,
@@ -502,38 +524,26 @@ async function postSpecReviewComment(args: {
     | "blocked"
     | "escalate";
 }): Promise<void> {
-  const lines: string[] = [];
-  const verb =
-    args.reviewResult === "approved"
-      ? "approves"
-      : args.reviewResult === "changes_requested"
-        ? "requests changes"
-        : args.reviewResult;
-  lines.push(`**Spec/DAG reviewer ${verb}.**`);
-  if (args.envelope.role_specific.summary) {
-    lines.push("");
-    lines.push(args.envelope.role_specific.summary);
-  }
-  if (args.envelope.role_specific.findings.length > 0) {
-    lines.push("");
-    lines.push("Findings:");
-    for (const f of args.envelope.role_specific.findings) {
-      lines.push(
-        `- **${f.severity}**: ${f.evidence}${f.suggested_fix ? ` — _${f.suggested_fix}_` : ""}`,
-      );
-    }
-  }
-  lines.push("");
-  lines.push(
-    args.reviewResult === "approved"
-      ? "Reply `/approve` to commit the DAG."
-      : "Reply `/changes <prose>` after the architect addresses the findings.",
-  );
   await args.adapter.mergeRequests.comment(
     args.project,
     args.mrId,
-    lines.join("\n"),
+    specReviewCommentBody(args.envelope, args.reviewResult),
   );
+}
+
+function specReviewCommentBody(
+  envelope: ReviewerReviewEnvelope,
+  reviewResult: "approved" | "changes_requested" | "blocked" | "escalate",
+): string {
+  const authored = envelope.role_specific.mr_comment_body?.trim();
+  if (authored) return authored.slice(0, 6000);
+
+  const nextStep =
+    reviewResult === "approved"
+      ? "Reply `/approve` to commit the DAG."
+      : "Reply `/changes <prose>` after the architect addresses the findings.";
+  const summary = envelope.role_specific.summary ?? envelope.rationale;
+  return [summary, "", nextStep].join("\n").slice(0, 6000);
 }
 
 const SPEC_DAG_ACCEPTANCE_CRITERIA: readonly string[] = [

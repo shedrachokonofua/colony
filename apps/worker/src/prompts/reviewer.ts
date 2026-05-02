@@ -91,7 +91,9 @@ Required keys:
 - \`rationale\`: one or two sentences explaining the verdict.
 - \`task_id\`: ECHO from the packet.
 - \`role_specific.findings\`: array per #4.
-- \`role_specific.summary\`: optional short prose summary of the review.`;
+- \`role_specific.summary\`: optional short prose summary of the review.
+- \`role_specific.mr_comment_body\`: optional public MR comment body with
+  verdict, evidence, and requested next step.`;
 
 export interface ReviewerPromptResult {
   readonly system: string;

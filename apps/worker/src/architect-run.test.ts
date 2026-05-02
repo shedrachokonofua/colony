@@ -77,7 +77,7 @@ describe("createArchitectRun (fake runtime)", () => {
     expect(stubs.submittedProposals).toHaveLength(0);
   });
 
-  it("rejects when scope has no provider mirror", async () => {
+  it("self-bootstraps a provider mirror when a draft scope has none", async () => {
     const stubs = makeStubs({ omitScopeMirror: true });
     const run = createArchitectRun({
       repo: stubs.repo as unknown as TaskGraphRepository,
@@ -88,11 +88,16 @@ describe("createArchitectRun (fake runtime)", () => {
     });
 
     const result = await run({ scope_id: SCOPE_ID });
-    expect(result).toEqual({
-      started: false,
+    expect(result).toMatchObject({
+      started: true,
       scope_id: SCOPE_ID,
-      reason: "scope_has_no_provider_mirror",
+      envelope_status: "succeeded",
     });
+    expect(stubs.createdIssues).toHaveLength(1);
+    expect(stubs.upsertedMirrors).toHaveLength(1);
+    expect(
+      stubs.audits.find((a) => a.action === "provider.scope.issue_projected"),
+    ).toBeTruthy();
   });
 
   it("rejects an envelope whose freshness no longer matches the packet", async () => {
@@ -169,6 +174,8 @@ function makeStubs(
   }> = [];
   const audits: Array<Record<string, unknown> & { readonly action: string }> =
     [];
+  const createdIssues: Array<Record<string, unknown>> = [];
+  const upsertedMirrors: Array<Record<string, unknown>> = [];
 
   const scope: Scope = {
     id: SCOPE_ID,
@@ -253,13 +260,31 @@ function makeStubs(
         return Promise.resolve([]);
       return Promise.resolve([scopeMirror]);
     },
+    upsertMirror: (input: Record<string, unknown>) => {
+      upsertedMirrors.push(input);
+      return Promise.resolve({
+        ...scopeMirror,
+        ...input,
+        id: "mirror-bootstrap",
+      });
+    },
   };
 
-  const providerAdapter = { provider: "gitlab" };
+  const providerAdapter = {
+    provider: "gitlab",
+    issues: {
+      create: (_project: unknown, input: Record<string, unknown>) => {
+        createdIssues.push(input);
+        return Promise.resolve({ id: "issue-bootstrap" });
+      },
+    },
+  };
 
   return {
     submittedProposals,
     audits,
+    createdIssues,
+    upsertedMirrors,
     repo,
     providerProjects,
     providerAdapter,

@@ -48,6 +48,11 @@ export interface Task {
   readonly agent_token_id?: string;
   readonly agent_token_expires_at?: Iso8601;
   readonly agent_token_revoked_at?: Iso8601;
+  readonly developer_plan_envelope?: Readonly<Record<string, unknown>>;
+  readonly developer_plan_hash?: string;
+  readonly plan_review_envelope?: Readonly<Record<string, unknown>>;
+  readonly plan_review_hash?: string;
+  readonly plan_review_result?: ReviewResult;
   readonly created_at: Iso8601;
   readonly updated_at: Iso8601;
 }

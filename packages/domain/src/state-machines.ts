@@ -20,6 +20,8 @@ export const TASK_STATES = [
   "created",
   "ready",
   "claimed",
+  "plan_proposed",
+  "plan_review",
   "in_progress",
   "review_requested",
   "changes_requested",
@@ -140,9 +142,27 @@ const TASK_FORWARD: ReadonlyArray<StateTransition<TaskState>> = [
   },
   {
     from: "claimed",
+    to: "plan_proposed",
+    owner: "developer",
+    precondition: "Developer submitted implementation plan envelope",
+  },
+  {
+    from: "plan_proposed",
+    to: "plan_review",
+    owner: "reviewer",
+    precondition: "Plan reviewer started evaluation",
+  },
+  {
+    from: "plan_review",
     to: "in_progress",
     owner: "supervisor",
-    precondition: "Agent packet delivered + run started",
+    precondition: "Plan reviewer approved developer plan",
+  },
+  {
+    from: "plan_review",
+    to: "plan_proposed",
+    owner: "supervisor",
+    precondition: "Plan reviewer requested changes; developer revises plan",
   },
   {
     from: "in_progress",
@@ -165,9 +185,9 @@ const TASK_FORWARD: ReadonlyArray<StateTransition<TaskState>> = [
   },
   {
     from: "changes_requested",
-    to: "in_progress",
+    to: "plan_proposed",
     owner: "supervisor",
-    precondition: "Refinement loop iteration; cap N=3 per gate",
+    precondition: "Refinement loop iteration starts with a fresh plan",
   },
   {
     from: "merge_ready",

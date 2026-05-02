@@ -12,6 +12,14 @@ import {
   type StartDeveloperRunResult,
 } from "./developer-run.js";
 import {
+  createStartDeveloperPlanRun,
+  createStartPlanReviewRun,
+  type StartDeveloperPlanRunInput,
+  type StartDeveloperPlanRunResult,
+  type StartPlanReviewRunInput,
+  type StartPlanReviewRunResult,
+} from "./task-planning.js";
+import {
   createReviewerRun,
   type StartReviewerRunInput,
   type StartReviewerRunResult,
@@ -192,7 +200,7 @@ function getProviderAdapter(): ProviderAdapter {
 }
 
 async function getAgentRuntime(
-  role: "developer" | "reviewer" | "architect",
+  role: keyof AgentRuntimeWiring,
 ): Promise<AgentRuntimeAdapter> {
   agentRuntimeWiring ??= await createAgentRuntimeWiring(env());
   return agentRuntimeWiring[role];
@@ -219,6 +227,28 @@ export async function startDeveloperRun(
     agentRuntime: await getAgentRuntime("developer"),
   });
   return run(input);
+}
+
+export async function startDeveloperPlanRun(
+  input: StartDeveloperPlanRunInput,
+): Promise<StartDeveloperPlanRunResult> {
+  return createStartDeveloperPlanRun({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
+    agentRuntime: await getAgentRuntime("developerPlanner"),
+  })(input);
+}
+
+export async function startPlanReviewRun(
+  input: StartPlanReviewRunInput,
+): Promise<StartPlanReviewRunResult> {
+  return createStartPlanReviewRun({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
+    agentRuntime: await getAgentRuntime("planReviewer"),
+  })(input);
 }
 
 export async function startReviewerRun(
@@ -738,6 +768,8 @@ export const activities = {
   requeueBlockedTask,
   resolveTaskConflict,
   scopeHeartbeatTick,
+  startDeveloperPlanRun,
+  startPlanReviewRun,
   startArchitectRun,
   startDecompositionReviewRun,
   startDeveloperRun,

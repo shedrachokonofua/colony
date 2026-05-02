@@ -101,7 +101,9 @@ describe("task state machine", () => {
     const path: ReadonlyArray<[TaskState, TaskState]> = [
       ["created", "ready"],
       ["ready", "claimed"],
-      ["claimed", "in_progress"],
+      ["claimed", "plan_proposed"],
+      ["plan_proposed", "plan_review"],
+      ["plan_review", "in_progress"],
       ["in_progress", "review_requested"],
       ["review_requested", "merge_ready"],
       ["merge_ready", "merged"],
@@ -115,11 +117,11 @@ describe("task state machine", () => {
     }
   });
 
-  it("loops review_requested -> changes_requested -> in_progress", () => {
+  it("loops review_requested -> changes_requested -> plan_proposed", () => {
     expect(canTransitionTask("review_requested", "changes_requested")).toBe(
       true,
     );
-    expect(canTransitionTask("changes_requested", "in_progress")).toBe(true);
+    expect(canTransitionTask("changes_requested", "plan_proposed")).toBe(true);
   });
 
   it("forbids skipping review on the way to merged", () => {

@@ -122,11 +122,11 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
         reason: "task_not_found",
       };
     }
-    if (task.state !== "claimed") {
+    if (task.state !== "in_progress") {
       return {
         started: false,
         task_id: task.id,
-        reason: `task_not_claimed:${task.state}`,
+        reason: `task_not_in_progress:${task.state}`,
       };
     }
     if (task.assignee !== (input.assignee as ActorId)) {
@@ -343,19 +343,9 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
       };
     }
 
-    // Promote claimed -> in_progress.
-    const inProgress = await deps.repo.updateTaskState(
-      task.id,
-      task.state_version,
-      "in_progress",
-      {
-        actor: SUPERVISOR_ACTOR,
-        capability: "task.assign",
-        reason: "developer_run_started",
-      },
-    );
-
-    const mr = await openOrFindMergeRequest({
+    const existingMrMirror = await primaryMirror(deps, task.id, "mr_pr");
+    const headCommitSha = developerCommitFromEnvelope(developerEnvelope);
+    const mrResult = await openOrUpdateMergeRequest({
       adapter: deps.providerAdapter,
       project: projectRef,
       title: task.title,
@@ -367,7 +357,9 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
       ),
       source_branch: sourceBranch,
       target_branch: project.default_branch,
+      existing_mr_id: existingMrMirror?.provider_id,
     });
+    const { mr } = mrResult;
 
     await deps.providerProjects.upsertMirror({
       colony_id: task.id,
@@ -376,14 +368,20 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
       provider_id: mr.id,
       provider_project_id: project.id,
       provider_project_path: project.path,
-      source_version: hashEnvelope(developerEnvelope),
+      source_version: JSON.stringify({
+        envelope_hash: hashEnvelope(developerEnvelope),
+        head_commit_sha: headCommitSha,
+      }),
     });
 
     await deps.repo.writeAudit({
       scope_id: task.scope_id,
       task_id: task.id,
       actor: SUPERVISOR_ACTOR,
-      action: "provider.mr.opened",
+      action:
+        mrResult.action === "updated"
+          ? "provider.mr.updated"
+          : "provider.mr.opened",
       capability: "provider.mr.open",
       target_kind: "merge_request",
       target_id: mr.id,
@@ -395,12 +393,14 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
         provider: project.provider,
         provider_project_id: project.id,
         envelope_hash: output.envelopeHash,
+        head_commit_sha: headCommitSha,
+        mr_action: mrResult.action,
       },
     });
 
     const finalTask = await deps.repo.updateTaskState(
       task.id,
-      inProgress.state_version,
+      task.state_version,
       "review_requested",
       {
         actor: SUPERVISOR_ACTOR,
@@ -430,9 +430,17 @@ async function primaryTaskMirror(
   deps: DeveloperRunDependencies,
   task_id: string,
 ): Promise<ProviderMirror | undefined> {
+  return primaryMirror(deps, task_id, "task");
+}
+
+async function primaryMirror(
+  deps: DeveloperRunDependencies,
+  task_id: string,
+  entity_kind: ProviderMirror["entity_kind"],
+): Promise<ProviderMirror | undefined> {
   const mirrors = await deps.providerProjects.listMirrorsForColony({
     colony_id: task_id,
-    entity_kind: "task",
+    entity_kind,
   });
   return mirrors[0];
 }
@@ -444,15 +452,43 @@ interface OpenMergeRequestArgs {
   readonly description: string;
   readonly source_branch: string;
   readonly target_branch: string;
+  readonly existing_mr_id?: string;
 }
 
-async function openOrFindMergeRequest(args: OpenMergeRequestArgs) {
-  return args.adapter.mergeRequests.open(args.project, {
+async function openOrUpdateMergeRequest(args: OpenMergeRequestArgs): Promise<{
+  readonly action: "opened" | "updated";
+  readonly mr: Awaited<ReturnType<ProviderAdapter["mergeRequests"]["open"]>>;
+}> {
+  if (args.existing_mr_id) {
+    try {
+      const existing = await args.adapter.mergeRequests.get(
+        args.project,
+        args.existing_mr_id,
+      );
+      if (existing.state === "opened") {
+        const mr = await args.adapter.mergeRequests.update(
+          args.project,
+          args.existing_mr_id,
+          {
+            title: args.title,
+            description: args.description,
+          },
+        );
+        return { action: "updated", mr };
+      }
+    } catch {
+      // The mirrored MR may have been deleted or become unreachable out of
+      // band. Fall through to opening a fresh MR and refresh the mirror below.
+    }
+  }
+
+  const mr = await args.adapter.mergeRequests.open(args.project, {
     title: args.title,
     description: args.description,
     source_branch: args.source_branch,
     target_branch: args.target_branch,
   });
+  return { action: "opened", mr };
 }
 
 function developerBranchName(task_id: string): string {
@@ -483,6 +519,13 @@ function developerMrDescription(
     lines.push(`> Head commit: ${commit.hash ?? commit.id}`);
   }
   return lines.join("\n");
+}
+
+function developerCommitFromEnvelope(
+  envelope: DeveloperCompletionEnvelope,
+): string {
+  const commit = envelope.artifacts.find((a) => a.kind === "commit");
+  return commit?.hash ?? commit?.id ?? envelope.freshness.commit_sha;
 }
 
 function parseDeveloperEnvelope(

@@ -23,7 +23,8 @@ export type SupervisorSignalName =
   | "approval"
   | "changes_requested"
   | "pipeline_update"
-  | "operator_override";
+  | "operator_override"
+  | "architect_requested";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type NormalizedAttributes = Readonly<Record<string, JsonPrimitive>>;
@@ -91,6 +92,18 @@ export interface OperatorOverrideSignal extends SupervisorSignalBase {
   readonly reason: string;
 }
 
+/**
+ * Operator (or recovery) intent: run the architect against this scope.
+ * Both the UI/API and the supervisor's heartbeat-driven recovery send the
+ * same signal — one handler, two senders.
+ */
+export interface ArchitectRequestedSignal extends SupervisorSignalBase {
+  readonly actor: string;
+  readonly reason?: string;
+  readonly audit_id?: string;
+  readonly event_id?: string;
+}
+
 export type SupervisorSignal =
   | { readonly name: "provider_event"; readonly payload: ProviderEventSignal }
   | { readonly name: "approval"; readonly payload: ApprovalSignal }
@@ -105,6 +118,10 @@ export type SupervisorSignal =
   | {
       readonly name: "operator_override";
       readonly payload: OperatorOverrideSignal;
+    }
+  | {
+      readonly name: "architect_requested";
+      readonly payload: ArchitectRequestedSignal;
     };
 
 export interface ScopeStateSnapshot {
@@ -178,6 +195,8 @@ export type TaskLifecycleState =
   | "created"
   | "ready"
   | "claimed"
+  | "plan_proposed"
+  | "plan_review"
   | "in_progress"
   | "review_requested"
   | "changes_requested"
@@ -203,6 +222,41 @@ export type DeveloperRunResult =
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
       readonly final_state: TaskLifecycleState;
       readonly developer_envelope?: unknown;
+      readonly reason?: string;
+    };
+
+export type DeveloperPlanResult =
+  | {
+      readonly started: false;
+      readonly task_id?: TaskId;
+      readonly reason: string;
+    }
+  | {
+      readonly started: true;
+      readonly task_id: TaskId;
+      readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly final_state: TaskLifecycleState;
+      readonly developer_plan?: unknown;
+      readonly reason?: string;
+    };
+
+export type PlanReviewResult =
+  | {
+      readonly started: false;
+      readonly task_id?: TaskId;
+      readonly reason: string;
+    }
+  | {
+      readonly started: true;
+      readonly task_id: TaskId;
+      readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly review_result?:
+        | "approved"
+        | "changes_requested"
+        | "blocked"
+        | "escalate";
+      readonly final_state: TaskLifecycleState;
+      readonly plan_review?: unknown;
       readonly reason?: string;
     };
 
@@ -304,6 +358,54 @@ export type TaskReworkResult =
       readonly rework_count: number;
     };
 
+export type ArchitectRunActivityResult =
+  | {
+      readonly started: false;
+      readonly scope_id?: string;
+      readonly reason: string;
+    }
+  | {
+      readonly started: true;
+      readonly scope_id: string;
+      readonly run_id: string;
+      readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly proposal_id?: string;
+      readonly reason?: string;
+    };
+
+export type DecompositionReviewActivityResult =
+  | {
+      readonly started: false;
+      readonly scope_id?: string;
+      readonly proposal_id?: string;
+      readonly reason: string;
+    }
+  | {
+      readonly started: true;
+      readonly scope_id: string;
+      readonly proposal_id: string;
+      readonly run_id: string;
+      readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly review_result?:
+        | "approved"
+        | "changes_requested"
+        | "blocked"
+        | "escalate";
+      readonly reason?: string;
+    };
+
+export interface LongRunningSupervisorActivities {
+  readonly startArchitectRun: (input: {
+    readonly scope_id: ScopeId;
+    readonly actor?: string;
+  }) => Promise<ArchitectRunActivityResult>;
+  readonly startDecompositionReviewRun: (input: {
+    readonly scope_id: ScopeId;
+    readonly proposal_id?: string;
+    readonly reviewer?: string;
+  }) => Promise<DecompositionReviewActivityResult>;
+}
+
 export interface SupervisorActivities {
   readonly readScopeState: (input: {
     readonly scope_id: ScopeId;
@@ -321,6 +423,15 @@ export interface SupervisorActivities {
     readonly task_id: TaskId;
     readonly assignee: string;
   }) => Promise<DeveloperRunResult>;
+  readonly startDeveloperPlanRun: (input: {
+    readonly task_id: TaskId;
+    readonly assignee: string;
+  }) => Promise<DeveloperPlanResult>;
+  readonly startPlanReviewRun: (input: {
+    readonly task_id: TaskId;
+    readonly reviewer: string;
+    readonly developer_plan: unknown;
+  }) => Promise<PlanReviewResult>;
   readonly openMrGate: (input: {
     readonly task_id: TaskId;
   }) => Promise<GateResult>;
@@ -412,28 +523,31 @@ export const pipelineUpdateSignal =
   defineSignal<[PipelineUpdateSignal]>("pipelineUpdate");
 export const operatorOverrideSignal =
   defineSignal<[OperatorOverrideSignal]>("operatorOverride");
+export const architectRequestedSignal =
+  defineSignal<[ArchitectRequestedSignal]>("architectRequested");
 
 export function supervisorWorkflowId(scope_id: ScopeId): string {
   return `supervisor-${scope_id}`;
 }
 
-export const RECONCILE_INTERVAL = "15 minutes" as const;
+export const RECONCILE_INTERVAL = "5 minutes" as const;
 
 /**
  * Per-scope heartbeat cadence — the supervisor's "am I making forward
- * progress?" tick. Three heartbeats fit inside one reconcile window so
- * a stalled scope surfaces well before drift detection runs.
+ * progress?" tick. Drives both stall detection and self-healing
+ * recovery dispatch (architect / reviewer kickoffs when the scope is
+ * stuck mid-flow).
  */
-export const HEARTBEAT_INTERVAL = "5 minutes" as const;
+export const HEARTBEAT_INTERVAL = "1 minute" as const;
 
 /**
- * After this much wall time without any audit/event/agent_run/task
- * update on the scope, the heartbeat activity classifies the scope as
- * stalled and tries to recover. Default keeps a tight enough window
- * for active scopes (architect run takes ~5 min) but doesn't trip on
- * normal-cadence developer runs.
+ * After this much wall time without any scope/task update, the
+ * heartbeat classifies the scope as stalled and dispatches recovery.
+ * In-flight agent runs bump scope.updated_at on submission so a
+ * tight threshold doesn't trip mid-run. Tuned to match the 1-min
+ * heartbeat cadence — recovery fires within ~3 min of a real stall.
  */
-export const HEARTBEAT_STALL_THRESHOLD_MS = 10 * 60 * 1000; // 10 min
+export const HEARTBEAT_STALL_THRESHOLD_MS = 3 * 60 * 1000; // 3 min
 
 export function reconcileActivityIdempotencyKey(input: {
   readonly scope_id: ScopeId;
@@ -460,6 +574,18 @@ const activities = proxyActivities<SupervisorActivities>({
   },
 });
 
+/**
+ * Architect runs invoke an LLM and can run for many minutes. Give them a
+ * dedicated proxy with a long timeout; the standard 30s window above
+ * fits the lightweight orchestration activities.
+ */
+const longRunningActivities = proxyActivities<LongRunningSupervisorActivities>({
+  startToCloseTimeout: "30 minutes",
+  retry: {
+    maximumAttempts: 1,
+  },
+});
+
 const DEVELOPER_ASSIGNEE = "bot:engine" as const;
 const REVIEWER_ASSIGNEE = "bot:reviewer" as const;
 
@@ -468,6 +594,31 @@ async function driveClaimedTask(input: {
   readonly task_id: TaskId;
   readonly assignee: string;
 }): Promise<void> {
+  const plan = await activities.startDeveloperPlanRun({
+    task_id: input.task_id,
+    assignee: input.assignee,
+  });
+  if (
+    !plan.started ||
+    plan.envelope_status !== "succeeded" ||
+    !plan.developer_plan
+  ) {
+    return;
+  }
+
+  const planReview = await activities.startPlanReviewRun({
+    task_id: input.task_id,
+    reviewer: REVIEWER_ASSIGNEE,
+    developer_plan: plan.developer_plan,
+  });
+  if (
+    !planReview.started ||
+    planReview.envelope_status !== "succeeded" ||
+    planReview.review_result !== "approved"
+  ) {
+    return;
+  }
+
   const dev = await activities.startDeveloperRun({
     task_id: input.task_id,
     assignee: input.assignee,
@@ -524,6 +675,40 @@ function eventKind(signal: SupervisorSignalName): string {
     case "pipeline_update":
     case "provider_event":
       return "provider_event";
+    case "architect_requested":
+      return "architect_decomposition_requested";
+  }
+}
+
+/**
+ * Run the architect, and on success tail-call the decomposition
+ * reviewer. Used by both the operator-intent signal handler and the
+ * heartbeat-driven recovery path so the chain is identical regardless
+ * of trigger. Recovery semantics: if the scope is already past draft
+ * with an un-reviewed proposal, skip architect and go straight to
+ * reviewer (the activity self-locates the latest `proposed` proposal).
+ */
+async function driveArchitectThenReview(
+  scope_id: ScopeId,
+  actor: string,
+): Promise<void> {
+  const arch = await longRunningActivities.startArchitectRun({
+    scope_id,
+    actor,
+  });
+  const proposedFresh =
+    arch.started && arch.envelope_status === "succeeded" && arch.proposal_id;
+  const isStalledAtReview =
+    !arch.started && arch.reason?.startsWith("scope_not_draft:");
+  if (proposedFresh) {
+    await longRunningActivities.startDecompositionReviewRun({
+      scope_id,
+      proposal_id: arch.proposal_id,
+    });
+  } else if (isStalledAtReview) {
+    await longRunningActivities.startDecompositionReviewRun({
+      scope_id,
+    });
   }
 }
 
@@ -549,6 +734,9 @@ export async function scopeSupervisorWorkflow(
   });
   setHandler(operatorOverrideSignal, (payload) => {
     queue.push({ seq: nextSignalSeq++, name: "operator_override", payload });
+  });
+  setHandler(architectRequestedSignal, (payload) => {
+    queue.push({ seq: nextSignalSeq++, name: "architect_requested", payload });
   });
 
   await activities.readScopeState({ scope_id });
@@ -584,11 +772,31 @@ export async function scopeSupervisorWorkflow(
         return;
       }
 
+      // Self-healing: when the heartbeat detects a stalled scope,
+      // dispatch the matching long-running kickoff so the lifecycle
+      // resumes without operator intervention. The activities are
+      // idempotent (refuse if state has already advanced), so a
+      // re-fired classifier on the next tick is safe.
+      if (heartbeat.status === "stalled" && heartbeat.classifier) {
+        switch (heartbeat.classifier) {
+          case "awaiting_architect":
+            await driveArchitectThenReview(scope_id, "svc:supervisor");
+            break;
+          case "awaiting_decomposition_review_or_approval":
+            await longRunningActivities.startDecompositionReviewRun({
+              scope_id,
+            });
+            break;
+        }
+      }
+
       heartbeatTickCount += 1;
-      // Reconcile every 3rd heartbeat tick (5 min × 3 = 15 min, matching
-      // the documented RECONCILE_INTERVAL). Drift checks remain on their
-      // own cadence; the heartbeat handles liveness.
-      if (heartbeatTickCount % 3 === 0) {
+      // Reconcile every 5th heartbeat tick (1 min × 5 = 5 min,
+      // matching RECONCILE_INTERVAL). Drift checks query the provider
+      // for every mirror, so they're heavier than the per-tick stall
+      // classifier — but 5 min is fine for a homelab provider and
+      // catches divergence fast.
+      if (heartbeatTickCount % 5 === 0) {
         const health = await activities.checkProviderHealth({});
         if (!health.ok) {
           // Provider down: freeze the DAG so partially completed work
@@ -660,6 +868,9 @@ export async function scopeSupervisorWorkflow(
           status: signal.payload.status,
         });
         taskIdsToEvaluate.push(signal.payload.task_id);
+      }
+      if (signal.name === "architect_requested") {
+        await driveArchitectThenReview(scope_id, signal.payload.actor);
       }
       if (signal.name === "provider_event") {
         const attrs = signal.payload.attributes;

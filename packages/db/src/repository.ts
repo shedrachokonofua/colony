@@ -204,6 +204,19 @@ export interface TaskAgentTokenRecord {
   readonly expires_at: Iso8601;
 }
 
+export interface RecordDeveloperPlanInput {
+  readonly task_id: TaskId;
+  readonly envelope_hash: string;
+  readonly envelope: Readonly<Record<string, unknown>>;
+}
+
+export interface RecordPlanReviewInput {
+  readonly task_id: TaskId;
+  readonly envelope_hash: string;
+  readonly result: "approved" | "changes_requested" | "blocked" | "escalate";
+  readonly envelope: Readonly<Record<string, unknown>>;
+}
+
 type Executor = Pool | PoolClient;
 
 // ---------------------------------------------------------------------------
@@ -235,6 +248,11 @@ interface TaskRow {
   agent_token_id: string | null;
   agent_token_expires_at: Date | null;
   agent_token_revoked_at: Date | null;
+  developer_plan_envelope: Record<string, unknown> | null;
+  developer_plan_hash: string | null;
+  plan_review_envelope: Record<string, unknown> | null;
+  plan_review_hash: string | null;
+  plan_review_result: Task["plan_review_result"] | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -312,6 +330,11 @@ const mapTask = (r: TaskRow): Task => ({
   agent_token_revoked_at: r.agent_token_revoked_at
     ? toIso(r.agent_token_revoked_at)
     : undefined,
+  developer_plan_envelope: r.developer_plan_envelope ?? undefined,
+  developer_plan_hash: r.developer_plan_hash ?? undefined,
+  plan_review_envelope: r.plan_review_envelope ?? undefined,
+  plan_review_hash: r.plan_review_hash ?? undefined,
+  plan_review_result: r.plan_review_result ?? undefined,
   created_at: toIso(r.created_at),
   updated_at: toIso(r.updated_at),
 });
@@ -519,6 +542,20 @@ export class TaskGraphRepository {
     return this.withTransaction((tx) =>
       tx.markTaskAgentTokenRevoked(input, ctx),
     );
+  }
+
+  async recordDeveloperPlan(
+    input: RecordDeveloperPlanInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    return this.withTransaction((tx) => tx.recordDeveloperPlan(input, ctx));
+  }
+
+  async recordPlanReview(
+    input: RecordPlanReviewInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    return this.withTransaction((tx) => tx.recordPlanReview(input, ctx));
   }
 
   async listActiveTaskAgentTokens(
@@ -965,6 +1002,96 @@ export class TaskGraphTransaction {
       kind: "task_state_changed",
       actor: ctx.actor,
       payload: { from: current.state, to: next_state },
+    });
+    return task;
+  }
+
+  async recordDeveloperPlan(
+    input: RecordDeveloperPlanInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    const current = await this.lockTaskRow(input.task_id);
+    if (!current) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `task not found: ${input.task_id}`,
+        {
+          task_id: input.task_id,
+        },
+      );
+    }
+    const { rows } = await queryRows<TaskRow>(
+      this.client,
+      `UPDATE tasks
+         SET developer_plan_envelope = $2::jsonb,
+             developer_plan_hash = $3,
+             plan_review_envelope = NULL,
+             plan_review_hash = NULL,
+             plan_review_result = NULL,
+             updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [input.task_id, JSON.stringify(input.envelope), input.envelope_hash],
+    );
+    const task = mapTask(rows[0]);
+    await this.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: ctx.actor,
+      action: "task.plan.recorded",
+      capability: ctx.capability,
+      target_kind: "task",
+      target_id: task.id,
+      reason: ctx.reason,
+      evidence: { envelope_hash: input.envelope_hash },
+    });
+    return task;
+  }
+
+  async recordPlanReview(
+    input: RecordPlanReviewInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    const current = await this.lockTaskRow(input.task_id);
+    if (!current) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `task not found: ${input.task_id}`,
+        {
+          task_id: input.task_id,
+        },
+      );
+    }
+    const { rows } = await queryRows<TaskRow>(
+      this.client,
+      `UPDATE tasks
+         SET plan_review_envelope = $2::jsonb,
+             plan_review_hash = $3,
+             plan_review_result = $4,
+             updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        input.task_id,
+        JSON.stringify(input.envelope),
+        input.envelope_hash,
+        input.result,
+      ],
+    );
+    const task = mapTask(rows[0]);
+    await this.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: ctx.actor,
+      action: "task.plan_review.recorded",
+      capability: ctx.capability,
+      target_kind: "task",
+      target_id: task.id,
+      reason: ctx.reason,
+      evidence: {
+        envelope_hash: input.envelope_hash,
+        result: input.result,
+      },
     });
     return task;
   }

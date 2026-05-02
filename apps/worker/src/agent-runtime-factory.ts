@@ -29,6 +29,8 @@ const ARCHITECT_FALLBACK_CEILINGS = {
 };
 
 export interface AgentRuntimeWiring {
+  readonly developerPlanner: AgentRuntimeAdapter;
+  readonly planReviewer: AgentRuntimeAdapter;
   readonly developer: AgentRuntimeAdapter;
   readonly reviewer: AgentRuntimeAdapter;
   readonly architect: AgentRuntimeAdapter;
@@ -45,7 +47,13 @@ export async function createAgentRuntimeWiring(
 
   if (choice === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
-    return { developer: fake, reviewer: fake, architect: fake };
+    return {
+      developerPlanner: fake,
+      planReviewer: fake,
+      developer: fake,
+      reviewer: fake,
+      architect: fake,
+    };
   }
 
   if (!config) {
@@ -66,11 +74,35 @@ export async function createAgentRuntimeWiring(
   const { PiCodingAgentRunner } =
     await import("@colony/agent-runtime/pi-coding-agent-runner");
   const { PiMonoRunner } = await import("@colony/agent-runtime/pi-mono-runner");
+  const { PiDeveloperPlanRunner, PiPlanReviewRunner } =
+    await import("@colony/agent-runtime/pi-plan-runner");
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");
 
   const logger = consoleLogger();
   return {
+    developerPlanner: new PiAgentRuntimeAdapter(
+      new PiDeveloperPlanRunner({
+        broker,
+        model: modelFromConfig(developer),
+        maxTurns: developer.ceilings.maxTurns,
+        maxUsd: developer.ceilings.maxUsdPerRun,
+        runTimeoutMs: developer.ceilings.timeoutMs,
+        thinkingLevel: developer.thinkingLevel,
+        logger,
+      }),
+    ),
+    planReviewer: new PiAgentRuntimeAdapter(
+      new PiPlanReviewRunner({
+        broker,
+        model: modelFromConfig(reviewer),
+        maxTurns: reviewer.ceilings.maxTurns,
+        maxUsd: reviewer.ceilings.maxUsdPerRun,
+        runTimeoutMs: reviewer.ceilings.timeoutMs,
+        thinkingLevel: reviewer.thinkingLevel,
+        logger,
+      }),
+    ),
     developer: new PiAgentRuntimeAdapter(
       new PiCodingAgentRunner({
         broker,

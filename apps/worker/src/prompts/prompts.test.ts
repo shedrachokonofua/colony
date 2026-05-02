@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildTaskPacket, buildReviewPacket } from "@colony/agent-runtime";
-import type { DeveloperCompletionEnvelope, Freshness } from "@colony/schemas";
+import type {
+  DeveloperCompletionEnvelope,
+  DeveloperPlanEnvelope,
+  Freshness,
+} from "@colony/schemas";
 import {
   buildDeveloperPrompt,
   buildDeveloperSystemPrompt,
@@ -11,6 +15,11 @@ import {
   buildReviewerSystemPrompt,
   buildReviewerUserPrompt,
 } from "./reviewer.js";
+import {
+  buildPlanReviewerPrompt,
+  buildPlanReviewerSystemPrompt,
+  buildPlanReviewerUserPrompt,
+} from "./plan-reviewer.js";
 
 const FRESHNESS = {
   task_graph_version: "task:1",
@@ -107,6 +116,30 @@ function fixtureDeveloperEnvelope(
       self_review_notes: "Check the streaming path.",
     },
   } satisfies DeveloperCompletionEnvelope;
+}
+
+function fixtureDeveloperPlanEnvelope(
+  packet: ReturnType<typeof fixtureTaskPacket>,
+) {
+  return {
+    version: 1 as const,
+    result: "done" as const,
+    confidence: 0.78,
+    requires_human: false,
+    risk_level: "medium" as const,
+    artifacts: [],
+    policy_flags: [],
+    next_action: "request_review" as const,
+    freshness: packet.freshness,
+    rationale: "Plan before implementation.",
+    task_id: packet.task_id,
+    role_specific: {
+      approach: "Add the endpoint in the existing routing module.",
+      files_to_touch: ["src/routes/export.ts"],
+      tests_to_add: ["test/export.test.ts"],
+      risks: ["CSV escaping must match existing conventions."],
+    },
+  } satisfies DeveloperPlanEnvelope;
 }
 
 function fixtureReviewPacket() {
@@ -517,7 +550,9 @@ describe("buildReviewerPrompt", () => {
       - \`rationale\`: one or two sentences explaining the verdict.
       - \`task_id\`: ECHO from the packet.
       - \`role_specific.findings\`: array per #4.
-      - \`role_specific.summary\`: optional short prose summary of the review.",
+      - \`role_specific.summary\`: optional short prose summary of the review.
+      - \`role_specific.mr_comment_body\`: optional public MR comment body with
+        verdict, evidence, and requested next step.",
         "user": "# Review for task col-test1.1
 
       Add a CSV export endpoint
@@ -610,5 +645,62 @@ describe("buildReviewerPrompt", () => {
       Read the diff with the available read-only tools, gather evidence, then call \`submit_reviewer_review\` exactly once with the envelope arguments.",
       }
     `);
+  });
+});
+
+describe("buildPlanReviewerPrompt", () => {
+  it("is a pure function of the task and developer plan", () => {
+    const task = fixtureTaskPacket();
+    const input = {
+      task: {
+        id: task.task_id,
+        scope_id: task.scope_id,
+        title: task.goal,
+        description: "Add export support.",
+        acceptance_criteria: task.acceptance_criteria,
+        non_goals: task.non_goals,
+      },
+      developerPlan: fixtureDeveloperPlanEnvelope(task),
+      reviewCount: 0,
+      loopCap: 3,
+    };
+
+    expect(buildPlanReviewerPrompt(input)).toEqual(
+      buildPlanReviewerPrompt(input),
+    );
+  });
+
+  it("system prompt enforces the plan-only terminal tool contract", () => {
+    const sys = buildPlanReviewerSystemPrompt();
+
+    expect(sys).toContain("Plan Reviewer agent");
+    expect(sys).toContain("before any code is written");
+    expect(sys).toContain("submit_plan_review");
+    expect(sys).toContain("plan_review envelope");
+  });
+
+  it("user prompt surfaces plan fields, loop budget, and freshness", () => {
+    const task = fixtureTaskPacket();
+    const user = buildPlanReviewerUserPrompt({
+      task: {
+        id: task.task_id,
+        scope_id: task.scope_id,
+        title: task.goal,
+        description: "Add export support.",
+        acceptance_criteria: task.acceptance_criteria,
+        non_goals: task.non_goals,
+      },
+      developerPlan: fixtureDeveloperPlanEnvelope(task),
+      reviewCount: 1,
+      loopCap: 3,
+    });
+
+    expect(user).toContain("# Plan review for task col-test1.1");
+    expect(user).toContain("Add the endpoint in the existing routing module.");
+    expect(user).toContain("src/routes/export.ts");
+    expect(user).toContain("test/export.test.ts");
+    expect(user).toContain("- review_count: 1");
+    expect(user).toContain("- packet_hash: sha256:");
+    expect(user).toContain("call `submit_plan_review` exactly once");
   });
 });

@@ -10,9 +10,9 @@ import { isTaskId, type ActorId } from "@colony/domain";
  *
  * When a `/changes` command lands on a task-level MR comment, the
  * supervisor workflow needs to:
- *   1. Move the task back to `in_progress` (state machine: review_requested
- *      -> changes_requested -> in_progress is the canonical refinement
- *      loop).
+ *   1. Move the task to `changes_requested`. The Phase 3.5 planning gate
+ *      then re-drives `changes_requested -> plan_proposed -> plan_review
+ *      -> in_progress` before code changes resume.
  *   2. Invalidate every still-active approval on the task's MR — fresh
  *      review must be earned on the new head commit. This prevents a
  *      stale approval from sliding through after the developer rewrites
@@ -22,7 +22,8 @@ import { isTaskId, type ActorId } from "@colony/domain";
  *      blocked state when the cap is hit.
  *
  * Idempotent: a duplicate `/changes` arriving while the task is already
- * `in_progress` returns `applied:false reason="task_not_open_to_rework"`.
+ * `changes_requested` does not bump state again, but still reports applied
+ * so the workflow can re-drive the planning loop.
  *
  * Returns enough context for the workflow loop to decide whether to
  * rerun the developer or escalate to a human-blocked state.
@@ -61,7 +62,7 @@ export type RequestTaskReworkResult =
       readonly applied: true;
       readonly task_id: string;
       readonly previous_state: string;
-      readonly new_state: "in_progress";
+      readonly new_state: "changes_requested";
       readonly invalidated_approvals: number;
       readonly rework_count: number;
     };
@@ -94,6 +95,16 @@ export function createRequestTaskRework(deps: TaskReworkRunDependencies) {
     }
     const cap = input.review_loop_cap ?? REVIEW_LOOP_CAP_DEFAULT;
     const reworkCount = await countReworkAudits(deps.repo, task.id);
+    if (task.state === "changes_requested") {
+      return {
+        applied: true,
+        task_id: task.id,
+        previous_state: task.state,
+        new_state: "changes_requested",
+        invalidated_approvals: 0,
+        rework_count: reworkCount,
+      };
+    }
     if (reworkCount >= cap) {
       await deps.repo.writeAudit({
         scope_id: task.scope_id,
@@ -117,23 +128,16 @@ export function createRequestTaskRework(deps: TaskReworkRunDependencies) {
       };
     }
 
-    // Bridge through changes_requested if we're still at review_requested.
-    let workingState = task.state;
-    let workingVersion = task.state_version;
-    if (workingState === "review_requested") {
-      const transitioned = await deps.repo.updateTaskState(
-        task.id,
-        workingVersion,
-        "changes_requested",
-        {
-          actor: input.actor as ActorId,
-          capability: "task.assign",
-          reason: input.reason ?? "command_changes_requested",
-        },
-      );
-      workingState = transitioned.state;
-      workingVersion = transitioned.state_version;
-    }
+    await deps.repo.updateTaskState(
+      task.id,
+      task.state_version,
+      "changes_requested",
+      {
+        actor: input.actor as ActorId,
+        capability: "task.assign",
+        reason: input.reason ?? "command_changes_requested",
+      },
+    );
 
     // Invalidate every active approval on the task's MR — fresh review
     // required on whatever the developer pushes next.
@@ -153,17 +157,6 @@ export function createRequestTaskRework(deps: TaskReworkRunDependencies) {
       }
     }
 
-    const final = await deps.repo.updateTaskState(
-      task.id,
-      workingVersion,
-      "in_progress",
-      {
-        actor: SUPERVISOR_ACTOR,
-        capability: "task.assign",
-        reason: input.reason ?? "rework_kickoff",
-      },
-    );
-
     await deps.repo.writeAudit({
       scope_id: task.scope_id,
       task_id: task.id,
@@ -173,7 +166,7 @@ export function createRequestTaskRework(deps: TaskReworkRunDependencies) {
       target_kind: "task",
       target_id: task.id,
       previous_state: task.state,
-      new_state: final.state,
+      new_state: "changes_requested",
       reason: input.reason ?? "rework_kickoff",
       evidence: {
         rework_count: reworkCount + 1,
@@ -187,7 +180,7 @@ export function createRequestTaskRework(deps: TaskReworkRunDependencies) {
       applied: true,
       task_id: task.id,
       previous_state: task.state,
-      new_state: "in_progress",
+      new_state: "changes_requested",
       invalidated_approvals: invalidated,
       rework_count: reworkCount + 1,
     };

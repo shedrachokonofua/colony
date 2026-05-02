@@ -585,6 +585,15 @@ interface PostReviewCommentArgs {
 }
 
 async function postReviewComment(args: PostReviewCommentArgs) {
+  const authored = args.envelope.role_specific.mr_comment_body?.trim();
+  if (authored) {
+    return args.adapter.mergeRequests.comment(
+      args.project,
+      args.mrId,
+      authored.slice(0, 6000),
+    );
+  }
+
   const result = mapEnvelopeResult(args.envelope.result);
   const lines: string[] = [];
   if (result === "approved") {
