@@ -4,10 +4,13 @@ import {
   type ArchitectPacket,
   type ArchitectTargetProject,
   type DeveloperCompletionEnvelope,
+  type DeveloperPlanEnvelope,
   type Freshness,
+  type PlanReviewPacket,
   type ReviewPacket,
   type TaskPacket,
   architectPacketSchema,
+  planReviewPacketSchema,
   reviewPacketSchema,
   taskPacketSchema,
 } from "@colony/schemas";
@@ -57,6 +60,12 @@ export interface ReviewPacketBuilderInput extends TaskPacketBuilderInput {
   readonly diff_summary: string;
   readonly developer_envelope: DeveloperCompletionEnvelope;
   readonly pipeline_artifacts: ReviewPacket["pipeline_artifacts"];
+}
+
+export interface PlanReviewPacketBuilderInput extends TaskPacketBuilderInput {
+  readonly developer_plan: DeveloperPlanEnvelope;
+  readonly review_count: number;
+  readonly loop_cap: number;
 }
 
 export interface ArchitectPacketBuilderInput {
@@ -148,6 +157,27 @@ export function buildReviewPacket(
   });
 }
 
+export function buildPlanReviewPacket(
+  input: PlanReviewPacketBuilderInput,
+): PlanReviewPacket {
+  const taskPacket = buildTaskPacket(input);
+  const packet: PlanReviewPacket = {
+    ...taskPacket,
+    developer_plan: input.developer_plan,
+    review_count: input.review_count,
+    loop_cap: input.loop_cap,
+    freshness: {
+      ...taskPacket.freshness,
+      packet_hash: UNCOMPUTED_PACKET_HASH,
+    },
+  };
+  const packet_hash = hashPacket(packet);
+  return planReviewPacketSchema.parse({
+    ...packet,
+    freshness: { ...packet.freshness, packet_hash },
+  });
+}
+
 export function buildArchitectPacket(
   input: ArchitectPacketBuilderInput,
 ): ArchitectPacket {
@@ -188,7 +218,7 @@ export function buildArchitectPacket(
 }
 
 export function hashPacket(
-  packet: TaskPacket | ReviewPacket | ArchitectPacket,
+  packet: TaskPacket | PlanReviewPacket | ReviewPacket | ArchitectPacket,
 ): string {
   return sha256Json({
     ...packet,

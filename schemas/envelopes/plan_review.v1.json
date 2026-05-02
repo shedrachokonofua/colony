@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "reviewer.review.v1",
+  "$id": "plan_review.v1",
   "version": 1,
   "type": "object",
   "properties": {
@@ -188,15 +188,11 @@
         },
         "summary": {
           "type": "string"
-        },
-        "mr_comment_body": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 6000
         }
       },
       "required": [
-        "findings"
+        "findings",
+        "summary"
       ],
       "additionalProperties": false
     }
@@ -216,6 +212,6 @@
     "role_specific"
   ],
   "additionalProperties": false,
-  "title": "ReviewerReviewEnvelope",
-  "description": "Reviewer output for an MR/PR review. Findings carry severity, evidence, the acceptance criterion they reference, and per-finding confidence."
+  "title": "PlanReviewEnvelope",
+  "description": "Specialized reviewer output for the pre-implementation developer plan gate."
 }

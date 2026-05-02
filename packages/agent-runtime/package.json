@@ -5,8 +5,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./pi-base-agent-runner": "./src/pi-base-agent-runner.ts",
     "./pi-coding-agent-runner": "./src/pi-coding-agent-runner.ts",
     "./pi-mono-runner": "./src/pi-mono-runner.ts",
+    "./pi-plan-runner": "./src/pi-plan-runner.ts",
     "./pi-architect-runner": "./src/pi-architect-runner.ts"
   },
   "scripts": {

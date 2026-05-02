@@ -611,8 +611,8 @@ describe("packets", () => {
 });
 
 describe("manifest", () => {
-  it("registers all 11 schemas covered by COL-0.5 and COL-3.0a", () => {
-    expect(SCHEMAS).toHaveLength(11);
+  it("registers all 14 schemas covered by COL-0.5, COL-3.0a, COL-3.5.6, and ADR-008 plan review", () => {
+    expect(SCHEMAS).toHaveLength(14);
   });
 
   it("uses unique <kind>/<name>/<version> tuples", () => {

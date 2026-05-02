@@ -16,6 +16,7 @@ export const reviewerRoleSpecificSchema = z
   .object({
     findings: z.array(reviewFindingSchema),
     summary: z.string().optional(),
+    mr_comment_body: z.string().min(1).max(6000).optional(),
   })
   .strict();
 

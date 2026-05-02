@@ -20,7 +20,12 @@ export interface PiRunResult {
 }
 
 export interface PiRunner {
-  readonly kind: "pi-coding-agent" | "pi-mono" | "pi-architect";
+  readonly kind:
+    | "pi-coding-agent"
+    | "pi-mono"
+    | "pi-architect"
+    | "pi-developer-plan"
+    | "pi-plan-review";
   run(request: PiRunRequest): Promise<PiRunResult>;
   cancel?(runId: string): Promise<void>;
 }

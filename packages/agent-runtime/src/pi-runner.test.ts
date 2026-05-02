@@ -8,6 +8,7 @@ import {
 } from "@mariozechner/pi-ai";
 import {
   PiAgentRuntimeAdapter,
+  buildPlanReviewPacket,
   buildReviewPacket,
   buildTaskPacket,
   prepareSandboxToolEnvironment,
@@ -16,17 +17,21 @@ import {
   type DeployerRuntimeBinding,
 } from "./index.js";
 import { PiCodingAgentRunner } from "./pi-coding-agent-runner.js";
-import { PiMonoRunner } from "./pi-mono-runner.js";
+import { DEFAULT_REVIEWER_TOOLS, PiMonoRunner } from "./pi-mono-runner.js";
 import {
   developerCompletionEnvelopeSchema,
+  developerPlanEnvelopeSchema,
+  planReviewEnvelopeSchema,
   reviewerReviewEnvelopeSchema,
   type DeveloperCompletionEnvelope,
+  type DeveloperPlanEnvelope,
 } from "@colony/schemas";
 import {
   buildDeveloperCompletionEnvelopeTemplate,
   buildDeveloperFinalizerPrompt,
   createPostProgressNoteTool,
 } from "./pi-runner-common.js";
+import { PiDeveloperPlanRunner, PiPlanReviewRunner } from "./pi-plan-runner.js";
 
 const SCOPE_ID = "col-pirun" as ScopeId;
 const TASK_ID = "col-pirun.15" as TaskId;
@@ -140,7 +145,7 @@ describe("pi runners", () => {
     }
   });
 
-  it("imports pi-agent-core in-process and captures a reviewer envelope", async () => {
+  it("runs the reviewer through a workspace-enabled coding-agent session", async () => {
     const registration = registerFauxProvider({
       provider: "colony-faux-review",
       models: [{ id: "colony-faux-review-model" }],
@@ -168,6 +173,13 @@ describe("pi runners", () => {
     registration.setResponses([
       fauxAssistantMessage(
         [
+          fauxText("Reading the review packet from the workspace first."),
+          fauxToolCall("read", { path: "PACKET.json" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        [
           fauxText("Submitting the review envelope."),
           fauxToolCall("submit_reviewer_review", envelope),
         ],
@@ -176,8 +188,16 @@ describe("pi runners", () => {
     ]);
 
     try {
+      const toolCalls: string[] = [];
       const adapter = new PiAgentRuntimeAdapter(
         new PiMonoRunner({
+          broker: {
+            resolve: () => "test-api-key",
+            authorizeTool: (request) => {
+              toolCalls.push(request.toolName);
+              return { allow: true };
+            },
+          },
           model: registration.getModel(),
           runTimeoutMs: 2_000,
         }),
@@ -189,8 +209,113 @@ describe("pi runners", () => {
       const output = await adapter.getRunOutput(metadata.runId);
 
       expect(metadata.status).toBe("succeeded");
+      expect(DEFAULT_REVIEWER_TOOLS).toEqual([
+        "read",
+        "bash",
+        "grep",
+        "find",
+        "ls",
+      ]);
+      expect(toolCalls).toContain("read");
+      expect(toolCalls).toContain("submit_reviewer_review");
       expect(output?.envelope).toEqual(
         reviewerReviewEnvelopeSchema.parse(envelope),
+      );
+    } finally {
+      registration.unregister();
+    }
+  });
+
+  it("captures developer planning through submit_developer_plan", async () => {
+    const registration = registerFauxProvider({
+      provider: "colony-faux-plan",
+      models: [{ id: "colony-faux-plan-model" }],
+    });
+    const packet = taskPacket();
+    const envelope = developerPlanEnvelope(packet);
+    registration.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText("Submitting the developer plan."),
+          fauxToolCall("submit_developer_plan", envelope),
+        ],
+        { stopReason: "toolUse" },
+      ),
+    ]);
+
+    try {
+      const adapter = new PiAgentRuntimeAdapter(
+        new PiDeveloperPlanRunner({
+          broker: { resolve: () => "test-api-key" },
+          model: registration.getModel(),
+          runTimeoutMs: 2_000,
+        }),
+      );
+      const metadata = await adapter.startRun(
+        packet,
+        await runEnvironment("developer_planner"),
+      );
+      const output = await adapter.getRunOutput(metadata.runId);
+
+      expect(metadata.status).toBe("succeeded");
+      expect(output?.envelope).toEqual(
+        developerPlanEnvelopeSchema.parse(envelope),
+      );
+    } finally {
+      registration.unregister();
+    }
+  });
+
+  it("captures plan review through submit_plan_review", async () => {
+    const registration = registerFauxProvider({
+      provider: "colony-faux-plan-review",
+      models: [{ id: "colony-faux-plan-review-model" }],
+    });
+    const packet = planReviewPacket();
+    const envelope = {
+      version: 1,
+      result: "approved",
+      confidence: 0.9,
+      requires_human: false,
+      risk_level: "low",
+      artifacts: [],
+      policy_flags: [],
+      next_action: "open_gate",
+      freshness: packet.freshness,
+      rationale: "The plan is specific, bounded, and testable.",
+      task_id: packet.task_id,
+      role_specific: {
+        findings: [],
+        summary: "Plan approved.",
+      },
+    };
+    registration.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText("Submitting the plan review."),
+          fauxToolCall("submit_plan_review", envelope),
+        ],
+        { stopReason: "toolUse" },
+      ),
+    ]);
+
+    try {
+      const adapter = new PiAgentRuntimeAdapter(
+        new PiPlanReviewRunner({
+          broker: { resolve: () => "test-api-key" },
+          model: registration.getModel(),
+          runTimeoutMs: 2_000,
+        }),
+      );
+      const metadata = await adapter.startRun(
+        packet,
+        await runEnvironment("plan_reviewer"),
+      );
+      const output = await adapter.getRunOutput(metadata.runId);
+
+      expect(metadata.status).toBe("succeeded");
+      expect(output?.envelope).toEqual(
+        planReviewEnvelopeSchema.parse(envelope),
       );
     } finally {
       registration.unregister();
@@ -210,6 +335,7 @@ describe("pi runners", () => {
     try {
       const adapter = new PiAgentRuntimeAdapter(
         new PiMonoRunner({
+          broker: { resolve: () => "test-api-key" },
           model: registration.getModel(),
           runTimeoutMs: 10_000,
         }),
@@ -380,6 +506,30 @@ function developerEnvelope(
   });
 }
 
+function developerPlanEnvelope(
+  packet: ReturnType<typeof taskPacket>,
+): DeveloperPlanEnvelope {
+  return developerPlanEnvelopeSchema.parse({
+    version: 1,
+    result: "done",
+    confidence: 0.82,
+    requires_human: false,
+    risk_level: "medium",
+    artifacts: [],
+    policy_flags: [],
+    next_action: "request_review",
+    freshness: packet.freshness,
+    rationale: "Synthetic Pi planner produced a scoped plan.",
+    task_id: packet.task_id,
+    role_specific: {
+      approach: "Inspect the runner and add focused coverage.",
+      files_to_touch: ["packages/agent-runtime/src/pi-runner-common.ts"],
+      tests_to_add: ["packages/agent-runtime/src/pi-runner.test.ts"],
+      risks: [],
+    },
+  });
+}
+
 function reviewPacket() {
   const task = taskPacket();
   return buildReviewPacket({
@@ -394,6 +544,17 @@ function reviewPacket() {
     diff_summary: "+10 -1",
     developer_envelope: developerEnvelope(task),
     pipeline_artifacts: [],
+  });
+}
+
+function planReviewPacket() {
+  const task = taskPacket();
+  return buildPlanReviewPacket({
+    ...task,
+    freshness: freshnessBase,
+    developer_plan: developerPlanEnvelope(task),
+    review_count: 0,
+    loop_cap: 3,
   });
 }
 

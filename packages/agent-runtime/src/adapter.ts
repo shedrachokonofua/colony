@@ -3,11 +3,16 @@ import {
   type ArchitectDecompositionEnvelope,
   type ArchitectPacket,
   type DeveloperCompletionEnvelope,
+  type DeveloperPlanEnvelope,
+  type PlanReviewEnvelope,
+  type PlanReviewPacket,
   type ReviewPacket,
   type ReviewerReviewEnvelope,
   type TaskPacket,
   architectDecompositionEnvelopeSchema,
   developerCompletionEnvelopeSchema,
+  developerPlanEnvelopeSchema,
+  planReviewEnvelopeSchema,
   reviewerReviewEnvelopeSchema,
 } from "@colony/schemas";
 import type { SandboxRunExtensions } from "./run-extensions.js";
@@ -15,11 +20,22 @@ import type { RuntimeBindingSelection } from "./runtime-bindings.js";
 import type { PreparedSandboxToolEnvironment } from "./tool-materialization.js";
 import { hashEnvelope, hashPacket } from "./packet-builders.js";
 
-export type AgentRuntimePacket = TaskPacket | ReviewPacket | ArchitectPacket;
+export type AgentRuntimePacket =
+  | TaskPacket
+  | PlanReviewPacket
+  | ReviewPacket
+  | ArchitectPacket;
 export type AgentRuntimeEnvelope =
+  | DeveloperPlanEnvelope
+  | PlanReviewEnvelope
   | DeveloperCompletionEnvelope
   | ReviewerReviewEnvelope
   | ArchitectDecompositionEnvelope;
+
+export type AgentRuntimeRole =
+  | Extract<Role, "developer" | "reviewer" | "architect">
+  | "developer_planner"
+  | "plan_reviewer";
 
 export type AgentRunRuntimeStatus =
   | "queued"
@@ -30,7 +46,7 @@ export type AgentRunRuntimeStatus =
   | "envelope_rejected";
 
 export interface AgentRunEnvironment {
-  readonly role: Extract<Role, "developer" | "reviewer" | "architect">;
+  readonly role: AgentRuntimeRole;
   readonly sandboxProfile: string;
   readonly runtimeBinding: RuntimeBindingSelection;
   readonly runExtensions: SandboxRunExtensions;
@@ -177,15 +193,19 @@ export type EnvelopeParseResult =
   | { readonly ok: false; readonly reason: string };
 
 export function parseEnvelope(
-  role: AgentRunEnvironment["role"],
+  role: AgentRuntimeRole,
   value: unknown,
 ): EnvelopeParseResult {
   const schema =
-    role === "developer"
-      ? developerCompletionEnvelopeSchema
-      : role === "reviewer"
-        ? reviewerReviewEnvelopeSchema
-        : architectDecompositionEnvelopeSchema;
+    role === "developer_planner"
+      ? developerPlanEnvelopeSchema
+      : role === "plan_reviewer"
+        ? planReviewEnvelopeSchema
+        : role === "developer"
+          ? developerCompletionEnvelopeSchema
+          : role === "reviewer"
+            ? reviewerReviewEnvelopeSchema
+            : architectDecompositionEnvelopeSchema;
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     return { ok: false, reason: parsed.error.message };
@@ -195,7 +215,7 @@ export function parseEnvelope(
 
 function defaultEnvelope(
   packet: AgentRuntimePacket,
-  role: AgentRunEnvironment["role"],
+  role: AgentRuntimeRole,
 ): AgentRuntimeEnvelope {
   if (role === "architect") {
     const scopeId = packet.scope_id;
@@ -233,6 +253,49 @@ function defaultEnvelope(
   // Both developer and reviewer envelopes carry task_id; only task/review
   // packets reach this branch, and both expose `task_id`.
   const taskId = (packet as TaskPacket).task_id;
+
+  if (role === "developer_planner") {
+    return developerPlanEnvelopeSchema.parse({
+      version: 1,
+      result: "done",
+      confidence: 0.75,
+      requires_human: false,
+      risk_level: "medium",
+      artifacts: [],
+      policy_flags: [],
+      next_action: "request_review",
+      freshness: packet.freshness,
+      rationale: "Fake developer planner prepared an implementation plan.",
+      task_id: taskId,
+      role_specific: {
+        approach:
+          "Inspect the existing implementation, make the smallest scoped change, and run the relevant verification.",
+        files_to_touch: [],
+        tests_to_add: ["Run the narrowest relevant test or check."],
+        risks: [],
+      },
+    });
+  }
+
+  if (role === "plan_reviewer") {
+    return planReviewEnvelopeSchema.parse({
+      version: 1,
+      result: "approved",
+      confidence: 0.8,
+      requires_human: false,
+      risk_level: "medium",
+      artifacts: [],
+      policy_flags: [],
+      next_action: "open_gate",
+      freshness: packet.freshness,
+      rationale: "Fake plan reviewer approved the implementation plan.",
+      task_id: taskId,
+      role_specific: {
+        findings: [],
+        summary: "Plan approved.",
+      },
+    });
+  }
 
   if (role === "developer") {
     return developerCompletionEnvelopeSchema.parse({
@@ -277,6 +340,8 @@ function defaultEnvelope(
     role_specific: {
       findings: [],
       summary: "No findings.",
+      mr_comment_body:
+        "Reviewer agent approved the change. No findings were reported.",
     },
   });
 }

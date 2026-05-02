@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "reviewer.review.v1",
+  "$id": "developer_plan.v1",
   "version": 1,
   "type": "object",
   "properties": {
@@ -149,54 +149,36 @@
     "role_specific": {
       "type": "object",
       "properties": {
-        "findings": {
+        "approach": {
+          "type": "string",
+          "minLength": 1
+        },
+        "files_to_touch": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "severity": {
-                "type": "string",
-                "enum": [
-                  "minor",
-                  "major",
-                  "critical"
-                ]
-              },
-              "evidence": {
-                "type": "string",
-                "minLength": 1
-              },
-              "acceptance_criterion_ref": {
-                "type": "string"
-              },
-              "suggested_fix": {
-                "type": "string"
-              },
-              "confidence": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1
-              }
-            },
-            "required": [
-              "severity",
-              "evidence",
-              "confidence"
-            ],
-            "additionalProperties": false
+            "type": "string",
+            "minLength": 1
           }
         },
-        "summary": {
-          "type": "string"
+        "tests_to_add": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "mr_comment_body": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 6000
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
-        "findings"
+        "approach",
+        "files_to_touch",
+        "tests_to_add",
+        "risks"
       ],
       "additionalProperties": false
     }
@@ -216,6 +198,6 @@
     "role_specific"
   ],
   "additionalProperties": false,
-  "title": "ReviewerReviewEnvelope",
-  "description": "Reviewer output for an MR/PR review. Findings carry severity, evidence, the acceptance criterion they reference, and per-finding confidence."
+  "title": "DeveloperPlanEnvelope",
+  "description": "Developer planning output emitted before code changes. Captures approach, intended files, tests, and risks for reviewer approval."
 }

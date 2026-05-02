@@ -7,11 +7,19 @@ import type { Agent, AgentTool, StreamFn } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { convertToLlm } from "@mariozechner/pi-coding-agent";
+import type {
+  ResourceLoader,
+  ToolDefinition,
+} from "@mariozechner/pi-coding-agent";
+import {
+  convertToLlm,
+  createExtensionRuntime,
+} from "@mariozechner/pi-coding-agent";
 import {
   architectDecompositionEnvelopeSchema,
   developerCompletionEnvelopeSchema,
+  developerPlanEnvelopeSchema,
+  planReviewEnvelopeSchema,
   reviewerReviewEnvelopeSchema,
 } from "@colony/schemas";
 import type { z } from "zod";
@@ -258,6 +266,24 @@ export function sanitizeSecret(
   return value
     .replaceAll(secret, "[redacted]")
     .replaceAll(encodeURIComponent(secret), "[redacted]");
+}
+
+export function noOpResourceLoader(systemPrompt: string): ResourceLoader {
+  return {
+    getExtensions: () => ({
+      extensions: [],
+      errors: [],
+      runtime: createExtensionRuntime(),
+    }),
+    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getSystemPrompt: () => systemPrompt,
+    getAppendSystemPrompt: () => [],
+    extendResources: () => {},
+    reload: async () => {},
+  };
 }
 
 export function createSandboxId(prefix: string): string {
@@ -697,11 +723,36 @@ export function buildDeveloperSystemPrompt(): string {
   ].join("\n");
 }
 
+export function buildDeveloperPlannerSystemPrompt(): string {
+  return [
+    "You are the Colony Developer Planner runner.",
+    "Create a pre-implementation plan and submit exactly one developer_plan envelope with submit_developer_plan.",
+    "Do not write code. Judge the task packet, acceptance criteria, non-goals, policy constraints, and known risks.",
+    "Name only files you have evidence are likely relevant. If you cannot inspect the repo, keep files_to_touch narrow or empty and say what must be inspected first.",
+    "Include a concrete verification path in tests_to_add whenever behavior changes.",
+    "Your run is not complete until you call submit_developer_plan. Do not finish with plain text.",
+  ].join("\n");
+}
+
+export function buildPlanReviewerSystemPrompt(): string {
+  return [
+    "You are the Colony Plan Reviewer runner.",
+    "Review the supplied developer_plan and submit exactly one plan_review envelope with submit_plan_review.",
+    "Do not write code. Judge whether the plan is specific, scoped, safe, and testable before implementation starts.",
+    "Approve only when the plan satisfies every acceptance criterion, respects non-goals, names a credible verification path, and is narrow enough for later code review.",
+    "Request changes for vague approaches, broad refactors, missing verification, unexplained risky files, or policy concerns.",
+    'Use result="approved" with next_action="open_gate" when the plan can proceed; use result="changes_requested" with next_action="return_to_author" when it needs revision.',
+    "Your run is not complete until you call submit_plan_review. Do not finish with plain text.",
+  ].join("\n");
+}
+
 export function buildReviewerSystemPrompt(): string {
   return [
     "You are the Colony Reviewer runner.",
     "Review the supplied packet and submit exactly one reviewer review envelope with submit_reviewer_review.",
-    "Reason from the diff_summary, developer_envelope, and acceptance criteria included in the packet. Do not pretend to have inspected sources you cannot see.",
+    "Your current working directory is a clone of the merge request head when repo credentials are available; otherwise it contains PACKET.json only. Inspect the working tree before judging code whenever source files are present.",
+    "Use diff_summary, developer_envelope, acceptance criteria, and direct workspace inspection together. If the workspace is unavailable, say so in the review rationale instead of pretending to have inspected sources.",
+    "Your sandbox is the current working directory only. Do NOT read, grep, find, list, or execute paths outside this directory; do not pass absolute paths like /Users, /home, /etc, /, or shell glob patterns that escape it. Stay inside `.`.",
     "Map the diff to every acceptance criterion, non-goal, protected path, and policy constraint. Request changes for material functional, regression, security, or policy issues; do not block on style nits alone.",
     "Flag surprise dependencies, generated files, public contract/schema changes, unrelated churn, duplicated helpers/schemas, type suppressions, or test rewrites that hide failures.",
     "When available, use post_progress_note(body) for terse review progress: what criterion you are checking, what evidence you found, or why you are blocked. The note is public; never include secrets, env values, or tokens. Final verdicts still go in the review envelope.",
@@ -803,6 +854,30 @@ export function buildDeveloperFinalizerPrompt(
     .join("\n");
 }
 
+export function buildDeveloperPlanFinalizerPrompt(
+  packet: AgentRuntimePacket,
+): string {
+  const taskId = (packet as { task_id?: string }).task_id ?? "<task_id>";
+  const freshness = JSON.stringify(packet.freshness, null, 2);
+  return [
+    "Submit exactly one schema-conforming developer_plan envelope by calling submit_developer_plan.",
+    "",
+    "REQUIRED plumbing fields — copy verbatim:",
+    `task_id: "${taskId}"`,
+    `freshness:\n${freshness}`,
+    "version: 1",
+    'result: "done"',
+    'next_action: "request_review"',
+    "",
+    "JUDGMENT FIELDS:",
+    "- confidence, requires_human, risk_level, artifacts, policy_flags, rationale",
+    "- role_specific.approach: concrete implementation approach",
+    "- role_specific.files_to_touch: likely files/modules, empty if unknown",
+    "- role_specific.tests_to_add: concrete tests/checks/commands to add or run",
+    "- role_specific.risks: material risks or missing context",
+  ].join("\n");
+}
+
 /**
  * Reviewer-side analogue. The reviewer DOES run the agent loop, so the
  * agent has prior context, but Ollama-cloud models still benefit from
@@ -828,6 +903,29 @@ export function buildReviewerFinalizerPrompt(
     "- confidence, requires_human, risk_level, artifacts, policy_flags, rationale",
     "- role_specific.findings: [] when approved with no concerns; otherwise an array of {severity,evidence,acceptance_criterion_ref?,suggested_fix?,confidence}",
     "- role_specific.summary: optional 1-2 sentence summary",
+    "- role_specific.mr_comment_body: optional human-readable MR comment body with verdict, evidence, and requested next step",
+  ].join("\n");
+}
+
+export function buildPlanReviewFinalizerPrompt(
+  packet: AgentRuntimePacket,
+): string {
+  const taskId = (packet as { task_id?: string }).task_id ?? "<task_id>";
+  const freshness = JSON.stringify(packet.freshness, null, 2);
+  return [
+    "Submit exactly one schema-conforming plan_review envelope by calling submit_plan_review.",
+    "",
+    "REQUIRED plumbing fields — copy verbatim:",
+    `task_id: "${taskId}"`,
+    `freshness:\n${freshness}`,
+    "version: 1",
+    'result: "approved" or "changes_requested" (or "blocked"/"escalate")',
+    'next_action: "open_gate" when approved, "return_to_author" when changes_requested, "report_blocked", "request_human_review", or "escalate"',
+    "",
+    "JUDGMENT FIELDS:",
+    "- confidence, requires_human, risk_level, artifacts, policy_flags, rationale",
+    "- role_specific.findings: [] when approved with no concerns; otherwise material plan issues",
+    "- role_specific.summary: short verdict summary",
   ].join("\n");
 }
 
@@ -930,6 +1028,51 @@ const envelopeBaseSchema = {
   task_id: Type.String({ pattern: "^col-[a-z0-9]{4,}\\.\\d+$" }),
 };
 
+export const developerPlanEnvelopeTypeBox = Type.Object(
+  {
+    ...envelopeBaseSchema,
+    role_specific: Type.Object(
+      {
+        approach: Type.String({ minLength: 1 }),
+        files_to_touch: Type.Array(Type.String({ minLength: 1 })),
+        tests_to_add: Type.Array(Type.String({ minLength: 1 })),
+        risks: Type.Array(Type.String()),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const planReviewEnvelopeTypeBox = Type.Object(
+  {
+    ...envelopeBaseSchema,
+    role_specific: Type.Object(
+      {
+        findings: Type.Array(
+          Type.Object(
+            {
+              severity: Type.Union([
+                Type.Literal("minor"),
+                Type.Literal("major"),
+                Type.Literal("critical"),
+              ]),
+              evidence: Type.String({ minLength: 1 }),
+              acceptance_criterion_ref: Type.Optional(Type.String()),
+              suggested_fix: Type.Optional(Type.String()),
+              confidence: Type.Number({ minimum: 0, maximum: 1 }),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+        summary: Type.String(),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const developerCompletionEnvelopeTypeBox = Type.Object(
   {
     ...envelopeBaseSchema,
@@ -968,6 +1111,9 @@ export const reviewerReviewEnvelopeTypeBox = Type.Object(
           ),
         ),
         summary: Type.Optional(Type.String()),
+        mr_comment_body: Type.Optional(
+          Type.String({ minLength: 1, maxLength: 6000 }),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -1062,6 +1208,54 @@ export function createDeveloperSubmitTool(
       capture(params);
       return Promise.resolve({
         content: [{ type: "text", text: "developer envelope captured" }],
+        details: {},
+        terminate: true,
+      });
+    },
+  };
+}
+
+export function createDeveloperPlanSubmitTool(
+  capture: (value: unknown) => void,
+): ToolDefinition<typeof developerPlanEnvelopeTypeBox> {
+  return {
+    name: "submit_developer_plan",
+    label: "Submit developer plan",
+    description:
+      "Final action. Submit exactly one schema-valid developer_plan envelope.",
+    parameters: developerPlanEnvelopeTypeBox,
+    executionMode: "sequential",
+    prepareArguments: makeZodPrepare(developerPlanEnvelopeSchema) as (
+      args: unknown,
+    ) => Static<typeof developerPlanEnvelopeTypeBox>,
+    execute: (_toolCallId, params) => {
+      capture(params);
+      return Promise.resolve({
+        content: [{ type: "text", text: "developer plan envelope captured" }],
+        details: {},
+        terminate: true,
+      });
+    },
+  };
+}
+
+export function createPlanReviewSubmitTool(
+  capture: (value: unknown) => void,
+): AgentTool<typeof planReviewEnvelopeTypeBox> {
+  return {
+    name: "submit_plan_review",
+    label: "Submit plan review",
+    description:
+      "Final action. Submit exactly one schema-valid plan_review envelope.",
+    parameters: planReviewEnvelopeTypeBox,
+    executionMode: "sequential",
+    prepareArguments: makeZodPrepare(planReviewEnvelopeSchema) as (
+      args: unknown,
+    ) => Static<typeof planReviewEnvelopeTypeBox>,
+    execute: (_toolCallId, params) => {
+      capture(params);
+      return Promise.resolve({
+        content: [{ type: "text", text: "plan review envelope captured" }],
         details: {},
         terminate: true,
       });

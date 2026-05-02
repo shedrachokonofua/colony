@@ -125,6 +125,8 @@
               "created",
               "ready",
               "claimed",
+              "plan_proposed",
+              "plan_review",
               "in_progress",
               "review_requested",
               "changes_requested",
