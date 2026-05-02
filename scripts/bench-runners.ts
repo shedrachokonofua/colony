@@ -107,10 +107,20 @@ const MODEL_ALIASES: Record<
     modelId: "ollama-cloud/kimi-k2.6",
     name: "kimi-k2.6",
   },
+  "deepseek-v4": {
+    providerKey: "openai_compatible",
+    modelId: "deepseek/deepseek-v4",
+    name: "deepseek-v4",
+  },
   "glm-5.1": {
     providerKey: "openai_compatible",
     modelId: "ollama-cloud/glm-5.1",
     name: "glm-5.1",
+  },
+  "qwen-coder": {
+    providerKey: "openai_compatible",
+    modelId: "qwen/qwen3-coder",
+    name: "qwen-coder",
   },
   "gemini-3-flash-preview": {
     providerKey: "openai_compatible",
@@ -936,6 +946,10 @@ function renderMarkdown(report: {
   lines.push(`Task: \`${report.task}\``);
   lines.push(`Repeats: \`${report.repeats}\``);
   lines.push(`Models: \`${report.models.join(", ")}\``);
+  lines.push("");
+  lines.push(
+    "Phase 3.5.1 note: this benchmark targets the configured Developer role or explicit non-Codex model aliases. Architect and Reviewer model wiring stays in `config/colony.yaml` and is validated by Phase 3 acceptance.",
+  );
   lines.push("");
   lines.push("## Summary");
   lines.push("");

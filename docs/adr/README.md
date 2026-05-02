@@ -17,3 +17,4 @@ See [`TEMPLATE.md`](./TEMPLATE.md).
 | [ADR-005](./005-typescript-monorepo-conventions.md) | TypeScript monorepo conventions                  | Accepted |
 | [ADR-006](./006-gitlab-ci-structure.md)             | GitLab CI job structure and image build strategy | Accepted |
 | [ADR-007](./007-aether-deployment-boundaries.md)    | Aether deployment ownership boundaries           | Accepted |
+| [ADR-008](./008-agent-autonomy-vs-orchestration.md) | Agent autonomy vs orchestration code             | Proposed |

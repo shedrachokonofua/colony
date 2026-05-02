@@ -18,3 +18,4 @@ coverage/
 plan.cache
 .claude/
 logs/
+.dev-logs/

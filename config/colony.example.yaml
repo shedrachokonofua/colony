@@ -71,14 +71,19 @@ agents:
     max_turns: 60
     max_usd_per_run: 10
   reviewer:
-    provider: openai_compatible
-    model: kimi-k2.6
+    provider: openai_codex
+    model: gpt-5.5
+    thinking_level: high
     timeout_ms: 600000
-    max_turns: 20
-    max_usd_per_run: 3
+    max_turns: 30
+    max_usd_per_run: 5
   architect:
-    provider: openai_compatible
-    model: kimi-k2.6
+    provider: openai_codex
+    model: gpt-5.5
+    thinking_level: high
+    timeout_ms: 1800000
+    max_turns: 80
+    max_usd_per_run: 25
   memory_consolidator:
     provider: openai_compatible
     model: kimi-k2.6

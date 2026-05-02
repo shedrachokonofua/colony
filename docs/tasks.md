@@ -1268,6 +1268,8 @@ Goal: between the working scope-to-closed-scope flow (Phase 3) and the operation
 
 - [ ]
 
+**Status:** implemented, acceptance pending. `config/colony.example.yaml` now wires Developer to `openai_compatible/kimi-k2.6` and keeps Architect/Reviewer on `openai_codex/gpt-5.5`; the local ignored `config/colony.yaml` was updated the same way for this workspace. `scripts/bench-runners.ts` now includes non-Codex developer aliases for Kimi, GLM, DeepSeek, Qwen, and Gemini and documents the Phase 3.5.1 model-split assumption in generated reports. Verified with typecheck, lint, format check, config/runtime factory tests, and the full unit suite. Still needed before marking complete: live Phase 3 acceptance with the non-Codex developer, EchoPress cost comparison, and recorded bench numbers in `docs/research/`.
+
 **Depends on:** COL-3.7
 
 **Deliverables**
@@ -1308,6 +1310,8 @@ Goal: between the working scope-to-closed-scope flow (Phase 3) and the operation
 ### COL-3.5.3 — Reviewer With Workspace And Diff Inspection
 
 - [ ]
+
+**Status:** implemented, acceptance pending. Added `GET/POST /admin/provider/projects` for registering existing GitLab projects into `provider_projects`, plus the admin UI form/list on `/admin/providers`. Added `/scopes` new-scope form with title, description, project picker, and provider mirroring, and a draft-scope "Run architect" action that calls `POST /scopes/:id/decomposition-request`. Documented the operator path in `docs/dev-loop.md`. Verified with typecheck, lint, format check, and the full unit suite. Still needed before marking complete: run the full operator path against a real project through scope closure and re-run `acceptance:phase3`.
 
 **Depends on:** COL-3.5.2
 
@@ -1363,6 +1367,8 @@ Goal: between the working scope-to-closed-scope flow (Phase 3) and the operation
 ### COL-3.5.6 — Per-Task Planning Gate
 
 - [ ]
+
+**Status:** implemented, acceptance pending. Added `developer_plan` and `plan_review` envelope schemas, generated JSON schemas, new task states (`claimed -> plan_proposed -> plan_review -> in_progress` with `changes_requested -> plan_proposed`), DB migration columns/indexes, repository helpers, workflow gate activities, a plan-review prompt builder, and worker planning activities with loop-cap handling. `startDeveloperRun` now requires `in_progress`, so code execution is gated behind approved plan review; failing deterministic plan review routes back to `plan_proposed`. Verified with typecheck, lint, format check, schema/domain/workflow/prompt tests, and the full unit suite. Still needed before marking complete: run Phase 3 acceptance with the inserted gate against the live provider path.
 
 **Depends on:** COL-3.5.3
 
