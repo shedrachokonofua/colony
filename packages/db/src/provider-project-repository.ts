@@ -219,6 +219,13 @@ export class ProviderProjectRepository {
     return rows[0] ? mapProject(rows[0]) : null;
   }
 
+  async listProjects(): Promise<ProviderProject[]> {
+    const { rows } = await this.pool.query<ProviderProjectRow>(
+      `SELECT * FROM provider_projects ORDER BY provider, path`,
+    );
+    return rows.map(mapProject);
+  }
+
   async linkScopeTarget(input: LinkScopeTargetInput): Promise<ScopeTarget> {
     const id = randomUUID();
     try {

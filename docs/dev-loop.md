@@ -79,6 +79,18 @@ The Web UI will surface the same operation as an "Set up provider" admin action 
 
 Note: the dispatcher currently records events to stdout as a COL-0.3 placeholder. The Task Graph `events` table is now defined by the schema migration (COL-0.6); the dispatcher will write through the repository layer once COL-0.7 / COL-0.11 land.
 
+## Operator UI path for an existing GitLab project
+
+COL-3.5.4 adds a script-free path for pointing Colony at an already-created GitLab project:
+
+1. Start the local stack and open `http://localhost:3000/admin/providers`.
+2. In "Registered projects", enter the GitLab project path, for example `group/project`. If you know the numeric GitLab project id, include it; otherwise the API resolves the path through the configured GitLab adapter.
+3. Open `http://localhost:3000/scopes` and create a new scope with a title, description, optional project picker, and the mirror checkbox enabled.
+4. Open the new scope detail page. While the scope is still `draft`, use "Run architect" to call `POST /scopes/:id/decomposition-request`.
+5. Review and approve the architect decomposition from the provider comments/UI path, then watch the scope detail page as tasks move through claim, plan review, implementation, review, merge, and close states.
+
+The API endpoints behind the UI are `POST /admin/provider/projects`, `GET /admin/provider/projects`, `POST /scopes`, and `POST /scopes/:id/decomposition-request`. All mutating provider-admin calls require the same `provider.bootstrap` policy path as bootstrap.
+
 ## Running individual apps
 
 ```sh

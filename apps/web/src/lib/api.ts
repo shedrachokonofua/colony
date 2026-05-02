@@ -2,6 +2,7 @@ import type {
   AuditRecord,
   Event,
   ProviderMirror,
+  ProviderProject,
   Scope,
   ScopeId,
   Task,
@@ -113,6 +114,24 @@ export interface OAuthBeginResponse {
 
 export interface ApiClient {
   listScopes(): Promise<readonly Scope[]>;
+  createScope(input: {
+    readonly id: string;
+    readonly title: string;
+    readonly description: string;
+    readonly provider_project_id?: string;
+    readonly mirror_scope?: boolean;
+  }): Promise<Scope>;
+  requestDecomposition(
+    scopeId: ScopeId,
+    input?: { readonly provider_project_id?: string; readonly reason?: string },
+  ): Promise<unknown>;
+  listProviderProjects(): Promise<readonly ProviderProject[]>;
+  registerProviderProject(input: {
+    readonly path: string;
+    readonly provider_id?: string;
+    readonly default_branch?: string;
+    readonly visibility?: "private" | "internal" | "public";
+  }): Promise<ProviderProject>;
   getScope(id: ScopeId): Promise<Scope | null>;
   listTasks(scopeId: ScopeId): Promise<readonly Task[]>;
   readyTasks(scopeId: ScopeId): Promise<readonly Task[]>;
@@ -207,6 +226,71 @@ export function createApiClient(opts: {
     async listScopes() {
       const body = await req<{ items: Scope[] }>("/scopes");
       return body.items;
+    },
+    async createScope(input) {
+      const provider_targets = input.provider_project_id
+        ? [{ provider_project_id: input.provider_project_id, role: "primary" }]
+        : undefined;
+      return req<Scope>("/scopes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": `web-create-scope:${input.id}`,
+        },
+        body: JSON.stringify({
+          id: input.id,
+          title: input.title,
+          description: input.description,
+          provider_targets,
+          provider_mirror:
+            input.provider_project_id && input.mirror_scope
+              ? { provider_project_id: input.provider_project_id }
+              : undefined,
+        }),
+      });
+    },
+    async requestDecomposition(scopeId, input) {
+      return req(
+        `/scopes/${encodeURIComponent(scopeId)}/decomposition-request`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": `web-decomposition-request:${scopeId}`,
+          },
+          body: JSON.stringify({
+            provider_targets: input?.provider_project_id
+              ? [
+                  {
+                    provider_project_id: input.provider_project_id,
+                    role: "primary",
+                  },
+                ]
+              : undefined,
+            reason: input?.reason ?? "web_ui",
+          }),
+        },
+      );
+    },
+    async listProviderProjects() {
+      const body = await req<{ items: ProviderProject[] }>(
+        "/admin/provider/projects",
+      );
+      return body.items;
+    },
+    async registerProviderProject(input) {
+      const body = await req<{ project: ProviderProject }>(
+        "/admin/provider/projects",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": `web-register-project:${input.provider_id ?? input.path}`,
+          },
+          body: JSON.stringify({ provider: "gitlab", ...input }),
+        },
+      );
+      return body.project;
     },
     async getScope(id) {
       try {

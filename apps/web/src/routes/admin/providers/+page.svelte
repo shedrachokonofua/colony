@@ -43,6 +43,18 @@
     if (typeof form.error !== "string") return null;
     return form.error;
   }
+
+  function globalNotice(): string | null {
+    if (!form) return null;
+    if (form.action !== "registerProject") return null;
+    return typeof form.notice === "string" ? form.notice : null;
+  }
+
+  function globalError(): string | null {
+    if (!form) return null;
+    if (form.action !== "registerProject") return null;
+    return typeof form.error === "string" ? form.error : null;
+  }
 </script>
 
 <section class="providers">
@@ -62,6 +74,62 @@
   {#if data.error}
     <div class="banner error">{data.error}</div>
   {/if}
+  {#if globalNotice()}
+    <div class="banner notice">{globalNotice()}</div>
+  {/if}
+  {#if globalError()}
+    <div class="banner error">{globalError()}</div>
+  {/if}
+
+  <article class="provider">
+    <header>
+      <h2>Registered projects</h2>
+      <span class="api">gitlab</span>
+    </header>
+    <form method="POST" action="?/registerProject" class="submit-form">
+      <div class="row">
+        <label>
+          Project path
+          <input name="path" required placeholder="group/project" />
+        </label>
+        <label>
+          Provider ID
+          <input name="provider_id" placeholder="optional numeric id" />
+        </label>
+      </div>
+      <div class="row">
+        <label>
+          Default branch
+          <input name="default_branch" placeholder="main" />
+        </label>
+        <label>
+          Visibility
+          <select name="visibility">
+            <option value="">From provider</option>
+            <option value="private">private</option>
+            <option value="internal">internal</option>
+            <option value="public">public</option>
+          </select>
+        </label>
+      </div>
+      <button type="submit" class="primary">Register project</button>
+    </form>
+    {#if data.projects.length === 0}
+      <p class="hint">No provider projects registered.</p>
+    {:else}
+      <dl class="meta">
+        {#each data.projects as project (project.id)}
+          <dt>{project.provider}</dt>
+          <dd>
+            <code>{project.path}</code>
+            <span class="hint">
+              · {project.default_branch} · {project.visibility} · {project.id}
+            </span>
+          </dd>
+        {/each}
+      </dl>
+    {/if}
+  </article>
 
   {#if !data.denied && data.providers.length === 0}
     <div class="banner empty">

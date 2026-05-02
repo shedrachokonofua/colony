@@ -14,6 +14,45 @@
     <div class="error">{data.error}</div>
   {/if}
 
+  <form method="POST" action="?/create" class="card stack">
+    <div>
+      <h2 style="margin:0">New scope</h2>
+      <p class="muted" style="margin:0.25rem 0 0">
+        Create a draft scope against a registered provider project.
+      </p>
+    </div>
+    <div class="grid-2">
+      <label>
+        <span>Scope ID</span>
+        <input name="id" placeholder="col-myproj" required pattern={"col-[a-z0-9]{4,}"} />
+      </label>
+      <label>
+        <span>Provider project</span>
+        <select name="provider_project_id">
+          <option value="">No provider target</option>
+          {#each data.providerProjects as project (project.id)}
+            <option value={project.id}>{project.provider}: {project.path}</option>
+          {/each}
+        </select>
+      </label>
+    </div>
+    <label>
+      <span>Title</span>
+      <input name="title" required />
+    </label>
+    <label>
+      <span>Description</span>
+      <textarea name="description" rows="4"></textarea>
+    </label>
+    <label class="inline">
+      <input type="checkbox" name="mirror_scope" checked />
+      <span>Mirror scope to the provider project</span>
+    </label>
+    <div>
+      <button type="submit">Create scope</button>
+    </div>
+  </form>
+
   {#if data.scopes.length === 0 && !data.error}
     <div class="card muted">No scopes yet.</div>
   {:else}

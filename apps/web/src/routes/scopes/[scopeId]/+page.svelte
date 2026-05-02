@@ -3,7 +3,7 @@
   import { Tabs } from "bits-ui";
   import AuditTimeline from "$lib/AuditTimeline.svelte";
 
-  let { data }: { data: PageData } = $props();
+  let { data, form }: { data: PageData; form?: Record<string, unknown> | null } = $props();
   let tab = $state<
     "tasks" | "decomposition" | "closure" | "sync" | "audit"
   >("tasks");
@@ -33,12 +33,33 @@
   {#if data.loadError}
     <div class="error">{data.loadError}</div>
   {/if}
+  {#if form?.action === "runArchitect" && typeof form.notice === "string"}
+    <div class="card">{form.notice}</div>
+  {/if}
+  {#if form?.action === "runArchitect" && typeof form.error === "string"}
+    <div class="error">{form.error}</div>
+  {/if}
 
   {#if data.scope}
     {#if data.scope.description}
       <div class="card">
         <p style="margin:0; white-space:pre-wrap">{data.scope.description}</p>
       </div>
+    {/if}
+
+    {#if data.scope.state === "draft"}
+      <form method="POST" action="?/runArchitect" class="card row">
+        <label style="min-width:18rem">
+          <span>Primary project</span>
+          <select name="provider_project_id">
+            <option value="">Use existing scope target</option>
+            {#each data.providerProjects as project (project.id)}
+              <option value={project.id}>{project.provider}: {project.path}</option>
+            {/each}
+          </select>
+        </label>
+        <button type="submit">Run architect</button>
+      </form>
     {/if}
 
     <Tabs.Root bind:value={tab}>

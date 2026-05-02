@@ -82,6 +82,8 @@ export function buildApp(options?: {
     registerProviderAdmin(app, {
       ...providerAdmin,
       repo: options?.taskGraph?.repo ?? providerAdmin.repo,
+      providerProjects:
+        options?.taskGraph?.providerProjects ?? providerAdmin.providerProjects,
       policyRepo: options?.taskGraph?.policyRepo ?? providerAdmin.policyRepo,
     });
   }

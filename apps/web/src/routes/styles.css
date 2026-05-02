@@ -159,6 +159,51 @@ h2 {
   gap: 1rem;
 }
 
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+}
+
+label.inline {
+  flex-direction: row;
+  align-items: center;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.6rem;
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button {
+  appearance: none;
+  background: var(--accent-dim);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+button:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
 @media (max-width: 720px) {
   .grid-2 {
     grid-template-columns: 1fr;

@@ -30,6 +30,7 @@ import { env } from "@colony/config";
 import type { ProviderAdapter } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
 import { getPool } from "./db.js";
+import { signalArchitectRequested } from "./temporal.js";
 
 const scopeIdParam = z
   .string()
@@ -447,20 +448,12 @@ async function requestArchitectDecomposition(
     readonly reason?: string;
   },
 ) {
-  if (input.scope.state !== "draft") {
-    return {
-      ok: false as const,
-      status: 409 as const,
-      body: jsonError(
-        "INVALID_SCOPE_STATE",
-        "architect decomposition can only be requested for a draft scope",
-        {
-          scope_id: input.scope.id,
-          state: input.scope.state,
-        },
-      ),
-    };
-  }
+  // No state pre-check — the workflow's architect handler is
+  // recovery-aware: it runs the architect activity on draft scopes,
+  // and falls through to the reviewer activity (idempotently) for
+  // scopes already in `decomposition_proposed` whose proposal hasn't
+  // been reviewed. This makes the endpoint a generic "drive this
+  // scope's lifecycle" trigger.
   const targets = await registerScopeTargets(
     deps,
     input.scope.id,
@@ -501,6 +494,37 @@ async function requestArchitectDecomposition(
     actor: input.actor,
     payload: evidence,
   });
+
+  let workflow_id: string | undefined;
+  let signal_error: string | undefined;
+  try {
+    const result = await signalArchitectRequested({
+      scope_id: input.scope.id,
+      payload: {
+        actor: input.actor,
+        reason: input.reason,
+        audit_id,
+        event_id: event.id,
+      },
+    });
+    workflow_id = result.workflow_id;
+  } catch (err) {
+    // Audit/event are already durable; the supervisor heartbeat will
+    // detect the un-acted-on request and retry. Surface the failure on
+    // the response so the operator sees it.
+    signal_error = err instanceof Error ? err.message : String(err);
+    await deps.repo.writeAudit({
+      scope_id: input.scope.id,
+      actor: input.actor,
+      action: "scope.decomposition_request.signal_failed",
+      capability: input.capability,
+      target_kind: "scope",
+      target_id: input.scope.id,
+      reason: signal_error,
+      evidence: { audit_id, event_id: event.id },
+    });
+  }
+
   return {
     ok: true as const,
     body: {
@@ -511,6 +535,8 @@ async function requestArchitectDecomposition(
       provider_targets: evidence.provider_targets,
       audit_id,
       event_id: event.id,
+      ...(workflow_id ? { workflow_id } : {}),
+      ...(signal_error ? { signal_error } : {}),
     },
   };
 }
@@ -688,6 +714,8 @@ const taskStateSchema = z.enum([
   "created",
   "ready",
   "claimed",
+  "plan_proposed",
+  "plan_review",
   "in_progress",
   "review_requested",
   "changes_requested",

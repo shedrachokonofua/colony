@@ -6,6 +6,7 @@ import {
   type ApiError,
   type OAuthProviderSummary,
 } from "$lib/api";
+import type { ProviderProject } from "@colony/domain";
 
 /**
  * COL-2.14d — admin OAuth provider connection page.
@@ -26,19 +27,62 @@ export const load: PageServerLoad = async ({ fetch }) => {
   const cfg = apiConfigFromEnv(process.env);
   const api = createApiClient({ ...cfg, fetch });
   let providers: readonly OAuthProviderSummary[] = [];
+  let projects: readonly ProviderProject[] = [];
   let error: string | null = null;
   let denied = false;
   try {
-    providers = await api.listOAuthProviders();
+    [providers, projects] = await Promise.all([
+      api.listOAuthProviders(),
+      api.listProviderProjects().catch(() => []),
+    ]);
   } catch (e) {
     const err = e as ApiError;
     if (err.status === 403) denied = true;
     else error = err.message ? `${err.code}: ${err.message}` : String(e);
   }
-  return { providers, error, denied };
+  return { providers, projects, error, denied };
 };
 
 export const actions: Actions = {
+  registerProject: async ({ request, fetch }) => {
+    const cfg = apiConfigFromEnv(process.env);
+    const api = createApiClient({ ...cfg, fetch });
+    const form = await request.formData();
+    const path = String(form.get("path") ?? "").trim();
+    const providerId = String(form.get("provider_id") ?? "").trim();
+    const defaultBranch = String(form.get("default_branch") ?? "").trim();
+    const visibility = String(form.get("visibility") ?? "").trim();
+    if (!path) {
+      return fail(400, {
+        action: "registerProject",
+        error: "path is required",
+      });
+    }
+    try {
+      const project = await api.registerProviderProject({
+        path,
+        provider_id: providerId || undefined,
+        default_branch: defaultBranch || undefined,
+        visibility:
+          visibility === "private" ||
+          visibility === "internal" ||
+          visibility === "public"
+            ? visibility
+            : undefined,
+      });
+      return {
+        action: "registerProject" as const,
+        notice: `Registered ${project.provider}:${project.path}.`,
+      };
+    } catch (e) {
+      const err = e as ApiError;
+      return fail(err.status || 500, {
+        action: "registerProject",
+        error: err.message ? `${err.code}: ${err.message}` : String(e),
+      });
+    }
+  },
+
   start: async ({ request, fetch }) => {
     const cfg = apiConfigFromEnv(process.env);
     const api = createApiClient({ ...cfg, fetch });

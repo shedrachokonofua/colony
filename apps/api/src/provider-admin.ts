@@ -6,7 +6,11 @@ import type {
   ProviderIdentity,
   Role,
 } from "@colony/domain";
-import { PolicyRepository, TaskGraphRepository } from "@colony/db";
+import {
+  PolicyRepository,
+  ProviderProjectRepository,
+  TaskGraphRepository,
+} from "@colony/db";
 import { env } from "@colony/config";
 import { evaluateAction } from "@colony/policy";
 import {
@@ -65,8 +69,17 @@ const bootstrapSpecSchema = z.object({
   rotate_tokens: z.boolean().optional(),
 });
 
+const registerExistingProjectSchema = z.object({
+  provider: z.literal("gitlab").default("gitlab"),
+  provider_id: z.string().min(1).optional(),
+  path: z.string().min(1),
+  default_branch: z.string().min(1).optional(),
+  visibility: z.enum(["private", "internal", "public"]).optional(),
+});
+
 export interface ProviderAdminDeps {
   readonly repo: TaskGraphRepository;
+  readonly providerProjects?: ProviderProjectRepository;
   readonly policyRepo: PolicyRepository;
   readonly adapter: ProviderAdapter;
 }
@@ -78,6 +91,7 @@ export function getProviderAdminDeps(): ProviderAdminDeps {
     const pool = getPool();
     singleton = {
       repo: new TaskGraphRepository(pool),
+      providerProjects: new ProviderProjectRepository(pool),
       policyRepo: new PolicyRepository(pool),
       adapter: new GitLabProviderAdapter({
         baseUrl: env().GITLAB_BASE_URL,
@@ -92,6 +106,156 @@ export function registerProviderAdmin(
   app: OpenAPIHono<{ Variables: { actor: string } }>,
   deps: ProviderAdminDeps = getProviderAdminDeps(),
 ): void {
+  const listProjectsRoute = createRoute({
+    method: "get",
+    path: "/admin/provider/projects",
+    summary: "List registered provider projects",
+    responses: {
+      200: {
+        description: "Registered provider projects",
+        content: {
+          "application/json": {
+            schema: z.object({ items: z.array(z.unknown()) }),
+          },
+        },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+
+  app.openapi(listProjectsRoute, async (c) => {
+    const actor = c.get("actor") as ActorId;
+    const policy = await deps.policyRepo.getGlobalPolicy();
+    const grants = await deps.policyRepo.getCapabilityGrantsForActor(
+      actor,
+      null,
+    );
+    const providerIdentity = await deps.policyRepo.getProviderIdentity(actor);
+    const decision = evaluateAction("provider.bootstrap", {
+      granted: grants,
+      providerIdentity,
+      effectivePolicy: policy,
+    });
+    if (!decision.allowed) {
+      return c.json(
+        {
+          error: {
+            code: "POLICY_DENY",
+            message: decision.reason,
+            details: { capability: decision.capability },
+          },
+        },
+        403,
+      );
+    }
+    return c.json(
+      { items: await requireProviderProjectRepo(deps).listProjects() },
+      200,
+    );
+  });
+
+  const registerProjectRoute = createRoute({
+    method: "post",
+    path: "/admin/provider/projects",
+    summary: "Register an existing provider project",
+    request: {
+      body: {
+        content: {
+          "application/json": {
+            schema: registerExistingProjectSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Project registered",
+        content: { "application/json": { schema: z.unknown() } },
+      },
+      400: {
+        description: "Invalid request",
+        content: { "application/json": { schema: errorBody } },
+      },
+      403: {
+        description: "Policy denied",
+        content: { "application/json": { schema: errorBody } },
+      },
+      404: {
+        description: "Provider project not found",
+        content: { "application/json": { schema: errorBody } },
+      },
+    },
+  });
+
+  app.openapi(registerProjectRoute, async (c) => {
+    const actor = c.get("actor") as ActorId;
+    const body = c.req.valid("json");
+    const policy = await deps.policyRepo.getGlobalPolicy();
+    const grants = await deps.policyRepo.getCapabilityGrantsForActor(
+      actor,
+      null,
+    );
+    const providerIdentity = await deps.policyRepo.getProviderIdentity(actor);
+    const decision = evaluateAction("provider.bootstrap", {
+      granted: grants,
+      providerIdentity,
+      effectivePolicy: policy,
+    });
+    if (!decision.allowed) {
+      return c.json(
+        {
+          error: {
+            code: "POLICY_DENY",
+            message: decision.reason,
+            details: { capability: decision.capability },
+          },
+        },
+        403,
+      );
+    }
+
+    const providerProject =
+      body.provider_id !== undefined
+        ? await deps.adapter.projects.getById(body.provider_id)
+        : await deps.adapter.projects.getByPath(body.path);
+    if (!providerProject) {
+      return c.json(
+        {
+          error: {
+            code: "PROVIDER_PROJECT_NOT_FOUND",
+            message: `provider project not found: ${body.provider_id ?? body.path}`,
+          },
+        },
+        404,
+      );
+    }
+    const project = await requireProviderProjectRepo(deps).upsertProject({
+      provider: deps.adapter.provider,
+      provider_id: providerProject.id,
+      path: providerProject.path,
+      default_branch: body.default_branch ?? providerProject.default_branch,
+      visibility: body.visibility ?? providerProject.visibility,
+      metadata: providerProject.metadata.raw ?? {},
+    });
+    await deps.repo.writeAudit({
+      actor,
+      action: "provider.project.register",
+      capability: decision.capability,
+      target_kind: "provider_project",
+      target_id: project.id,
+      reason: "api",
+      evidence: {
+        provider: project.provider,
+        provider_id: project.provider_id,
+        path: project.path,
+      },
+    });
+    return c.json({ project }, 200);
+  });
+
   const route = createRoute({
     method: "post",
     path: "/admin/provider/bootstrap",
@@ -246,6 +410,15 @@ export function registerProviderAdmin(
       );
     }
   });
+}
+
+function requireProviderProjectRepo(
+  deps: ProviderAdminDeps,
+): ProviderProjectRepository {
+  if (!deps.providerProjects) {
+    throw new Error("provider project repository is not configured");
+  }
+  return deps.providerProjects;
 }
 
 function fingerprint(token: string): string {

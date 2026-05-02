@@ -89,9 +89,20 @@ tasks:
   # Dev / test
   # ---------------------------------------------------------------------------
   dev:
-    desc: Run all local services (api, worker, webhook-dispatcher, tool-gateway, web)
+    desc: Run all local services (api, worker, webhook-dispatcher, tool-gateway, web) with secrets sourced from sops
+    summary: |
+      Wraps `npm run dev` with `sops exec-env secrets/dev.yaml` so the
+      worker + API inherit GITLAB_BASE_URL, GITLAB_TOKEN, and the rest
+      of the dev secrets. Without this wrapper, services launch with
+      empty creds and live provider calls (architect runs, project
+      registration, agent token minting) all fail.
     cmds:
-      - npm run dev
+      # Source .env into the shell so workspace children inherit non-
+      # secret config (DATABASE_URL, COLONY_*_API_KEY, AGENT_RUNTIME).
+      # Children switch cwd to apps/<service>, so dotenv inside their
+      # own process can't find the repo-root .env. Force COLONY_CONFIG_PATH
+      # to an absolute path for the same reason.
+      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'set -a; . ./.env; set +a; COLONY_CONFIG_PATH=$PWD/config/colony.yaml npm run dev'"
 
   test:
     desc: Run unit tests (no DB / no external services)
