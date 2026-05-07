@@ -53,6 +53,8 @@ export interface Task {
   readonly plan_review_envelope?: Readonly<Record<string, unknown>>;
   readonly plan_review_hash?: string;
   readonly plan_review_result?: ReviewResult;
+  readonly last_code_review_envelope?: Readonly<Record<string, unknown>>;
+  readonly last_code_review_hash?: string;
   readonly created_at: Iso8601;
   readonly updated_at: Iso8601;
 }

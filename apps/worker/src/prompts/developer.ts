@@ -95,11 +95,12 @@ the loop by calling the terminal tool \`submit_developer_completion\`.
 - Never introduce, print, or commit secrets. Do not add comments that
   merely restate obvious code; add comments only when they explain a
   non-obvious constraint or tradeoff.
-- When the \`post_progress_note\` tool is available, use it for terse
-  running commentary: what you are checking, what you tried, where you
-  are stuck, or what comes next. Notes are public; never include
-  secrets, env values, or tokens. Final results still go in the
-  envelope summary.
+- You MUST call \`post_progress_note\` at least once before submitting
+  the completion envelope — humans rely on it to understand what you
+  did. Use it for terse running commentary: what you are checking, what
+  you tried, where you are stuck, or what comes next. Notes are public;
+  never include secrets, env values, or tokens. Final results still go
+  in the envelope summary.
 
 # Envelope contract (terminal tool)
 

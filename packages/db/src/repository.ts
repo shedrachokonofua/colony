@@ -217,6 +217,13 @@ export interface RecordPlanReviewInput {
   readonly envelope: Readonly<Record<string, unknown>>;
 }
 
+export interface RecordCodeReviewInput {
+  readonly task_id: TaskId;
+  readonly envelope_hash: string;
+  readonly result: "approved" | "changes_requested" | "blocked" | "escalate";
+  readonly envelope: Readonly<Record<string, unknown>>;
+}
+
 type Executor = Pool | PoolClient;
 
 // ---------------------------------------------------------------------------
@@ -253,6 +260,8 @@ interface TaskRow {
   plan_review_envelope: Record<string, unknown> | null;
   plan_review_hash: string | null;
   plan_review_result: Task["plan_review_result"] | null;
+  last_code_review_envelope: Record<string, unknown> | null;
+  last_code_review_hash: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -335,6 +344,8 @@ const mapTask = (r: TaskRow): Task => ({
   plan_review_envelope: r.plan_review_envelope ?? undefined,
   plan_review_hash: r.plan_review_hash ?? undefined,
   plan_review_result: r.plan_review_result ?? undefined,
+  last_code_review_envelope: r.last_code_review_envelope ?? undefined,
+  last_code_review_hash: r.last_code_review_hash ?? undefined,
   created_at: toIso(r.created_at),
   updated_at: toIso(r.updated_at),
 });
@@ -556,6 +567,13 @@ export class TaskGraphRepository {
     ctx: ActorContext,
   ): Promise<Task> {
     return this.withTransaction((tx) => tx.recordPlanReview(input, ctx));
+  }
+
+  async recordCodeReview(
+    input: RecordCodeReviewInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    return this.withTransaction((tx) => tx.recordCodeReview(input, ctx));
   }
 
   async listActiveTaskAgentTokens(
@@ -1084,6 +1102,48 @@ export class TaskGraphTransaction {
       task_id: task.id,
       actor: ctx.actor,
       action: "task.plan_review.recorded",
+      capability: ctx.capability,
+      target_kind: "task",
+      target_id: task.id,
+      reason: ctx.reason,
+      evidence: {
+        envelope_hash: input.envelope_hash,
+        result: input.result,
+      },
+    });
+    return task;
+  }
+
+  async recordCodeReview(
+    input: RecordCodeReviewInput,
+    ctx: ActorContext,
+  ): Promise<Task> {
+    const current = await this.lockTaskRow(input.task_id);
+    if (!current) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `task not found: ${input.task_id}`,
+        {
+          task_id: input.task_id,
+        },
+      );
+    }
+    const { rows } = await queryRows<TaskRow>(
+      this.client,
+      `UPDATE tasks
+         SET last_code_review_envelope = $2::jsonb,
+             last_code_review_hash = $3,
+             updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [input.task_id, JSON.stringify(input.envelope), input.envelope_hash],
+    );
+    const task = mapTask(rows[0]);
+    await this.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: ctx.actor,
+      action: "task.review_envelope.recorded",
       capability: ctx.capability,
       target_kind: "task",
       target_id: task.id,

@@ -309,7 +309,7 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
             ? "envelope_rejected"
             : "failed",
         final_state: task.state,
-        reason: `agent_run_${metadata.status}`,
+        reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
       };
     }
 

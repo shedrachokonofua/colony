@@ -1010,8 +1010,20 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     const text = await res.text();
     const body = text ? (JSON.parse(text) as unknown) : null;
     if (!res.ok) {
+      const summary =
+        body && typeof body === "object"
+          ? ((body as { message?: unknown }).message ??
+            (body as { error?: unknown }).error ??
+            "")
+          : "";
+      const summaryStr =
+        typeof summary === "string"
+          ? summary
+          : summary
+            ? JSON.stringify(summary)
+            : "";
       throw new GitLabProviderError(
-        `GitLab ${init.method ?? "GET"} ${path} returned ${res.status}`,
+        `GitLab ${init.method ?? "GET"} ${path} returned ${res.status}${summaryStr ? `: ${summaryStr}` : ""}`,
         res.status,
         body,
       );

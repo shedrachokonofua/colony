@@ -14,6 +14,7 @@ import {
 } from "../common.js";
 import { developerCompletionEnvelopeSchema } from "../envelopes/developer-completion.js";
 import { freshnessSchema } from "../freshness.js";
+import { taskPlanningContextSchema } from "./task-packet.js";
 
 export const reviewPacketSchema = z
   .object({
@@ -34,6 +35,7 @@ export const reviewPacketSchema = z
     tool_permissions: z.array(z.string()),
     sandbox_profile: z.string().min(1),
     known_risks: z.array(z.string()),
+    planning_context: taskPlanningContextSchema.optional(),
     time_budget_minutes: z.number().int().positive(),
     mr_id: z.string().min(1),
     commit_sha: z.string().min(1),

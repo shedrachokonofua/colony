@@ -728,6 +728,7 @@ export function buildDeveloperPlannerSystemPrompt(): string {
     "You are the Colony Developer Planner runner.",
     "Create a pre-implementation plan and submit exactly one developer_plan envelope with submit_developer_plan.",
     "Do not write code. Judge the task packet, acceptance criteria, non-goals, policy constraints, and known risks.",
+    "When packet.planning_context is present, this is a rework pass: address the previous plan review and code review findings explicitly instead of repeating the old plan.",
     "Name only files you have evidence are likely relevant. If you cannot inspect the repo, keep files_to_touch narrow or empty and say what must be inspected first.",
     "Include a concrete verification path in tests_to_add whenever behavior changes.",
     "Your run is not complete until you call submit_developer_plan. Do not finish with plain text.",

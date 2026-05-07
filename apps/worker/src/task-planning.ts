@@ -12,8 +12,10 @@ import {
 import {
   developerPlanEnvelopeSchema,
   planReviewEnvelopeSchema,
+  reviewerReviewEnvelopeSchema,
   type DeveloperPlanEnvelope,
   type PlanReviewEnvelope,
+  type ReviewerReviewEnvelope,
   type TaskPacket,
 } from "@colony/schemas";
 import { isTaskId, type ActorId, type Task } from "@colony/domain";
@@ -30,7 +32,7 @@ import {
 } from "./task-agent-tokens.js";
 
 const SUPERVISOR_ACTOR = "svc:supervisor" as ActorId;
-const PLAN_REVIEW_LOOP_CAP_DEFAULT = 3;
+const PLAN_REVIEW_LOOP_CAP_DEFAULT = 50;
 
 const DEFAULT_DEPLOYER_BINDING: DeployerRuntimeBinding = {
   name: "local-permissive",
@@ -122,7 +124,11 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
         reason: "task_not_found",
       };
     }
-    if (task.state !== "claimed" && task.state !== "changes_requested") {
+    if (
+      task.state !== "claimed" &&
+      task.state !== "changes_requested" &&
+      task.state !== "plan_proposed"
+    ) {
       return {
         started: false,
         task_id: task.id,
@@ -138,6 +144,7 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
       task,
       "developer-planner",
     );
+    const planningContext = planningContextFor(task);
     const packet = buildTaskPacket({
       scope_id: task.scope_id,
       task_id: task.id,
@@ -170,7 +177,12 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
       ],
       tool_permissions: [],
       sandbox_profile: "developer-planner-default",
-      known_risks: [],
+      known_risks: planningContext?.code_review
+        ? planningContext.code_review.role_specific.findings.map(
+            (finding) => finding.evidence,
+          )
+        : [],
+      planning_context: planningContext,
       time_budget_minutes: 10,
       freshness: freshnessFor(task),
     });
@@ -199,7 +211,7 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
             ? "envelope_rejected"
             : "failed",
         final_state: task.state,
-        reason: `agent_run_${metadata.status}`,
+        reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
       };
     }
     const output = await deps.agentRuntime.getRunOutput(metadata.runId);
@@ -245,16 +257,29 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
         reason: "developer_plan",
       },
     );
-    const planned = await deps.repo.updateTaskState(
-      task.id,
-      recorded.state_version,
-      "plan_proposed",
-      {
-        actor: SUPERVISOR_ACTOR,
-        capability: "task.assign",
-        reason: "developer_plan_proposed",
-      },
+    await postPlanningIssueComment(
+      deps,
+      context,
+      task,
+      "task.plan.comment_posted",
+      renderDeveloperPlanDigest(task, envelope),
     );
+    // First plan from claimed/changes_requested transitions into plan_proposed.
+    // A rework run is invoked when state is already plan_proposed (after plan
+    // reviewer requested changes) and only refreshes the envelope.
+    const planned =
+      task.state === "plan_proposed"
+        ? recorded
+        : await deps.repo.updateTaskState(
+            task.id,
+            recorded.state_version,
+            "plan_proposed",
+            {
+              actor: SUPERVISOR_ACTOR,
+              capability: "task.assign",
+              reason: "developer_plan_proposed",
+            },
+          );
     return {
       started: true,
       task_id: task.id,
@@ -431,7 +456,7 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
             ? "envelope_rejected"
             : "failed",
         final_state: "plan_review",
-        reason: `agent_run_${metadata.status}`,
+        reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
       };
     }
     const output = await deps.agentRuntime.getRunOutput(metadata.runId);
@@ -477,6 +502,13 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
         capability: "task.assign",
         reason: "plan_review",
       },
+    );
+    await postPlanningIssueComment(
+      deps,
+      context,
+      task,
+      "task.plan_review.comment_posted",
+      renderPlanReviewDigest(task, review),
     );
     const final = await deps.repo.updateTaskState(
       task.id,
@@ -524,6 +556,39 @@ function parseDeveloperPlanEnvelope(
 function parsePlanReviewEnvelope(envelope: unknown): PlanReviewEnvelope | null {
   const result = planReviewEnvelopeSchema.safeParse(envelope);
   return result.success ? result.data : null;
+}
+
+function parseReviewerReviewEnvelope(
+  envelope: unknown,
+): ReviewerReviewEnvelope | null {
+  const result = reviewerReviewEnvelopeSchema.safeParse(envelope);
+  return result.success ? result.data : null;
+}
+
+function planningContextFor(
+  task: Task,
+): TaskPacket["planning_context"] | undefined {
+  if (task.state !== "plan_proposed" && task.state !== "changes_requested") {
+    return undefined;
+  }
+  const context: NonNullable<TaskPacket["planning_context"]> = {};
+  const previousDeveloperPlan = parseDeveloperPlanEnvelope(
+    task.developer_plan_envelope,
+  );
+  if (previousDeveloperPlan) {
+    context.previous_developer_plan = previousDeveloperPlan;
+  }
+  const previousPlanReview = parsePlanReviewEnvelope(task.plan_review_envelope);
+  if (previousPlanReview) {
+    context.previous_plan_review = previousPlanReview;
+  }
+  const codeReview = parseReviewerReviewEnvelope(
+    task.last_code_review_envelope,
+  );
+  if (codeReview) {
+    context.code_review = codeReview;
+  }
+  return Object.keys(context).length > 0 ? context : undefined;
 }
 
 function mapPlanReviewResult(
@@ -708,6 +773,99 @@ async function revokePlanningContext(
       },
     },
   );
+}
+
+async function postPlanningIssueComment(
+  deps: TaskPlanningDependencies,
+  context: PlanningProviderContext,
+  task: Task,
+  action: string,
+  body: string,
+): Promise<void> {
+  if (!deps.providerAdapter || !context.projectRef) return;
+  try {
+    const comment = await deps.providerAdapter.issues.comment(
+      context.projectRef,
+      context.providerIssue.id,
+      body.slice(0, 6000),
+    );
+    await deps.repo.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: SUPERVISOR_ACTOR,
+      action,
+      capability: "provider.issues.comment",
+      target_kind: "issue_comment",
+      target_id: comment.id,
+      reason: "planning_digest_posted",
+      evidence: {
+        provider_issue_id: context.providerIssue.id,
+      },
+    });
+  } catch (err) {
+    await deps.repo.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: SUPERVISOR_ACTOR,
+      action: `${action}.failed`,
+      capability: "provider.issues.comment",
+      target_kind: "issue",
+      target_id: context.providerIssue.id,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function renderDeveloperPlanDigest(
+  task: Task,
+  envelope: DeveloperPlanEnvelope,
+): string {
+  return [
+    `[colony:${task.id}] Developer plan proposed`,
+    "",
+    `**Result:** ${envelope.result}`,
+    `**Confidence:** ${envelope.confidence.toFixed(2)}`,
+    `**Risk:** ${envelope.risk_level}`,
+    "",
+    "**Approach**",
+    envelope.role_specific.approach,
+    "",
+    "**Files to touch**",
+    renderList(envelope.role_specific.files_to_touch),
+    "",
+    "**Verification**",
+    renderList(envelope.role_specific.tests_to_add),
+    "",
+    "**Risks**",
+    renderList(envelope.role_specific.risks),
+    "",
+    `**Rationale:** ${envelope.rationale}`,
+  ].join("\n");
+}
+
+function renderPlanReviewDigest(
+  task: Task,
+  envelope: PlanReviewEnvelope,
+): string {
+  const notes = [
+    envelope.rationale,
+    ...envelope.policy_flags.map((flag) => `Policy: ${flag}`),
+  ].filter((note) => note.trim().length > 0);
+  return [
+    `[colony:${task.id}] Plan review ${envelope.result}`,
+    "",
+    `**Next action:** ${envelope.next_action}`,
+    `**Confidence:** ${envelope.confidence.toFixed(2)}`,
+    `**Risk:** ${envelope.risk_level}`,
+    "",
+    "**Reviewer notes**",
+    renderList(notes),
+  ].join("\n");
+}
+
+function renderList(items: readonly string[]): string {
+  if (items.length === 0) return "- (none)";
+  return items.map((item) => `- ${item}`).join("\n");
 }
 
 async function writePlanningRunRejectedAudit(

@@ -50,6 +50,7 @@ export interface TaskPacketBuilderInput {
   readonly tool_permissions: readonly string[];
   readonly sandbox_profile: string;
   readonly known_risks: readonly string[];
+  readonly planning_context?: TaskPacket["planning_context"];
   readonly time_budget_minutes: number;
   readonly freshness: Omit<Freshness, "packet_hash">;
 }
@@ -121,6 +122,9 @@ export function buildTaskPacket(input: TaskPacketBuilderInput): TaskPacket {
     tool_permissions: [...input.tool_permissions],
     sandbox_profile: input.sandbox_profile,
     known_risks: [...input.known_risks],
+    ...(input.planning_context
+      ? { planning_context: input.planning_context }
+      : {}),
     time_budget_minutes: input.time_budget_minutes,
     freshness: {
       ...input.freshness,

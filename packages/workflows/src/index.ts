@@ -5,6 +5,7 @@ import {
   setHandler,
   workflowInfo,
 } from "@temporalio/workflow";
+import { ActivityFailure, ApplicationFailure } from "@temporalio/common";
 
 /**
  * Temporal workflow-safe package.
@@ -440,6 +441,22 @@ export interface SupervisorActivities {
     readonly reviewer: string;
     readonly developer_envelope: unknown;
   }) => Promise<ReviewerRunResult>;
+  readonly markTaskFailed: (input: {
+    readonly task_id: TaskId;
+    readonly reason: string;
+  }) => Promise<
+    | {
+        readonly marked: false;
+        readonly task_id?: TaskId;
+        readonly reason: string;
+      }
+    | {
+        readonly marked: true;
+        readonly task_id: TaskId;
+        readonly previous_state: TaskLifecycleState;
+        readonly new_state: "failed";
+      }
+  >;
   readonly recordHumanApproval: (input: {
     readonly task_id: TaskId;
     readonly actor: string;
@@ -568,9 +585,28 @@ export function heartbeatActivityIdempotencyKey(input: {
 }
 
 const activities = proxyActivities<SupervisorActivities>({
-  startToCloseTimeout: "30 seconds",
+  startToCloseTimeout: "30 minutes",
   retry: {
     maximumAttempts: 1,
+  },
+});
+
+const agentActivities = proxyActivities<
+  Pick<
+    SupervisorActivities,
+    | "startDeveloperPlanRun"
+    | "startPlanReviewRun"
+    | "startDeveloperRun"
+    | "startReviewerRun"
+  >
+>({
+  startToCloseTimeout: "30 minutes",
+  scheduleToCloseTimeout: "2 hours",
+  retry: {
+    initialInterval: "10 seconds",
+    maximumInterval: "2 minutes",
+    maximumAttempts: 3,
+    nonRetryableErrorTypes: ["NonRetryableAgentRunError"],
   },
 });
 
@@ -588,55 +624,88 @@ const longRunningActivities = proxyActivities<LongRunningSupervisorActivities>({
 
 const DEVELOPER_ASSIGNEE = "bot:engine" as const;
 const REVIEWER_ASSIGNEE = "bot:reviewer" as const;
+const TASK_REFINEMENT_LOOP_CAP = 50;
 
 async function driveClaimedTask(input: {
   readonly scope_id: ScopeId;
   readonly task_id: TaskId;
   readonly assignee: string;
 }): Promise<void> {
-  const plan = await activities.startDeveloperPlanRun({
-    task_id: input.task_id,
-    assignee: input.assignee,
-  });
-  if (
-    !plan.started ||
-    plan.envelope_status !== "succeeded" ||
-    !plan.developer_plan
-  ) {
-    return;
-  }
+  try {
+    for (let cycle = 1; cycle <= TASK_REFINEMENT_LOOP_CAP; cycle += 1) {
+      let planApproved = false;
+      for (
+        let attempt = 1;
+        attempt <= TASK_REFINEMENT_LOOP_CAP && !planApproved;
+        attempt += 1
+      ) {
+        const plan = await agentActivities.startDeveloperPlanRun({
+          task_id: input.task_id,
+          assignee: input.assignee,
+        });
+        if (
+          !plan.started ||
+          plan.envelope_status !== "succeeded" ||
+          !plan.developer_plan
+        ) {
+          return;
+        }
 
-  const planReview = await activities.startPlanReviewRun({
-    task_id: input.task_id,
-    reviewer: REVIEWER_ASSIGNEE,
-    developer_plan: plan.developer_plan,
-  });
-  if (
-    !planReview.started ||
-    planReview.envelope_status !== "succeeded" ||
-    planReview.review_result !== "approved"
-  ) {
-    return;
-  }
+        const planReview = await agentActivities.startPlanReviewRun({
+          task_id: input.task_id,
+          reviewer: REVIEWER_ASSIGNEE,
+          developer_plan: plan.developer_plan,
+        });
+        if (!planReview.started || planReview.envelope_status !== "succeeded") {
+          return;
+        }
+        if (planReview.review_result === "approved") {
+          planApproved = true;
+        } else if (planReview.review_result !== "changes_requested") {
+          return;
+        }
+      }
+      if (!planApproved) return;
 
-  const dev = await activities.startDeveloperRun({
-    task_id: input.task_id,
-    assignee: input.assignee,
-  });
-  if (
-    !dev.started ||
-    dev.envelope_status !== "succeeded" ||
-    !dev.developer_envelope
-  ) {
-    return;
-  }
+      const dev = await agentActivities.startDeveloperRun({
+        task_id: input.task_id,
+        assignee: input.assignee,
+      });
+      if (
+        !dev.started ||
+        dev.envelope_status !== "succeeded" ||
+        !dev.developer_envelope
+      ) {
+        return;
+      }
 
-  await activities.openMrGate({ task_id: input.task_id });
-  await activities.startReviewerRun({
-    task_id: input.task_id,
-    reviewer: REVIEWER_ASSIGNEE,
-    developer_envelope: dev.developer_envelope,
-  });
+      await activities.openMrGate({ task_id: input.task_id });
+      const review = await agentActivities.startReviewerRun({
+        task_id: input.task_id,
+        reviewer: REVIEWER_ASSIGNEE,
+        developer_envelope: dev.developer_envelope,
+      });
+      if (!review.started || review.envelope_status !== "succeeded") return;
+      if (review.review_result === "approved") return;
+      if (review.review_result !== "changes_requested") return;
+    }
+  } catch (err) {
+    await activities.markTaskFailed({
+      task_id: input.task_id,
+      reason: `agent_activity_exhausted:${activityFailureReason(err)}`,
+    });
+  }
+}
+
+function activityFailureReason(err: unknown): string {
+  if (err instanceof ActivityFailure) {
+    const cause = err.cause;
+    if (cause instanceof ApplicationFailure) {
+      return cause.message;
+    }
+    return cause instanceof Error ? cause.message : err.message;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function claimAndDriveReadyTask(scope_id: ScopeId): Promise<void> {

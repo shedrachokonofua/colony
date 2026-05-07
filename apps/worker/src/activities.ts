@@ -6,6 +6,7 @@ import {
   TaskGraphRepository,
   type Pool,
 } from "@colony/db";
+import { ApplicationFailure } from "@temporalio/common";
 import {
   createDeveloperRun,
   type StartDeveloperRunInput,
@@ -226,29 +227,33 @@ export async function startDeveloperRun(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("developer"),
   });
-  return run(input);
+  return throwRetryableAgentRunFailure(run(input));
 }
 
 export async function startDeveloperPlanRun(
   input: StartDeveloperPlanRunInput,
 ): Promise<StartDeveloperPlanRunResult> {
-  return createStartDeveloperPlanRun({
-    repo: getRepository(),
-    providerProjects: getProviderProjects(),
-    providerAdapter: getProviderAdapter(),
-    agentRuntime: await getAgentRuntime("developerPlanner"),
-  })(input);
+  return throwRetryableAgentRunFailure(
+    createStartDeveloperPlanRun({
+      repo: getRepository(),
+      providerProjects: getProviderProjects(),
+      providerAdapter: getProviderAdapter(),
+      agentRuntime: await getAgentRuntime("developerPlanner"),
+    })(input),
+  );
 }
 
 export async function startPlanReviewRun(
   input: StartPlanReviewRunInput,
 ): Promise<StartPlanReviewRunResult> {
-  return createStartPlanReviewRun({
-    repo: getRepository(),
-    providerProjects: getProviderProjects(),
-    providerAdapter: getProviderAdapter(),
-    agentRuntime: await getAgentRuntime("planReviewer"),
-  })(input);
+  return throwRetryableAgentRunFailure(
+    createStartPlanReviewRun({
+      repo: getRepository(),
+      providerProjects: getProviderProjects(),
+      providerAdapter: getProviderAdapter(),
+      agentRuntime: await getAgentRuntime("planReviewer"),
+    })(input),
+  );
 }
 
 export async function startReviewerRun(
@@ -261,7 +266,127 @@ export async function startReviewerRun(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("reviewer"),
   });
-  return run(input);
+  return throwRetryableAgentRunFailure(run(input));
+}
+
+type AgentRunActivityResult =
+  | StartDeveloperRunResult
+  | StartDeveloperPlanRunResult
+  | StartPlanReviewRunResult
+  | StartReviewerRunResult;
+
+async function throwRetryableAgentRunFailure<T extends AgentRunActivityResult>(
+  promise: Promise<T>,
+): Promise<T> {
+  const result = await promise;
+  if (!result.started) return result;
+  if (!shouldRetryAgentRunResult(result)) return result;
+  throw ApplicationFailure.create({
+    message: result.reason ?? `agent_run_${result.envelope_status}`,
+    type: "RetryableAgentRunError",
+    details: [
+      {
+        task_id: result.task_id,
+        run_id: "run_id" in result ? result.run_id : undefined,
+        envelope_status: result.envelope_status,
+        final_state: result.final_state,
+        reason: result.reason,
+      },
+    ],
+  });
+}
+
+function shouldRetryAgentRunResult(result: AgentRunActivityResult): boolean {
+  if (!result.started) return false;
+  if (result.envelope_status === "failed") return true;
+  if (result.envelope_status !== "envelope_rejected") return false;
+  const reason = result.reason ?? "";
+  return (
+    reason.includes("terminal submit_*") ||
+    reason.includes("stream") ||
+    reason.includes("agent_run_envelope_rejected")
+  );
+}
+
+export interface MarkTaskFailedInput {
+  readonly task_id: string;
+  readonly reason: string;
+}
+
+export type MarkTaskFailedResult =
+  | {
+      readonly marked: false;
+      readonly task_id?: string;
+      readonly reason: string;
+    }
+  | {
+      readonly marked: true;
+      readonly task_id: string;
+      readonly previous_state: string;
+      readonly new_state: "failed";
+    };
+
+export async function markTaskFailed(
+  input: MarkTaskFailedInput,
+): Promise<MarkTaskFailedResult> {
+  if (!isTaskId(input.task_id)) {
+    return { marked: false, reason: "invalid_task_id" };
+  }
+  const repository = getRepository();
+  const task = await repository.getTask(input.task_id);
+  if (!task) {
+    return {
+      marked: false,
+      task_id: input.task_id,
+      reason: "task_not_found",
+    };
+  }
+  if (task.state === "failed") {
+    await repository.writeAudit({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      actor: SUPERVISOR_ACTOR,
+      action: "task.failure.observed",
+      capability: "task.assign",
+      target_kind: "task",
+      target_id: task.id,
+      reason: input.reason,
+    });
+    return {
+      marked: true,
+      task_id: task.id,
+      previous_state: "failed",
+      new_state: "failed",
+    };
+  }
+  const failed = await repository.updateTaskState(
+    task.id,
+    task.state_version,
+    "failed",
+    {
+      actor: SUPERVISOR_ACTOR,
+      capability: "task.assign",
+      reason: input.reason,
+    },
+  );
+  await repository.writeAudit({
+    scope_id: task.scope_id,
+    task_id: task.id,
+    actor: SUPERVISOR_ACTOR,
+    action: "task.failure.recorded",
+    capability: "task.assign",
+    target_kind: "task",
+    target_id: task.id,
+    previous_state: task.state,
+    new_state: "failed",
+    reason: input.reason,
+  });
+  return {
+    marked: true,
+    task_id: failed.id,
+    previous_state: task.state,
+    new_state: "failed",
+  };
 }
 
 export async function startArchitectRun(
@@ -762,6 +887,7 @@ export const activities = {
   evaluateScopeCloseReadiness,
   ingestBlockedEnvelope,
   markScopePendingSync,
+  markTaskFailed,
   recordTaskConflict,
   requestScopeReview,
   requestTaskRework,

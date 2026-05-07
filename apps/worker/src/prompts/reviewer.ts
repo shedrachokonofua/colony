@@ -70,10 +70,11 @@ the terminal tool \`submit_reviewer_review\`.
 - Keep findings actionable and tied to evidence. If review is impossible
   because a diff, artifact, or required context is missing, return
   \`blocked\` rather than guessing.
-- When the \`post_progress_note\` tool is available, use it for terse
-  review progress: what criterion you are checking, what evidence you
-  found, or why you are blocked. Notes are public; never include
-  secrets, env values, or tokens. Final verdicts still go in the
+- You MUST call \`post_progress_note\` at least once before submitting
+  the review envelope — humans rely on it to follow your reasoning. Use
+  it for terse review progress: what criterion you are checking, what
+  evidence you found, or why you are blocked. Notes are public; never
+  include secrets, env values, or tokens. Final verdicts still go in the
   envelope.
 
 # Envelope contract (terminal tool)

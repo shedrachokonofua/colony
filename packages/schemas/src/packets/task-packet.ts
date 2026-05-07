@@ -11,7 +11,18 @@ import {
   scopeIdSchema,
   taskIdSchema,
 } from "../common.js";
+import { developerPlanEnvelopeSchema } from "../envelopes/developer-plan.js";
+import { planReviewEnvelopeSchema } from "../envelopes/plan-review.js";
+import { reviewerReviewEnvelopeSchema } from "../envelopes/reviewer-review.js";
 import { freshnessSchema } from "../freshness.js";
+
+export const taskPlanningContextSchema = z
+  .object({
+    previous_developer_plan: developerPlanEnvelopeSchema.optional(),
+    previous_plan_review: planReviewEnvelopeSchema.optional(),
+    code_review: reviewerReviewEnvelopeSchema.optional(),
+  })
+  .strict();
 
 export const taskPacketSchema = z
   .object({
@@ -32,6 +43,7 @@ export const taskPacketSchema = z
     tool_permissions: z.array(z.string()),
     sandbox_profile: z.string().min(1),
     known_risks: z.array(z.string()),
+    planning_context: taskPlanningContextSchema.optional(),
     time_budget_minutes: z.number().int().positive(),
     freshness: freshnessSchema,
   })
@@ -44,3 +56,4 @@ export const taskPacketSchema = z
   });
 
 export type TaskPacket = z.infer<typeof taskPacketSchema>;
+export type TaskPlanningContext = z.infer<typeof taskPlanningContextSchema>;

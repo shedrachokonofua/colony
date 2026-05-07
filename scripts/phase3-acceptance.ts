@@ -11,8 +11,8 @@
 //     -> programmatic operator /approve -> human_approved
 //     -> commit DAG -> active (tasks created)
 //   for each task:
-//     -> claim -> developer run -> review_requested
-//     -> reviewer run -> approved
+//     -> claim -> plan gate -> developer run -> review_requested
+//     -> reviewer run -> approved, or changes_requested -> plan gate loop
 //     -> human approval + green pipeline -> merge_ready
 //     -> merge -> closed
 //   -> request scope review -> scope_review_requested
@@ -61,6 +61,10 @@ import { createDecompositionReviewRun } from "../apps/worker/src/decomposition-r
 import { createDeveloperRun } from "../apps/worker/src/developer-run.js";
 import { createReviewerRun } from "../apps/worker/src/reviewer-run.js";
 import {
+  createStartDeveloperPlanRun,
+  createStartPlanReviewRun,
+} from "../apps/worker/src/task-planning.js";
+import {
   createAgentRuntimeWiring,
   type AgentRuntimeWiring,
 } from "../apps/worker/src/agent-runtime-factory.js";
@@ -106,6 +110,7 @@ const keepGroup =
   ["1", "true", "yes"].includes(
     process.env["COLONY_PHASE3_KEEP_GROUP"]?.toLowerCase() ?? "",
   );
+const TASK_REFINEMENT_LOOP_CAP = 50;
 const pool = createPool({
   connectionString: databaseUrl,
   role: "colony_writer",
@@ -789,49 +794,31 @@ async function driveTaskToClose(task: Task): Promise<void> {
       .catch(() => {});
   }
 
-  // Developer.
+  // Plan gate: developer planner -> plan_proposed -> plan reviewer -> in_progress.
+  const startDeveloperPlanRun = createStartDeveloperPlanRun({
+    repo,
+    providerProjects,
+    providerAdapter: adapter,
+    agentRuntime: agentRuntime.developerPlanner,
+  });
+  const startPlanReviewRun = createStartPlanReviewRun({
+    repo,
+    providerProjects,
+    providerAdapter: adapter,
+    agentRuntime: agentRuntime.planReviewer,
+  });
   const startDeveloperRun = createDeveloperRun({
     repo,
     providerProjects,
     providerAdapter: adapter,
     agentRuntime: agentRuntime.developer,
   });
-  const devResult = await startDeveloperRun({
-    task_id: task.id,
-    assignee: developerActor,
-  });
-  assert(
-    devResult.started && devResult.envelope_status === "succeeded",
-    `developer failed for ${task.id}: ${JSON.stringify(devResult)}`,
-  );
-  if (!devResult.started) throw new Error("unreachable");
-  const progressMirror = await primaryTaskMirror(task.id);
-  assert(
-    progressMirror,
-    `task mirror missing for progress-note check ${task.id}`,
-  );
-  await assertAgentProgressNoteOnIssue(
-    project.provider_id,
-    progressMirror.provider_id,
-    task.id,
-  );
-
-  // Open MR gate.
   const openMrGate = createOpenMrGate({
     repo,
     providerProjects,
     reviewGate,
     policy,
   });
-  const gateOpen = await openMrGate({ task_id: task.id });
-  assert(gateOpen.opened, `mr gate did not open for ${task.id}`);
-
-  const devOutput = await agentRuntime.developer.getRunOutput(devResult.run_id);
-  const developerEnvelope = developerCompletionEnvelopeSchema.parse(
-    devOutput?.envelope,
-  ) satisfies DeveloperCompletionEnvelope;
-
-  // Reviewer.
   const startReviewerRun = createReviewerRun({
     repo,
     providerProjects,
@@ -839,76 +826,109 @@ async function driveTaskToClose(task: Task): Promise<void> {
     providerAdapter: adapter,
     agentRuntime: agentRuntime.reviewer,
   });
-  const revResult = await startReviewerRun({
-    task_id: task.id,
-    reviewer: reviewerActor,
-    developer_envelope: developerEnvelope,
-  });
-  assert(
-    revResult.started,
-    `reviewer flow did not start for ${task.id}: ${JSON.stringify(revResult)}`,
-  );
-  if (!revResult.started) throw new Error("unreachable");
-  if (revResult.review_result !== "approved") {
-    // Acceptance escape hatch: the reviewer's verdict is recorded in
-    // audit + the GitLab MR comment. Force the lifecycle forward so we
-    // exercise merge + scope close. Bot reviewer judgment quality is
-    // tracked by the bench harness, not gated here.
-    phase(
-      `task reviewer requested ${revResult.review_result}; force-approving for acceptance`,
-    );
-    const taskNow = await repo.getTask(task.id);
-    if (!taskNow) throw new Error(`task vanished after review: ${task.id}`);
-    if (taskNow.state === "changes_requested") {
-      const inProgress = await repo.updateTaskState(
-        task.id,
-        taskNow.state_version,
-        "in_progress",
-        {
-          actor: human,
-          capability: "task.assign",
-          reason: "phase3_acceptance_force_approve_after_changes_requested",
-        },
-      );
-      await repo.updateTaskState(
-        task.id,
-        inProgress.state_version,
-        "review_requested",
-        {
-          actor: human,
-          capability: "task.assign",
-          reason: "phase3_acceptance_force_approve_after_changes_requested",
-        },
-      );
-    }
-    const mrMirror = (
-      await providerProjects.listMirrorsForColony({
-        colony_id: task.id,
-        entity_kind: "mr_pr",
-      })
-    )[0];
-    if (mrMirror) {
-      const artifact = await reviewGate.getArtifactByProviderRef({
-        provider: mrMirror.provider,
-        kind: "mr",
-        provider_id: mrMirror.provider_id,
+
+  let developerEnvelope: DeveloperCompletionEnvelope | undefined;
+  let reviewerApproved = false;
+  for (
+    let cycle = 1;
+    cycle <= TASK_REFINEMENT_LOOP_CAP && !reviewerApproved;
+    cycle += 1
+  ) {
+    phase(`task ${task.id}: refinement cycle ${cycle}`);
+    let planApproved = false;
+    for (
+      let attempt = 1;
+      attempt <= TASK_REFINEMENT_LOOP_CAP && !planApproved;
+      attempt += 1
+    ) {
+      phase(`task ${task.id}: developer plan attempt ${attempt}`);
+      const planResult = await startDeveloperPlanRun({
+        task_id: task.id,
+        assignee: developerActor,
       });
-      if (artifact) {
-        const forcedCommit = developerEnvelope.artifacts.find(
-          (a) => a.kind === "commit",
-        );
-        const forcedHeadSha =
-          forcedCommit?.hash ??
-          forcedCommit?.id ??
-          developerEnvelope.freshness.commit_sha;
-        await reviewGate.recordApproval({
-          artifact_id: artifact.id,
-          actor: reviewerActor,
-          commit_sha: forcedHeadSha,
-        });
+      assert(
+        planResult.started &&
+          planResult.envelope_status === "succeeded" &&
+          planResult.developer_plan,
+        `developer plan failed for ${task.id}: ${JSON.stringify(planResult)}`,
+      );
+      if (!planResult.started) throw new Error("unreachable");
+      const reviewResult = await startPlanReviewRun({
+        task_id: task.id,
+        reviewer: reviewerActor,
+        developer_plan: planResult.developer_plan,
+      });
+      assert(
+        reviewResult.started && reviewResult.envelope_status === "succeeded",
+        `plan review failed for ${task.id}: ${JSON.stringify(reviewResult)}`,
+      );
+      if (!reviewResult.started) throw new Error("unreachable");
+      if (reviewResult.review_result === "approved") {
+        planApproved = true;
+        break;
       }
+      phase(
+        `task ${task.id}: plan review returned ${reviewResult.review_result}; retrying`,
+      );
     }
+    assert(planApproved, `plan review never approved for ${task.id}`);
+
+    const devResult = await startDeveloperRun({
+      task_id: task.id,
+      assignee: developerActor,
+    });
+    assert(
+      devResult.started && devResult.envelope_status === "succeeded",
+      `developer failed for ${task.id}: ${JSON.stringify(devResult)}`,
+    );
+    if (!devResult.started) throw new Error("unreachable");
+    const progressMirror = await primaryTaskMirror(task.id);
+    assert(
+      progressMirror,
+      `task mirror missing for progress-note check ${task.id}`,
+    );
+    await assertAgentProgressNoteOnIssue(
+      project.provider_id,
+      progressMirror.provider_id,
+      task.id,
+    );
+
+    const gateOpen = await openMrGate({ task_id: task.id });
+    assert(gateOpen.opened, `mr gate did not open for ${task.id}`);
+
+    const devOutput = await agentRuntime.developer.getRunOutput(
+      devResult.run_id,
+    );
+    developerEnvelope = developerCompletionEnvelopeSchema.parse(
+      devOutput?.envelope,
+    ) satisfies DeveloperCompletionEnvelope;
+
+    const revResult = await startReviewerRun({
+      task_id: task.id,
+      reviewer: reviewerActor,
+      developer_envelope: developerEnvelope,
+    });
+    assert(
+      revResult.started,
+      `reviewer flow did not start for ${task.id}: ${JSON.stringify(revResult)}`,
+    );
+    if (!revResult.started) throw new Error("unreachable");
+    if (revResult.review_result === "approved") {
+      reviewerApproved = true;
+      break;
+    }
+    assert(
+      revResult.review_result === "changes_requested",
+      `reviewer returned terminal result for ${task.id}: ${JSON.stringify(revResult)}`,
+    );
+    phase(
+      `task ${task.id}: reviewer returned ${revResult.review_result}; re-entering plan gate`,
+    );
   }
+  assert(
+    reviewerApproved && developerEnvelope,
+    `reviewer never approved for ${task.id}`,
+  );
 
   // Human approval + green pipeline + gate evaluation.
   const commit = developerEnvelope.artifacts.find((a) => a.kind === "commit");
@@ -957,12 +977,18 @@ async function driveTaskToClose(task: Task): Promise<void> {
     providerAdapter: adapter,
   });
   let mergeResult = await mergeTask({ task_id: task.id });
-  for (let attempt = 1; !mergeResult.merged && attempt <= 6; attempt += 1) {
+  for (let attempt = 1; !mergeResult.merged && attempt <= 8; attempt += 1) {
     if (!mergeResult.reason.includes("returned 405")) break;
-    await sleep(attempt * 1000);
+    phase(
+      `task ${task.id}: merge attempt ${attempt} got 405; retrying after ${attempt * 3}s`,
+    );
+    await sleep(attempt * 3000);
     mergeResult = await mergeTask({ task_id: task.id });
   }
-  assert(mergeResult.merged, `merge failed for ${task.id}`);
+  assert(
+    mergeResult.merged,
+    `merge failed for ${task.id}: ${"reason" in mergeResult ? mergeResult.reason : "unknown"}`,
+  );
   if (!mergeResult.merged) throw new Error("unreachable");
 
   const closeTaskAfterMerge = createCloseTaskAfterMerge({

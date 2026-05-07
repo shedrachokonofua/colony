@@ -340,7 +340,7 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
               ? "envelope_rejected"
               : "failed",
           final_state: task.state,
-          reason: `agent_run_${metadata.status}`,
+          reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
         };
       }
 
@@ -403,6 +403,19 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         result: reviewResult,
         envelope_hash: envelopeHash,
       });
+      await deps.repo.recordCodeReview(
+        {
+          task_id: task.id,
+          envelope_hash: envelopeHash,
+          result: reviewResult,
+          envelope,
+        },
+        {
+          actor: input.reviewer as ActorId,
+          capability: "task.assign",
+          reason: "reviewer_review",
+        },
+      );
       await deps.repo.recordEvent({
         scope_id: task.scope_id,
         task_id: task.id,

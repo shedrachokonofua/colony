@@ -322,11 +322,12 @@ describe("buildDeveloperPrompt", () => {
       - Never introduce, print, or commit secrets. Do not add comments that
         merely restate obvious code; add comments only when they explain a
         non-obvious constraint or tradeoff.
-      - When the \`post_progress_note\` tool is available, use it for terse
-        running commentary: what you are checking, what you tried, where you
-        are stuck, or what comes next. Notes are public; never include
-        secrets, env values, or tokens. Final results still go in the
-        envelope summary.
+      - You MUST call \`post_progress_note\` at least once before submitting
+        the completion envelope — humans rely on it to understand what you
+        did. Use it for terse running commentary: what you are checking, what
+        you tried, where you are stuck, or what comes next. Notes are public;
+        never include secrets, env values, or tokens. Final results still go
+        in the envelope summary.
 
       # Envelope contract (terminal tool)
 
@@ -529,10 +530,11 @@ describe("buildReviewerPrompt", () => {
       - Keep findings actionable and tied to evidence. If review is impossible
         because a diff, artifact, or required context is missing, return
         \`blocked\` rather than guessing.
-      - When the \`post_progress_note\` tool is available, use it for terse
-        review progress: what criterion you are checking, what evidence you
-        found, or why you are blocked. Notes are public; never include
-        secrets, env values, or tokens. Final verdicts still go in the
+      - You MUST call \`post_progress_note\` at least once before submitting
+        the review envelope — humans rely on it to follow your reasoning. Use
+        it for terse review progress: what criterion you are checking, what
+        evidence you found, or why you are blocked. Notes are public; never
+        include secrets, env values, or tokens. Final verdicts still go in the
         envelope.
 
       # Envelope contract (terminal tool)
