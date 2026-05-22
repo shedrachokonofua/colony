@@ -195,7 +195,7 @@ try {
         "- Keep `npm test` dependency-free and make sure it exits cleanly.",
         "- Update README with run and test commands.",
         "",
-        "Decompose into exactly one implementation task. Do not split this scope into multiple tasks.",
+        "- Decomposition hard rule: exactly one implementation task. Do not split this scope into multiple tasks; more than one proposed task fails review.",
       ].join("\n"),
       provider_targets: [
         { provider_project_id: registered.project.id, role: "primary" },

@@ -258,6 +258,7 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
       },
       policy: {
         constraints: [
+          ...scopeSpecificArchitectConstraints(scope.description),
           "Each proposed_task_id must be `<scope_id>.<n>` and unique within the proposal.",
           "Honor explicit task-count constraints in the scope brief. If the scope asks for one task, propose one task; otherwise prefer small, independently mergeable tasks.",
           "For proposed_dependencies with kind=blocks, from_task_id is the prerequisite/blocker that must land first and to_task_id is the dependent task that is blocked.",
@@ -744,6 +745,15 @@ function defaultTaskTargetMapping(
   return mapping;
 }
 
+function scopeSpecificArchitectConstraints(description: string): string[] {
+  if (/exactly\s+one\s+implementation\s+task/i.test(description)) {
+    return [
+      "Hard scope constraint: propose exactly one implementation task and no task dependencies. More than one proposed task fails decomposition review.",
+    ];
+  }
+  return [];
+}
+
 function deriveAcceptanceCriteria(description: string): string[] {
   // Scopes do not yet carry first-class acceptance criteria; surface
   // bullet-prefixed lines from the description when present so the architect
@@ -755,6 +765,9 @@ function deriveAcceptanceCriteria(description: string): string[] {
     const trimmed = line.trim();
     const m = /^[-*]\s+(.+)$/.exec(trimmed);
     if (m) bullets.push(m[1].trim());
+  }
+  for (const constraint of scopeSpecificArchitectConstraints(description)) {
+    if (!bullets.includes(constraint)) bullets.unshift(constraint);
   }
   return bullets;
 }
