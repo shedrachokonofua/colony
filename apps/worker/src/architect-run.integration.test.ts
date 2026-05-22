@@ -11,6 +11,7 @@ import {
 } from "@colony/db";
 import { FakeAgentRuntimeAdapter } from "@colony/agent-runtime";
 import type { ActorId, ScopeId } from "@colony/domain";
+import { FakeProviderAdapter } from "@colony/provider";
 import type { ProviderAdapter } from "@colony/provider";
 import { createArchitectRun } from "./architect-run.js";
 
@@ -202,7 +203,7 @@ describe.runIf(TEST_URL)("createArchitectRun integration", () => {
     );
   });
 
-  it("returns scope_has_no_provider_mirror without writing audit when the mirror is missing", async () => {
+  it("projects a scope provider mirror before architect work when the mirror is missing", async () => {
     await repo.createScope(
       {
         id: SCOPE_ID,
@@ -211,9 +212,10 @@ describe.runIf(TEST_URL)("createArchitectRun integration", () => {
       },
       { actor: SUPERVISOR, capability: "graph.write", reason: "test" },
     );
+    const providerAdapter = new FakeProviderAdapter();
     const project = await providerProjects.upsertProject({
-      provider: "gitlab",
-      provider_id: "gitlab-99",
+      provider: providerAdapter.provider,
+      provider_id: "fake-project-99",
       path: "shdr/colony",
       default_branch: "main",
     });
@@ -226,24 +228,28 @@ describe.runIf(TEST_URL)("createArchitectRun integration", () => {
     const run = createArchitectRun({
       repo,
       providerProjects,
-      providerAdapter: { provider: "gitlab" } as unknown as ProviderAdapter,
+      providerAdapter,
       agentRuntime: new FakeAgentRuntimeAdapter(),
     });
 
     const result = await run({ scope_id: SCOPE_ID });
-    expect(result).toEqual({
-      started: false,
+    expect(result).toMatchObject({
+      started: true,
       scope_id: SCOPE_ID,
-      reason: "scope_has_no_provider_mirror",
+      envelope_status: "succeeded",
     });
+    const mirrors = await providerProjects.listMirrorsForColony({
+      colony_id: SCOPE_ID,
+      entity_kind: "scope",
+    });
+    expect(mirrors).toHaveLength(1);
+    expect(mirrors[0].provider_project_id).toBe(project.id);
 
     const audit = await audited(pool, SCOPE_ID);
-    expect(audit.some((a) => a.action === "architect.envelope.stale")).toBe(
-      false,
-    );
-    expect(audit.some((a) => a.action === "decomposition.proposed")).toBe(
-      false,
-    );
+    expect(
+      audit.some((a) => a.action === "provider.scope.issue_projected"),
+    ).toBe(true);
+    expect(audit.some((a) => a.action === "decomposition.proposed")).toBe(true);
   });
 });
 

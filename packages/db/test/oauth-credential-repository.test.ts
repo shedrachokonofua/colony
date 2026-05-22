@@ -193,9 +193,13 @@ describe.runIf(TEST_URL)("OAuthCredentialRepository", () => {
       providerKey: "openai_codex",
       initiator: "human:op-1",
       redirectUri: "https://x/callback",
-      ttlMs: 1,
     });
-    await new Promise((r) => setTimeout(r, 10));
+    await admin.query(
+      `UPDATE provider_oauth_pending_state
+          SET expires_at = now() - interval '1 second'
+        WHERE state_token = $1`,
+      [created.stateToken],
+    );
     const consumed = await repo.consumePendingState(created.stateToken);
     expect(consumed).toBeNull();
   });
@@ -205,7 +209,6 @@ describe.runIf(TEST_URL)("OAuthCredentialRepository", () => {
       providerKey: "openai_codex",
       initiator: "human:op-1",
       redirectUri: "https://x/callback",
-      ttlMs: 1,
     });
     const live = await repo.createPendingState({
       providerKey: "anthropic_pro",
@@ -213,7 +216,12 @@ describe.runIf(TEST_URL)("OAuthCredentialRepository", () => {
       redirectUri: "https://x/callback",
       ttlMs: 60_000,
     });
-    await new Promise((r) => setTimeout(r, 10));
+    await admin.query(
+      `UPDATE provider_oauth_pending_state
+          SET expires_at = now() - interval '1 second'
+        WHERE state_token = $1`,
+      [expired.stateToken],
+    );
     const swept = await repo.sweepExpiredPendingState();
     expect(swept).toBe(1);
     const stillThere = await repo.consumePendingState(live.stateToken);

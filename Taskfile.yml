@@ -9,6 +9,10 @@ version: "3"
 vars:
   BAO_LOGIN: ./scripts/bao-login.sh
   SECRETS_FILE: secrets/dev.yaml
+  LOCAL_DATABASE_URL:
+    sh: 'port="$(docker-compose port postgres 5432 2>/dev/null | sed "s/.*://")"; printf "postgres://colony:colony@127.0.0.1:%s/colony" "${port:-5432}"'
+  LOCAL_TEST_DATABASE_URL:
+    sh: 'port="$(docker-compose port postgres 5432 2>/dev/null | sed "s/.*://")"; printf "postgres://colony:colony@127.0.0.1:%s/colony_test" "${port:-5432}"'
 
 tasks:
   # ---------------------------------------------------------------------------
@@ -78,7 +82,7 @@ tasks:
   db:migrate:
     desc: Apply DB migrations
     cmds:
-      - npm run db:migrate
+      - DATABASE_URL="${DATABASE_URL:-{{.LOCAL_DATABASE_URL}}}" npm run db:migrate
 
   db:migrate:down:
     desc: Roll back the last DB migration
@@ -112,7 +116,7 @@ tasks:
   test:integration:
     desc: Run integration tests (requires the local stack — see `task up`)
     cmds:
-      - COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test npm run test:integration
+      - COLONY_TEST_DATABASE_URL="${COLONY_TEST_DATABASE_URL:-{{.LOCAL_TEST_DATABASE_URL}}}" npm run test:integration
 
   test:live:gitlab:
     desc: Run the live multi-repo GitLab integration test against the homelab GitLab
@@ -131,7 +135,7 @@ tasks:
       the Task Graph + provider projection audit. Requires GITLAB_BASE_URL
       and GITLAB_TOKEN from secrets/dev.yaml.
     cmds:
-      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase1'"
+      - '{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} ''set -a; . ./.env 2>/dev/null || true; set +a; DATABASE_URL="${DATABASE_URL:-{{.LOCAL_DATABASE_URL}}}" npm run acceptance:phase1'''
 
   acceptance:phase2:
     desc: Run Phase 2 live acceptance (AGENT_RUNTIME=pi) against the homelab GitLab
@@ -159,7 +163,7 @@ tasks:
           limit / runtime exception)
         - developer.run.rejected, developer.envelope.stale (envelope path)
     cmds:
-      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase2'"
+      - '{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} ''set -a; . ./.env 2>/dev/null || true; set +a; DATABASE_URL="${DATABASE_URL:-{{.LOCAL_DATABASE_URL}}}" npm run acceptance:phase2'''
 
   acceptance:phase3:
     desc: Run Phase 3 live acceptance (architect → reviewer → developer → merge → scope close)
@@ -173,12 +177,44 @@ tasks:
       Prerequisites: same as acceptance:phase2 plus an active Codex (or
       configured) OAuth connection in provider_oauth_connections.
     cmds:
-      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'npm run acceptance:phase3'"
+      - '{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} ''set -a; . ./.env 2>/dev/null || true; set +a; DATABASE_URL="${DATABASE_URL:-{{.LOCAL_DATABASE_URL}}}" npm run acceptance:phase3'''
+
+  acceptance:phase3-temporal:
+    desc: Run Temporal-driven Phase 3 live smoke acceptance
+    summary: |
+      Live-by-default. Seeds a disposable GitLab group/project and one ready
+      task, starts an embedded Temporal worker on a disposable queue, starts
+      `scopeSupervisorWorkflow`, and lets that worker own the plan/develop/review
+      loop through Temporal instead of calling lifecycle activities directly
+      from the harness.
+
+      Prerequisites: same as acceptance:phase3. Run `task up` and
+      `task db:migrate` before launching this target.
+
+      Teardown: the throwaway GitLab group is deleted in `finally` unless
+      COLONY_TEMPORAL_BUILD_KEEP_GROUP=1 is set. The run prints a compact
+      Temporal workflow-history summary before exiting.
+    cmds:
+      - '{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} ''set -a; . ./.env 2>/dev/null || true; set +a; DATABASE_URL="${DATABASE_URL:-{{.LOCAL_DATABASE_URL}}}" npm run acceptance:phase3-temporal'''
+
+  e2e:real-flow:
+    desc: Run the real local E2E flow through API, Temporal, and webhook dispatcher
+    summary: |
+      Bootstraps a throwaway GitLab project, then drives the product path:
+      API provider registration, API scope creation, API decomposition
+      request, Temporal architect/reviewer/developer work, webhook-dispatcher
+      approval + pipeline signals, merge, task close, and API scope close.
+
+      The harness does not seed scopes/tasks or call lifecycle activities
+      directly. It only creates the disposable provider sandbox and grants the
+      local operator capabilities the API requires.
+    cmds:
+      - '{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} ''set -a; . ./.env 2>/dev/null || true; set +a; DATABASE_URL="${DATABASE_URL:-{{.LOCAL_DATABASE_URL}}}" npm run e2e:real-flow'''
 
   test:all:
     desc: All tests (unit + integration + live GitLab)
     cmds:
-      - "{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} 'COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test npm test'"
+      - '{{.BAO_LOGIN}} --exec sops exec-env {{.SECRETS_FILE}} ''COLONY_TEST_DATABASE_URL="${COLONY_TEST_DATABASE_URL:-{{.LOCAL_TEST_DATABASE_URL}}}" npm test'''
 
   # ---------------------------------------------------------------------------
   # Code quality

@@ -9,6 +9,7 @@ import { config as loadDotenv } from "dotenv";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client as TemporalClient, Connection } from "@temporalio/client";
+import { NativeConnection, Worker } from "@temporalio/worker";
 import {
   PolicyRepository,
   ProviderProjectRepository,
@@ -22,6 +23,10 @@ import {
   scopeSupervisorWorkflow,
   supervisorWorkflowId,
 } from "@colony/workflows";
+import {
+  activities,
+  initializeAgentRuntime,
+} from "../apps/worker/src/activities.js";
 
 loadDotenv({
   path: resolve(dirname(fileURLToPath(import.meta.url)), "..", ".env"),
@@ -35,11 +40,16 @@ const stamp = Date.now().toString(36);
 const scopeId = `col-tb${stamp}` as ScopeId;
 const taskId = `${scopeId}.1` as TaskId;
 const groupPath = `colony-temporal-build-${stamp}`;
-const projectPath = "opspulse";
+const projectPath = "echopress";
 const taskQueue =
-  process.env["COLONY_TEMPORAL_BUILD_TASK_QUEUE"] ?? cfg.TEMPORAL_TASK_QUEUE;
+  process.env["COLONY_TEMPORAL_BUILD_TASK_QUEUE"] ??
+  `colony-temporal-build-${stamp}`;
+const keepGroup = ["1", "true", "yes"].includes(
+  process.env["COLONY_TEMPORAL_BUILD_KEEP_GROUP"]?.toLowerCase() ?? "",
+);
 const supervisor = "svc:supervisor" as ActorId;
 const developer = "bot:engine" as ActorId;
+let cleanupGroupId: string | undefined;
 
 const pool = createPool({
   connectionString: cfg.DATABASE_URL,
@@ -54,12 +64,15 @@ const adapter = new GitLabProviderAdapter({
 });
 
 try {
+  await initializeAgentRuntime();
+
   console.log(`[temporal-build] creating GitLab group ${groupPath}`);
   const group = await adapter.groups.create({
     name: `Colony Temporal Build ${stamp}`,
     path: groupPath,
     visibility: "private",
   });
+  cleanupGroupId = group.id;
   const projectInfo = await adapter.projects.create({
     name: projectPath,
     path: projectPath,
@@ -78,11 +91,10 @@ try {
           action: "create",
           file_path: "README.md",
           content: [
-            "# OpsPulse",
+            "# EchoPress",
             "",
-            "A tiny Node.js observability report scaffold. Colony should add",
-            "the JSONL metrics parser, markdown report generator, CLI, tests,",
-            "and usage docs.",
+            "A tiny Node.js app scaffold. Colony should add the HTTP server,",
+            "static page, local smoke test, and usage docs.",
             "",
           ].join("\n"),
         },
@@ -91,11 +103,12 @@ try {
           file_path: "package.json",
           content: JSON.stringify(
             {
-              name: "opspulse",
+              name: "echopress",
               version: "0.0.0",
               type: "module",
               scripts: {
-                test: "node --test",
+                start: "node server.js",
+                test: "node --test --test-timeout=10000 --test-force-exit",
               },
             },
             null,
@@ -138,9 +151,9 @@ try {
   await repo.createScope(
     {
       id: scopeId,
-      title: "Build OpsPulse JSONL metrics reporter",
+      title: "Build EchoPress static posting app",
       description:
-        "Use Temporal to drive Colony through a single implementation task that creates a useful reporting CLI.",
+        "Use Temporal to drive Colony through a single implementation task that creates a tiny fixed-stack Node.js app.",
       state: "active",
     },
     {
@@ -158,33 +171,34 @@ try {
     {
       id: taskId,
       scope_id: scopeId,
-      title: "Implement OpsPulse metrics report CLI",
+      title: "Implement EchoPress tiny posting app",
       description: [
-        "Implement a small Node.js observability reporting package in this repo.",
+        "Implement a deliberately small Node.js web app in this repo.",
         "",
         "Expected behavior:",
-        "- Export `parseEvents(input)`, `summarize(events)`, and `renderMarkdown(summary)` from `src/opspulse.js`.",
-        "- Input is newline-delimited JSON. Each event has `service`, `route`, `status`, `latency_ms`, and optional ISO `timestamp`.",
-        "- Group by service and compute request count, error count, error rate, p50 latency, p95 latency, and slowest route.",
-        "- Render a markdown report with a summary table and a compact ASCII latency sparkline per service.",
-        "- Add executable `bin/opspulse.js` that reads a JSONL file path argument or stdin and prints the markdown report.",
-        "- Add sample data under `examples/events.jsonl`.",
-        "- Add `node --test` coverage for parsing, percentile calculation, grouping, markdown output, CLI file input, and malformed JSON diagnostics.",
-        "- Update README with library and CLI usage examples.",
-        "- `npm test` must pass.",
+        "- Keep the stack to a root npm package, plain Node.js, static HTML, vanilla CSS, and vanilla JavaScript.",
+        "- Add `server.js` using Node's built-in `http` module; it must serve `public/index.html`, `public/styles.css`, and `public/app.js`.",
+        "- Make `server.js` testable: export `requestHandler(req, res)` and `createServer()`, and only call `listen` when `server.js` is executed directly.",
+        "- Do not export or reuse a singleton server from `server.js`; each test should create its own server with `createServer()` and close it.",
+        "- The first page should render a small EchoPress posting surface with a composer, a list of seeded posts, and no external assets.",
+        "- Add `test/server.test.js` using Node's built-in test runner and local HTTP requests against `createServer()`.",
+        "- Keep the package `test` script as `node --test --test-timeout=10000 --test-force-exit` so a leaked handle cannot hang the agent.",
+        "- Tests must close the server they create and must not leave a process running after `npm test`.",
+        "- Update README with install-free run and test commands.",
+        "- `npm test` must pass locally without downloading packages.",
       ].join("\n"),
       acceptance_criteria: [
-        "`src/opspulse.js` exports parser, summarizer, and markdown renderer functions.",
-        "`bin/opspulse.js` reads JSONL from a file path or stdin and prints markdown.",
-        "Reports include request count, error rate, p50, p95, slowest route, and a per-service sparkline.",
-        "Tests cover parser errors, percentile math, grouping, renderer output, and CLI execution.",
+        "`server.js` exports `requestHandler` and `createServer`, uses only Node built-ins, and is importable without opening a port.",
+        "`public/index.html`, `public/styles.css`, and `public/app.js` implement the posting UI.",
+        "The page includes a composer, seeded posts, and client-side add-post behavior.",
+        "`test/server.test.js` verifies the server returns HTML, CSS, and JavaScript assets and exits cleanly.",
         "`npm test` passes using Node's built-in test runner.",
-        "README documents library and CLI usage with sample JSONL.",
+        "README documents `npm start` and `npm test`.",
       ],
       non_goals: [
-        "Do not add external runtime dependencies.",
-        "Do not add a build step or TypeScript.",
-        "Do not call external services.",
+        "Do not add React, Vite, Playwright, Puppeteer, TypeScript, databases, auth, or external services.",
+        "Do not add package dependencies or a build step.",
+        "Do not download browser binaries or call external APIs.",
       ],
       state: "ready",
     },
@@ -216,31 +230,102 @@ try {
     provider_project_path: project.path,
   });
 
-  const connection = await Connection.connect({
+  const connectionOptions = {
     address: cfg.TEMPORAL_ADDRESS,
     tls:
       cfg.TEMPORAL_TLS_SERVER_NAME !== undefined
         ? { serverNameOverride: cfg.TEMPORAL_TLS_SERVER_NAME }
         : cfg.TEMPORAL_TLS,
-  });
+  };
+  const connection = await Connection.connect(connectionOptions);
+  const nativeConnection = await NativeConnection.connect(connectionOptions);
   const temporal = new TemporalClient({
     connection,
     namespace: cfg.TEMPORAL_NAMESPACE,
   });
+  const worker = await Worker.create({
+    connection: nativeConnection,
+    namespace: cfg.TEMPORAL_NAMESPACE,
+    taskQueue,
+    workflowsPath: resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "apps",
+      "worker",
+      "src",
+      "workflows.ts",
+    ),
+    activities,
+  });
   const workflowId = supervisorWorkflowId(scopeId);
   console.log(
-    `[temporal-build] starting workflow ${workflowId} on queue ${taskQueue}`,
+    `[temporal-build] starting embedded worker + workflow ${workflowId} on queue ${taskQueue}`,
   );
-  await temporal.workflow.start(scopeSupervisorWorkflow, {
-    workflowId,
-    taskQueue,
-    args: [scopeId],
-  });
-  await connection.close();
-
-  await monitorBuild(project.path);
+  try {
+    await worker.runUntil(async () => {
+      const handle = await temporal.workflow.start(scopeSupervisorWorkflow, {
+        workflowId,
+        taskQueue,
+        args: [scopeId],
+      });
+      try {
+        await monitorBuild(project.path);
+      } finally {
+        await terminateIfRunning(handle, "Temporal build smoke finished");
+        await logWorkflowHistory(handle);
+      }
+    });
+  } finally {
+    await nativeConnection.close();
+    await connection.close();
+  }
 } finally {
+  if (cleanupGroupId && !keepGroup) {
+    await adapter.groups.delete(cleanupGroupId).catch(() => {});
+  } else if (cleanupGroupId) {
+    console.log(`[temporal-build] keeping GitLab group ${groupPath}`);
+  }
   await pool.end();
+}
+
+async function logWorkflowHistory(
+  handle: Awaited<ReturnType<TemporalClient["workflow"]["start"]>>,
+): Promise<void> {
+  const description = await handle.describe();
+  const history = await handle.fetchHistory();
+  const events = history.events ?? [];
+  const scheduledActivities = events.filter(
+    (event) => event.activityTaskScheduledEventAttributes,
+  ).length;
+  const failedActivities = events.filter(
+    (event) => event.activityTaskFailedEventAttributes,
+  ).length;
+  const completedActivities = events.filter(
+    (event) => event.activityTaskCompletedEventAttributes,
+  ).length;
+  console.log(
+    [
+      "[temporal-build] workflow history:",
+      `status=${description.status.name}`,
+      `events=${events.length}`,
+      `activities_scheduled=${scheduledActivities}`,
+      `activities_completed=${completedActivities}`,
+      `activities_failed=${failedActivities}`,
+    ].join(" "),
+  );
+}
+
+async function terminateIfRunning(
+  handle: Awaited<ReturnType<TemporalClient["workflow"]["start"]>>,
+  reason: string,
+): Promise<void> {
+  const description = await handle.describe();
+  if (description.status.name !== "RUNNING") return;
+  await handle.terminate(reason).catch((err) => {
+    console.warn(
+      `[temporal-build] failed to terminate workflow after smoke run: ${String(err)}`,
+    );
+  });
 }
 
 async function monitorBuild(projectPathWithNamespace: string): Promise<void> {
@@ -254,18 +339,19 @@ async function monitorBuild(projectPathWithNamespace: string): Promise<void> {
         entity_kind: "mr_pr",
       })
     )[0];
+    const codeReviewResult = reviewResultOf(task?.last_code_review_envelope);
     const line = [
       `state=${task?.state ?? "missing"}`,
       `plan=${task?.developer_plan_hash ? "yes" : "no"}`,
       `plan_review=${task?.plan_review_result ?? "none"}`,
       `mr=${mrMirror?.provider_id ?? "none"}`,
-      `code_review=${task?.last_code_review_hash ? "yes" : "no"}`,
+      `code_review=${codeReviewResult ?? "none"}`,
     ].join(" ");
     if (line !== lastLine) {
       console.log(`[temporal-build] ${line}`);
       lastLine = line;
     }
-    if (mrMirror && task?.last_code_review_hash) {
+    if (mrMirror && codeReviewResult === "approved") {
       console.log(`[temporal-build] review completed for ${taskId}`);
       console.log(
         `[temporal-build] project: ${gitlabBaseUrl.replace(/\/+$/, "")}/${projectPathWithNamespace}`,
@@ -276,6 +362,15 @@ async function monitorBuild(projectPathWithNamespace: string): Promise<void> {
         )}`,
       );
       return;
+    }
+    if (
+      mrMirror &&
+      codeReviewResult !== undefined &&
+      codeReviewResult !== "approved"
+    ) {
+      throw new Error(
+        `Temporal build review did not approve ${taskId}: ${codeReviewResult}`,
+      );
     }
     if (task?.state === "review_requested" && mrMirror) {
       console.log(`[temporal-build] developer opened MR for ${taskId}`);
@@ -330,6 +425,13 @@ function isUniqueViolation(err: unknown): err is { readonly code: string } {
 function providerLocalId(id: string): string {
   const index = id.lastIndexOf(":");
   return index === -1 ? id : id.slice(index + 1);
+}
+
+function reviewResultOf(
+  envelope: Readonly<Record<string, unknown>> | undefined,
+): string | undefined {
+  const result = envelope?.["result"];
+  return typeof result === "string" ? result : undefined;
 }
 
 async function sleep(ms: number): Promise<void> {

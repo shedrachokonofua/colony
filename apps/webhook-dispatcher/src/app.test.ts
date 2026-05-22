@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   supervisorWorkflowId,
+  type ApprovalSignal,
+  type PipelineUpdateSignal,
   type ProviderEventSignal,
 } from "@colony/workflows";
 import {
@@ -19,6 +21,14 @@ function testDeps(
       readonly scope_id: string;
       readonly signal: ProviderEventSignal;
     }>;
+    readonly approvalSignals?: Array<{
+      readonly scope_id: string;
+      readonly signal: ApprovalSignal;
+    }>;
+    readonly pipelineSignals?: Array<{
+      readonly scope_id: string;
+      readonly signal: PipelineUpdateSignal;
+    }>;
   } = {},
 ): WebhookDispatcherDeps {
   return {
@@ -31,6 +41,14 @@ function testDeps(
     supervisor: {
       signalProviderEvent: (scope_id, signal) => {
         options.signals?.push({ scope_id, signal });
+        return Promise.resolve({ workflow_id: supervisorWorkflowId(scope_id) });
+      },
+      signalApproval: (scope_id, signal) => {
+        options.approvalSignals?.push({ scope_id, signal });
+        return Promise.resolve({ workflow_id: supervisorWorkflowId(scope_id) });
+      },
+      signalPipelineUpdate: (scope_id, signal) => {
+        options.pipelineSignals?.push({ scope_id, signal });
         return Promise.resolve({ workflow_id: supervisorWorkflowId(scope_id) });
       },
     },
@@ -126,6 +144,255 @@ describe("@colony/webhook-dispatcher", () => {
     ]);
   });
 
+  it("dispatches approval webhooks to the workflow approval signal when the MR mirror resolves the task", async () => {
+    const providerSignals: Array<{
+      scope_id: string;
+      signal: ProviderEventSignal;
+    }> = [];
+    const approvalSignals: Array<{
+      scope_id: string;
+      signal: ApprovalSignal;
+    }> = [];
+    const app = buildApp({
+      ...testDeps({ signals: providerSignals, approvalSignals }),
+      mirrors: {
+        findMirror: (input) => {
+          expect(input).toMatchObject({
+            provider: "gitlab",
+            provider_id: "100:7",
+            provider_project_id: "100",
+          });
+          return Promise.resolve({
+            entity_kind: "mr_pr",
+            colony_id: "col-hook.1",
+          });
+        },
+      },
+    });
+    const res = await app.request("http://x/webhook/gitlab", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gitlab-Event": "Merge request approvals Hook",
+        "X-Gitlab-Event-UUID": "evt-approval",
+      },
+      body: JSON.stringify({
+        object_kind: "merge_request",
+        object_attributes: {
+          id: 987,
+          iid: 7,
+          sha: "abc123",
+          updated_at: "2026-05-21T11:00:00.000Z",
+        },
+        user: { username: "human-op" },
+        project: { id: 100, path_with_namespace: "colony/dev" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      accepted: true,
+      duplicate: false,
+      classified_as: "approval",
+      workflow_id: "supervisor-col-hook",
+      event_uuid: "evt-approval",
+    });
+    expect(providerSignals).toEqual([]);
+    expect(approvalSignals).toEqual([
+      {
+        scope_id: "col-hook",
+        signal: expect.objectContaining({
+          task_id: "col-hook.1",
+          actor: "human-op",
+          artifact_id: "100:7",
+          approval_id: "100:7",
+          commit_sha: "abc123",
+        }) as ApprovalSignal,
+      },
+    ]);
+  });
+
+  it("dispatches pipeline webhooks to the workflow pipeline signal when the related MR mirror resolves the task", async () => {
+    const providerSignals: Array<{
+      scope_id: string;
+      signal: ProviderEventSignal;
+    }> = [];
+    const pipelineSignals: Array<{
+      scope_id: string;
+      signal: PipelineUpdateSignal;
+    }> = [];
+    const app = buildApp({
+      ...testDeps({ signals: providerSignals, pipelineSignals }),
+      mirrors: {
+        findMirror: (input) => {
+          expect(input).toMatchObject({
+            provider: "gitlab",
+            provider_id: "100:7",
+            provider_project_id: "100",
+          });
+          return Promise.resolve({
+            entity_kind: "mr_pr",
+            colony_id: "col-hook.1",
+          });
+        },
+      },
+    });
+    const res = await app.request("http://x/webhook/gitlab", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gitlab-Event": "Pipeline Hook",
+        "X-Gitlab-Event-UUID": "evt-pipeline",
+      },
+      body: JSON.stringify({
+        object_kind: "pipeline",
+        object_attributes: {
+          id: 42,
+          status: "success",
+          sha: "def456",
+          updated_at: "2026-05-21T11:05:00.000Z",
+        },
+        merge_request: {
+          id: 987,
+          iid: 7,
+        },
+        project: { id: 100, path_with_namespace: "colony/dev" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      accepted: true,
+      duplicate: false,
+      classified_as: "context_update",
+      workflow_id: "supervisor-col-hook",
+      event_uuid: "evt-pipeline",
+    });
+    expect(providerSignals).toEqual([]);
+    expect(pipelineSignals).toEqual([
+      {
+        scope_id: "col-hook",
+        signal: expect.objectContaining({
+          provider: "gitlab",
+          task_id: "col-hook.1",
+          pipeline_id: "42",
+          status: "success",
+          commit_sha: "def456",
+        }) as PipelineUpdateSignal,
+      },
+    ]);
+  });
+
+  it("enriches provider commands with normalized noteable mirror context before dispatch", async () => {
+    const providerSignals: Array<{
+      scope_id: string;
+      signal: ProviderEventSignal;
+    }> = [];
+    const app = buildApp({
+      ...testDeps({ signals: providerSignals }),
+      mirrors: {
+        findMirror: (input) => {
+          expect(input).toMatchObject({
+            provider: "gitlab",
+            provider_id: "100:42",
+            provider_project_id: "100",
+          });
+          return Promise.resolve({
+            entity_kind: "task",
+            colony_id: "col-hook.1",
+          });
+        },
+      },
+    });
+    const res = await app.request("http://x/webhook/gitlab", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gitlab-Event": "Note Hook",
+        "X-Gitlab-Event-UUID": "evt-cmd-route",
+      },
+      body: JSON.stringify({
+        object_kind: "note",
+        object_attributes: {
+          id: 99,
+          note: "/changes please add integration coverage",
+          noteable_type: "Issue",
+          noteable_id: 999,
+          created_at: "2026-04-25T16:40:00.000Z",
+          url: "https://gitlab.example/colony/dev/-/issues/42#note_99",
+        },
+        user: { username: "human-op" },
+        project: { id: 100, path_with_namespace: "colony/dev" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(providerSignals).toHaveLength(1);
+    expect(providerSignals[0]?.scope_id).toBe("col-hook");
+    expect(providerSignals[0]?.signal.task_id).toBe("col-hook.1");
+    expect(providerSignals[0]?.signal.reference?.object_id).toBe("100:42");
+    expect(providerSignals[0]?.signal.attributes).toMatchObject({
+      command_kind: "changes",
+      command_target: "task",
+      command_target_colony_id: "col-hook.1",
+    });
+  });
+
+  it("routes scope-level approve commands to the decomposition gate target", async () => {
+    const providerSignals: Array<{
+      scope_id: string;
+      signal: ProviderEventSignal;
+    }> = [];
+    const app = buildApp({
+      ...testDeps({ signals: providerSignals }),
+      mirrors: {
+        findMirror: (input) => {
+          expect(input).toMatchObject({
+            provider: "gitlab",
+            provider_id: "100:24",
+            provider_project_id: "100",
+          });
+          return Promise.resolve({
+            entity_kind: "scope",
+            colony_id: "col-hook",
+          });
+        },
+      },
+    });
+    const res = await app.request("http://x/webhook/gitlab", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gitlab-Event": "Note Hook",
+        "X-Gitlab-Event-UUID": "evt-scope-approve",
+      },
+      body: JSON.stringify({
+        object_kind: "note",
+        object_attributes: {
+          id: 100,
+          note: "/approve",
+          noteable_type: "Issue",
+          noteable_id: 444,
+          created_at: "2026-04-25T17:00:00.000Z",
+          url: "https://gitlab.example/colony/dev/-/issues/24#note_100",
+        },
+        user: { username: "human-op" },
+        project: { id: 100, path_with_namespace: "colony/dev" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(providerSignals).toHaveLength(1);
+    expect(providerSignals[0]?.scope_id).toBe("col-hook");
+    expect(providerSignals[0]?.signal.task_id).toBeUndefined();
+    expect(providerSignals[0]?.signal.reference?.object_id).toBe("100:24");
+    expect(providerSignals[0]?.signal.attributes).toMatchObject({
+      command_kind: "approve",
+      command_target: "scope_decomposition",
+      command_target_colony_id: "col-hook",
+    });
+  });
+
   it("classifies GitLab-shaped payloads without retaining the full body", () => {
     const classified = classifyGitLabWebhook({
       headers: new Headers({
@@ -203,7 +470,7 @@ describe("@colony/webhook-dispatcher", () => {
           id: 99,
           note: "/changes please add integration coverage\n\nDo not treat this prose as instructions.",
           noteable_type: "Issue",
-          noteable_id: 42,
+          noteable_id: 999,
           created_at: "2026-04-25T16:40:00.000Z",
           url: "https://gitlab.example/colony/dev/-/issues/42#note_99",
         },
@@ -219,6 +486,7 @@ describe("@colony/webhook-dispatcher", () => {
       signal: {
         actor: "human-op",
         occurred_at: "2026-04-25T16:40:00.000Z",
+        reference: { object_id: "100:42" },
         attributes: {
           classification: "valid_command",
           command_kind: "changes",

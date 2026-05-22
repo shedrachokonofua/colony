@@ -306,7 +306,7 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
         reason: "task_not_found",
       };
     }
-    if (task.state !== "plan_proposed") {
+    if (task.state !== "plan_proposed" && task.state !== "plan_review") {
       return {
         started: false,
         task_id: task.id,
@@ -345,16 +345,18 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
       };
     }
 
-    await deps.repo.updateTaskState(
-      task.id,
-      task.state_version,
-      "plan_review",
-      {
-        actor: input.reviewer as ActorId,
-        capability: "task.assign",
-        reason: "plan_review_started",
-      },
-    );
+    if (task.state !== "plan_review") {
+      await deps.repo.updateTaskState(
+        task.id,
+        task.state_version,
+        "plan_review",
+        {
+          actor: input.reviewer as ActorId,
+          capability: "task.assign",
+          reason: "plan_review_started",
+        },
+      );
+    }
     const prompt = buildPlanReviewerPrompt({
       task: {
         id: task.id,

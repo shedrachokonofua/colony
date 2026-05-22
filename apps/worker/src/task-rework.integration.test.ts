@@ -35,11 +35,12 @@ const HUMAN_ACTOR = "user:so" as ActorId;
  *
  * Seeds a task in `review_requested` state with a recorded approval on
  * its MR artifact, then drives `requestTaskRework` and asserts:
- *   - state goes review_requested -> changes_requested -> in_progress
+ *   - state goes review_requested -> changes_requested so the planning gate
+ *     can drive changes_requested -> plan_proposed -> plan_review -> in_progress
  *   - the MR's active approval is invalidated
  *   - the rework counter increments
  *   - hitting the loop cap returns loop_cap_exceeded
- *   - re-applying when the task is already in_progress is a no-op
+ *   - re-applying while already changes_requested is idempotent
  */
 describe.runIf(TEST_URL)("requestTaskRework integration", () => {
   const databaseUrl = TEST_URL!;
@@ -89,7 +90,7 @@ describe.runIf(TEST_URL)("requestTaskRework integration", () => {
     }
   });
 
-  it("kicks task back to in_progress and invalidates the active approval", async () => {
+  it("kicks task back to changes_requested and invalidates the active approval", async () => {
     const { artifactId } = await seedTaskWithApproval();
     const rework = createRequestTaskRework({
       repo,
@@ -106,13 +107,13 @@ describe.runIf(TEST_URL)("requestTaskRework integration", () => {
       applied: true,
       task_id: TASK_ID,
       previous_state: "review_requested",
-      new_state: "in_progress",
+      new_state: "changes_requested",
       invalidated_approvals: 1,
       rework_count: 1,
     });
 
     const task = await repo.getTask(TASK_ID);
-    expect(task!.state).toBe("in_progress");
+    expect(task!.state).toBe("changes_requested");
     const approvals = await reviewGate.listActiveApprovals(artifactId as never);
     expect(approvals).toHaveLength(0);
 
@@ -120,7 +121,7 @@ describe.runIf(TEST_URL)("requestTaskRework integration", () => {
     expect(audit.some((a) => a.action === "task.rework.kicked_off")).toBe(true);
   });
 
-  it("returns task_not_open_to_rework when the task is already in_progress", async () => {
+  it("is idempotent when the task is already changes_requested", async () => {
     await seedTaskWithApproval();
     const rework = createRequestTaskRework({
       repo,
@@ -130,10 +131,14 @@ describe.runIf(TEST_URL)("requestTaskRework integration", () => {
 
     await rework({ task_id: TASK_ID, actor: HUMAN_ACTOR });
     const second = await rework({ task_id: TASK_ID, actor: HUMAN_ACTOR });
-    expect(second.applied).toBe(false);
-    expect((second as { reason: string }).reason).toBe(
-      "task_not_open_to_rework:in_progress",
-    );
+    expect(second).toMatchObject({
+      applied: true,
+      task_id: TASK_ID,
+      previous_state: "changes_requested",
+      new_state: "changes_requested",
+      invalidated_approvals: 0,
+      rework_count: 1,
+    });
   });
 
   it("returns loop_cap_exceeded once the cap is reached", async () => {
@@ -152,17 +157,9 @@ describe.runIf(TEST_URL)("requestTaskRework integration", () => {
         review_loop_cap: 3,
       });
       expect(r.applied).toBe(true);
-      // Move the task back to review_requested to allow another rework.
-      await repo.updateTaskState(
-        TASK_ID,
-        (await repo.getTask(TASK_ID))!.state_version,
-        "review_requested",
-        {
-          actor: SUPERVISOR,
-          capability: "task.assign",
-          reason: "test_cycle",
-        },
-      );
+      // Move through the planning gate path and back to review_requested
+      // to allow another rework without bypassing the state machine.
+      await moveTaskBackToReviewRequested();
     }
     const blocked = await rework({
       task_id: TASK_ID,
@@ -229,6 +226,23 @@ describe.runIf(TEST_URL)("requestTaskRework integration", () => {
       commit_sha: "abc123",
     });
     return { artifactId: artifact.id };
+  }
+
+  async function moveTaskBackToReviewRequested(): Promise<void> {
+    for (const state of [
+      "plan_proposed",
+      "plan_review",
+      "in_progress",
+      "review_requested",
+    ] as const) {
+      const current = await repo.getTask(TASK_ID);
+      if (!current) throw new Error("task missing during rework test cycle");
+      await repo.updateTaskState(TASK_ID, current.state_version, state, {
+        actor: SUPERVISOR,
+        capability: "task.assign",
+        reason: "test_cycle",
+      });
+    }
   }
 });
 

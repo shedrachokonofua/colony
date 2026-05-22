@@ -27,13 +27,17 @@ import {
   createRecordPipelineStatus,
 } from "./gate-evaluation.js";
 import { createCloseTaskAfterMerge, createMergeTask } from "./merge-flow.js";
+import {
+  createStartDeveloperPlanRun,
+  createStartPlanReviewRun,
+} from "./task-planning.js";
 
 /**
  * COL-2.14 Phase 2 acceptance — exercises the complete state pipeline
- * `ready -> claimed -> in_progress -> review_requested -> merge_ready ->
- *  merged -> closed` using the FakeProviderAdapter so this test runs in CI
- * without GitLab credentials. Real-GitLab E2E lives in
- * `scripts/phase2-acceptance.ts`.
+ * `ready -> claimed -> plan_proposed -> plan_review -> in_progress ->
+ * review_requested -> merge_ready -> merged -> closed` using the
+ * FakeProviderAdapter so this test runs in CI without GitLab credentials.
+ * Real-GitLab E2E lives in `scripts/phase2-acceptance.ts`.
  */
 
 const TEST_URL = process.env.COLONY_TEST_DATABASE_URL;
@@ -80,7 +84,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     await pgClient?.end();
   });
 
-  it("walks ready -> claimed -> in_progress -> review_requested -> merge_ready -> merged -> closed", async () => {
+  it("walks ready -> claimed -> plan gate -> review_requested -> merge_ready -> merged -> closed", async () => {
     const repo = new TaskGraphRepository(pool);
     const providerProjects = new ProviderProjectRepository(pool);
     const reviewGate = new ReviewGateRepository(pool);
@@ -177,7 +181,41 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     );
     expect(claimed?.state).toBe("claimed");
 
-    // 3. Run developer flow → opens MR, task → review_requested.
+    // 3. Run the Phase 3.5 planning gate before allowing code execution.
+    const startDeveloperPlanRun = createStartDeveloperPlanRun({
+      repo,
+      providerProjects,
+      providerAdapter: adapter,
+      agentRuntime,
+    });
+    const planResult = await startDeveloperPlanRun({
+      task_id: task.id,
+      assignee: developer,
+    });
+    expect(planResult.started).toBe(true);
+    if (!planResult.started) throw new Error("developer plan did not start");
+    expect(planResult.envelope_status).toBe("succeeded");
+    expect(planResult.final_state).toBe("plan_proposed");
+    expect(planResult.developer_plan?.task_id).toBe(task.id);
+
+    const startPlanReviewRun = createStartPlanReviewRun({
+      repo,
+      providerProjects,
+      providerAdapter: adapter,
+      agentRuntime,
+    });
+    const planReviewResult = await startPlanReviewRun({
+      task_id: task.id,
+      reviewer,
+      developer_plan: planResult.developer_plan,
+    });
+    expect(planReviewResult.started).toBe(true);
+    if (!planReviewResult.started) throw new Error("plan review did not start");
+    expect(planReviewResult.envelope_status).toBe("succeeded");
+    expect(planReviewResult.review_result).toBe("approved");
+    expect(planReviewResult.final_state).toBe("in_progress");
+
+    // 4. Run developer flow → opens MR, task → review_requested.
     const startDeveloperRun = createDeveloperRun({
       repo,
       providerProjects,
@@ -203,7 +241,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
       /^\d{4}-\d{2}-\d{2}T/,
     );
 
-    // 4. Open the mr_pr gate.
+    // 5. Open the mr_pr gate.
     const openMrGate = createOpenMrGate({
       repo,
       providerProjects,
@@ -213,7 +251,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     const gateOpen = await openMrGate({ task_id: task.id });
     expect(gateOpen.opened).toBe(true);
 
-    // 5. Run reviewer flow with an approved envelope. Reuse the developer's
+    // 6. Run reviewer flow with an approved envelope. Reuse the developer's
     //    completion envelope as the input to the review packet builder.
     const devOutput = await agentRuntime.getRunOutput(devResult.run_id);
     const developerEnvelope = developerCompletionEnvelopeSchema.parse(
@@ -239,7 +277,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     // approval + green pipeline arrive.
     expect(revResult.final_state).toBe("review_requested");
 
-    // 6. Record human /approve and a green pipeline at the developer head.
+    // 7. Record human /approve and a green pipeline at the developer head.
     const recordHumanApproval = createRecordHumanApproval({
       repo,
       providerProjects,
@@ -274,7 +312,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     });
     expect(pipelineResult.recorded).toBe(true);
 
-    // 7. Evaluate gate → task → merge_ready.
+    // 8. Evaluate gate → task → merge_ready.
     const checkMrGate = createCheckMrGate({
       repo,
       providerProjects,
@@ -289,7 +327,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     }
     expect(gateCheck.final_state).toBe("merge_ready");
 
-    // 8. Merge → task → merged.
+    // 9. Merge → task → merged.
     const mergeTask = createMergeTask({
       repo,
       providerProjects,
@@ -301,7 +339,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     if (!mergeResult.merged) throw new Error("merge failed");
     expect(mergeResult.final_state).toBe("merged");
 
-    // 9. Close after merge → task → closed.
+    // 10. Close after merge → task → closed.
     const closeTaskAfterMerge = createCloseTaskAfterMerge({
       repo,
       providerProjects,
@@ -317,7 +355,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     if (!closeResult.closed) throw new Error("close failed");
     expect(closeResult.final_state).toBe("closed");
 
-    // 10. Audit trail: every transition links provider event, workflow action,
+    // 11. Audit trail: every transition links provider event, workflow action,
     //     envelope hash, and resulting state.
     const audit = await repo.listAuditForScope(scope_id, { limit: 200 });
     const actions = new Set(audit.map((a) => a.action));
@@ -328,7 +366,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     expect(actions.has("provider.mr.merged")).toBe(true);
     expect(actions.has("task.closed")).toBe(true);
 
-    // 11. Stale-approval invalidation sanity check: a failed pipeline kicks
+    // 12. Stale-approval invalidation sanity check: a failed pipeline kicks
     //     human approvals out, so a re-evaluation can't re-open the gate.
     //     We re-record the human approval, then drop a failed pipeline;
     //     listActiveApprovals should drop to zero.

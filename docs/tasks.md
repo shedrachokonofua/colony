@@ -1098,7 +1098,7 @@ Goal: make Colony usable for a real project by the end of this phase. The Phase 
 - Duplicate signals and activity retries do not duplicate provider writes, MRs, approvals, merges, or audit records.
 - `changes_requested` re-enters Developer work and requires a fresh review before merge readiness.
 
-**Status:** in progress. Commit `1b60d62` moved the happy-path task loop into `scopeSupervisorWorkflow`. Commit `a7c55c0` added the `changes_requested -> in_progress` refinement loop: webhook dispatcher tags task-level `/changes` comments with `command_target=task`, the supervisor workflow dispatches to `requestTaskRework` which transitions the task back through `changes_requested` to `in_progress`, invalidates every active approval on the task's MR artifact (fresh review required), and the workflow re-drives `driveClaimedTask` after the signal batch. `review_loop_cap` enforces the loop ceiling. Provider command routing covers `provider_event` (scope-decomposition + task-rework), `approval`, `pipeline_update`, `changes_requested` (workflow-level via the rework path), and the reconciliation timer. Remaining work for the deep version of this task before marking complete: explicit idempotency keys threaded through every lifecycle activity invocation (current activities are naturally idempotent via state-machine guards but don't dedupe at the audit layer), durable retry tuning beyond `maximumAttempts: 1`, and an `operator_override` workflow handler. These are defense-in-depth and tracked under COL-3.5/COL-3.7 acceptance.
+**Status:** in progress. Commit `1b60d62` moved the happy-path task loop into `scopeSupervisorWorkflow`. Commit `a7c55c0` added the `changes_requested -> in_progress` refinement loop: webhook dispatcher tags task-level `/changes` comments with `command_target=task`, the supervisor workflow dispatches to `requestTaskRework` which transitions the task back through `changes_requested` to `in_progress`, invalidates every active approval on the task's MR artifact (fresh review required), and the workflow re-drives `driveClaimedTask` after the signal batch. `review_loop_cap` enforces the loop ceiling. Provider command routing covers `provider_event` (scope-decomposition + task-rework), `approval`, `pipeline_update`, `changes_requested` (workflow-level via the rework path), `operator_override`, and the reconciliation timer. The operator override handler is covered by the Temporal SDK workflow test as of 2026-05-21. Live acceptance passed on 2026-05-21 with direct Phase 3 scope `col-p3mpfl9xji` and Temporal smoke task `col-tbmpfol3jl.1`. Remaining work for the deep version of this task before marking complete: explicit idempotency keys threaded through every lifecycle activity invocation (current activities are naturally idempotent via state-machine guards but don't dedupe at the audit layer).
 
 ### COL-3.2 — Periodic Reconciliation Timer
 
@@ -1311,7 +1311,7 @@ Goal: between the working scope-to-closed-scope flow (Phase 3) and the operation
 
 - [ ]
 
-**Status:** implemented, acceptance pending. Added `GET/POST /admin/provider/projects` for registering existing GitLab projects into `provider_projects`, plus the admin UI form/list on `/admin/providers`. Added `/scopes` new-scope form with title, description, project picker, and provider mirroring, and a draft-scope "Run architect" action that calls `POST /scopes/:id/decomposition-request`. Documented the operator path in `docs/dev-loop.md`. Verified with typecheck, lint, format check, and the full unit suite. Still needed before marking complete: run the full operator path against a real project through scope closure and re-run `acceptance:phase3`.
+**Status:** partially implemented, acceptance pending. Reviewer prompts and the Pi runner path now expect direct workspace/diff inspection when a cloned MR workspace is available, and the reviewer packet still carries `diff_summary` as fallback context. Still needed before marking complete: Phase 3 acceptance with the workspace-enabled reviewer, a regression proving it catches an issue invisible from `diff_summary` alone, and bench evidence that turn counts stay bounded.
 
 **Depends on:** COL-3.5.2
 
@@ -1332,6 +1332,8 @@ Goal: between the working scope-to-closed-scope flow (Phase 3) and the operation
 
 - [ ]
 
+**Status:** implemented, acceptance pending. Added `GET/POST /admin/provider/projects` for registering existing GitLab projects into `provider_projects`, plus the admin UI form/list on `/admin/providers`. Added `/scopes` new-scope form with title, description, project picker, and provider mirroring, and a draft-scope "Run architect" action that calls `POST /scopes/:id/decomposition-request`. Documented the operator path in `docs/dev-loop.md`. Verified with typecheck, lint, format check, full unit suite, and the DB/API/worker integration suites on 2026-05-21. Still needed before marking complete: run the full operator path against a real project through scope closure and re-run `acceptance:phase3`.
+
 **Depends on:** COL-3.5.2
 
 **Deliverables**
@@ -1349,6 +1351,8 @@ Goal: between the working scope-to-closed-scope flow (Phase 3) and the operation
 ### COL-3.5.5 — Temporal-Driven End-To-End Harness
 
 - [ ]
+
+**Status:** partially implemented. `scripts/temporal-build-smoke.ts` now has runnable entrypoints as `npm run acceptance:phase3-temporal` and `task acceptance:phase3-temporal`; the harness seeds a live project/task, starts an embedded Temporal worker on a disposable queue, starts `scopeSupervisorWorkflow`, monitors Task Graph state instead of directly calling lifecycle activities, cleans up the disposable GitLab group by default, and prints a compact Temporal workflow-history summary before exit. On 2026-05-21 the home-lab GitLab/Temporal smoke passed with task `col-tbmpfol3jl.1`, MR `187:1`, approved reviewer result, and workflow history `events=48`, `activities_scheduled=7`, `activities_completed=7`, `activities_failed=0`. The Temporal SDK workflow tests cover plan-gate ordering, activity retry, reviewer-driven rework, `operator_override` signal routing into the workflow activity, and worker restart/resume from workflow history after a failed activity attempt. Webhook dispatcher unit coverage now proves live-shaped GitLab webhooks do not need a synthetic `scope_id`: approval hooks derive the scope from an MR mirror before routing to the workflow approval signal, pipeline hooks derive the scope from a related MR mirror before routing to the workflow pipeline signal, and provider command comments normalize GitLab issue/MR references to the same `project_id:iid` mirror key used by the GitLab adapter for both task-level `/changes` and scope-level `/approve`. Still needed before marking complete: verify live provider webhook events drive signals end-to-end.
 
 **Depends on:** COL-3.5.2
 
@@ -1368,7 +1372,7 @@ Goal: between the working scope-to-closed-scope flow (Phase 3) and the operation
 
 - [ ]
 
-**Status:** implemented, acceptance pending. Added `developer_plan` and `plan_review` envelope schemas, generated JSON schemas, new task states (`claimed -> plan_proposed -> plan_review -> in_progress` with `changes_requested -> plan_proposed`), DB migration columns/indexes, repository helpers, workflow gate activities, a plan-review prompt builder, and worker planning activities with loop-cap handling. `startDeveloperRun` now requires `in_progress`, so code execution is gated behind approved plan review; failing deterministic plan review routes back to `plan_proposed`. Verified with typecheck, lint, format check, schema/domain/workflow/prompt tests, and the full unit suite. Still needed before marking complete: run Phase 3 acceptance with the inserted gate against the live provider path.
+**Status:** implemented. Added `developer_plan` and `plan_review` envelope schemas, generated JSON schemas, new task states (`claimed -> plan_proposed -> plan_review -> in_progress` with `changes_requested -> plan_proposed`), DB migration columns/indexes, repository helpers, workflow gate activities, a plan-review prompt builder, and worker planning activities with loop-cap handling. `startDeveloperRun` now requires `in_progress`, so code execution is gated behind approved plan review; failing deterministic plan review routes back to `plan_proposed`. Verified with typecheck, lint, format check, schema/domain/workflow/prompt tests, the full unit suite, DB/API/worker integration suites, the Temporal SDK workflow test, direct Phase 3 acceptance scope `col-p3mpfl9xji`, and Temporal smoke task `col-tbmpfol3jl.1` on 2026-05-21.
 
 **Depends on:** COL-3.5.3
 

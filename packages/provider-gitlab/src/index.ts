@@ -329,7 +329,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     create: async (project, input) =>
       this.createIssue(project, {
         ...input,
-        labels: [...(input.labels ?? []), "colony:scope"],
+        labels: [...new Set([...(input.labels ?? []), "colony:scope"])],
       }),
     update: async (project, id, input) => this.updateIssue(project, id, input),
     close: async (project, id) => this.updateIssueState(project, id, "close"),

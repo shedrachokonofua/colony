@@ -359,6 +359,42 @@ export type TaskReworkResult =
       readonly rework_count: number;
     };
 
+export type OperatorTaskAction =
+  | "cancel"
+  | "block"
+  | "unblock"
+  | "force_pending_sync"
+  | "requeue_ready";
+
+export type OperatorScopeAction = "cancel";
+
+export type ApplyOperatorOverrideInput =
+  | {
+      readonly target: "task";
+      readonly task_id: TaskId;
+      readonly action: OperatorTaskAction;
+      readonly actor: string;
+      readonly reason: string;
+      readonly evidence?: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly target: "scope";
+      readonly scope_id: ScopeId;
+      readonly action: OperatorScopeAction;
+      readonly actor: string;
+      readonly reason: string;
+      readonly evidence?: Readonly<Record<string, unknown>>;
+    };
+
+export type ApplyOperatorOverrideResult =
+  | { readonly applied: false; readonly reason: string }
+  | {
+      readonly applied: true;
+      readonly target: "task" | "scope";
+      readonly previous_state: string;
+      readonly new_state: string;
+    };
+
 export type ArchitectRunActivityResult =
   | {
       readonly started: false;
@@ -493,6 +529,9 @@ export interface SupervisorActivities {
     readonly actor: string;
     readonly reason?: string;
   }) => Promise<TaskReworkResult>;
+  readonly applyOperatorOverride: (
+    input: ApplyOperatorOverrideInput,
+  ) => Promise<ApplyOperatorOverrideResult>;
   readonly checkProviderHealth: (input: {
     readonly provider?: string;
   }) => Promise<{
@@ -749,6 +788,20 @@ function eventKind(signal: SupervisorSignalName): string {
   }
 }
 
+function isOperatorTaskAction(action: string): action is OperatorTaskAction {
+  return (
+    action === "cancel" ||
+    action === "block" ||
+    action === "unblock" ||
+    action === "force_pending_sync" ||
+    action === "requeue_ready"
+  );
+}
+
+function isOperatorScopeAction(action: string): action is OperatorScopeAction {
+  return action === "cancel";
+}
+
 /**
  * Run the architect, and on success tail-call the decomposition
  * reviewer. Used by both the operator-intent signal handler and the
@@ -940,6 +993,35 @@ export async function scopeSupervisorWorkflow(
       }
       if (signal.name === "architect_requested") {
         await driveArchitectThenReview(scope_id, signal.payload.actor);
+      }
+      if (signal.name === "operator_override") {
+        if (signal.payload.task_id) {
+          if (isOperatorTaskAction(signal.payload.action)) {
+            await activities.applyOperatorOverride({
+              target: "task",
+              task_id: signal.payload.task_id,
+              action: signal.payload.action,
+              actor: signal.payload.actor,
+              reason: signal.payload.reason,
+              evidence: {
+                signal_seq: signal.seq,
+                reference: signal.payload.reference,
+              },
+            });
+          }
+        } else if (isOperatorScopeAction(signal.payload.action)) {
+          await activities.applyOperatorOverride({
+            target: "scope",
+            scope_id,
+            action: signal.payload.action,
+            actor: signal.payload.actor,
+            reason: signal.payload.reason,
+            evidence: {
+              signal_seq: signal.seq,
+              reference: signal.payload.reference,
+            },
+          });
+        }
       }
       if (signal.name === "provider_event") {
         const attrs = signal.payload.attributes;

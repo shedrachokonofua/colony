@@ -43,6 +43,7 @@ import {
   resolvePiModel,
   reviewerReviewEnvelopeTypeBox,
   runnerBroker,
+  waitForIdleOrCapturedEnvelope,
   withRunTimeout,
 } from "./pi-runner-common.js";
 import {
@@ -128,10 +129,15 @@ export class PiBaseAgentRunner implements PiRunner {
       workTools,
     );
     let capturedEnvelope: unknown;
+    let resolveCapturedEnvelope: (() => void) | undefined;
+    const capturedEnvelopePromise = new Promise<void>((resolve) => {
+      resolveCapturedEnvelope = resolve;
+    });
     let session: AgentSession | undefined;
 
     const submitTool = this.profile.submitTool((value) => {
       capturedEnvelope = value;
+      resolveCapturedEnvelope?.();
     });
     const progressNote = this.profile.includeProgressNote
       ? createPostProgressNoteTool({
@@ -245,11 +251,22 @@ export class PiBaseAgentRunner implements PiRunner {
 
       try {
         if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {
-          await session.prompt(buildPacketPrompt(request.packet), {
-            expandPromptTemplates: false,
-            source: "extension",
-          });
-          await session.agent.waitForIdle();
+          const promptPromise = session
+            .prompt(buildPacketPrompt(request.packet), {
+              expandPromptTemplates: false,
+              source: "extension",
+            })
+            .catch((err) => {
+              if (capturedEnvelope !== undefined) return;
+              throw err;
+            });
+          await Promise.race([promptPromise, capturedEnvelopePromise]);
+          if (capturedEnvelope === undefined) {
+            await waitForIdleOrCapturedEnvelope(
+              session.agent,
+              capturedEnvelopePromise,
+            );
+          }
         }
       } finally {
         unsubscribeGuards();
@@ -435,7 +452,7 @@ export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
   defaultThinkingLevel: "medium",
   defaultLimits: { maxTurns: 80, maxUsd: 25 },
   workspaceMode: "scratch",
-  includeProgressNote: true,
+  includeProgressNote: false,
 };
 
 /**
@@ -513,24 +530,28 @@ function completeDeveloperEnvelope(
     "release",
   ]);
   const cleanArtifacts = Array.isArray(m["artifacts"])
-    ? (m["artifacts"] as unknown[])
-        .filter(isObject)
-        .filter(
-          (a) =>
-            typeof a["kind"] === "string" &&
-            validArtifactKinds.has(a["kind"]) &&
-            typeof a["id"] === "string" &&
-            typeof a["uri"] === "string",
-        )
-        .map((a) => {
-          const out: Record<string, string> = {
-            kind: a["kind"] as string,
-            id: a["id"] as string,
-            uri: a["uri"] as string,
-          };
-          if (typeof a["hash"] === "string") out["hash"] = a["hash"];
-          return out;
-        })
+    ? (m["artifacts"] as unknown[]).filter(isObject).flatMap((a) => {
+        if (
+          typeof a["kind"] !== "string" ||
+          !validArtifactKinds.has(a["kind"])
+        ) {
+          return [];
+        }
+        const hash = typeof a["hash"] === "string" ? a["hash"] : undefined;
+        const id = typeof a["id"] === "string" ? a["id"] : hash;
+        if (!id) return [];
+        const uri =
+          typeof a["uri"] === "string"
+            ? a["uri"]
+            : artifactUriForDeveloperEnvelope(taskPacket, id);
+        const out: Record<string, string> = {
+          kind: a["kind"],
+          id,
+          uri,
+        };
+        if (hash) out["hash"] = hash;
+        return [out];
+      })
     : [];
   const rationale =
     typeof m["rationale"] === "string" && m["rationale"].trim().length > 0
@@ -572,4 +593,16 @@ function completeDeveloperEnvelope(
         : {}),
     },
   };
+}
+
+function artifactUriForDeveloperEnvelope(
+  packet: TaskPacket,
+  artifactId: string,
+): string {
+  const repo = packet as TaskPacket & {
+    readonly repo?: { readonly url?: unknown };
+  };
+  const repoUrl = typeof repo.repo?.url === "string" ? repo.repo.url : "";
+  if (!repoUrl) return `urn:colony:artifact:${artifactId}`;
+  return `${repoUrl.replace(/\.git$/, "")}/-/commit/${artifactId}`;
 }

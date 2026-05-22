@@ -8,6 +8,7 @@ import {
   RECONCILE_INTERVAL,
   type LongRunningSupervisorActivities,
   type SupervisorActivities,
+  operatorOverrideSignal,
   reconcileActivityIdempotencyKey,
   scopeSupervisorWorkflow,
   supervisorWorkflowId,
@@ -34,6 +35,19 @@ const temporalTestEnabled = process.env["COLONY_TEMPORAL_TEST"] === "1";
 
 function resolved<T>(value: T): Promise<T> {
   return Promise.resolve(value);
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("timed out waiting for condition");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 describe.runIf(temporalTestEnabled)(
@@ -191,6 +205,15 @@ describe.runIf(temporalTestEnabled)(
               invalidated_approvals: 0,
               rework_count: 1,
             }),
+          applyOperatorOverride: (input) => {
+            calls.push(`applyOperatorOverride:${input.target}:${input.action}`);
+            return resolved({
+              applied: true,
+              target: input.target,
+              previous_state: "review_requested",
+              new_state: input.target === "task" ? "blocked" : "canceled",
+            });
+          },
           checkProviderHealth: () =>
             resolved({
               provider: "fake",
@@ -239,13 +262,24 @@ describe.runIf(temporalTestEnabled)(
           ),
           activities,
         });
-        await worker.runUntil(
-          client.workflow.execute(scopeSupervisorWorkflow, {
+        await worker.runUntil(async () => {
+          const handle = await client.workflow.start(scopeSupervisorWorkflow, {
             taskQueue,
             workflowId: `workflow-${randomUUID()}`,
             args: [scopeId],
-          }),
-        );
+          });
+          await handle.signal(operatorOverrideSignal, {
+            actor: "human:op-1",
+            action: "block",
+            reason: "pause for operator inspection",
+            task_id: taskId,
+            reference: {
+              provider: "fake",
+              event_id: "evt-operator-1",
+            },
+          });
+          await handle.result();
+        });
       } finally {
         await nativeConnection.close();
         await connection.close();
@@ -265,8 +299,251 @@ describe.runIf(temporalTestEnabled)(
         "startDeveloperRun:2",
         "openMrGate",
         "startReviewerRun:2",
+        "applyOperatorOverride:task:block",
+        "claimReadyTask",
+        "startDeveloperPlanRun:4",
+        "startPlanReviewRun:4",
+        "startDeveloperRun:3",
+        "openMrGate",
+        "startReviewerRun:3",
         "scopeHeartbeatTick",
       ]);
     }, 120_000);
+
+    it("resumes from history after a worker shuts down before an activity retry", async () => {
+      const address = process.env["TEMPORAL_ADDRESS"] ?? "localhost:7233";
+      const namespace = process.env["TEMPORAL_NAMESPACE"] ?? "default";
+      const connection = await Connection.connect({ address });
+      const nativeConnection1 = await NativeConnection.connect({ address });
+      const nativeConnection2 = await NativeConnection.connect({ address });
+      const client = new Client({ connection, namespace });
+      const taskQueue = `colony-workflow-restart-test-${randomUUID()}`;
+      const scopeId = "col-restart";
+      const taskId = "col-restart.1";
+      const calls: string[] = [];
+      let planRun = 0;
+
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          readScopeState: () => {
+            calls.push("readScopeState");
+            return resolved({
+              scope: { id: scopeId, state: "active", state_version: 0 },
+              tasks: [],
+            });
+          },
+          claimReadyTask: () => {
+            calls.push("claimReadyTask");
+            return resolved({
+              claimed: true,
+              task_id: taskId,
+              assignee: "bot:engine",
+            });
+          },
+          startDeveloperPlanRun: () => {
+            planRun += 1;
+            calls.push(`startDeveloperPlanRun:${planRun}`);
+            if (planRun === 1) {
+              throw new Error("planner failed before worker restart");
+            }
+            return resolved({
+              started: true,
+              task_id: taskId,
+              envelope_status: "succeeded",
+              final_state: "plan_proposed",
+              developer_plan: { planRun },
+            });
+          },
+          startPlanReviewRun: (input) => {
+            calls.push(
+              `startPlanReviewRun:${(input.developer_plan as { planRun: number }).planRun}`,
+            );
+            return resolved({
+              started: true,
+              task_id: taskId,
+              envelope_status: "succeeded",
+              review_result: "approved",
+              final_state: "in_progress",
+              plan_review: { approvedPlan: input.developer_plan },
+            });
+          },
+          startDeveloperRun: () => {
+            calls.push("startDeveloperRun");
+            return resolved({
+              started: true,
+              task_id: taskId,
+              run_id: "dev-after-restart",
+              envelope_status: "succeeded",
+              final_state: "review_requested",
+              developer_envelope: { developerRun: "after-restart" },
+            });
+          },
+          openMrGate: () => {
+            calls.push("openMrGate");
+            return resolved({ opened: true, gate_id: "gate-1" });
+          },
+          startReviewerRun: () => {
+            calls.push("startReviewerRun");
+            return resolved({
+              started: true,
+              task_id: taskId,
+              run_id: "review-after-restart",
+              review_id: "review-after-restart",
+              envelope_status: "succeeded",
+              review_result: "approved",
+              final_state: "review_requested",
+            });
+          },
+          scopeHeartbeatTick: () => {
+            calls.push("scopeHeartbeatTick");
+            return resolved({
+              scope_id: scopeId,
+              status: "scope_terminal",
+            });
+          },
+          recordWorkflowEvent: () => resolved({ recorded: true }),
+          reconcileScope: () =>
+            resolved({
+              scope_id: scopeId,
+              checked_at: "2026-05-21T00:00:00.000Z",
+              ok: true,
+              auto_corrected: 0,
+              conflicts: 0,
+              warnings: 0,
+            }),
+          recordHumanApproval: () =>
+            resolved({
+              recorded: true,
+              approval_id: "approval-1",
+            }),
+          recordPipelineStatus: () =>
+            resolved({
+              recorded: true,
+              invalidated_approvals: 0,
+            }),
+          checkMrGate: () =>
+            resolved({
+              checked: true,
+              task_id: taskId,
+              final_state: "merge_ready",
+              gate_open: false,
+              reasons: [],
+            }),
+          mergeTask: () =>
+            resolved({
+              merged: false,
+              task_id: taskId,
+              reason: "gate_closed",
+            }),
+          closeTaskAfterMerge: () =>
+            resolved({
+              closed: false,
+              task_id: taskId,
+              reason: "not_merged",
+            }),
+          applyDecompositionCommand: () =>
+            resolved({
+              applied: false,
+              reason: "not_used",
+            }),
+          requestTaskRework: () =>
+            resolved({
+              applied: false,
+              task_id: taskId,
+              reason: "not_used",
+            }),
+          applyOperatorOverride: () =>
+            resolved({
+              applied: false,
+              reason: "not_used",
+            }),
+          checkProviderHealth: () =>
+            resolved({
+              provider: "fake",
+              ok: true,
+              checked_at: "2026-05-21T00:00:00.000Z",
+            }),
+          markScopePendingSync: () =>
+            resolved({
+              scope_id: scopeId,
+              transitioned: 0,
+              skipped: 0,
+              already_pending: 0,
+              task_ids: [],
+            }),
+          markTaskFailed: () => {
+            calls.push("markTaskFailed");
+            return resolved({
+              marked: true,
+              task_id: taskId,
+              previous_state: "plan_proposed",
+              new_state: "failed",
+            });
+          },
+          startArchitectRun: () =>
+            resolved({
+              started: false,
+              scope_id: scopeId,
+              reason: "not_used",
+            }),
+          startDecompositionReviewRun: () =>
+            resolved({
+              started: false,
+              scope_id: scopeId,
+              reason: "not_used",
+            }),
+        };
+
+      try {
+        const worker1 = await Worker.create({
+          connection: nativeConnection1,
+          namespace,
+          taskQueue,
+          workflowsPath: resolve(
+            dirname(fileURLToPath(import.meta.url)),
+            "index.ts",
+          ),
+          activities,
+        });
+        const run1 = worker1.run();
+        const handle = await client.workflow.start(scopeSupervisorWorkflow, {
+          taskQueue,
+          workflowId: `workflow-${randomUUID()}`,
+          args: [scopeId],
+        });
+
+        await waitFor(() => calls.includes("startDeveloperPlanRun:1"), 15_000);
+        worker1.shutdown();
+        await run1;
+
+        const worker2 = await Worker.create({
+          connection: nativeConnection2,
+          namespace,
+          taskQueue,
+          workflowsPath: resolve(
+            dirname(fileURLToPath(import.meta.url)),
+            "index.ts",
+          ),
+          activities,
+        });
+        await worker2.runUntil(handle.result());
+      } finally {
+        await nativeConnection2.close();
+        await nativeConnection1.close();
+        await connection.close();
+      }
+
+      expect(calls).toEqual([
+        "readScopeState",
+        "claimReadyTask",
+        "startDeveloperPlanRun:1",
+        "startDeveloperPlanRun:2",
+        "startPlanReviewRun:2",
+        "startDeveloperRun",
+        "openMrGate",
+        "startReviewerRun",
+        "scopeHeartbeatTick",
+      ]);
+    }, 150_000);
   },
 );

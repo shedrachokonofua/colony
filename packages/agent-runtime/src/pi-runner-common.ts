@@ -335,6 +335,13 @@ export function withRunTimeout(
   return () => clearTimeout(timer);
 }
 
+export async function waitForIdleOrCapturedEnvelope(
+  agent: Agent,
+  capturedEnvelope: Promise<void>,
+): Promise<void> {
+  await Promise.race([agent.waitForIdle(), capturedEnvelope]);
+}
+
 export function forceSubmitToolStream(
   toolName: string,
   baseStream: StreamFn = streamSimple,
@@ -551,8 +558,37 @@ export interface FinalizeEnvelopeOptions {
   readonly validate?: (value: unknown) => string[] | null;
   /** Max attempts including the first. Default 3. */
   readonly maxAttempts?: number;
+  /** Max time to wait for a finalizer stream event before giving up. */
+  readonly streamTimeoutMs?: number;
   readonly logger?: PiRunnerLogger;
   readonly runId: string;
+}
+
+class FinalizerStreamTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`finalizer stream timed out after ${timeoutMs}ms`);
+    this.name = "FinalizerStreamTimeoutError";
+  }
+}
+
+async function nextWithTimeout<T>(
+  iterator: AsyncIterator<T>,
+  timeoutMs: number,
+): Promise<IteratorResult<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      iterator.next(),
+      new Promise<IteratorResult<T>>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new FinalizerStreamTimeoutError(timeoutMs)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -598,6 +634,7 @@ export async function finalizeEnvelopeWithStructuredOutput(
     },
   ];
   const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
+  const streamTimeoutMs = options.streamTimeoutMs ?? 180_000;
 
   let userMessage = options.finalUserMessage;
   let lastErrors: string[] | null = null;
@@ -611,6 +648,12 @@ export async function finalizeEnvelopeWithStructuredOutput(
         content: [{ type: "text" as const, text: userMessage }],
       },
     ];
+    const streamOptions = {
+      apiKey: options.apiKey,
+      ...(options.model.api === "openai-completions"
+        ? { toolChoice: { type: "function", function: { name: toolName } } }
+        : {}),
+    } as Parameters<typeof streamSimple>[2];
     const events = streamSimple(
       options.model,
       {
@@ -618,15 +661,16 @@ export async function finalizeEnvelopeWithStructuredOutput(
         messages,
         tools,
       } as Parameters<typeof streamSimple>[1],
-      {
-        apiKey: options.apiKey,
-        toolChoice: { type: "function", function: { name: toolName } },
-      } as Parameters<typeof streamSimple>[2],
+      streamOptions,
     );
 
     let captured: unknown;
+    const iterator = events[Symbol.asyncIterator]();
     try {
-      for await (const event of events) {
+      for (;;) {
+        const next = await nextWithTimeout(iterator, streamTimeoutMs);
+        if (next.done) break;
+        const event = next.value;
         if (event.type === "toolcall_end" && event.toolCall.name === toolName) {
           captured = event.toolCall.arguments;
           break;
@@ -640,6 +684,18 @@ export async function finalizeEnvelopeWithStructuredOutput(
         }
       }
     } catch (err) {
+      if (err instanceof FinalizerStreamTimeoutError) {
+        options.logger?.warn?.(
+          {
+            runId: options.runId,
+            attempt,
+            timeoutMs: err.timeoutMs,
+          },
+          "finalize_envelope_stream_timeout",
+        );
+        await iterator.return?.();
+        return undefined;
+      }
       options.logger?.error?.(
         {
           runId: options.runId,
@@ -649,6 +705,8 @@ export async function finalizeEnvelopeWithStructuredOutput(
         "finalize_envelope_stream_threw",
       );
       return undefined;
+    } finally {
+      await iterator.return?.();
     }
 
     lastCaptured = captured;

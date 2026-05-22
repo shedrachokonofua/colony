@@ -13,12 +13,12 @@ import {
   buildArchitectSystemPrompt,
   buildPacketPrompt,
   createArchitectSubmitTool,
-  createPostProgressNoteTool,
   createSandboxId,
   finalizeEnvelopeWithStructuredOutput,
   installRunGuards,
   resolvePiModel,
   runnerBroker,
+  waitForIdleOrCapturedEnvelope,
   withRunTimeout,
 } from "./pi-runner-common.js";
 
@@ -40,15 +40,16 @@ export class PiArchitectRunner implements PiRunner {
     const broker = runnerBroker(this.options);
     const model = await resolvePiModel(request, this.options.model);
     let capturedEnvelope: unknown;
+    let resolveCapturedEnvelope: (() => void) | undefined;
+    const capturedEnvelopePromise = new Promise<void>((resolve) => {
+      resolveCapturedEnvelope = resolve;
+    });
 
     const submitTool = createArchitectSubmitTool((value) => {
       capturedEnvelope = value;
+      resolveCapturedEnvelope?.();
     });
-    const progressNote = createPostProgressNoteTool({
-      packet: request.packet,
-      baseUrl: process.env["GITLAB_BASE_URL"],
-    });
-    const tools = [...(progressNote ? [progressNote.tool] : []), submitTool];
+    const tools = [submitTool];
 
     const agent = new Agent({
       initialState: {
@@ -137,8 +138,16 @@ export class PiArchitectRunner implements PiRunner {
     );
 
     try {
-      await agent.prompt(buildPacketPrompt(request.packet));
-      await agent.waitForIdle();
+      const promptPromise = agent
+        .prompt(buildPacketPrompt(request.packet))
+        .catch((err) => {
+          if (capturedEnvelope !== undefined) return;
+          throw err;
+        });
+      await Promise.race([promptPromise, capturedEnvelopePromise]);
+      if (capturedEnvelope === undefined) {
+        await waitForIdleOrCapturedEnvelope(agent, capturedEnvelopePromise);
+      }
 
       if (capturedEnvelope === undefined) {
         capturedEnvelope = await finalizeEnvelopeWithStructuredOutput({

@@ -344,17 +344,29 @@ export class ProviderProjectRepository {
     readonly provider: string;
     readonly provider_id: string;
     readonly provider_project_id?: string;
+    readonly preferred_entity_kinds?: readonly ProviderEntityKind[];
   }): Promise<ProviderMirror | null> {
     const params: unknown[] = [input.provider, input.provider_id];
     let projectClause = "";
     if (input.provider_project_id) {
       params.push(input.provider_project_id);
-      projectClause = `AND provider_project_id = $${params.length}`;
+      projectClause = `AND (
+         provider_project_id = $${params.length}
+         OR provider_project_id IN (
+           SELECT id FROM provider_projects
+           WHERE provider = $1 AND provider_id = $${params.length}
+         )
+       )`;
+    }
+    let orderBy = "projected_at DESC NULLS LAST";
+    if (input.preferred_entity_kinds?.length) {
+      params.push([...input.preferred_entity_kinds]);
+      orderBy = `array_position($${params.length}::text[], entity_kind) NULLS LAST, projected_at DESC NULLS LAST`;
     }
     const { rows } = await this.pool.query<ProviderMirrorRow>(
       `SELECT * FROM provider_mirrors
        WHERE provider = $1 AND provider_id = $2 ${projectClause}
-       ORDER BY projected_at DESC NULLS LAST
+       ORDER BY ${orderBy}
        LIMIT 1`,
       params,
     );

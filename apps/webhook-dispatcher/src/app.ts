@@ -16,7 +16,12 @@ import {
   type ProviderCommandSource,
 } from "@colony/provider";
 import {
+  approvalSignal,
+  pipelineUpdateSignal,
+  providerEventSignal,
   supervisorWorkflowId,
+  type ApprovalSignal,
+  type PipelineUpdateSignal,
   type ProviderEventSignal,
   type ScopeId,
 } from "@colony/workflows";
@@ -100,6 +105,14 @@ export interface SupervisorSignalDispatcher {
     scope_id: ScopeId,
     signal: ProviderEventSignal,
   ) => Promise<{ readonly workflow_id: string }>;
+  readonly signalApproval: (
+    scope_id: ScopeId,
+    signal: ApprovalSignal,
+  ) => Promise<{ readonly workflow_id: string }>;
+  readonly signalPipelineUpdate: (
+    scope_id: ScopeId,
+    signal: PipelineUpdateSignal,
+  ) => Promise<{ readonly workflow_id: string }>;
 }
 
 /**
@@ -113,10 +126,13 @@ export interface MirrorLookup {
     readonly provider: string;
     readonly provider_id: string;
     readonly provider_project_id?: string;
-  }) => Promise<{
-    readonly entity_kind: ProviderEntityKind;
-    readonly colony_id: string;
-  } | null>;
+    readonly preferred_entity_kinds?: readonly ProviderEntityKind[];
+  }) => Promise<MirrorContext | null>;
+}
+
+interface MirrorContext {
+  readonly entity_kind: ProviderEntityKind;
+  readonly colony_id: string;
 }
 
 export interface WebhookDispatcherDeps {
@@ -140,6 +156,8 @@ interface GitLabWebhookBody {
   readonly user?: unknown;
   readonly project?: unknown;
   readonly project_id?: unknown;
+  readonly issue?: unknown;
+  readonly merge_request?: unknown;
 }
 
 export type GitLabWebhookClassification =
@@ -154,7 +172,7 @@ export type GitLabWebhookClassification =
 export type ClassifiedGitLabWebhook =
   | {
       readonly kind: Exclude<GitLabWebhookClassification, "noop">;
-      readonly scope_id: ScopeId;
+      readonly scope_id?: ScopeId;
       readonly event_id: string;
       readonly object_id: string;
       readonly signal: ProviderEventSignal;
@@ -178,9 +196,10 @@ class GitLabTokenVerifier implements WebhookSignatureVerifier {
 class TemporalSupervisorSignalDispatcher implements SupervisorSignalDispatcher {
   private client: TemporalClient | undefined;
 
-  async signalProviderEvent(
+  private async signalWithStart(
     scope_id: ScopeId,
-    signal: ProviderEventSignal,
+    signalName: string,
+    signalArgs: unknown[],
   ): Promise<{ readonly workflow_id: string }> {
     const cfg = env();
     if (!this.client) {
@@ -203,10 +222,31 @@ class TemporalSupervisorSignalDispatcher implements SupervisorSignalDispatcher {
       workflowId: workflow_id,
       taskQueue: cfg.TEMPORAL_TASK_QUEUE,
       args: [scope_id],
-      signal: "providerEvent",
-      signalArgs: [signal],
+      signal: signalName,
+      signalArgs,
     });
     return { workflow_id };
+  }
+
+  async signalProviderEvent(
+    scope_id: ScopeId,
+    signal: ProviderEventSignal,
+  ): Promise<{ readonly workflow_id: string }> {
+    return this.signalWithStart(scope_id, providerEventSignal.name, [signal]);
+  }
+
+  async signalApproval(
+    scope_id: ScopeId,
+    signal: ApprovalSignal,
+  ): Promise<{ readonly workflow_id: string }> {
+    return this.signalWithStart(scope_id, approvalSignal.name, [signal]);
+  }
+
+  async signalPipelineUpdate(
+    scope_id: ScopeId,
+    signal: PipelineUpdateSignal,
+  ): Promise<{ readonly workflow_id: string }> {
+    return this.signalWithStart(scope_id, pipelineUpdateSignal.name, [signal]);
   }
 }
 
@@ -231,6 +271,7 @@ function getDefaultDeps(): WebhookDispatcherDeps {
             provider: input.provider,
             provider_id: input.provider_id,
             provider_project_id: input.provider_project_id,
+            preferred_entity_kinds: input.preferred_entity_kinds,
           });
           if (!row) return null;
           return {
@@ -269,6 +310,26 @@ function firstString(...values: unknown[]): string | undefined {
     if (typeof value === "number") return String(value);
   }
   return undefined;
+}
+
+function scopedProviderId(
+  providerProjectId: string | undefined,
+  providerLocalId: string | undefined,
+): string | undefined {
+  if (!providerLocalId) return undefined;
+  return providerProjectId
+    ? `${providerProjectId}:${providerLocalId}`
+    : providerLocalId;
+}
+
+function gitLabLocalIdFromUrl(
+  uri: unknown,
+  segment: "issues" | "merge_requests",
+): string | undefined {
+  const value = asString(uri);
+  if (!value) return undefined;
+  const match = value.match(new RegExp(`/(?:-/)?${segment}/(\\d+)`));
+  return match?.[1];
 }
 
 function scalarAttributes(
@@ -368,18 +429,12 @@ function commandSource(input: {
   readonly project: Record<string, unknown> | undefined;
   readonly providerProjectId: string | undefined;
   readonly providerProjectPath: string | undefined;
+  readonly referenceObjectId: string | undefined;
 }): ProviderCommandSource {
   const noteableKind = firstString(
     input.objectAttributes?.noteable_type,
     input.objectAttributes?.target_type,
     input.objectKind,
-  );
-  const noteableId = firstString(
-    input.objectAttributes?.noteable_id,
-    input.objectAttributes?.target_id,
-    input.objectAttributes?.issue_id,
-    input.objectAttributes?.merge_request_id,
-    input.objectId,
   );
   return {
     actor: input.actor ?? "unknown",
@@ -387,7 +442,7 @@ function commandSource(input: {
     artifact: {
       provider: "gitlab",
       object_kind: noteableKind ?? input.objectKind ?? "unknown",
-      object_id: noteableId ?? input.objectId,
+      object_id: input.referenceObjectId ?? input.objectId,
       uri: firstString(input.objectAttributes?.url, input.project?.web_url),
       ...(input.providerProjectId
         ? { provider_project_id: input.providerProjectId }
@@ -453,18 +508,27 @@ function classificationForComment(
 export async function enrichSignalWithMirrorContext(
   signal: ProviderEventSignal,
   mirrors: MirrorLookup,
-): Promise<void> {
-  const commandKind = signal.attributes?.command_kind;
-  if (typeof commandKind !== "string") return;
+): Promise<MirrorContext | null> {
   const noteableId =
     signal.reference?.object_id ?? signal.object_id ?? undefined;
-  if (!noteableId) return;
+  if (!noteableId) return null;
   const mirror = await mirrors.findMirror({
     provider: signal.provider,
     provider_id: noteableId,
     provider_project_id: signal.provider_project_id,
+    preferred_entity_kinds: preferredMirrorKinds(signal),
   });
-  if (!mirror) return;
+  if (!mirror) return null;
+  if (
+    (mirror.entity_kind === "task" || mirror.entity_kind === "mr_pr") &&
+    isTaskId(mirror.colony_id) &&
+    !signal.task_id
+  ) {
+    (signal as { task_id: string }).task_id = mirror.colony_id;
+  }
+
+  const commandKind = signal.attributes?.command_kind;
+  if (typeof commandKind !== "string") return mirror;
   const target =
     mirror.entity_kind === "scope" ? "scope_decomposition" : mirror.entity_kind;
   // attributes is readonly; rebuild the same object with the extra key.
@@ -476,9 +540,85 @@ export async function enrichSignalWithMirrorContext(
     command_target_colony_id: mirror.colony_id,
   };
   (signal as { attributes: typeof enriched }).attributes = enriched;
+  return mirror;
 }
 
 type JsonScalar = string | number | boolean | null;
+
+function providerObjectId(input: {
+  readonly objectKind: string | undefined;
+  readonly objectAttributes: Record<string, unknown> | undefined;
+  readonly providerProjectId: string | undefined;
+  readonly fallback: string | undefined;
+}): string | undefined {
+  const objectKind = lower(input.objectKind);
+  const iid = firstString(input.objectAttributes?.iid);
+  if (
+    input.providerProjectId &&
+    iid &&
+    (objectKind.includes("issue") || objectKind.includes("merge"))
+  ) {
+    return scopedProviderId(input.providerProjectId, iid);
+  }
+  return input.fallback;
+}
+
+function noteableProviderObjectId(input: {
+  readonly objectKind: string | undefined;
+  readonly objectAttributes: Record<string, unknown> | undefined;
+  readonly issue: Record<string, unknown> | undefined;
+  readonly mergeRequest: Record<string, unknown> | undefined;
+  readonly providerProjectId: string | undefined;
+  readonly fallback: string;
+}): string {
+  const noteableKind = lower(
+    firstString(
+      input.objectAttributes?.noteable_type,
+      input.objectAttributes?.target_type,
+      input.objectKind,
+    ),
+  );
+  const issueIid = firstString(
+    input.objectAttributes?.issue_iid,
+    input.issue?.iid,
+    gitLabLocalIdFromUrl(input.objectAttributes?.url, "issues"),
+  );
+  if (input.providerProjectId && issueIid && noteableKind.includes("issue")) {
+    return (
+      scopedProviderId(input.providerProjectId, issueIid) ?? input.fallback
+    );
+  }
+  const mrIid = firstString(
+    input.objectAttributes?.merge_request_iid,
+    input.mergeRequest?.iid,
+    gitLabLocalIdFromUrl(input.objectAttributes?.url, "merge_requests"),
+  );
+  if (input.providerProjectId && mrIid && noteableKind.includes("merge")) {
+    return scopedProviderId(input.providerProjectId, mrIid) ?? input.fallback;
+  }
+  return (
+    firstString(
+      input.objectAttributes?.noteable_id,
+      input.objectAttributes?.target_id,
+      input.objectAttributes?.issue_id,
+      input.objectAttributes?.merge_request_id,
+    ) ?? input.fallback
+  );
+}
+
+function pipelineMergeRequestObjectId(input: {
+  readonly objectAttributes: Record<string, unknown> | undefined;
+  readonly mergeRequest: Record<string, unknown> | undefined;
+  readonly providerProjectId: string | undefined;
+}): string | undefined {
+  const objectAttributesMr = asRecord(input.objectAttributes?.merge_request);
+  const iid = firstString(
+    input.mergeRequest?.iid,
+    objectAttributesMr?.iid,
+    input.objectAttributes?.merge_request_iid,
+  );
+  return scopedProviderId(input.providerProjectId, iid);
+}
 
 export function classifyGitLabWebhook(input: {
   readonly headers: Headers;
@@ -492,6 +632,8 @@ export function classifyGitLabWebhook(input: {
   );
   const objectAttributes = asRecord(input.body.object_attributes);
   const project = asRecord(input.body.project);
+  const issue = asRecord(input.body.issue);
+  const mergeRequest = asRecord(input.body.merge_request);
   const attributes = asRecord(input.body.attributes);
   const user = asRecord(input.body.user);
   const objectKind = firstString(
@@ -499,7 +641,20 @@ export function classifyGitLabWebhook(input: {
     objectAttributes?.object_kind,
     eventKind,
   );
-  const objectId = firstString(
+  // Resolve the originating provider project so downstream lookups against
+  // `provider_mirrors` can scope by project (COL-1.2b). GitLab webhooks put
+  // the project ID either on `body.project.id` or `body.project_id`, and the
+  // path under `project.path_with_namespace` (older payloads use `project.path`).
+  const providerProjectId = firstString(
+    project?.id,
+    objectAttributes?.project_id,
+    input.body.project_id,
+  );
+  const providerProjectPath = firstString(
+    project?.path_with_namespace,
+    project?.path,
+  );
+  const rawObjectId = firstString(
     input.body.object_id,
     objectAttributes?.id,
     objectAttributes?.iid,
@@ -507,6 +662,12 @@ export function classifyGitLabWebhook(input: {
     project?.id,
     eventId,
   );
+  const objectId = providerObjectId({
+    objectKind,
+    objectAttributes,
+    providerProjectId,
+    fallback: rawObjectId,
+  });
 
   if (!eventId || !objectId) {
     return {
@@ -522,14 +683,7 @@ export function classifyGitLabWebhook(input: {
     objectAttributes?.scope_id,
     objectAttributes?.colony_scope_id,
   );
-  if (!scopeId || !isScopeId(scopeId)) {
-    return {
-      kind: "noop",
-      reason: "missing_scope_id",
-      event_id: eventId,
-      object_id: objectId,
-    };
-  }
+  const classifiedScopeId = scopeId && isScopeId(scopeId) ? scopeId : undefined;
 
   const taskId = firstString(input.body.task_id, objectAttributes?.task_id);
   const actor = firstString(input.body.actor, user?.username, user?.name);
@@ -538,24 +692,25 @@ export function classifyGitLabWebhook(input: {
     objectAttributes?.updated_at,
     objectAttributes?.created_at,
   );
-  // Resolve the originating provider project so downstream lookups against
-  // `provider_mirrors` can scope by project (COL-1.2b). GitLab webhooks put
-  // the project ID either on `body.project.id` or `body.project_id`, and the
-  // path under `project.path_with_namespace` (older payloads use `project.path`).
-  const providerProjectId = firstString(
-    project?.id,
-    objectAttributes?.project_id,
-    input.body.project_id,
-  );
-  const providerProjectPath = firstString(
-    project?.path_with_namespace,
-    project?.path,
-  );
   const body = commentBody(objectAttributes, attributes);
   const isComment =
     lower(eventKind).includes("note") ||
     lower(objectKind).includes("note") ||
     lower(objectKind).includes("comment");
+  const referenceObjectId = isComment
+    ? noteableProviderObjectId({
+        objectKind,
+        objectAttributes,
+        issue,
+        mergeRequest,
+        providerProjectId,
+        fallback: objectId,
+      })
+    : (pipelineMergeRequestObjectId({
+        objectAttributes,
+        mergeRequest,
+        providerProjectId,
+      }) ?? objectId);
   const parsedCommand =
     isComment && body
       ? parseProviderCommand({
@@ -570,6 +725,7 @@ export function classifyGitLabWebhook(input: {
             project,
             providerProjectId,
             providerProjectPath,
+            referenceObjectId,
           }),
         })
       : undefined;
@@ -600,7 +756,7 @@ export function classifyGitLabWebhook(input: {
     reference: {
       provider: "gitlab",
       object_kind: objectKind,
-      object_id: objectId,
+      object_id: referenceObjectId,
       event_id: eventId,
       uri: firstString(
         objectAttributes?.url,
@@ -622,11 +778,125 @@ export function classifyGitLabWebhook(input: {
 
   return {
     kind: classification,
-    scope_id: scopeId,
+    ...(classifiedScopeId ? { scope_id: classifiedScopeId } : {}),
     event_id: eventId,
     object_id: objectId,
     signal,
   };
+}
+
+function approvalFromProviderSignal(
+  signal: ProviderEventSignal,
+): ApprovalSignal | null {
+  if (!signal.task_id) return null;
+  return {
+    task_id: signal.task_id,
+    actor: signal.actor ?? "unknown",
+    artifact_id: signal.reference?.object_id ?? signal.object_id,
+    approval_id: signal.object_id,
+    commit_sha: firstString(
+      signal.attributes?.commit_sha,
+      signal.attributes?.sha,
+    ),
+    pipeline_id: firstString(
+      signal.attributes?.pipeline_id,
+      signal.attributes?.pipeline,
+    ),
+    reference: signal.reference,
+    occurred_at: signal.occurred_at,
+  };
+}
+
+function pipelineUpdateFromProviderSignal(
+  signal: ProviderEventSignal,
+): PipelineUpdateSignal | null {
+  if (!signal.task_id) return null;
+  const pipeline_id = firstString(
+    signal.attributes?.pipeline_id,
+    signal.attributes?.id,
+    signal.object_id,
+  );
+  const status = firstString(
+    signal.attributes?.status,
+    signal.attributes?.state,
+  );
+  if (!pipeline_id || !status) return null;
+  return {
+    provider: signal.provider,
+    task_id: signal.task_id,
+    pipeline_id,
+    status,
+    commit_sha: firstString(
+      signal.attributes?.commit_sha,
+      signal.attributes?.sha,
+    ),
+    reference: signal.reference,
+    occurred_at: signal.occurred_at,
+  };
+}
+
+function isPipelineProviderSignal(signal: ProviderEventSignal): boolean {
+  return (
+    lower(signal.event_type).includes("pipeline") ||
+    lower(signal.object_kind).includes("pipeline")
+  );
+}
+
+async function dispatchWebhookSignal(
+  deps: WebhookDispatcherDeps,
+  scope_id: ScopeId,
+  classified: Exclude<ClassifiedGitLabWebhook, { readonly kind: "noop" }>,
+): Promise<{ readonly workflow_id: string }> {
+  if (classified.kind === "approval") {
+    const approval = approvalFromProviderSignal(classified.signal);
+    if (approval) {
+      return deps.supervisor.signalApproval(scope_id, approval);
+    }
+  }
+  if (isPipelineProviderSignal(classified.signal)) {
+    const pipeline = pipelineUpdateFromProviderSignal(classified.signal);
+    if (pipeline) {
+      return deps.supervisor.signalPipelineUpdate(scope_id, pipeline);
+    }
+  }
+  return deps.supervisor.signalProviderEvent(scope_id, classified.signal);
+}
+
+function preferredMirrorKinds(
+  signal: ProviderEventSignal,
+): readonly ProviderEntityKind[] | undefined {
+  const objectKind = lower(
+    firstString(
+      signal.attributes?.noteable_type,
+      signal.reference?.object_kind,
+      signal.object_kind,
+      signal.event_type,
+    ),
+  );
+  const eventType = lower(signal.event_type);
+  if (objectKind.includes("merge") || eventType.includes("merge")) {
+    return ["mr_pr"];
+  }
+  if (objectKind.includes("pipeline") || eventType.includes("pipeline")) {
+    return ["mr_pr"];
+  }
+  if (objectKind.includes("issue")) {
+    return ["scope", "task"];
+  }
+  return undefined;
+}
+
+function scopeIdFromMirror(mirror: MirrorContext | null): ScopeId | undefined {
+  if (!mirror) return undefined;
+  if (isScopeId(mirror.colony_id)) return mirror.colony_id;
+  if (isTaskId(mirror.colony_id)) {
+    const scope_id = mirror.colony_id.slice(
+      0,
+      mirror.colony_id.lastIndexOf("."),
+    );
+    return isScopeId(scope_id) ? scope_id : undefined;
+  }
+  return undefined;
 }
 
 export function buildApp(
@@ -642,6 +912,7 @@ export function buildApp(
       verifier: overrides.verifier ?? defaults.verifier,
       dedup: overrides.dedup ?? defaults.dedup,
       supervisor: overrides.supervisor ?? defaults.supervisor,
+      mirrors: overrides.mirrors ?? defaults.mirrors,
     };
   };
 
@@ -698,10 +969,20 @@ export function buildApp(
       );
     }
 
-    if (depsForRequest.mirrors) {
-      await enrichSignalWithMirrorContext(
-        classified.signal,
-        depsForRequest.mirrors,
+    const mirror = depsForRequest.mirrors
+      ? await enrichSignalWithMirrorContext(
+          classified.signal,
+          depsForRequest.mirrors,
+        )
+      : null;
+    const scope_id = classified.scope_id ?? scopeIdFromMirror(mirror);
+    if (!scope_id) {
+      return c.json(
+        {
+          accepted: false as const,
+          error: "missing_scope_id",
+        },
+        400,
       );
     }
 
@@ -724,9 +1005,10 @@ export function buildApp(
       );
     }
 
-    const signalResult = await depsForRequest.supervisor.signalProviderEvent(
-      classified.scope_id,
-      classified.signal,
+    const signalResult = await dispatchWebhookSignal(
+      depsForRequest,
+      scope_id,
+      classified,
     );
 
     return c.json(

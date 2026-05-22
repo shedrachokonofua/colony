@@ -38,6 +38,8 @@
     "acceptance:phase1": "tsx scripts/phase1-acceptance.ts",
     "acceptance:phase2": "tsx scripts/phase2-acceptance.ts",
     "acceptance:phase3": "tsx scripts/phase3-acceptance.ts",
+    "acceptance:phase3-temporal": "tsx scripts/temporal-build-smoke.ts",
+    "e2e:real-flow": "tsx scripts/e2e-real-flow.ts",
     "bench:runners": "tsx scripts/bench-runners.ts",
     "test:bash": "echo test",
     "lint": "eslint .",

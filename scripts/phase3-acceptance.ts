@@ -105,12 +105,19 @@ const reviewerActor = (process.env["COLONY_PHASE3_REVIEWER"] ??
 const human = (process.env["COLONY_PHASE3_HUMAN"] ?? "human:op-1") as ActorId;
 const groupPath = `colony-phase3-${stamp}`;
 const projectPath = process.env["COLONY_PHASE3_PROJECT_PATH"] ?? "echopress";
+const maxArchitectTasks = Number.parseInt(
+  process.env["COLONY_PHASE3_MAX_TASKS"] ?? "1",
+  10,
+);
 const keepGroup =
   process.env["COLONY_PHASE3_DEMO"] === "1" ||
   ["1", "true", "yes"].includes(
     process.env["COLONY_PHASE3_KEEP_GROUP"]?.toLowerCase() ?? "",
   );
-const TASK_REFINEMENT_LOOP_CAP = 50;
+const TASK_REFINEMENT_LOOP_CAP = Number.parseInt(
+  process.env["COLONY_PHASE3_TASK_REFINEMENT_LOOP_CAP"] ?? "3",
+  10,
+);
 const pool = createPool({
   connectionString: databaseUrl,
   role: "colony_writer",
@@ -249,11 +256,11 @@ try {
           content: [
             "# EchoPress",
             "",
-            "An end-to-end web app: HTTP API + browser UI + persistence,",
+            "A tiny acceptance app: HTTP API + browser UI smoke path,",
             "built incrementally by Colony agents from this empty scaffold.",
             "",
-            "The architect picks the stack. Subsequent tasks add the toolchain,",
-            "the API, the UI, the data layer, and tests.",
+            "Use the fixed acceptance stack: Node.js HTTP server plus",
+            "static HTML/vanilla JS and local smoke tests.",
             "",
           ].join("\n"),
         },
@@ -320,19 +327,20 @@ try {
   const scope = await repo.createScope(
     {
       id: scopeId,
-      title: "Build EchoPress, a small full-stack social blogging app",
+      title: "Build EchoPress, a tiny full-stack acceptance app",
       description: [
-        "Build EchoPress: a working full-stack social blogging web app — HTTP API, browser UI, persistence that survives restart, and authentication. The repo is empty except for a README and .gitignore. The architect picks the stack, the layout, the feature set, and how to slice the work.",
+        "Build EchoPress: a tiny working full-stack acceptance app with an HTTP API, a browser UI, and automated smoke tests. The repo is empty except for a README and .gitignore. This is an acceptance harness, not a product build.",
         "",
         "Constraints:",
-        "- One stack, one repo. Whatever the architect picks in task 1, every later task uses.",
-        "- Decompose into independently reviewable, independently mergeable tasks with explicit dependencies.",
+        "- Fixed acceptance stack: one root npm package, a minimal Node.js HTTP server, static HTML/vanilla JS, and local smoke tests. Do not introduce React, Vite, Playwright, Puppeteer, browser downloads, databases, auth, or external services.",
+        `- Decompose into at most ${maxArchitectTasks} independently reviewable, independently mergeable task(s). Prefer exactly one task unless a second task is truly needed.`,
         "- For proposed_dependencies with kind=blocks, from_task_id is the prerequisite that lands first; to_task_id is the dependent task that is blocked.",
-        "- A new task can assume only what prior merged tasks provide. Task 1 must leave the repo with a working `npm test` (or equivalent) that subsequent tasks extend.",
+        "- Task 1 must leave the repo with a working root `npm test`, one minimal API or health route, one static browser UI view, and HTTP-level smoke tests for both. Fetching the HTML route and asserting visible content is sufficient for the UI smoke test.",
+        "- If a second task is proposed, it may only harden the same smoke app. It must not add authentication, social feeds, comments, follows, search, external services, or broad product features.",
         "- Each task adds or extends tests for its own slice. No task may delete, skip, or rewrite previously merged tests to make its own changes pass.",
         "- No external paid services; everything the app talks to must run in CI or on a dev box.",
         "",
-        "What 'social blogging app' covers is the architect's call — pick a feature set that's interesting to build but realistic to finish in a handful of tasks.",
+        "The goal is to prove the real Colony lifecycle end-to-end: architect, decomposition review, operator approval, developer plan, plan review, developer implementation, code review, merge, task close, and scope close.",
       ].join("\n"),
       // Stay in draft so the architect run is the entry point.
     },
@@ -386,10 +394,21 @@ try {
     phase(`running architect attempt ${attempt}`);
     const architectResult = await architectRun({ scope_id: scope.id });
     assert(
-      architectResult.started &&
-        architectResult.envelope_status === "succeeded",
+      architectResult.started,
       `architect failed: ${JSON.stringify(architectResult)}`,
     );
+    if (
+      architectResult.envelope_status !== "succeeded" ||
+      !architectResult.proposal_id
+    ) {
+      phase(
+        `architect attempt ${attempt} returned ${architectResult.envelope_status}; retrying`,
+      );
+      if (attempt === 3) {
+        throw new Error(`architect failed: ${JSON.stringify(architectResult)}`);
+      }
+      continue;
+    }
     if (!architectResult.started || !architectResult.proposal_id) {
       throw new Error("unreachable");
     }
@@ -402,9 +421,20 @@ try {
       proposal_id: proposalId,
     });
     assert(
-      reviewResult.started && reviewResult.envelope_status === "succeeded",
+      reviewResult.started,
       `decomposition review failed: ${JSON.stringify(reviewResult)}`,
     );
+    if (reviewResult.envelope_status !== "succeeded") {
+      phase(
+        `decomposition reviewer attempt ${attempt} returned ${reviewResult.envelope_status}; retrying`,
+      );
+      if (attempt === 3) {
+        throw new Error(
+          `decomposition review failed: ${JSON.stringify(reviewResult)}`,
+        );
+      }
+      continue;
+    }
     if (!reviewResult.started) throw new Error("unreachable");
     phase(`decomposition reviewer: ${reviewResult.review_result}`);
     if (reviewResult.review_result === "approved") break;
@@ -458,6 +488,10 @@ try {
     `DAG committed; ${commitResult.tasks.length} tasks, ${commitResult.dependencies.length} deps`,
   );
   assert(commitResult.tasks.length > 0, "no tasks committed");
+  assert(
+    commitResult.tasks.length <= maxArchitectTasks,
+    `architect produced ${commitResult.tasks.length} tasks, max is ${maxArchitectTasks}`,
+  );
 
   phase("eagerly projecting committed tasks to provider issues");
   await syncCommittedTasksToProvider(
@@ -903,16 +937,28 @@ async function driveTaskToClose(task: Task): Promise<void> {
       devOutput?.envelope,
     ) satisfies DeveloperCompletionEnvelope;
 
-    const revResult = await startReviewerRun({
-      task_id: task.id,
-      reviewer: reviewerActor,
-      developer_envelope: developerEnvelope,
-    });
+    let revResult: Awaited<ReturnType<typeof startReviewerRun>> | undefined;
+    for (let reviewAttempt = 1; reviewAttempt <= 2; reviewAttempt += 1) {
+      revResult = await startReviewerRun({
+        task_id: task.id,
+        reviewer: reviewerActor,
+        developer_envelope: developerEnvelope,
+      });
+      assert(
+        revResult.started,
+        `reviewer flow did not start for ${task.id}: ${JSON.stringify(revResult)}`,
+      );
+      if (!revResult.started) throw new Error("unreachable");
+      if (revResult.envelope_status === "succeeded") break;
+      phase(
+        `task ${task.id}: reviewer envelope ${revResult.envelope_status}; retrying reviewer (${reviewAttempt}/2)`,
+      );
+    }
     assert(
-      revResult.started,
-      `reviewer flow did not start for ${task.id}: ${JSON.stringify(revResult)}`,
+      revResult?.started && revResult.envelope_status === "succeeded",
+      `reviewer failed for ${task.id}: ${JSON.stringify(revResult)}`,
     );
-    if (!revResult.started) throw new Error("unreachable");
+    if (!revResult?.started) throw new Error("unreachable");
     if (revResult.review_result === "approved") {
       reviewerApproved = true;
       break;
