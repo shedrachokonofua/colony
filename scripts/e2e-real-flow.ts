@@ -576,9 +576,6 @@ async function waitForProposalStatus(status: string): Promise<{
       last = line;
     }
     if (proposal?.status === status) return proposal;
-    if (proposal?.status === "changes_requested") {
-      throw new Error("decomposition returned changes_requested");
-    }
     await sleep(pollMs);
   }
   throw new Error(`timed out waiting for proposal status ${status}`);

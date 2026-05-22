@@ -259,7 +259,7 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
       policy: {
         constraints: [
           "Each proposed_task_id must be `<scope_id>.<n>` and unique within the proposal.",
-          "Prefer small, independently mergeable tasks over a single large task.",
+          "Honor explicit task-count constraints in the scope brief. If the scope asks for one task, propose one task; otherwise prefer small, independently mergeable tasks.",
           "For proposed_dependencies with kind=blocks, from_task_id is the prerequisite/blocker that must land first and to_task_id is the dependent task that is blocked.",
         ],
         protected_paths: [],
