@@ -12,21 +12,19 @@ import {
   type AgentRuntimeAdapter,
   type CredentialBroker,
   type CredentialResolveRequest,
+  type ToolAuthorizationRequest,
   type ToolAuthorizationResult,
 } from "@colony/agent-runtime";
 import {
   ColonyConfigError,
+  DEFAULT_CEILINGS,
   loadColonyConfig,
   type Env,
   type ColonyConfig,
   type ResolvedAgentConfig,
 } from "@colony/config";
 
-const ARCHITECT_FALLBACK_CEILINGS = {
-  timeoutMs: 1_800_000,
-  maxTurns: 80,
-  maxUsdPerRun: 25,
-};
+const ARCHITECT_FALLBACK_CEILINGS = DEFAULT_CEILINGS.architect;
 
 export interface AgentRuntimeWiring {
   readonly developerPlanner: AgentRuntimeAdapter;
@@ -43,6 +41,11 @@ export async function createAgentRuntimeWiring(
   const runtime =
     env.AGENT_RUNTIME ?? (env.NODE_ENV === "test" ? "fake" : undefined);
   const config = loadRuntimeConfig(env, runtime, rawEnv);
+  if (!runtime && !config && env.NODE_ENV !== "test") {
+    throw new Error(
+      "Colony agent runtime config is unavailable: set AGENT_RUNTIME or provide a readable COLONY_CONFIG_PATH",
+    );
+  }
   const choice = runtime ?? config?.agentRuntime ?? "fake";
 
   if (choice === "fake") {
@@ -216,7 +219,6 @@ export function createConfigCredentialBroker(
     entriesByProvider.set(agent.providerKey, { agent, piProviderId });
     entriesByProvider.set(piProviderId, { agent, piProviderId });
   }
-
   return {
     async resolve(
       request: CredentialResolveRequest,
@@ -244,10 +246,59 @@ export function createConfigCredentialBroker(
         providerId: oauthProviderId,
       });
     },
-    authorizeTool(): ToolAuthorizationResult {
-      return { allow: true };
+    authorizeTool(request: ToolAuthorizationRequest): ToolAuthorizationResult {
+      if (isSubmissionTool(request.toolName)) {
+        return { allow: true };
+      }
+      const granted = new Set([
+        ...request.packet.capabilities,
+        ...request.packet.tool_permissions,
+      ]);
+      const required = requiredPacketPermissions(request.toolName);
+      if (required.some((permission) => granted.has(permission))) {
+        return { allow: true };
+      }
+      return {
+        allow: false,
+        reason: `tool ${request.toolName} is not authorized by the run packet capabilities or tool permissions`,
+      };
     },
   };
+}
+
+function isSubmissionTool(toolName: string): boolean {
+  return (
+    toolName === "submit_developer_completion" ||
+    toolName === "submit_developer_plan" ||
+    toolName === "submit_plan_review" ||
+    toolName === "submit_reviewer_review" ||
+    toolName === "submit_architect_decomposition"
+  );
+}
+
+function requiredPacketPermissions(toolName: string): readonly string[] {
+  switch (toolName) {
+    case "bash":
+      return ["bash", "tool.cli.execute", "tool.call", "git"];
+    case "read":
+    case "grep":
+    case "find":
+    case "ls":
+      return [toolName, "provider.commits.read", "tool.call", "git"];
+    case "write":
+    case "edit":
+      return [toolName, "provider.branches.push", "tool.call", "git"];
+    case "post_progress_note":
+      return ["post_progress_note", "provider.comment", "provider.mr.comment"];
+    case "submit_developer_completion":
+    case "submit_developer_plan":
+    case "submit_plan_review":
+    case "submit_reviewer_review":
+    case "submit_architect_decomposition":
+      return [toolName];
+    default:
+      return [toolName];
+  }
 }
 
 async function resolveOAuthApiKey(input: {

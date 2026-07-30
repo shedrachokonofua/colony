@@ -10,6 +10,8 @@ import {
 } from "@colony/agent-runtime";
 import {
   reviewerReviewEnvelopeSchema,
+  type DeveloperCompletionEnvelope,
+  type Freshness,
   type ReviewerReviewEnvelope,
 } from "@colony/schemas";
 import {
@@ -25,8 +27,11 @@ import {
   type ProviderProject,
   type Task,
 } from "@colony/domain";
-import type { ProviderAdapter, ProviderProjectRef } from "@colony/provider";
-import type { DeveloperCompletionEnvelope, Freshness } from "@colony/schemas";
+import type {
+  ProviderAdapter,
+  ProviderMergeRequest,
+  ProviderProjectRef,
+} from "@colony/provider";
 import {
   mintTaskAgentToken,
   revokeTaskAgentToken,
@@ -94,6 +99,7 @@ export type StartReviewerRunResult =
   | {
       readonly started: false;
       readonly task_id?: string;
+      readonly envelope_status?: "failed";
       readonly reason: string;
     }
   | {
@@ -102,6 +108,11 @@ export type StartReviewerRunResult =
       readonly run_id: string;
       readonly review_id: string;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?:
+        | "approved"
+        | "changes_requested"
+        | "blocked"
+        | "escalate";
       readonly review_result?:
         | "approved"
         | "changes_requested"
@@ -209,9 +220,34 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
     }
 
     try {
-      const mr = await deps.providerAdapter.mergeRequests
-        .get(projectRef, mrMirror.provider_id)
-        .catch(() => null);
+      let mr: ProviderMergeRequest;
+      try {
+        mr = await deps.providerAdapter.mergeRequests.get(
+          projectRef,
+          mrMirror.provider_id,
+        );
+      } catch (err) {
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "reviewer.mr.fetch_failed",
+          capability: "provider.commits.read",
+          target_kind: "merge_request",
+          target_id: mrMirror.provider_id,
+          reason: "mr_fetch_failed",
+          evidence: {
+            provider: project.provider,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+        return {
+          started: false,
+          task_id: task.id,
+          envelope_status: "failed",
+          reason: "mr_fetch_failed",
+        };
+      }
       const commit_sha = developerCommitFromEnvelope(input.developer_envelope);
 
       // Persist (or upsert) the MR artifact so reviews/approvals can hang off it.
@@ -243,6 +279,36 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
       });
 
       const freshness = freshnessFor(task, project, input.developer_envelope);
+      let diff_summary: string;
+      try {
+        diff_summary = await fetchDiffSummary(
+          deps.providerAdapter,
+          { id: project.provider_id, path: project.path },
+          mrMirror.provider_id,
+        );
+      } catch (err) {
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "reviewer.diff.fetch_failed",
+          capability: "provider.commits.read",
+          target_kind: "merge_request",
+          target_id: mrMirror.provider_id,
+          reason: "diff_fetch_failed",
+          evidence: {
+            provider: project.provider,
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+        return {
+          started: false,
+          task_id: task.id,
+          envelope_status: "failed",
+          reason: "diff_fetch_failed",
+        };
+      }
+
       const packet = buildReviewPacket({
         scope_id: task.scope_id,
         task_id: task.id,
@@ -298,11 +364,7 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         time_budget_minutes: 30,
         mr_id: mrMirror.provider_id,
         commit_sha,
-        diff_summary: await fetchDiffSummary(
-          deps.providerAdapter,
-          { id: project.provider_id, path: project.path },
-          mrMirror.provider_id,
-        ),
+        diff_summary,
         developer_envelope: input.developer_envelope,
         pipeline_artifacts: [],
         freshness,
@@ -490,7 +552,11 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         action:
           reviewResult === "changes_requested"
             ? "review.changes_requested"
-            : "review.approved",
+            : reviewResult === "blocked"
+              ? "review.blocked"
+              : reviewResult === "escalate"
+                ? "review.escalated"
+                : "review.approved",
         capability: "task.assign",
         target_kind: "review",
         target_id: review.id,
@@ -511,6 +577,7 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         run_id: metadata.runId,
         review_id: review.id,
         envelope_status: "succeeded",
+        outcome: reviewResult,
         review_result: reviewResult,
         final_state: nextState,
         comment_id: comment?.id,
@@ -538,37 +605,33 @@ async function fetchDiffSummary(
   project: ProviderProjectRef,
   mrId: string,
 ): Promise<string> {
-  try {
-    const diff = await adapter.mergeRequests.diff(project, mrId);
-    if (!diff || diff.length === 0) {
-      return `No textual diff available for MR ${mrId}.`;
-    }
-    const MAX = 12_000;
-    const parts: string[] = [`MR ${mrId} diff (${diff.length} files):`];
-    let used = parts[0].length;
-    for (const file of diff) {
-      const path =
-        (file["new_path"] as string | undefined) ??
-        (file["old_path"] as string | undefined) ??
-        "<unknown>";
-      const body =
-        (file["diff"] as string | undefined) ??
-        (file["patch"] as string | undefined) ??
-        "";
-      const block = `\n--- ${path} ---\n${body.length > 4000 ? body.slice(0, 4000) + "\n[truncated]" : body}`;
-      if (used + block.length > MAX) {
-        parts.push(
-          `\n[diff truncated; ${diff.length - parts.length + 1} files omitted]`,
-        );
-        break;
-      }
-      parts.push(block);
-      used += block.length;
-    }
-    return parts.join("");
-  } catch (e) {
-    return `Diff for MR ${mrId} could not be fetched (${e instanceof Error ? e.message : String(e)}).`;
+  const diff = await adapter.mergeRequests.diff(project, mrId);
+  if (!diff || diff.length === 0) {
+    return `No textual diff available for MR ${mrId}.`;
   }
+  const MAX = 12_000;
+  const parts: string[] = [`MR ${mrId} diff (${diff.length} files):`];
+  let used = parts[0].length;
+  for (const file of diff) {
+    const path =
+      (file["new_path"] as string | undefined) ??
+      (file["old_path"] as string | undefined) ??
+      "<unknown>";
+    const body =
+      (file["diff"] as string | undefined) ??
+      (file["patch"] as string | undefined) ??
+      "";
+    const block = `\n--- ${path} ---\n${body.length > 4000 ? body.slice(0, 4000) + "\n[truncated]" : body}`;
+    if (used + block.length > MAX) {
+      parts.push(
+        `\n[diff truncated; ${diff.length - parts.length + 1} files omitted]`,
+      );
+      break;
+    }
+    parts.push(block);
+    used += block.length;
+  }
+  return parts.join("");
 }
 
 async function primaryMirror(

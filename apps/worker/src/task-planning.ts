@@ -76,6 +76,7 @@ export type StartDeveloperPlanRunResult =
       readonly task_id: string;
       readonly run_id?: string;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?: "done" | "blocked" | "escalate";
       readonly final_state: Task["state"];
       readonly developer_plan?: DeveloperPlanEnvelope;
       readonly reason?: string;
@@ -99,6 +100,11 @@ export type StartPlanReviewRunResult =
       readonly task_id: string;
       readonly run_id?: string;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?:
+        | "approved"
+        | "changes_requested"
+        | "blocked"
+        | "escalate";
       readonly review_result?:
         | "approved"
         | "changes_requested"
@@ -216,7 +222,15 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
     }
     const output = await deps.agentRuntime.getRunOutput(metadata.runId);
     const envelope = parseDeveloperPlanEnvelope(output?.envelope);
+
     if (!output || !envelope || envelope.task_id !== task.id) {
+      await writePlanningEnvelopeRejectedAudit(
+        deps.repo,
+        task,
+        metadata,
+        "developer",
+        "developer_plan_missing_or_mismatched",
+      );
       return {
         started: true,
         task_id: task.id,
@@ -242,6 +256,31 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
         envelope_status: "envelope_rejected",
         final_state: task.state,
         reason: "envelope_freshness_mismatch",
+      };
+    }
+    if (envelope.result === "blocked" || envelope.result === "escalate") {
+      await deps.repo.writeAudit({
+        scope_id: task.scope_id,
+        task_id: task.id,
+        actor: input.assignee as ActorId,
+        action:
+          envelope.result === "blocked"
+            ? "task.developer_plan.blocked"
+            : "task.developer_plan.escalated",
+        capability: "task.assign",
+        target_kind: "agent_run",
+        target_id: metadata.runId,
+        reason: `developer_plan_${envelope.result}`,
+        evidence: { run_id: metadata.runId, envelope_result: envelope.result },
+      });
+      return {
+        started: true,
+        task_id: task.id,
+        run_id: metadata.runId,
+        envelope_status: "succeeded",
+        outcome: envelope.result,
+        final_state: task.state,
+        developer_plan: envelope,
       };
     }
 
@@ -285,6 +324,7 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
       task_id: task.id,
       run_id: metadata.runId,
       envelope_status: "succeeded",
+      outcome: "done",
       final_state: planned.state,
       developer_plan: envelope,
     };
@@ -314,7 +354,19 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
       };
     }
     const plan = developerPlanEnvelopeSchema.safeParse(input.developer_plan);
+
     if (!plan.success || plan.data.task_id !== task.id) {
+      await deps.repo.writeAudit({
+        scope_id: task.scope_id,
+        task_id: task.id,
+        actor: SUPERVISOR_ACTOR,
+        action: "task.plan_review.input_envelope_rejected",
+        capability: "task.assign",
+        target_kind: "task",
+        target_id: task.id,
+        reason: "developer_plan_missing_or_mismatched",
+        evidence: { task_id: task.id },
+      });
       return {
         started: true,
         task_id: task.id,
@@ -463,7 +515,15 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
     }
     const output = await deps.agentRuntime.getRunOutput(metadata.runId);
     const review = parsePlanReviewEnvelope(output?.envelope);
+
     if (!output || !review || review.task_id !== task.id) {
+      await writePlanningEnvelopeRejectedAudit(
+        deps.repo,
+        task,
+        metadata,
+        "plan_review",
+        "plan_review_missing_or_mismatched",
+      );
       return {
         started: true,
         task_id: task.id,
@@ -512,24 +572,52 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
       "task.plan_review.comment_posted",
       renderPlanReviewDigest(task, review),
     );
-    const final = await deps.repo.updateTaskState(
-      task.id,
-      recorded.state_version,
-      reviewResult === "approved" ? "in_progress" : "plan_proposed",
-      {
-        actor: SUPERVISOR_ACTOR,
+    if (reviewResult === "blocked" || reviewResult === "escalate") {
+      await deps.repo.writeAudit({
+        scope_id: task.scope_id,
+        task_id: task.id,
+        actor: input.reviewer as ActorId,
+        action:
+          reviewResult === "blocked"
+            ? "task.plan_review.blocked"
+            : "task.plan_review.escalated",
         capability: "task.assign",
-        reason:
-          reviewResult === "approved"
-            ? "plan_review_approved"
-            : "plan_review_changes_requested",
-      },
-    );
+        target_kind: "task",
+        target_id: task.id,
+        reason: `plan_review_${reviewResult}`,
+        evidence: { run_id: metadata.runId, envelope_hash: hashJson(review) },
+      });
+    }
+    const final =
+      reviewResult === "approved"
+        ? await deps.repo.updateTaskState(
+            task.id,
+            recorded.state_version,
+            "in_progress",
+            {
+              actor: SUPERVISOR_ACTOR,
+              capability: "task.assign",
+              reason: "plan_review_approved",
+            },
+          )
+        : reviewResult === "changes_requested"
+          ? await deps.repo.updateTaskState(
+              task.id,
+              recorded.state_version,
+              "plan_proposed",
+              {
+                actor: SUPERVISOR_ACTOR,
+                capability: "task.assign",
+                reason: "plan_review_changes_requested",
+              },
+            )
+          : { state: "plan_review" as Task["state"] };
     return {
       started: true,
       task_id: task.id,
       run_id: metadata.runId,
       envelope_status: "succeeded",
+      outcome: reviewResult,
       review_result: reviewResult,
       final_state: final.state,
       plan_review: review,
@@ -916,5 +1004,25 @@ async function writePlanningEnvelopeStaleAudit(
       packet_hash: packetHash,
       envelope_packet_hash: envelopePacketHash,
     },
+  });
+}
+
+async function writePlanningEnvelopeRejectedAudit(
+  repo: TaskGraphRepository,
+  task: Task,
+  metadata: AgentRunMetadata,
+  kind: "developer" | "plan_review",
+  reason: string,
+): Promise<void> {
+  await repo.writeAudit({
+    scope_id: task.scope_id,
+    task_id: task.id,
+    actor: SUPERVISOR_ACTOR,
+    action: `task.${kind}.envelope_rejected`,
+    capability: "task.assign",
+    target_kind: "agent_run",
+    target_id: metadata.runId,
+    reason,
+    evidence: { run_id: metadata.runId, status: metadata.status },
   });
 }

@@ -264,7 +264,7 @@ export class ColonyConfigError extends Error {
   }
 }
 
-const DEFAULT_CEILINGS = {
+export const DEFAULT_CEILINGS = {
   developer: { timeoutMs: 900_000, maxTurns: 60, maxUsdPerRun: 10 },
   reviewer: { timeoutMs: 600_000, maxTurns: 20, maxUsdPerRun: 3 },
   architect: { timeoutMs: 1_800_000, maxTurns: 80, maxUsdPerRun: 25 },

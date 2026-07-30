@@ -106,6 +106,11 @@ export type StartDecompositionReviewRunResult =
       readonly proposal_id: string;
       readonly run_id: string;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?:
+        | "approved"
+        | "changes_requested"
+        | "blocked"
+        | "escalate";
       readonly review_result?:
         | "approved"
         | "changes_requested"
@@ -206,6 +211,31 @@ export function createDecompositionReviewRun(
             )
             .catch(() => null)
         : null;
+    if (
+      deps.providerAdapter &&
+      (!primaryProjectRef || !specMrMirror || !specMr)
+    ) {
+      await deps.repo.writeAudit({
+        scope_id: scopeId,
+        actor: SUPERVISOR_ACTOR,
+        action: "decomposition.review.spec_mr_unavailable",
+        capability: "graph.read",
+        target_kind: "decomposition_proposal",
+        target_id: proposalId,
+        reason: "spec_mr_unavailable",
+        evidence: {
+          primary_project_resolved: Boolean(primaryProjectRef),
+          spec_mr_mirror_resolved: Boolean(specMrMirror),
+          spec_mr_fetched: Boolean(specMr),
+        },
+      });
+      return {
+        started: false,
+        scope_id: scopeId,
+        proposal_id: proposalId,
+        reason: "spec_mr_unavailable",
+      };
+    }
     let agentToken: Awaited<
       ReturnType<typeof mintEphemeralProjectAgentToken>
     > | null = null;
@@ -502,12 +532,31 @@ export function createDecompositionReviewRun(
       }
     }
 
+    await deps.repo.writeAudit({
+      scope_id: scopeId,
+      actor: reviewer,
+      action:
+        reviewResult === "approved"
+          ? "decomposition.review.approved"
+          : reviewResult === "changes_requested"
+            ? "decomposition.review.changes_requested"
+            : reviewResult === "blocked"
+              ? "decomposition.review.blocked"
+              : "decomposition.review.escalated",
+      capability: "graph.write",
+      target_kind: "decomposition_proposal",
+      target_id: proposalId,
+      reason: `decomposition_review_${reviewResult}`,
+      evidence: { run_id: metadata.runId, proposal_id: proposalId },
+    });
+
     return {
       started: true,
       scope_id: scopeId,
       proposal_id: proposalId,
       run_id: metadata.runId,
       envelope_status: "succeeded",
+      outcome: reviewResult,
       review_result: reviewResult,
     };
   };

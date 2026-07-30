@@ -71,6 +71,7 @@ export function resetEnvCache(): void {
 export {
   AGENT_ROLES,
   ColonyConfigError,
+  DEFAULT_CEILINGS,
   PI_API_KINDS,
   colonyConfigFileSchema,
   loadColonyConfig,

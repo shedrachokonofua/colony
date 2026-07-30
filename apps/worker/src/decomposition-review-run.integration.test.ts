@@ -106,6 +106,7 @@ describe.runIf(TEST_URL)("createDecompositionReviewRun integration", () => {
       scope_id: SCOPE_ID,
       proposal_id: proposalId,
       envelope_status: "succeeded",
+      outcome: "approved",
       review_result: "approved",
     });
 
@@ -141,6 +142,7 @@ describe.runIf(TEST_URL)("createDecompositionReviewRun integration", () => {
     });
     expect(result).toMatchObject({
       envelope_status: "succeeded",
+      outcome: "changes_requested",
       review_result: "changes_requested",
     });
 

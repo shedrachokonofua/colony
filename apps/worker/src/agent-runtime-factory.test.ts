@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Env } from "@colony/config";
-import { createAgentRuntimeWiring } from "./agent-runtime-factory.js";
+import type { ToolAuthorizationRequest } from "@colony/agent-runtime";
+import {
+  createAgentRuntimeWiring,
+  createConfigCredentialBroker,
+} from "./agent-runtime-factory.js";
 
 describe("createAgentRuntimeWiring", () => {
   it("uses fake runtime in test mode without requiring a config file", async () => {
@@ -15,6 +19,32 @@ describe("createAgentRuntimeWiring", () => {
 
     await expect(wiring.developer.getRunStatus("missing")).resolves.toBeNull();
     expect(wiring.developer).toBe(wiring.reviewer);
+  });
+
+  it("fails fast in production when the runtime config is missing", async () => {
+    await expect(
+      createAgentRuntimeWiring({
+        ...baseEnv(),
+        NODE_ENV: "production",
+        COLONY_CONFIG_PATH: "/no/such/config.yaml",
+      }),
+    ).rejects.toThrow(/Colony agent runtime config is unavailable/);
+  });
+
+  it("denies tools absent from packet capabilities and permissions", async () => {
+    const broker = createConfigCredentialBroker([], baseEnv(), {});
+    const result = await broker.authorizeTool?.({
+      toolName: "provider.mr.merge",
+      args: {},
+      packet: {
+        capabilities: ["tool.cli.execute"],
+        tool_permissions: [],
+      } as unknown as ToolAuthorizationRequest["packet"],
+      environment: {} as ToolAuthorizationRequest["environment"],
+    });
+
+    expect(result?.allow).toBe(false);
+    expect(result?.reason).toContain("not authorized");
   });
 
   it("builds pi adapters from an OpenAI-compatible provider config", async () => {

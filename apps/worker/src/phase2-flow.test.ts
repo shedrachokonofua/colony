@@ -195,6 +195,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     expect(planResult.started).toBe(true);
     if (!planResult.started) throw new Error("developer plan did not start");
     expect(planResult.envelope_status).toBe("succeeded");
+    expect(planResult.outcome).toBe("done");
     expect(planResult.final_state).toBe("plan_proposed");
     expect(planResult.developer_plan?.task_id).toBe(task.id);
 
@@ -212,6 +213,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     expect(planReviewResult.started).toBe(true);
     if (!planReviewResult.started) throw new Error("plan review did not start");
     expect(planReviewResult.envelope_status).toBe("succeeded");
+    expect(planReviewResult.outcome).toBe("approved");
     expect(planReviewResult.review_result).toBe("approved");
     expect(planReviewResult.final_state).toBe("in_progress");
 
@@ -229,6 +231,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     expect(devResult.started).toBe(true);
     if (!devResult.started) throw new Error("developer flow did not start");
     expect(devResult.envelope_status).toBe("succeeded");
+    expect(devResult.outcome).toBe("done");
     expect(devResult.final_state).toBe("review_requested");
     const mrId = devResult.mr?.id;
     if (!mrId) throw new Error("expected MR id");
@@ -272,6 +275,7 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     });
     expect(revResult.started).toBe(true);
     if (!revResult.started) throw new Error("reviewer did not start");
+    expect(revResult.outcome).toBe("approved");
     expect(revResult.review_result).toBe("approved");
     // After reviewer approval the task remains review_requested until human
     // approval + green pipeline arrive.

@@ -772,6 +772,19 @@ export async function claimReadyTask(
     scope_id: claimed.scope_id,
     assignee,
   });
+  if (provider_projection?.status === "failed") {
+    await repository.writeAudit({
+      scope_id: claimed.scope_id,
+      task_id: claimed.id,
+      actor: SUPERVISOR_ACTOR,
+      action: "task.claim.provider_projection_failed",
+      capability: "task.claim",
+      target_kind: "task",
+      target_id: claimed.id,
+      reason: provider_projection.reason ?? "provider_projection_failed",
+      evidence: { provider_projection },
+    });
+  }
   return {
     claimed: true,
     task_id: claimed.id,

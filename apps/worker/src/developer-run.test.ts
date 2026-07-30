@@ -221,6 +221,7 @@ describe.runIf(liveEnabled)("createDeveloperRun live", () => {
     expect(result.started).toBe(true);
     if (!result.started) throw new Error("flow did not start");
     expect(result.envelope_status).toBe("succeeded");
+    expect(result.outcome).toBe("done");
     expect(result.final_state).toBe("review_requested");
     expect(result.mr?.source_branch).toBe(featureBranch);
     expect(result.mr?.target_branch).toBe("main");
