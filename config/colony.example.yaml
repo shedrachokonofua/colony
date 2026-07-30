@@ -24,6 +24,23 @@ providers:
       kind: api_key
       value: COLONY_OPENAI_COMPATIBLE_API_KEY
     models:
+      - id: router/mimo-v2.5-pro
+        name: mimo-v2.5-pro
+        context_window: 262144
+        max_tokens: 32768
+        cost: { input: 0, output: 0 }
+      - id: router/glm-5.2
+        name: glm-5.2
+        reasoning: true
+        context_window: 200000
+        max_tokens: 131072
+        cost: { input: 0, output: 0 }
+      - id: kimi/k3
+        name: kimi-k3
+        reasoning: true
+        context_window: 262144
+        max_tokens: 32768
+        cost: { input: 0, output: 0 }
       - id: ollama-cloud/kimi-k2.6
         name: kimi-k2.6
         context_window: 128000
@@ -60,30 +77,30 @@ providers:
         name: sonnet-4-via-pro
 
 agents:
+  # Model split (2026-07): developer on MiMo v2.5 Pro, architect on GLM 5.2,
+  # reviewer on Kimi K3 — all via the LiteLLM gateway (openai_compatible).
   developer:
     provider: openai_compatible
-    model: kimi-k2.6
+    model: mimo-v2.5-pro
     # For subscription-backed Codex instead:
     # provider: openai_codex
     # model: gpt-5.5
     # thinking_level: high
-    timeout_ms: 900000
-    max_turns: 60
-    max_usd_per_run: 10
-  reviewer:
-    provider: openai_codex
-    model: gpt-5.5
-    thinking_level: high
-    timeout_ms: 600000
-    max_turns: 30
-    max_usd_per_run: 5
-  architect:
-    provider: openai_codex
-    model: gpt-5.5
-    thinking_level: high
     timeout_ms: 1800000
-    max_turns: 80
-    max_usd_per_run: 25
+    max_turns: 250
+    max_usd_per_run: 50
+  reviewer:
+    provider: openai_compatible
+    model: kimi-k3
+    timeout_ms: 1800000
+    max_turns: 200
+    max_usd_per_run: 30
+  architect:
+    provider: openai_compatible
+    model: glm-5.2
+    timeout_ms: 1800000
+    max_turns: 200
+    max_usd_per_run: 50
   memory_consolidator:
     provider: openai_compatible
-    model: kimi-k2.6
+    model: glm-5.2
