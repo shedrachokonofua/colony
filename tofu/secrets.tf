@@ -62,6 +62,10 @@ resource "kubernetes_secret_v1" "app_env" {
 
     COLONY_SECRET_ENCRYPTION_KEY = random_id.secret_encryption_key.b64_std
 
+    AGENT_RUNTIME                    = "pi"
+    COLONY_CONFIG_PATH               = "/etc/colony/colony.yaml"
+    COLONY_OPENAI_COMPATIBLE_API_KEY = data.vault_kv_secret_v2.litellm.data["COLONY_OPENAI_COMPATIBLE_API_KEY"]
+
     TEMPORAL_ADDRESS         = var.temporal_address
     TEMPORAL_TLS             = tostring(var.temporal_tls)
     TEMPORAL_NAMESPACE       = var.temporal_namespace

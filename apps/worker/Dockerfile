@@ -26,7 +26,7 @@ RUN npm ci --include=dev
 FROM docker.io/library/node:24-bookworm-slim AS runtime
 WORKDIR /workspace
 ENV NODE_ENV=production
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /workspace/node_modules ./node_modules
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages ./packages
