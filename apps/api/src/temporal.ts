@@ -19,6 +19,7 @@ async function getClient(): Promise<TemporalClient> {
   const connection = await Connection.connect({
     address: cfg.TEMPORAL_ADDRESS,
     tls,
+    connectTimeout: "5s",
   });
   cached = new TemporalClient({
     connection,

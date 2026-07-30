@@ -115,12 +115,20 @@ const taskMirrorSchema = z.object({
   freshness_ttl_seconds: z.number().int().positive().optional(),
 });
 
+export type ArchitectSignaler = typeof signalArchitectRequested;
+
 export interface TaskGraphDeps {
   readonly repo: TaskGraphRepository;
   readonly policyRepo: PolicyRepository;
   readonly idempotencyRepo: IdempotencyRepository;
   readonly providerProjects: ProviderProjectRepository;
   readonly providerAdapter?: ProviderAdapter;
+  /**
+   * Temporal kickoff for architect decomposition requests. Injectable so
+   * tests never dial a real Temporal; production wiring defaults to
+   * signalArchitectRequested.
+   */
+  readonly signalArchitect?: ArchitectSignaler;
 }
 
 let singleton: TaskGraphDeps | undefined;
@@ -498,7 +506,7 @@ async function requestArchitectDecomposition(
   let workflow_id: string | undefined;
   let signal_error: string | undefined;
   try {
-    const result = await signalArchitectRequested({
+    const result = await (deps.signalArchitect ?? signalArchitectRequested)({
       scope_id: input.scope.id,
       payload: {
         actor: input.actor,

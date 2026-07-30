@@ -35,12 +35,19 @@ describe.runIf(TEST)("Task Graph API (HTTP)", () => {
   const url = TEST!;
   const pool = createPool({ connectionString: url, role: "colony_writer" });
   const providerAdapter = new FakeProviderAdapter();
+  const signaled: Array<{ scope_id: string }> = [];
   const deps = {
     repo: new TaskGraphRepository(pool),
     policyRepo: new PolicyRepository(pool),
     idempotencyRepo: new IdempotencyRepository(pool),
     providerProjects: new ProviderProjectRepository(pool),
     providerAdapter,
+    signalArchitect: (input: { scope_id: string }) => {
+      signaled.push({ scope_id: input.scope_id });
+      return Promise.resolve({
+        workflow_id: `scope-supervisor:${input.scope_id}`,
+      });
+    },
   };
   const app = buildApp({
     taskGraph: deps,
