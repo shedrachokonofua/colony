@@ -52,7 +52,6 @@ import {
   developerPlanEnvelopeSchema,
   planReviewEnvelopeSchema,
   reviewerReviewEnvelopeSchema,
-  type TaskPacket,
 } from "@colony/schemas";
 
 export type PiWorkspaceMode = "repo-required" | "scratch";
@@ -87,10 +86,6 @@ export interface PiRoleProfile {
   readonly workspaceMode: PiWorkspaceMode;
   readonly includeProgressNote: boolean;
   readonly skipPromptWithoutWorkTools?: boolean;
-  readonly completeEnvelope?: (
-    rawEnvelope: unknown,
-    packet: AgentRuntimePacket,
-  ) => unknown;
 }
 
 export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
@@ -121,12 +116,14 @@ export class PiBaseAgentRunner implements PiRunner {
     const broker = runnerBroker(this.options);
     const model = await resolvePiModel(request, this.options.model);
     const workTools = this.options.tools ?? this.profile.defaultTools;
+    let failureReason: string | undefined;
+    let timeoutTriggered = false;
+
     const cwd = provisionProfileWorkspace(
       runId,
       request.packet,
       this.profile,
       this.options,
-      workTools,
     );
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
@@ -174,11 +171,14 @@ export class PiBaseAgentRunner implements PiRunner {
       ...(progressNote ? [progressNote.tool.name] : []),
       submitTool.name,
     ];
-
     const clearTimeoutGuard = withRunTimeout(
       runId,
       this.options.runTimeoutMs,
       () => session?.abort(),
+      () => {
+        failureReason ??= "timeout_without_envelope";
+        timeoutTriggered = true;
+      },
     );
     this.activeRuns.set(runId, {
       abort: async () => {
@@ -204,6 +204,9 @@ export class PiBaseAgentRunner implements PiRunner {
         tools: toolNames,
       });
       session = result.session;
+      if (timeoutTriggered) {
+        void session.abort();
+      }
       session.agent.getApiKey = async (provider) =>
         broker.resolve({
           provider,
@@ -216,6 +219,9 @@ export class PiBaseAgentRunner implements PiRunner {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
         maxUsd: this.options.maxUsd ?? this.profile.defaultLimits.maxUsd,
         logger: this.options.logger,
+        onFailure: (reason) => {
+          failureReason ??= reason;
+        },
       });
       const previousBeforeToolCall = session.agent.beforeToolCall;
       session.agent.beforeToolCall = async (context, signal) => {
@@ -292,9 +298,11 @@ export class PiBaseAgentRunner implements PiRunner {
           logger: this.options.logger,
           runId,
         });
-        capturedEnvelope = this.profile.completeEnvelope
-          ? this.profile.completeEnvelope(rawEnvelope, request.packet)
-          : rawEnvelope;
+        if (rawEnvelope === undefined) {
+          failureReason ??= "finalize_no_submission";
+        } else {
+          capturedEnvelope = rawEnvelope;
+        }
       }
     } finally {
       clearTimeoutGuard();
@@ -305,6 +313,10 @@ export class PiBaseAgentRunner implements PiRunner {
     return {
       sandboxId,
       envelope: capturedEnvelope ?? { __unfinished: true },
+      reason:
+        capturedEnvelope === undefined
+          ? (failureReason ?? "finalize_no_submission")
+          : undefined,
     };
   }
 
@@ -312,15 +324,13 @@ export class PiBaseAgentRunner implements PiRunner {
     await this.activeRuns.get(runId)?.abort();
   }
 }
-
 function provisionProfileWorkspace(
   runId: string,
   packet: AgentRuntimePacket,
   profile: PiRoleProfile,
   options: PiBaseAgentRunnerOptions,
-  workTools: readonly string[],
 ): string {
-  if (profile.workspaceMode === "scratch" || workTools.length === 0) {
+  if (profile.workspaceMode === "scratch") {
     return provisionScratchDir(runId, packet, options.scratchDir);
   }
   return provisionRepoWorkspace(runId, packet, {
@@ -384,7 +394,6 @@ export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
   workspaceMode: "repo-required",
   includeProgressNote: true,
   skipPromptWithoutWorkTools: true,
-  completeEnvelope: completeDeveloperEnvelope,
 };
 
 export const REVIEWER_ROLE_PROFILE: PiRoleProfile = {
@@ -454,155 +463,3 @@ export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
   workspaceMode: "scratch",
   includeProgressNote: false,
 };
-
-/**
- * Merge model output with packet-derived defaults to produce a
- * schema-valid `developer_completion` envelope. Kimi-class models served via
- * Ollama don't strictly conform to deeply-nested tool-call schemas; rather
- * than retry forever, we take the model's contributions and overlay
- * deterministic packet fields so the envelope validates by construction.
- */
-function completeDeveloperEnvelope(
-  rawArgs: unknown,
-  packet: AgentRuntimePacket,
-): unknown {
-  const taskPacket = packet as TaskPacket;
-  const isObject = (v: unknown): v is Record<string, unknown> =>
-    !!v && typeof v === "object" && !Array.isArray(v);
-  const m = isObject(rawArgs) ? rawArgs : {};
-  const role = isObject(m["role_specific"]) ? m["role_specific"] : {};
-  const validResults = new Set([
-    "done",
-    "changes_requested",
-    "approved",
-    "blocked",
-    "escalate",
-  ]);
-  const validRisk = new Set(["low", "medium", "high"]);
-  const validNext = new Set([
-    "request_review",
-    "merge",
-    "close",
-    "wait_human",
-    "return_to_author",
-    "request_human_review",
-    "propose_decomposition",
-    "propose_discovered_work",
-    "open_gate",
-    "report_blocked",
-    "escalate",
-  ]);
-  const noWorkTools = !Array.isArray(m["__work"]);
-  const reportedResult =
-    typeof m["result"] === "string" && validResults.has(m["result"])
-      ? m["result"]
-      : "done";
-  const result =
-    noWorkTools && reportedResult === "blocked" ? "done" : reportedResult;
-  const riskLevel =
-    typeof m["risk_level"] === "string" && validRisk.has(m["risk_level"])
-      ? m["risk_level"]
-      : "low";
-  const nextAction =
-    typeof m["next_action"] === "string" && validNext.has(m["next_action"])
-      ? m["next_action"]
-      : "request_review";
-  const confidence =
-    typeof m["confidence"] === "number" &&
-    m["confidence"] >= 0 &&
-    m["confidence"] <= 1
-      ? m["confidence"]
-      : 0.8;
-  const requiresHuman =
-    typeof m["requires_human"] === "boolean" ? m["requires_human"] : false;
-  const policyFlags = Array.isArray(m["policy_flags"])
-    ? (m["policy_flags"] as unknown[]).filter((x) => typeof x === "string")
-    : [];
-  const validArtifactKinds = new Set([
-    "issue",
-    "epic",
-    "mr",
-    "pr",
-    "commit",
-    "branch",
-    "pipeline",
-    "comment",
-    "release",
-  ]);
-  const cleanArtifacts = Array.isArray(m["artifacts"])
-    ? (m["artifacts"] as unknown[]).filter(isObject).flatMap((a) => {
-        if (
-          typeof a["kind"] !== "string" ||
-          !validArtifactKinds.has(a["kind"])
-        ) {
-          return [];
-        }
-        const hash = typeof a["hash"] === "string" ? a["hash"] : undefined;
-        const id = typeof a["id"] === "string" ? a["id"] : hash;
-        if (!id) return [];
-        const uri =
-          typeof a["uri"] === "string"
-            ? a["uri"]
-            : artifactUriForDeveloperEnvelope(taskPacket, id);
-        const out: Record<string, string> = {
-          kind: a["kind"],
-          id,
-          uri,
-        };
-        if (hash) out["hash"] = hash;
-        return [out];
-      })
-    : [];
-  const rationale =
-    typeof m["rationale"] === "string" && m["rationale"].trim().length > 0
-      ? m["rationale"]
-      : "Developer envelope auto-completed from packet defaults.";
-  const testsAdded = Array.isArray(role["tests_added"])
-    ? (role["tests_added"] as unknown[]).filter((x) => typeof x === "string")
-    : [];
-  const testsModified = Array.isArray(role["tests_modified"])
-    ? (role["tests_modified"] as unknown[]).filter((x) => typeof x === "string")
-    : [];
-  const selfReviewNotes =
-    typeof role["self_review_notes"] === "string"
-      ? role["self_review_notes"]
-      : "";
-  const followUpProposals = Array.isArray(role["follow_up_proposals"])
-    ? (role["follow_up_proposals"] as unknown[]).filter(
-        (x) => typeof x === "string",
-      )
-    : [];
-  return {
-    version: 1,
-    result,
-    confidence,
-    requires_human: requiresHuman,
-    risk_level: riskLevel,
-    artifacts: cleanArtifacts,
-    policy_flags: policyFlags,
-    next_action: nextAction,
-    freshness: taskPacket.freshness,
-    rationale,
-    task_id: taskPacket.task_id,
-    role_specific: {
-      tests_added: testsAdded,
-      ...(testsModified.length > 0 ? { tests_modified: testsModified } : {}),
-      self_review_notes: selfReviewNotes,
-      ...(followUpProposals.length > 0
-        ? { follow_up_proposals: followUpProposals }
-        : {}),
-    },
-  };
-}
-
-function artifactUriForDeveloperEnvelope(
-  packet: TaskPacket,
-  artifactId: string,
-): string {
-  const repo = packet as TaskPacket & {
-    readonly repo?: { readonly url?: unknown };
-  };
-  const repoUrl = typeof repo.repo?.url === "string" ? repo.repo.url : "";
-  if (!repoUrl) return `urn:colony:artifact:${artifactId}`;
-  return `${repoUrl.replace(/\.git$/, "")}/-/commit/${artifactId}`;
-}

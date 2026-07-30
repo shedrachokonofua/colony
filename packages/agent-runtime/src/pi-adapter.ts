@@ -17,6 +17,7 @@ export interface PiRunRequest {
 export interface PiRunResult {
   readonly sandboxId: string;
   readonly envelope: unknown;
+  readonly reason?: string;
 }
 
 export interface PiRunner {
@@ -67,25 +68,38 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         return withoutOutput(current);
       }
       const parsed = parseEnvelope(runEnvironment.role, result.envelope);
-      const output = parsed.ok
-        ? {
-            envelope: parsed.envelope,
-            envelopeHash: hashEnvelope(parsed.envelope),
-          }
-        : undefined;
+      const unfinished =
+        result.envelope &&
+        typeof result.envelope === "object" &&
+        "__unfinished" in result.envelope;
+      const failureReason =
+        result.reason ?? (unfinished ? "finalize_no_submission" : undefined);
+      const output =
+        parsed.ok && !failureReason
+          ? {
+              envelope: parsed.envelope,
+              envelopeHash: hashEnvelope(parsed.envelope),
+            }
+          : undefined;
       const metadata: AgentRunMetadata = {
         runId,
         sandboxId: result.sandboxId,
         role: runEnvironment.role,
-        status: parsed.ok ? "succeeded" : "envelope_rejected",
+        status: failureReason
+          ? "failed"
+          : parsed.ok
+            ? "succeeded"
+            : "envelope_rejected",
         packetHash: running.packetHash,
         outputEnvelopeHash: output?.envelopeHash,
         runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
         runtimeBindingHash: runEnvironment.runtimeBinding.hash,
         toolProfileHash: runEnvironment.tools.manifest.profileHash,
-        rejectionReason: parsed.ok
-          ? undefined
-          : truncate(describeRejection(result.envelope, parsed.reason), 800),
+        rejectionReason: failureReason
+          ? truncate(failureReason, 800)
+          : parsed.ok
+            ? undefined
+            : truncate(describeRejection(result.envelope, parsed.reason), 800),
       };
       this.runs.set(runId, { ...metadata, output });
       return metadata;
@@ -115,10 +129,28 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
   }
 
   async cancelRun(runId: string): Promise<AgentRunMetadata | null> {
-    await this.runner.cancel?.(runId);
     const run = this.runs.get(runId);
     if (!run) return null;
-    const canceled = { ...run, status: "canceled" as const };
+    if (
+      run.status === "canceled" ||
+      run.status === "succeeded" ||
+      run.status === "failed" ||
+      run.status === "envelope_rejected"
+    ) {
+      return withoutOutput(run);
+    }
+    await this.runner.cancel?.(runId);
+    const current = this.runs.get(runId);
+    if (!current) return null;
+    if (
+      current.status === "canceled" ||
+      current.status === "succeeded" ||
+      current.status === "failed" ||
+      current.status === "envelope_rejected"
+    ) {
+      return withoutOutput(current);
+    }
+    const canceled = { ...current, status: "canceled" as const };
     this.runs.set(runId, canceled);
     return withoutOutput(canceled);
   }

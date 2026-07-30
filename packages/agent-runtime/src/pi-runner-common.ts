@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Agent, AgentTool, StreamFn } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { Type, getModel, streamSimple } from "@mariozechner/pi-ai";
+import { Type, streamSimple } from "@mariozechner/pi-ai";
 import type { Static } from "typebox";
 import type {
   ResourceLoader,
@@ -54,6 +54,9 @@ export interface PiRunnerBaseOptions {
 export type PiModelResolver = (
   request: PiRunRequest,
 ) => Promise<Model<Api>> | Model<Api>;
+export interface PiRunGuardOptions extends PiRunnerBaseOptions {
+  readonly onFailure?: (reason: string) => void;
+}
 
 export interface ActivePiRun {
   readonly abort: () => Promise<void> | void;
@@ -62,7 +65,11 @@ export interface ActivePiRun {
 export const DEFAULT_PI_RUN_TIMEOUT_MS = 15 * 60_000;
 
 export function runnerBroker(options: PiRunnerBaseOptions): CredentialBroker {
-  return options.broker ?? permissiveCredentialBroker;
+  if (options.broker) return options.broker;
+  if (process.env.NODE_ENV === "test") return permissiveCredentialBroker;
+  throw new Error(
+    "Pi runner requires an explicit credential broker outside test mode",
+  );
 }
 
 export async function resolvePiModel(
@@ -72,7 +79,10 @@ export async function resolvePiModel(
   if (typeof model === "function") {
     return model(request);
   }
-  return model ?? getModel("anthropic", "claude-sonnet-4-20250514");
+  if (model) return model;
+  throw new Error(
+    `No Pi model configured for the ${request.environment.role} agent; configure the ${request.environment.role} model in Colony config`,
+  );
 }
 
 export function sandboxCwd(
@@ -133,6 +143,9 @@ export function provisionRepoWorkspace(
 
   const repo = packetRepo(packet);
   if (!repo || (options.requireCredentials && !repo.credentials?.token)) {
+    if (options.requireCredentials) {
+      throw new Error("workspace_provision_failed");
+    }
     return provisionScratchDir(runId, packet);
   }
 
@@ -149,7 +162,8 @@ export function provisionRepoWorkspace(
       );
       try {
         git(["checkout", "--quiet", repo.branch], dir);
-      } catch {
+      } catch (err) {
+        if (!isBranchNotFoundError(err)) throw err;
         git(["checkout", "--quiet", "-B", repo.branch, repo.base_commit], dir);
       }
       writeFileSync(join(dir, "PACKET.json"), JSON.stringify(packet, null, 2), {
@@ -177,7 +191,21 @@ export function provisionRepoWorkspace(
     "agent_workspace_clone_failed",
   );
   rmSync(dir, { recursive: true, force: true });
-  return provisionScratchDir(runId, packet, dir);
+  throw new Error("workspace_provision_failed");
+}
+
+function isBranchNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const stderr = "stderr" in error ? error.stderr : undefined;
+  const message =
+    (typeof stderr === "string"
+      ? stderr
+      : stderr instanceof Buffer
+        ? stderr.toString("utf8")
+        : "") +
+    " " +
+    (error instanceof Error ? error.message : "");
+  return /pathspec .* did not match/i.test(message);
 }
 
 export function packetRepo(packet: AgentRuntimePacket): PacketRepoRef | null {
@@ -293,7 +321,7 @@ export function createSandboxId(prefix: string): string {
 export function installRunGuards(
   agent: Agent,
   runId: string,
-  options: PiRunnerBaseOptions,
+  options: PiRunGuardOptions,
 ): () => void {
   let turns = 0;
   let usdSpent = 0;
@@ -309,16 +337,23 @@ export function installRunGuards(
       usdSpent += messageUsd;
       options.logger?.info?.({ runId, messageUsd, usdSpent }, "pi_usage");
     }
-    if (turns > maxTurns || usdSpent > maxUsd) {
+    const reason =
+      turns >= maxTurns
+        ? "max_turns_exhausted_without_envelope"
+        : usdSpent > maxUsd
+          ? "max_usd_exhausted_without_envelope"
+          : undefined;
+    if (reason) {
       options.logger?.warn?.(
         {
           runId,
           turns,
           usdSpent,
-          reason: turns > maxTurns ? "max_turns" : "max_usd",
+          reason,
         },
         "pi_run_limit_exceeded",
       );
+      options.onFailure?.(reason);
       agent.abort();
     }
   });
@@ -328,8 +363,10 @@ export function withRunTimeout(
   runId: string,
   timeoutMs: number | undefined,
   abort: () => Promise<void> | void,
+  onTimeout?: () => void,
 ): () => void {
   const timer = setTimeout(() => {
+    onTimeout?.();
     void abort();
   }, timeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);
   return () => clearTimeout(timer);

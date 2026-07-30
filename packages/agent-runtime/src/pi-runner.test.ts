@@ -30,6 +30,7 @@ import {
   buildDeveloperCompletionEnvelopeTemplate,
   buildDeveloperFinalizerPrompt,
   createPostProgressNoteTool,
+  resolvePiModel,
 } from "./pi-runner-common.js";
 import { PiDeveloperPlanRunner, PiPlanReviewRunner } from "./pi-plan-runner.js";
 
@@ -107,6 +108,19 @@ describe("pi runners", () => {
     expect(prompt).toContain("Do not add wrapper keys");
   });
 
+  it("fails when the role has no configured Pi model", async () => {
+    await expect(
+      resolvePiModel(
+        {
+          runId: "missing-model",
+          packet: taskPacket(),
+          environment: await runEnvironment(),
+        },
+        undefined,
+      ),
+    ).rejects.toThrow(/developer agent/);
+  });
+
   it("imports pi-coding-agent in-process and captures a developer envelope", async () => {
     const registration = registerFauxProvider({
       provider: "colony-faux-dev",
@@ -131,6 +145,7 @@ describe("pi runners", () => {
           model: registration.getModel(),
           runTimeoutMs: 2_000,
           developerTools: [],
+          scratchDir: "/tmp/colony-pi-agent-runtime-tests",
         }),
       );
       const metadata = await adapter.startRun(packet, await runEnvironment());
@@ -140,6 +155,59 @@ describe("pi runners", () => {
       expect(output?.envelope).toEqual(
         developerCompletionEnvelopeSchema.parse(envelope),
       );
+    } finally {
+      registration.unregister();
+    }
+  });
+
+  it("reports max-turn exhaustion as a failed run", async () => {
+    const adapter = new PiAgentRuntimeAdapter({
+      kind: "pi-coding-agent",
+      run: () =>
+        Promise.resolve({
+          sandboxId: "pi-dev-max-turns",
+          envelope: { __unfinished: true },
+          reason: "max_turns_exhausted_without_envelope",
+        }),
+    });
+    const metadata = await adapter.startRun(
+      taskPacket(),
+      await runEnvironment(),
+    );
+
+    expect(metadata.status).toBe("failed");
+    expect(metadata.rejectionReason).toBe(
+      "max_turns_exhausted_without_envelope",
+    );
+    await expect(adapter.getRunOutput(metadata.runId)).resolves.toBeNull();
+  });
+
+  it("reports developer workspace clone failure instead of using scratch", async () => {
+    const registration = registerFauxProvider({
+      provider: "colony-faux-workspace-failure",
+      models: [{ id: "colony-faux-workspace-failure-model" }],
+    });
+    const packet = {
+      ...taskPacket(),
+      repo: {
+        ...repo,
+        url: "file:///definitely/missing-colony-repository",
+        credentials: { token: "workspace-test-token" },
+      },
+    };
+
+    try {
+      const adapter = new PiAgentRuntimeAdapter(
+        new PiCodingAgentRunner({
+          broker: { resolve: () => "test-api-key" },
+          model: registration.getModel(),
+          runTimeoutMs: 2_000,
+        }),
+      );
+      const metadata = await adapter.startRun(packet, await runEnvironment());
+
+      expect(metadata.status).toBe("failed");
+      expect(metadata.rejectionReason).toBe("workspace_provision_failed");
     } finally {
       registration.unregister();
     }
@@ -200,6 +268,7 @@ describe("pi runners", () => {
           },
           model: registration.getModel(),
           runTimeoutMs: 2_000,
+          scratchDir: "/tmp/colony-pi-agent-runtime-tests",
         }),
       );
       const metadata = await adapter.startRun(
@@ -249,6 +318,7 @@ describe("pi runners", () => {
           broker: { resolve: () => "test-api-key" },
           model: registration.getModel(),
           runTimeoutMs: 2_000,
+          scratchDir: "/tmp/colony-pi-agent-runtime-tests",
         }),
       );
       const metadata = await adapter.startRun(
@@ -304,6 +374,7 @@ describe("pi runners", () => {
         new PiPlanReviewRunner({
           broker: { resolve: () => "test-api-key" },
           model: registration.getModel(),
+          scratchDir: "/tmp/colony-pi-agent-runtime-tests",
           runTimeoutMs: 2_000,
         }),
       );
@@ -337,6 +408,7 @@ describe("pi runners", () => {
         new PiMonoRunner({
           broker: { resolve: () => "test-api-key" },
           model: registration.getModel(),
+          scratchDir: "/tmp/colony-pi-agent-runtime-tests",
           runTimeoutMs: 10_000,
         }),
       );
