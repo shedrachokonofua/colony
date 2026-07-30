@@ -547,3 +547,246 @@ describe.runIf(temporalTestEnabled)(
     }, 150_000);
   },
 );
+
+function makeSupervisorTestActivities(
+  scopeId: string,
+  taskId: string,
+  calls: string[],
+): SupervisorActivities & LongRunningSupervisorActivities {
+  let claimCount = 0;
+  return {
+    readScopeState: () =>
+      resolved({
+        scope: { id: scopeId, state: "active", state_version: 0 },
+        tasks: [],
+      }),
+    claimReadyTask: () => {
+      claimCount += 1;
+      return resolved(
+        claimCount === 1
+          ? { claimed: true, task_id: taskId, assignee: "bot:engine" }
+          : { claimed: false },
+      );
+    },
+    startDeveloperPlanRun: () =>
+      resolved({
+        started: true,
+        task_id: taskId,
+        envelope_status: "succeeded" as const,
+        final_state: "plan_proposed" as const,
+        developer_plan: { plan: true },
+      }),
+    startPlanReviewRun: () =>
+      resolved({
+        started: true,
+        task_id: taskId,
+        envelope_status: "succeeded" as const,
+        review_result: "approved" as const,
+        final_state: "in_progress" as const,
+        plan_review: { approved: true },
+      }),
+    startDeveloperRun: () =>
+      resolved({
+        started: true,
+        task_id: taskId,
+        run_id: "developer-1",
+        envelope_status: "succeeded" as const,
+        final_state: "review_requested" as const,
+        developer_envelope: { done: true },
+      }),
+    openMrGate: () => resolved({ opened: true, gate_id: "gate-1" }),
+    startReviewerRun: () =>
+      resolved({
+        started: true,
+        task_id: taskId,
+        run_id: "review-1",
+        review_id: "review-1",
+        envelope_status: "succeeded" as const,
+        review_result: "approved" as const,
+        final_state: "review_requested" as const,
+      }),
+    recordWorkflowEvent: () => resolved({ recorded: true }),
+    reconcileScope: () =>
+      resolved({
+        scope_id: scopeId,
+        checked_at: "2026-07-30T00:00:00.000Z",
+        ok: true,
+        auto_corrected: 0,
+        conflicts: 0,
+        warnings: 0,
+        tasks: [{ task_id: taskId, state: "review_requested" }],
+      }),
+    recordHumanApproval: () =>
+      resolved({ recorded: true, approval_id: "approval-1" }),
+    recordPipelineStatus: () =>
+      resolved({ recorded: true, invalidated_approvals: 0 }),
+    checkMrGate: () =>
+      resolved({
+        checked: true,
+        task_id: taskId,
+        final_state: "merge_ready" as const,
+        gate_open: false,
+        reasons: [],
+      }),
+    mergeTask: () =>
+      resolved({ merged: false, task_id: taskId, reason: "gate_closed" }),
+    closeTaskAfterMerge: () =>
+      resolved({ closed: false, task_id: taskId, reason: "not_merged" }),
+    applyDecompositionCommand: () =>
+      resolved({ applied: false, reason: "not_used" }),
+    requestTaskRework: () =>
+      resolved({ applied: false, task_id: taskId, reason: "not_used" }),
+    applyOperatorOverride: (input) => {
+      calls.push(`override:${input.target}:${input.action}`);
+      return resolved({
+        applied: true,
+        target: input.target,
+        previous_state: "in_progress",
+        new_state: input.target === "task" ? "blocked" : "canceled",
+      });
+    },
+    checkProviderHealth: () =>
+      resolved({
+        provider: "fake",
+        ok: true,
+        checked_at: "2026-07-30T00:00:00.000Z",
+      }),
+    markScopePendingSync: () =>
+      resolved({
+        scope_id: scopeId,
+        transitioned: 0,
+        skipped: 0,
+        already_pending: 0,
+        task_ids: [],
+      }),
+    markTaskFailed: () =>
+      resolved({
+        marked: true,
+        task_id: taskId,
+        previous_state: "in_progress" as const,
+        new_state: "failed" as const,
+      }),
+    scopeHeartbeatTick: () => {
+      calls.push("heartbeat");
+      return resolved({ scope_id: scopeId, status: "scope_terminal" as const });
+    },
+    startArchitectRun: () =>
+      resolved({ started: false, scope_id: scopeId, reason: "not_used" }),
+    startDecompositionReviewRun: () =>
+      resolved({ started: false, scope_id: scopeId, reason: "not_used" }),
+  };
+}
+
+async function runSupervisorTestScenario(
+  activities: SupervisorActivities & LongRunningSupervisorActivities,
+  signaler?: (handle: unknown) => Promise<void>,
+): Promise<void> {
+  const address = process.env["TEMPORAL_ADDRESS"] ?? "localhost:7233";
+  const namespace = process.env["TEMPORAL_NAMESPACE"] ?? "default";
+  const connection = await Connection.connect({ address });
+  const nativeConnection = await NativeConnection.connect({ address });
+  const client = new Client({ connection, namespace });
+  const taskQueue = `colony-workflow-extra-test-${randomUUID()}`;
+  try {
+    const worker = await Worker.create({
+      connection: nativeConnection,
+      namespace,
+      taskQueue,
+      workflowsPath: resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "index.ts",
+      ),
+      activities,
+    });
+    await worker.runUntil(async () => {
+      const handle = await client.workflow.start(scopeSupervisorWorkflow, {
+        taskQueue,
+        workflowId: `workflow-${randomUUID()}`,
+        args: ["col-extra"],
+      });
+      await signaler?.(handle);
+      await handle.result();
+    });
+  } finally {
+    await nativeConnection.close();
+    await connection.close();
+  }
+}
+
+describe.runIf(temporalTestEnabled)(
+  "@colony/workflows supervisor failure ownership",
+  () => {
+    it("blocks a task when the developer envelope fails", async () => {
+      const calls: string[] = [];
+      const baseActivities = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...baseActivities,
+          startDeveloperRun: () =>
+            resolved({
+              started: true,
+              task_id: "col-extra.1",
+              run_id: "developer-failed",
+              envelope_status: "failed" as const,
+              final_state: "in_progress" as const,
+              reason: "developer_envelope_invalid",
+            }),
+        };
+      await runSupervisorTestScenario(activities);
+      expect(calls).toContain("override:task:block");
+    }, 120_000);
+
+    it("blocks a task when the refinement loop cap is exhausted", async () => {
+      const calls: string[] = [];
+      const baseActivities = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...baseActivities,
+          startPlanReviewRun: () =>
+            resolved({
+              started: true,
+              task_id: "col-extra.1",
+              envelope_status: "succeeded" as const,
+              review_result: "changes_requested" as const,
+              final_state: "plan_review" as const,
+            }),
+        };
+      await runSupervisorTestScenario(activities);
+      expect(calls).toContain("override:task:block");
+    }, 120_000);
+
+    it("fires heartbeat while signals remain continuously queued", async () => {
+      const calls: string[] = [];
+      const activities = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      await runSupervisorTestScenario(activities, async (unknownHandle) => {
+        const handle = unknownHandle as {
+          signal: (
+            signal: typeof operatorOverrideSignal,
+            payload: unknown,
+          ) => Promise<void>;
+        };
+        for (let index = 0; index < 120; index += 1) {
+          await handle.signal(operatorOverrideSignal, {
+            actor: "test",
+            action: "block",
+            reason: `load-${index}`,
+            task_id: "col-extra.1",
+          });
+        }
+      });
+      expect(calls).toContain("heartbeat");
+    }, 120_000);
+  },
+);

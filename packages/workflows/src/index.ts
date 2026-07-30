@@ -1,8 +1,10 @@
 import {
   condition,
+  continueAsNew,
   defineSignal,
   proxyActivities,
   setHandler,
+  sleep,
   workflowInfo,
 } from "@temporalio/workflow";
 import { ActivityFailure, ApplicationFailure } from "@temporalio/common";
@@ -125,6 +127,17 @@ export type SupervisorSignal =
       readonly payload: ArchitectRequestedSignal;
     };
 
+interface SupervisorContinuationState {
+  readonly pending_signals?: ReadonlyArray<
+    SupervisorSignal & { readonly seq: number }
+  >;
+  readonly next_signal_seq?: number;
+  readonly next_reconcile_seq?: number;
+  readonly next_heartbeat_seq?: number;
+  readonly heartbeat_tick_count?: number;
+  readonly processed_work_count?: number;
+}
+
 export interface ScopeStateSnapshot {
   readonly scope: {
     readonly id: ScopeId;
@@ -190,6 +203,22 @@ export interface ReconcileScopeResult {
   readonly auto_corrected: number;
   readonly conflicts: number;
   readonly warnings: number;
+  readonly findings?: ReadonlyArray<{
+    readonly task_id?: TaskId;
+    readonly kind?: string;
+    readonly severity?: string;
+    readonly action?: string;
+    readonly actual?: Readonly<Record<string, unknown>>;
+  }>;
+  readonly tasks?: ReadonlyArray<{
+    readonly task_id: TaskId;
+    readonly state?: string;
+    readonly findings?: ReadonlyArray<{
+      readonly kind?: string;
+      readonly severity?: string;
+      readonly action?: string;
+    }>;
+  }>;
 }
 
 export type TaskLifecycleState =
@@ -207,8 +236,13 @@ export type TaskLifecycleState =
   | "blocked"
   | "conflict"
   | "failed"
-  | "canceled"
-  | "pending_sync";
+  | "canceled";
+export type AgentOutcome =
+  | "done"
+  | "approved"
+  | "changes_requested"
+  | "blocked"
+  | "escalate";
 
 export type DeveloperRunResult =
   | {
@@ -221,6 +255,7 @@ export type DeveloperRunResult =
       readonly task_id: TaskId;
       readonly run_id: string;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?: AgentOutcome;
       readonly final_state: TaskLifecycleState;
       readonly developer_envelope?: unknown;
       readonly reason?: string;
@@ -236,6 +271,7 @@ export type DeveloperPlanResult =
       readonly started: true;
       readonly task_id: TaskId;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?: AgentOutcome;
       readonly final_state: TaskLifecycleState;
       readonly developer_plan?: unknown;
       readonly reason?: string;
@@ -251,6 +287,7 @@ export type PlanReviewResult =
       readonly started: true;
       readonly task_id: TaskId;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?: AgentOutcome;
       readonly review_result?:
         | "approved"
         | "changes_requested"
@@ -273,6 +310,7 @@ export type ReviewerRunResult =
       readonly run_id: string;
       readonly review_id: string;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?: AgentOutcome;
       readonly review_result?:
         | "approved"
         | "changes_requested"
@@ -423,6 +461,7 @@ export type DecompositionReviewActivityResult =
       readonly proposal_id: string;
       readonly run_id: string;
       readonly envelope_status: "succeeded" | "envelope_rejected" | "failed";
+      readonly outcome?: AgentOutcome;
       readonly review_result?:
         | "approved"
         | "changes_requested"
@@ -626,7 +665,10 @@ export function heartbeatActivityIdempotencyKey(input: {
 const activities = proxyActivities<SupervisorActivities>({
   startToCloseTimeout: "30 minutes",
   retry: {
-    maximumAttempts: 1,
+    initialInterval: "3 seconds",
+    maximumInterval: "1 minute",
+    backoffCoefficient: 2,
+    maximumAttempts: 5,
   },
 });
 
@@ -660,10 +702,42 @@ const longRunningActivities = proxyActivities<LongRunningSupervisorActivities>({
     maximumAttempts: 1,
   },
 });
-
 const DEVELOPER_ASSIGNEE = "bot:engine" as const;
 const REVIEWER_ASSIGNEE = "bot:reviewer" as const;
 const TASK_REFINEMENT_LOOP_CAP = 50;
+
+async function blockTaskAndAudit(input: {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+  readonly reason: string;
+  readonly signal_seq: number;
+  readonly evidence?: Readonly<Record<string, unknown>>;
+}): Promise<void> {
+  const info = workflowInfo();
+  await activities.applyOperatorOverride({
+    target: "task",
+    task_id: input.task_id,
+    action: "block",
+    actor: "svc:supervisor",
+    reason: input.reason,
+    evidence: input.evidence,
+  });
+  await activities.recordWorkflowEvent({
+    scope_id: input.scope_id,
+    task_id: input.task_id,
+    signal_seq: input.signal_seq,
+    signal: "operator_override",
+    kind: "task_blocked",
+    actor: "svc:supervisor",
+    workflow_id: info.workflowId,
+    run_id: info.runId,
+    payload: {
+      action: "block",
+      reason: input.reason,
+      ...(input.evidence ?? {}),
+    },
+  });
+}
 
 async function driveClaimedTask(input: {
   readonly scope_id: ScopeId;
@@ -682,11 +756,40 @@ async function driveClaimedTask(input: {
           task_id: input.task_id,
           assignee: input.assignee,
         });
+        const planOutcome = "outcome" in plan ? plan.outcome : undefined;
         if (
           !plan.started ||
-          plan.envelope_status !== "succeeded" ||
-          !plan.developer_plan
+          planOutcome === "blocked" ||
+          planOutcome === "escalate"
         ) {
+          await blockTaskAndAudit({
+            ...input,
+            signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
+            reason:
+              plan.reason ??
+              (planOutcome === "blocked" || planOutcome === "escalate"
+                ? `developer_plan_${planOutcome}`
+                : "developer_plan_not_started"),
+            evidence: {
+              envelope_status: plan.started
+                ? plan.envelope_status
+                : "not_started",
+              outcome: planOutcome,
+            },
+          });
+          return;
+        }
+        if (plan.envelope_status !== "succeeded" || !plan.developer_plan) {
+          if (attempt < TASK_REFINEMENT_LOOP_CAP) continue;
+          await blockTaskAndAudit({
+            ...input,
+            signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
+            reason: "developer_plan_refinement_loop_cap_exhausted",
+            evidence: {
+              envelope_status: plan.envelope_status,
+              outcome: planOutcome,
+            },
+          });
           return;
         }
 
@@ -695,43 +798,154 @@ async function driveClaimedTask(input: {
           reviewer: REVIEWER_ASSIGNEE,
           developer_plan: plan.developer_plan,
         });
-        if (!planReview.started || planReview.envelope_status !== "succeeded") {
+        const planReviewOutcome =
+          "outcome" in planReview ? planReview.outcome : undefined;
+        if (
+          !planReview.started ||
+          planReviewOutcome === "blocked" ||
+          planReviewOutcome === "escalate"
+        ) {
+          await blockTaskAndAudit({
+            ...input,
+            signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
+            reason:
+              planReview.reason ??
+              (planReviewOutcome === "blocked" ||
+              planReviewOutcome === "escalate"
+                ? `plan_review_${planReviewOutcome}`
+                : "plan_review_not_started"),
+            evidence: {
+              envelope_status: planReview.started
+                ? planReview.envelope_status
+                : "not_started",
+              outcome: planReviewOutcome,
+            },
+          });
+          return;
+        }
+        if (planReview.envelope_status !== "succeeded") {
+          if (attempt < TASK_REFINEMENT_LOOP_CAP) continue;
+          await blockTaskAndAudit({
+            ...input,
+            signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
+            reason: "plan_review_refinement_loop_cap_exhausted",
+            evidence: {
+              envelope_status: planReview.envelope_status,
+              outcome: planReviewOutcome,
+            },
+          });
           return;
         }
         if (planReview.review_result === "approved") {
           planApproved = true;
-        } else if (planReview.review_result !== "changes_requested") {
+        } else if (planReview.review_result === "changes_requested") {
+          continue;
+        } else {
+          await blockTaskAndAudit({
+            ...input,
+            signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
+            reason: "plan_review_no_approval",
+            evidence: { review_result: planReview.review_result },
+          });
           return;
         }
       }
-      if (!planApproved) return;
+      if (!planApproved) {
+        await blockTaskAndAudit({
+          ...input,
+          signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP,
+          reason: "plan_refinement_loop_cap_exhausted",
+        });
+        return;
+      }
 
       const dev = await agentActivities.startDeveloperRun({
         task_id: input.task_id,
         assignee: input.assignee,
       });
+      const devOutcome = "outcome" in dev ? dev.outcome : undefined;
       if (
         !dev.started ||
         dev.envelope_status !== "succeeded" ||
+        devOutcome === "blocked" ||
+        devOutcome === "escalate" ||
         !dev.developer_envelope
       ) {
+        await blockTaskAndAudit({
+          ...input,
+          signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 10_000,
+          reason:
+            dev.reason ??
+            (devOutcome === "blocked" || devOutcome === "escalate"
+              ? `developer_${devOutcome}`
+              : "developer_envelope_failed"),
+          evidence: {
+            envelope_status: dev.started ? dev.envelope_status : "not_started",
+            outcome: devOutcome,
+          },
+        });
         return;
       }
 
-      await activities.openMrGate({ task_id: input.task_id });
+      const gate = await activities.openMrGate({ task_id: input.task_id });
+      if (!gate.opened) {
+        await blockTaskAndAudit({
+          ...input,
+          signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 20_000,
+          reason: `open_mr_gate_failed:${gate.reason ?? "unknown"}`,
+        });
+        return;
+      }
       const review = await agentActivities.startReviewerRun({
         task_id: input.task_id,
         reviewer: REVIEWER_ASSIGNEE,
         developer_envelope: dev.developer_envelope,
       });
-      if (!review.started || review.envelope_status !== "succeeded") return;
+      const reviewOutcome = "outcome" in review ? review.outcome : undefined;
+      if (
+        !review.started ||
+        review.envelope_status !== "succeeded" ||
+        reviewOutcome === "blocked" ||
+        reviewOutcome === "escalate"
+      ) {
+        await blockTaskAndAudit({
+          ...input,
+          signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 30_000,
+          reason:
+            review.reason ??
+            (reviewOutcome === "blocked" || reviewOutcome === "escalate"
+              ? `review_${reviewOutcome}`
+              : "review_envelope_failed"),
+          evidence: {
+            envelope_status: review.started
+              ? review.envelope_status
+              : "not_started",
+            outcome: reviewOutcome,
+          },
+        });
+        return;
+      }
       if (review.review_result === "approved") return;
-      if (review.review_result !== "changes_requested") return;
+      if (review.review_result !== "changes_requested") {
+        await blockTaskAndAudit({
+          ...input,
+          signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 30_001,
+          reason: "review_no_approval",
+          evidence: { review_result: review.review_result },
+        });
+        return;
+      }
     }
+    await blockTaskAndAudit({
+      ...input,
+      signal_seq: TASK_REFINEMENT_LOOP_CAP * TASK_REFINEMENT_LOOP_CAP,
+      reason: "task_refinement_loop_cap_exhausted",
+    });
   } catch (err) {
-    await activities.markTaskFailed({
-      task_id: input.task_id,
-      reason: `agent_activity_exhausted:${activityFailureReason(err)}`,
+    await blockTaskAndAudit({
+      ...input,
+      signal_seq: 2_000_000,
+      reason: `agent_activity_failed:${activityFailureReason(err)}`,
     });
   }
 }
@@ -760,16 +974,146 @@ async function claimAndDriveReadyTask(scope_id: ScopeId): Promise<void> {
   });
 }
 
-async function evaluateAndAdvanceTask(task_id: TaskId): Promise<void> {
+function isMergedProviderSignal(
+  signal: SupervisorSignal & { readonly seq: number },
+  task_id: TaskId,
+): boolean {
+  if (signal.name !== "provider_event" || signal.payload.task_id !== task_id) {
+    return false;
+  }
+  const eventType = signal.payload.event_type.toLowerCase();
+  return (
+    eventType === "merged" ||
+    eventType === "merge" ||
+    eventType.includes("merge_request_merged") ||
+    signal.payload.attributes?.["state"] === "merged"
+  );
+}
+
+async function markTaskPendingSyncAndAudit(input: {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+  readonly reason: string;
+  readonly signal_seq: number;
+}): Promise<void> {
+  const info = workflowInfo();
+  await activities.applyOperatorOverride({
+    target: "task",
+    task_id: input.task_id,
+    action: "force_pending_sync",
+    actor: "svc:supervisor",
+    reason: input.reason,
+  });
+  await activities.recordWorkflowEvent({
+    scope_id: input.scope_id,
+    task_id: input.task_id,
+    signal_seq: input.signal_seq,
+    signal: "provider_event",
+    kind: "task_pending_sync",
+    actor: "svc:supervisor",
+    workflow_id: info.workflowId,
+    run_id: info.runId,
+    payload: { reason: input.reason },
+  });
+}
+
+async function consumeReconciliationResult(
+  scope_id: ScopeId,
+  result: ReconcileScopeResult,
+  signal_seq: number,
+): Promise<void> {
+  if (result.conflicts <= 0) return;
+  const taskIds = new Set<TaskId>();
+  for (const finding of result.findings ?? []) {
+    if (finding.task_id && finding.severity === "conflict") {
+      taskIds.add(finding.task_id);
+    }
+  }
+  for (const task of result.tasks ?? []) {
+    if (task.findings?.some((finding) => finding.severity === "conflict")) {
+      taskIds.add(task.task_id);
+    }
+  }
+  if (taskIds.size === 0) {
+    await activities.markScopePendingSync({
+      scope_id,
+      reason: `reconcile_conflicts:${result.conflicts}`,
+    });
+  } else {
+    for (const task_id of taskIds) {
+      await markTaskPendingSyncAndAudit({
+        scope_id,
+        task_id,
+        signal_seq: signal_seq++,
+        reason: "reconcile_conflict",
+      });
+    }
+  }
+  const info = workflowInfo();
+  await activities.recordWorkflowEvent({
+    scope_id,
+    signal_seq,
+    signal: "provider_event",
+    kind: "reconcile_conflict",
+    actor: "svc:supervisor",
+    workflow_id: info.workflowId,
+    run_id: info.runId,
+    payload: { conflicts: result.conflicts, warnings: result.warnings },
+  });
+}
+
+async function evaluateAndAdvanceTask(
+  scope_id: ScopeId,
+  task_id: TaskId,
+  queue: ReadonlyArray<SupervisorSignal & { readonly seq: number }>,
+  reconcileSeq: number,
+): Promise<void> {
   const gate = await activities.checkMrGate({ task_id });
   if (!gate.checked || !gate.gate_open) return;
   const merge = await activities.mergeTask({ task_id });
   if (!merge.merged) return;
-  await activities.closeTaskAfterMerge({
-    task_id,
-    merge_commit_sha: merge.merge_commit_sha,
-    verified_by_webhook: false,
+
+  const webhookConfirmed = await condition(
+    () => queue.some((signal) => isMergedProviderSignal(signal, task_id)),
+    "2 minutes",
+  );
+  if (webhookConfirmed) {
+    await activities.closeTaskAfterMerge({
+      task_id,
+      merge_commit_sha: merge.merge_commit_sha,
+      verified_by_webhook: true,
+    });
+    return;
+  }
+
+  const reconciliation = await activities.reconcileScope({
+    scope_id,
+    idempotency_key: reconcileActivityIdempotencyKey({
+      scope_id,
+      workflow_id: workflowInfo().workflowId,
+      run_id: workflowInfo().runId,
+      sequence: reconcileSeq,
+    }),
   });
+  await consumeReconciliationResult(scope_id, reconciliation, reconcileSeq);
+  const mergedByReconcile =
+    reconciliation.tasks?.some(
+      (task) => task.task_id === task_id && task.state === "merged",
+    ) ?? false;
+  if (mergedByReconcile) {
+    await activities.closeTaskAfterMerge({
+      task_id,
+      merge_commit_sha: merge.merge_commit_sha,
+      verified_by_webhook: false,
+    });
+  } else {
+    await markTaskPendingSyncAndAudit({
+      scope_id,
+      task_id,
+      signal_seq: reconcileSeq + 100_000,
+      reason: "merge_webhook_timeout_unconfirmed",
+    });
+  }
 }
 
 function eventKind(signal: SupervisorSignalName): string {
@@ -836,10 +1180,13 @@ async function driveArchitectThenReview(
 
 export async function scopeSupervisorWorkflow(
   scope_id: ScopeId,
+  continuation?: SupervisorContinuationState,
 ): Promise<void> {
-  const queue: Array<SupervisorSignal & { readonly seq: number }> = [];
-  let nextSignalSeq = 1;
-  let nextReconcileSeq = 1;
+  const queue: Array<SupervisorSignal & { readonly seq: number }> = [
+    ...(continuation?.pending_signals ?? []),
+  ];
+  let nextSignalSeq = continuation?.next_signal_seq ?? 1;
+  let nextReconcileSeq = continuation?.next_reconcile_seq ?? 1;
   const info = workflowInfo();
 
   setHandler(providerEventSignal, (payload) => {
@@ -864,14 +1211,20 @@ export async function scopeSupervisorWorkflow(
   await activities.readScopeState({ scope_id });
   await claimAndDriveReadyTask(scope_id);
 
-  let nextHeartbeatSeq = 1;
-  let heartbeatTickCount = 0;
+  let nextHeartbeatSeq = continuation?.next_heartbeat_seq ?? 1;
+  let heartbeatTickCount = continuation?.heartbeat_tick_count ?? 0;
+  let processedWorkCount = continuation?.processed_work_count ?? 0;
 
+  let heartbeatTimer = sleep(HEARTBEAT_INTERVAL).then(() => true);
   for (;;) {
-    const signaled = await condition(
-      () => queue.length > 0,
-      HEARTBEAT_INTERVAL,
-    );
+    const heartbeatDue = await Promise.race([
+      condition(() => queue.length > 0).then(() => false),
+      heartbeatTimer,
+    ]);
+    const signaled = !heartbeatDue;
+    if (heartbeatDue) {
+      heartbeatTimer = sleep(HEARTBEAT_INTERVAL).then(() => true);
+    }
 
     if (!signaled) {
       // Per-scope liveness tick — fires every HEARTBEAT_INTERVAL when
@@ -894,11 +1247,6 @@ export async function scopeSupervisorWorkflow(
         return;
       }
 
-      // Self-healing: when the heartbeat detects a stalled scope,
-      // dispatch the matching long-running kickoff so the lifecycle
-      // resumes without operator intervention. The activities are
-      // idempotent (refuse if state has already advanced), so a
-      // re-fired classifier on the next tick is safe.
       if (heartbeat.status === "stalled" && heartbeat.classifier) {
         switch (heartbeat.classifier) {
           case "awaiting_architect":
@@ -936,15 +1284,32 @@ export async function scopeSupervisorWorkflow(
           });
           continue;
         }
-        await activities.reconcileScope({
+        const reconciliation = await activities.reconcileScope({
           scope_id,
           idempotency_key: reconcileActivityIdempotencyKey({
             scope_id,
             workflow_id: info.workflowId,
             run_id: info.runId,
-            sequence: nextReconcileSeq++,
+            sequence: nextReconcileSeq,
           }),
         });
+        await consumeReconciliationResult(
+          scope_id,
+          reconciliation,
+          nextReconcileSeq++,
+        );
+      }
+      processedWorkCount += 1;
+      if (processedWorkCount >= 100 || workflowInfo().continueAsNewSuggested) {
+        await continueAsNew<typeof scopeSupervisorWorkflow>(scope_id, {
+          pending_signals: queue,
+          next_signal_seq: nextSignalSeq,
+          next_reconcile_seq: nextReconcileSeq,
+          next_heartbeat_seq: nextHeartbeatSeq,
+          heartbeat_tick_count: heartbeatTickCount,
+          processed_work_count: 0,
+        });
+        return;
       }
       await claimAndDriveReadyTask(scope_id);
       continue;
@@ -1060,10 +1425,15 @@ export async function scopeSupervisorWorkflow(
         }
       }
       signal = queue.shift();
+      processedWorkCount += 1;
     }
-
     for (const task_id of taskIdsToEvaluate) {
-      await evaluateAndAdvanceTask(task_id);
+      await evaluateAndAdvanceTask(
+        scope_id,
+        task_id,
+        queue,
+        nextReconcileSeq++,
+      );
     }
     // Re-drive developer + reviewer for any task that was just kicked
     // back into rework. This forces a fresh review on the new head;
@@ -1076,5 +1446,17 @@ export async function scopeSupervisorWorkflow(
       });
     }
     await claimAndDriveReadyTask(scope_id);
+
+    if (processedWorkCount >= 100 || workflowInfo().continueAsNewSuggested) {
+      await continueAsNew<typeof scopeSupervisorWorkflow>(scope_id, {
+        pending_signals: queue,
+        next_signal_seq: nextSignalSeq,
+        next_reconcile_seq: nextReconcileSeq,
+        next_heartbeat_seq: nextHeartbeatSeq,
+        heartbeat_tick_count: heartbeatTickCount,
+        processed_work_count: 0,
+      });
+      return;
+    }
   }
 }
