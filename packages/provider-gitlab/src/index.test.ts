@@ -622,7 +622,11 @@ describe("GitLabProviderAdapter mergeRequests", () => {
       ) {
         return Promise.resolve(new Response(null, { status: 201 }));
       }
-      if (method === "GET" && path === "/projects/20/merge_requests/5") {
+      if (
+        method === "GET" &&
+        (path === "/projects/20/merge_requests/5" ||
+          path.startsWith("/projects/20/merge_requests/5?"))
+      ) {
         return Promise.resolve(json(mr));
       }
       if (method === "PUT" && path === "/projects/20/merge_requests/5/merge") {
@@ -717,6 +721,153 @@ describe("GitLabProviderAdapter mergeRequests", () => {
     expect(
       calls.some((c) => c.url.endsWith("/projects/20/merge_requests/5/merge")),
     ).toBe(true);
+  });
+});
+
+describe("GitLabProviderAdapter merge preflight and transport failures", () => {
+  const project = { id: "20", path: "colony/dev" } as const;
+  const urlPath = (url: Parameters<typeof fetch>[0]): string =>
+    (typeof url === "string"
+      ? url
+      : url instanceof URL
+        ? url.href
+        : url.url
+    ).replace("https://gitlab.test/api/v4", "");
+
+  it("short-circuits a known conflict without attempting PUT", async () => {
+    const calls: string[] = [];
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot",
+      fetch: (url, init) => {
+        const method = init?.method ?? "GET";
+        const path = urlPath(url);
+        calls.push(`${method} ${path}`);
+        return Promise.resolve(
+          method === "GET"
+            ? json({
+                id: 1,
+                iid: 1,
+                project_id: 20,
+                title: "MR",
+                state: "opened",
+                detailed_merge_status: "conflicts",
+              })
+            : json({ error: "PUT must not be attempted" }, 405),
+        );
+      },
+    });
+
+    const result = await adapter.mergeRequests.merge(project, "20:1");
+    expect(result.reason).toBe("conflicts");
+    expect(calls.every((call) => !call.startsWith("PUT "))).toBe(true);
+  });
+
+  it("polls checking merge status until GitLab reports mergeable", async () => {
+    let checks = 0;
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot",
+      fetch: (url, init) => {
+        const path = urlPath(url);
+        if (
+          (init?.method ?? "GET") === "GET" &&
+          path.includes("with_merge_status_recheck")
+        ) {
+          checks += 1;
+          return Promise.resolve(
+            json({
+              id: 1,
+              iid: 1,
+              project_id: 20,
+              title: "MR",
+              state: "opened",
+              detailed_merge_status: checks === 1 ? "checking" : "mergeable",
+            }),
+          );
+        }
+        return Promise.resolve(
+          json({ id: 1, iid: 1, project_id: 20, title: "MR", state: "merged" }),
+        );
+      },
+    });
+
+    const result = await adapter.mergeRequests.merge(project, "20:1");
+    expect(checks).toBe(2);
+    expect(result.state).toBe("merged");
+  });
+
+  it("rechecks after a 405 and returns the typed mergeability reason", async () => {
+    let putAttempts = 0;
+    let preflightChecks = 0;
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot",
+      fetch: (url, init) => {
+        const method = init?.method ?? "GET";
+        const path = urlPath(url);
+        if (method === "GET" && path.includes("with_merge_status_recheck")) {
+          preflightChecks += 1;
+          return Promise.resolve(
+            json({
+              id: 1,
+              iid: 1,
+              project_id: 20,
+              title: "MR",
+              state: "opened",
+              detailed_merge_status:
+                preflightChecks === 1 ? "mergeable" : "not_approved",
+            }),
+          );
+        }
+        if (method === "PUT") {
+          putAttempts += 1;
+          return Promise.resolve(json({ error: "cannot merge" }, 405));
+        }
+        return Promise.resolve(json({ error: "unexpected request" }, 500));
+      },
+    });
+
+    const result = await adapter.mergeRequests.merge(project, "20:1");
+    expect(result).toMatchObject({
+      reason: "not_approved",
+      detailed_merge_status: "not_approved",
+    });
+    expect(putAttempts).toBe(1);
+  });
+
+  it("retries a rate-limited request once using Retry-After", async () => {
+    let attempts = 0;
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot",
+      fetch: () => {
+        attempts += 1;
+        return Promise.resolve(
+          attempts === 1
+            ? new Response(JSON.stringify({ message: "slow down" }), {
+                status: 429,
+                headers: { "Retry-After": "0" },
+              })
+            : json({ id: 20, path: "dev", path_with_namespace: "colony/dev" }),
+        );
+      },
+    });
+
+    await adapter.projects.getById("20");
+    expect(attempts).toBe(2);
+  });
+
+  it("propagates non-empty diff endpoint errors", async () => {
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot",
+      fetch: () => Promise.resolve(json({ message: "server exploded" }, 500)),
+    });
+
+    await expect(
+      adapter.mergeRequests.diff(project, "20:1"),
+    ).rejects.toBeInstanceOf(GitLabProviderError);
   });
 });
 

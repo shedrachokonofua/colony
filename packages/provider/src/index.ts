@@ -45,6 +45,14 @@ export interface ProviderMergeRequest extends ProviderRef {
   readonly target_branch: string;
   readonly state: "opened" | "closed" | "merged";
   readonly head_commit_sha?: string;
+  readonly detailed_merge_status?: string;
+  readonly has_conflicts?: boolean;
+  readonly merged?: boolean;
+  /**
+   * Set on a merge result when the provider could not complete the merge.
+   * Ordinary merge requests omit this field.
+   */
+  readonly reason?: string;
 }
 
 export interface ProviderBranch extends ProviderRef {
@@ -400,6 +408,7 @@ export interface ProviderAdapter {
     merge(
       project: ProviderProjectRef,
       id: ProviderId,
+      input?: { readonly sha?: string },
     ): Promise<ProviderMergeRequest>;
     close(
       project: ProviderProjectRef,
@@ -737,7 +746,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
     approve: async (_project, id) => this.requireMr(id),
     unapprove: async (_project, id) => this.requireMr(id),
     merge: async (_project, id) =>
-      this.replaceMr(id, { ...this.requireMr(id), state: "merged" }),
+      this.replaceMr(id, {
+        ...this.requireMr(id),
+        state: "merged",
+        merged: true,
+      }),
     close: async (_project, id) =>
       this.replaceMr(id, { ...this.requireMr(id), state: "closed" }),
     comment: async (_project, _id, body) =>

@@ -42,6 +42,9 @@ interface GitLabProviderAdapterOptions {
   readonly baseUrl: string;
   readonly token?: string;
   readonly fetch?: Fetch;
+  /** Maximum time allowed for an individual GitLab request. */
+  readonly requestTimeoutMs?: number;
+  readonly timeoutMs?: number;
 }
 
 interface GitLabEntity {
@@ -93,6 +96,9 @@ interface GitLabMergeRequest extends GitLabEntity {
   readonly diff_refs?: {
     readonly head_sha?: string | null;
   } | null;
+  readonly merge_status?: string | null;
+  readonly detailed_merge_status?: string | null;
+  readonly has_conflicts?: boolean;
 }
 
 interface GitLabBranch extends GitLabEntity {
@@ -129,17 +135,19 @@ export class GitLabProviderError extends Error {
     this.name = "GitLabProviderError";
   }
 }
-
 export class GitLabProviderAdapter implements ProviderAdapter {
   readonly provider = "gitlab" as const;
   private readonly baseUrl: string;
   private readonly token?: string;
   private readonly fetchImpl: Fetch;
+  private readonly requestTimeoutMs: number;
 
   constructor(options: GitLabProviderAdapterOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.token = options.token;
     this.fetchImpl = options.fetch ?? fetch;
+    this.requestTimeoutMs =
+      options.requestTimeoutMs ?? options.timeoutMs ?? 30_000;
   }
 
   readonly groups: ProviderAdapter["groups"] = {
@@ -400,13 +408,68 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       );
       return toMergeRequest(this.provider, project.id, mr);
     },
-    merge: async (project, id) => {
-      const mr = await this.projectApi<GitLabMergeRequest>(
-        project.id,
-        `/merge_requests/${encodePath(mrIid(project.id, id))}/merge`,
-        { method: "PUT", body: JSON.stringify({}) },
-      );
-      return toMergeRequest(this.provider, project.id, mr);
+    merge: async (project, id, input) => {
+      const iid = mrIid(project.id, id);
+      let preflight = await this.getMergeability(project.id, iid);
+      if (preflight.rejected) {
+        return {
+          ...toMergeRequest(this.provider, project.id, preflight.mr),
+          merged: false,
+          reason: preflight.reason,
+        };
+      }
+
+      const mergePath = `/merge_requests/${encodePath(iid)}/merge`;
+      const body = JSON.stringify(input?.sha ? { sha: input.sha } : {});
+      try {
+        const mr = await this.projectApi<GitLabMergeRequest>(
+          project.id,
+          mergePath,
+          { method: "PUT", body },
+        );
+        return {
+          ...toMergeRequest(this.provider, project.id, mr),
+          merged: true,
+        };
+      } catch (error) {
+        if (
+          !(error instanceof GitLabProviderError) ||
+          (error.status !== 405 && error.status !== 409)
+        ) {
+          throw error;
+        }
+        preflight = await this.getMergeability(project.id, iid);
+        if (preflight.rejected) {
+          return {
+            ...toMergeRequest(this.provider, project.id, preflight.mr),
+            merged: false,
+            reason: preflight.reason,
+          };
+        }
+        try {
+          const mr = await this.projectApi<GitLabMergeRequest>(
+            project.id,
+            mergePath,
+            { method: "PUT", body },
+          );
+          return {
+            ...toMergeRequest(this.provider, project.id, mr),
+            merged: true,
+          };
+        } catch (retryError) {
+          if (
+            retryError instanceof GitLabProviderError &&
+            (retryError.status === 405 || retryError.status === 409)
+          ) {
+            return {
+              ...toMergeRequest(this.provider, project.id, preflight.mr),
+              merged: false,
+              reason: `merge_http_${retryError.status}`,
+            };
+          }
+          throw retryError;
+        }
+      }
     },
     close: async (project, id) => {
       const mr = await this.projectApi<GitLabMergeRequest>(
@@ -454,46 +517,54 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     },
     diff: async (project, id) => {
       const iid = mrIid(project.id, id);
-      // GitLab 17+ deprecated `/changes` for `/diffs` (paginated array).
+      // GitLab 17+ deprecated `/changes` for `/diffs`; collect every page.
+      let diffs: readonly Readonly<Record<string, unknown>>[] = [];
       try {
-        const diffs = await this.projectApi<
-          readonly Readonly<Record<string, unknown>>[]
-        >(project.id, `/merge_requests/${encodePath(iid)}/diffs?per_page=50`);
-        if (diffs.length > 0) return diffs;
-      } catch {
-        // fall through
+        diffs = await this.getAllDiffs(project.id, iid);
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
       }
+      if (diffs.length > 0) return diffs;
+
+      let changes:
+        | { readonly changes?: readonly Readonly<Record<string, unknown>>[] }
+        | undefined;
       try {
-        const changes = await this.projectApi<{
+        changes = await this.projectApi<{
           readonly changes?: readonly Readonly<Record<string, unknown>>[];
         }>(project.id, `/merge_requests/${encodePath(iid)}/changes`);
-        if (changes.changes && changes.changes.length > 0)
-          return changes.changes;
-      } catch {
-        // fall through
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
       }
-      // Last resort: /merge_requests/<iid>/diffs and /changes can return
-      // empty briefly after MR creation while GitLab computes them.
-      // /repository/compare is independent of the MR object's diff cache
-      // and always reflects the current branch tips.
+      if (changes?.changes && changes.changes.length > 0)
+        return changes.changes;
+
+      // Last resort: /repository/compare is independent of the MR object's
+      // diff cache and reflects the current branch tips.
+      let mr:
+        | { readonly source_branch?: string; readonly target_branch?: string }
+        | undefined;
       try {
-        const mr = await this.projectApi<{
+        mr = await this.projectApi<{
           readonly source_branch?: string;
           readonly target_branch?: string;
         }>(project.id, `/merge_requests/${encodePath(iid)}`);
-        if (mr.source_branch && mr.target_branch) {
-          const compare = await this.projectApi<{
-            readonly diffs?: readonly Readonly<Record<string, unknown>>[];
-          }>(
-            project.id,
-            `/repository/compare?from=${encodeURIComponent(mr.target_branch)}&to=${encodeURIComponent(mr.source_branch)}`,
-          );
-          return compare.diffs ?? [];
-        }
-      } catch {
-        // give up
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
       }
-      return [];
+      if (!mr?.source_branch || !mr.target_branch) return [];
+      try {
+        const compare = await this.projectApi<{
+          readonly diffs?: readonly Readonly<Record<string, unknown>>[];
+        }>(
+          project.id,
+          `/repository/compare?from=${encodeURIComponent(mr.target_branch)}&to=${encodeURIComponent(mr.source_branch)}`,
+        );
+        return compare.diffs ?? [];
+      } catch (error) {
+        if (isNotFound(error)) return [];
+        throw error;
+      }
     },
   };
 
@@ -1000,35 +1071,177 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     token: string,
     init: RequestInit = {},
   ): Promise<T> {
-    const headers = new Headers(init.headers);
-    headers.set("PRIVATE-TOKEN", token);
-    headers.set("Content-Type", "application/json");
-    const res = await this.fetchImpl(`${this.baseUrl}/api/v4${path}`, {
-      ...init,
-      headers,
-    });
-    const text = await res.text();
-    const body = text ? (JSON.parse(text) as unknown) : null;
-    if (!res.ok) {
-      const summary =
-        body && typeof body === "object"
-          ? ((body as { message?: unknown }).message ??
-            (body as { error?: unknown }).error ??
-            "")
-          : "";
-      const summaryStr =
-        typeof summary === "string"
-          ? summary
-          : summary
-            ? JSON.stringify(summary)
-            : "";
-      throw new GitLabProviderError(
-        `GitLab ${init.method ?? "GET"} ${path} returned ${res.status}${summaryStr ? `: ${summaryStr}` : ""}`,
-        res.status,
-        body,
-      );
+    const result = await this.requestPage<T>(path, token, init);
+    return result.body;
+  }
+
+  private async requestPage<T>(
+    path: string,
+    token: string,
+    init: RequestInit = {},
+  ): Promise<{ readonly body: T; readonly headers: Headers }> {
+    for (let attempt = 0; ; attempt += 1) {
+      const headers = new Headers(init.headers);
+      headers.set("PRIVATE-TOKEN", token);
+      headers.set("Content-Type", "application/json");
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.requestTimeoutMs);
+      const onAbort = () => controller.abort();
+      init.signal?.addEventListener("abort", onAbort, { once: true });
+      let res: Response;
+      try {
+        res = await this.fetchImpl(`${this.baseUrl}/api/v4${path}`, {
+          ...init,
+          headers,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        init.signal?.removeEventListener("abort", onAbort);
+        if (timedOut) {
+          throw new GitLabProviderError(
+            `GitLab ${init.method ?? "GET"} ${path} timed out`,
+            408,
+            null,
+          );
+        }
+        throw error;
+      }
+      let text: string;
+      try {
+        text = await res.text();
+      } catch (error) {
+        if (timedOut) {
+          throw new GitLabProviderError(
+            `GitLab ${init.method ?? "GET"} ${path} timed out`,
+            408,
+            null,
+          );
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        init.signal?.removeEventListener("abort", onAbort);
+      }
+      let body: unknown = null;
+      if (text) {
+        try {
+          body = JSON.parse(text) as unknown;
+        } catch {
+          body = text;
+        }
+      }
+      if (res.status === 429 && attempt === 0) {
+        const retryAfter = retryAfterMs(res.headers.get("Retry-After"));
+        await delay(retryAfter);
+        continue;
+      }
+      if (!res.ok) {
+        const summary =
+          body && typeof body === "object"
+            ? ((body as { message?: unknown }).message ??
+              (body as { error?: unknown }).error ??
+              "")
+            : typeof body === "string"
+              ? body
+              : "";
+        const summaryStr =
+          typeof summary === "string"
+            ? summary
+            : summary
+              ? JSON.stringify(summary)
+              : "";
+        throw new GitLabProviderError(
+          `GitLab ${init.method ?? "GET"} ${path} returned ${res.status}${summaryStr ? `: ${summaryStr}` : ""}`,
+          res.status,
+          body,
+        );
+      }
+      return { body: body as T, headers: res.headers };
     }
-    return body as T;
+  }
+
+  private async getAllDiffs(
+    projectId: ProviderId,
+    iid: string,
+  ): Promise<readonly Readonly<Record<string, unknown>>[]> {
+    const all: Readonly<Record<string, unknown>>[] = [];
+    let page = 1;
+    for (;;) {
+      const result = await this.projectApiPage<
+        readonly Readonly<Record<string, unknown>>[]
+      >(
+        projectId,
+        `/merge_requests/${encodePath(iid)}/diffs?per_page=50&page=${page}`,
+      );
+      all.push(...result.body);
+      const next = result.headers.get("x-next-page");
+      if (!next) break;
+      const nextPage = Number(next);
+      if (!Number.isInteger(nextPage) || nextPage <= page) break;
+      page = nextPage;
+    }
+    return all;
+  }
+  private async getMergeability(
+    projectId: ProviderId,
+    iid: string,
+  ): Promise<{
+    readonly mr: GitLabMergeRequest;
+    readonly rejected: boolean;
+    readonly reason?: string;
+  }> {
+    const startedAt = Date.now();
+    let pollDelay = 100;
+    for (;;) {
+      const mr = await this.projectApi<GitLabMergeRequest>(
+        projectId,
+        `/merge_requests/${encodePath(iid)}?with_merge_status_recheck=true`,
+      );
+      const detailed = mr.detailed_merge_status ?? undefined;
+      const legacy = mr.merge_status ?? undefined;
+      const statuses = [detailed, legacy]
+        .filter((status): status is string => Boolean(status))
+        .map((status) => status.toLowerCase());
+      if (mr.has_conflicts || statuses.some(isKnownUnmergeable)) {
+        return {
+          mr,
+          rejected: true,
+          reason: mr.has_conflicts ? "conflicts" : (detailed ?? legacy),
+        };
+      }
+      if (
+        !statuses.some((status) => ["checking", "unchecked"].includes(status))
+      ) {
+        return { mr, rejected: false };
+      }
+      if (Date.now() - startedAt >= 60_000) {
+        return {
+          mr,
+          rejected: true,
+          reason: "mergeability_check_timeout",
+        };
+      }
+      await delay(pollDelay);
+      pollDelay = Math.min(pollDelay * 2, 2_000);
+    }
+  }
+
+  private async projectApiPage<T>(
+    projectId: ProviderId,
+    path: string,
+    init?: RequestInit,
+  ): Promise<{ readonly body: T; readonly headers: Headers }> {
+    const token = this.requireToken();
+    return this.requestPage<T>(
+      `/projects/${encodePath(projectId)}${path}`,
+      token,
+      init,
+    );
   }
 
   private async api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1054,6 +1267,42 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     }
     return this.token;
   }
+}
+const KNOWN_UNMERGEABLE_STATUSES: Readonly<Record<string, true>> = {
+  conflicts: true,
+  conflict: true,
+  ci_must_pass: true,
+  status_checks_must_pass: true,
+  not_approved: true,
+  draft_status: true,
+  not_open: true,
+  cannot_be_merged: true,
+  discussions_not_resolved: true,
+  requested_changes: true,
+  blocked_status: true,
+  merge_time: true,
+};
+
+function isKnownUnmergeable(status: string): boolean {
+  return KNOWN_UNMERGEABLE_STATUSES[status] === true;
+}
+
+function isNotFound(error: unknown): error is GitLabProviderError {
+  return error instanceof GitLabProviderError && error.status === 404;
+}
+
+function retryAfterMs(value: string | null): number {
+  if (!value) return 1_000;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds))
+    return Math.min(Math.max(seconds * 1_000, 0), 5_000);
+  const date = Date.parse(value);
+  if (!Number.isFinite(date)) return 1_000;
+  return Math.min(Math.max(date - Date.now(), 0), 5_000);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function issueInputBody(
@@ -1221,10 +1470,7 @@ function issueIid(projectId: ProviderId, id: ProviderId): string {
   const separator = id.lastIndexOf(":");
   return separator === -1 ? id : id.slice(separator + 1);
 }
-
-// MR IDs use the same `<project_id>:<iid>` shape as issues so a single ID is
-// stable across project context. `mrIid` strips the project prefix so the
-// caller can hit GitLab's `/merge_requests/<iid>` endpoint.
+// MR IDs use the same `<project_id>:<iid>` shape as issues.
 function mrIid(projectId: ProviderId, id: ProviderId): string {
   return issueIid(projectId, id);
 }
@@ -1246,6 +1492,9 @@ function toMergeRequest(
     target_branch: mr.target_branch ?? "",
     state,
     head_commit_sha: mr.sha ?? mr.diff_refs?.head_sha ?? undefined,
+    detailed_merge_status:
+      mr.detailed_merge_status ?? mr.merge_status ?? undefined,
+    has_conflicts: mr.has_conflicts,
     metadata: { ...meta(provider, mr), id },
   };
 }
