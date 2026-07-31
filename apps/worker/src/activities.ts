@@ -902,6 +902,7 @@ export async function checkMrGate(
     providerProjects: getProviderProjects(),
     reviewGate: getReviewGateRepository(),
     policy: getPolicyRepository(),
+    providerAdapter: getProviderAdapter(),
   })(input);
 }
 

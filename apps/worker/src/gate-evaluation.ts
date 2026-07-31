@@ -15,6 +15,7 @@ import {
   type Task,
 } from "@colony/domain";
 import { evaluate as evaluatePolicy } from "@colony/policy";
+import type { ProviderAdapter } from "@colony/provider";
 
 /**
  * COL-2.12 — HITL gate evaluation.
@@ -45,6 +46,15 @@ export interface GateDependencies {
   readonly providerProjects: ProviderProjectRepository;
   readonly reviewGate: ReviewGateRepository;
   readonly policy: PolicyRepository;
+  /**
+   * Optional provider adapter. The `mr_pr` mirror records `head_commit_sha`
+   * only when the developer opens or updates the MR, so any later commit on
+   * the branch leaves it stale — and every head-bound decision (pipeline
+   * selection, approval staleness, re-review eligibility) then evaluates a
+   * dead commit. When an adapter is supplied the gate reads the live head
+   * from the provider and treats the mirror as a cache.
+   */
+  readonly providerAdapter?: ProviderAdapter;
 }
 
 export interface OpenMrGateInput {
@@ -562,7 +572,26 @@ export function createCheckMrGate(deps: GateDependencies) {
         // ignore malformed mirror payload
       }
     }
+    // Provider truth wins over the cached mirror: the mirror's
+    // head_commit_sha is only written when the developer opens/updates the
+    // MR, so a later commit (rework push, CI fix) leaves it pointing at a
+    // dead commit and every head-bound check below evaluates the wrong
+    // revision. Fall back to the mirror when no adapter is wired or the
+    // provider read fails — a stale head is still better than none.
+    let providerHeadCommitSha: string | null = null;
+    if (deps.providerAdapter) {
+      try {
+        const liveMr = await deps.providerAdapter.mergeRequests.get(
+          { id: project.provider_id, path: project.path },
+          mrMirror.provider_id,
+        );
+        providerHeadCommitSha = liveMr.head_commit_sha ?? null;
+      } catch {
+        // Provider unreachable: fall through to the cached mirror value.
+      }
+    }
     const head_commit_sha =
+      providerHeadCommitSha ??
       mirrorHeadCommitSha ??
       artifact.hash ??
       approvals.find((a) => a.commit_sha)?.commit_sha ??
