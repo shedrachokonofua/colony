@@ -52,6 +52,12 @@ import {
   type CommitDecompositionProposalResult,
 } from "./decomposition-commit.js";
 import {
+  createSyncCommittedTasksToProvider,
+  type SyncCommittedTasksToProviderInput,
+  type SyncCommittedTasksToProviderResult,
+} from "./task-provider-projection.js";
+
+import {
   createRequestTaskRework,
   type RequestTaskReworkInput,
   type RequestTaskReworkResult,
@@ -523,6 +529,17 @@ export async function commitDecompositionProposal(
   });
   return run(input);
 }
+export async function syncCommittedTasksToProvider(
+  input: SyncCommittedTasksToProviderInput,
+): Promise<SyncCommittedTasksToProviderResult> {
+  const run = createSyncCommittedTasksToProvider({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
+  });
+  return run(input);
+}
+
 export async function requestTaskRework(
   input: RequestTaskReworkInput,
 ): Promise<RequestTaskReworkResult> {
@@ -1009,11 +1026,33 @@ export async function claimReadyTask(
 
   const repository = getRepository();
   const ready = await repository.readyTasks(input.scope_id);
-  const candidate = ready[0];
-  if (!candidate) {
-    return { claimed: false, reason: "no_ready_tasks" };
+  let candidate = ready[0];
+  let taskMirror: ProviderMirror | undefined;
+  let taskProject: ProviderProject | undefined;
+
+  for (const task of ready) {
+    const taskMirrors = await getProviderProjects().listMirrorsForColony({
+      colony_id: task.id,
+      entity_kind: "task",
+    });
+    const mirror = taskMirrors[0];
+    if (!mirror?.provider_project_id) continue;
+    const project = await getProviderProjects().getProject(
+      mirror.provider_project_id,
+    );
+    if (!project) continue;
+    candidate = task;
+    taskMirror = mirror;
+    taskProject = project;
+    break;
   }
 
+  if (!candidate || !taskMirror || !taskProject) {
+    return {
+      claimed: false,
+      reason: ready.length > 0 ? "no_projected_ready_tasks" : "no_ready_tasks",
+    };
+  }
   const assignee = input.assignee as ActorId;
   const claimed = await repository.claimTask(
     candidate.id,
@@ -1156,6 +1195,7 @@ export const activities = {
   claimReadyTask,
   readScopeState,
   mergeSpecMergeRequest,
+  syncCommittedTasksToProvider,
   commitDecompositionProposal,
   recordWorkflowEvent,
   applyDecompositionCommand,

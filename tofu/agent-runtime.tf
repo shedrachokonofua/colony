@@ -15,6 +15,14 @@ locals {
     agent_runtime: pi
     allow_literal_keys: false
 
+    # Unattended operation: the supervisor auto-passes the three human gates,
+    # but only when the bot evidence a human would have relied on exists
+    # (reviewer approved, pipeline green at the exact head sha, no
+    # pending_sync/conflict residue). Auto-passes audit as svc:supervisor
+    # with .auto_approved actions; human_approved_by stays NULL.
+    hitl:
+      mode: yolo
+
     providers:
       openai_compatible:
         api: openai-completions

@@ -516,6 +516,14 @@ export type AutoApproveDecompositionResult =
       readonly envelope_hash: string;
     };
 
+export interface SyncCommittedTasksToProviderResult {
+  readonly scope_id?: ScopeId;
+  readonly projected: number;
+  readonly skipped: number;
+  readonly failed: number;
+  readonly failures: readonly string[];
+}
+
 export interface LongRunningSupervisorActivities {
   readonly startArchitectRun: (input: {
     readonly scope_id: ScopeId;
@@ -621,6 +629,7 @@ export interface SupervisorActivities {
     readonly scope_id: ScopeId;
     readonly action: "approve" | "changes";
     readonly actor: string;
+
     readonly reason?: string;
   }) => Promise<DecompositionCommandResult>;
   readonly commitDecompositionProposal: (input: {
@@ -629,6 +638,9 @@ export interface SupervisorActivities {
     readonly actor: string;
     readonly reason?: string;
   }) => Promise<CommitDecompositionProposalResult>;
+  readonly syncCommittedTasksToProvider: (input: {
+    readonly scope_id: ScopeId;
+  }) => Promise<SyncCommittedTasksToProviderResult>;
   readonly mergeSpecMergeRequest: (input: {
     readonly scope_id: ScopeId;
     readonly proposal_id?: string;
@@ -1327,6 +1339,9 @@ async function commitApprovedDecomposition(input: {
 }): Promise<void> {
   const commit = await activities.commitDecompositionProposal(input);
   if (!commit.committed) return;
+  await activities.syncCommittedTasksToProvider({
+    scope_id: input.scope_id,
+  });
   // The DAG is already durable and the scope is active at this point. A
   // provider preflight failure is audited by the merge activity and must not
   // strand the scope or roll back the committed graph.
@@ -1365,6 +1380,9 @@ export async function scopeSupervisorWorkflow(
   setHandler(architectRequestedSignal, (payload) => {
     queue.push({ seq: nextSignalSeq++, name: "architect_requested", payload });
   });
+  // Recovery for scopes committed before this activity existed. The activity
+  // is idempotent and skips tasks that already have mirrors.
+  await activities.syncCommittedTasksToProvider({ scope_id });
 
   const initialState = await activities.readScopeState({ scope_id });
   const hitl_mode = initialState.hitl_mode ?? "gated";
@@ -1505,6 +1523,7 @@ export async function scopeSupervisorWorkflow(
         });
         return;
       }
+      await activities.syncCommittedTasksToProvider({ scope_id });
       await claimAndDriveReadyTask(scope_id);
       continue;
     }
@@ -1700,6 +1719,7 @@ export async function scopeSupervisorWorkflow(
         assignee: DEVELOPER_ASSIGNEE,
       });
     }
+    await activities.syncCommittedTasksToProvider({ scope_id });
     await claimAndDriveReadyTask(scope_id);
 
     if (processedWorkCount >= 100 || workflowInfo().continueAsNewSuggested) {

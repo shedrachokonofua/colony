@@ -202,6 +202,8 @@ describe.runIf(temporalTestEnabled)(
               committed: false,
               reason: "not_used",
             }),
+          syncCommittedTasksToProvider: () =>
+            resolved({ projected: 0, skipped: 0, failed: 0, failures: [] }),
           mergeSpecMergeRequest: () =>
             resolved({
               merged: true,
@@ -478,6 +480,8 @@ describe.runIf(temporalTestEnabled)(
               committed: false,
               reason: "not_used",
             }),
+          syncCommittedTasksToProvider: () =>
+            resolved({ projected: 0, skipped: 0, failed: 0, failures: [] }),
           mergeSpecMergeRequest: () =>
             resolved({
               merged: true,
@@ -661,6 +665,15 @@ describe.runIf(temporalTestEnabled)(
               dependency_count: 0,
             });
           },
+          syncCommittedTasksToProvider: () => {
+            calls.push("syncCommittedTasksToProvider");
+            return resolved({
+              projected: 0,
+              skipped: 0,
+              failed: 0,
+              failures: [],
+            });
+          },
           mergeSpecMergeRequest: () => {
             calls.push("mergeSpecMergeRequest");
             return resolved({ merged: true as const, scope_id: scopeId });
@@ -799,6 +812,8 @@ function makeSupervisorTestActivities(
       resolved({ applied: false, reason: "not_used" }),
     commitDecompositionProposal: () =>
       resolved({ committed: false, reason: "not_used" }),
+    syncCommittedTasksToProvider: () =>
+      resolved({ projected: 0, skipped: 0, failed: 0, failures: [] }),
     mergeSpecMergeRequest: () =>
       resolved({ merged: true, scope_id: scopeId, already_merged: true }),
     requestTaskRework: () =>
@@ -985,6 +1000,15 @@ describe.runIf(temporalTestEnabled)(
               proposal_id: "proposal-1",
               task_count: 1,
               dependency_count: 0,
+            });
+          },
+          syncCommittedTasksToProvider: () => {
+            calls.push("syncCommittedTasksToProvider");
+            return resolved({
+              projected: 0,
+              skipped: 0,
+              failed: 0,
+              failures: [],
             });
           },
           mergeSpecMergeRequest: () => {

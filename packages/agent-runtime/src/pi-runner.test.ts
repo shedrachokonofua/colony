@@ -196,6 +196,44 @@ describe("pi runners", () => {
       },
     };
 
+    const warnings: Array<Record<string, unknown>> = [];
+    try {
+      const adapter = new PiAgentRuntimeAdapter(
+        new PiCodingAgentRunner({
+          broker: { resolve: () => "test-api-key" },
+          model: registration.getModel(),
+          runTimeoutMs: 2_000,
+          logger: {
+            warn: (fields) => {
+              warnings.push(fields);
+            },
+          },
+        }),
+      );
+      const metadata = await adapter.startRun(packet, await runEnvironment());
+
+      expect(metadata.status).toBe("failed");
+      expect(metadata.rejectionReason).toMatch(
+        /^workspace_provision_failed:clone_failed:/,
+      );
+      expect(metadata.rejectionReason).toContain("exit_status=128");
+      expect(metadata.rejectionReason).not.toContain("workspace-test-token");
+      expect(JSON.stringify(warnings)).not.toContain("workspace-test-token");
+    } finally {
+      registration.unregister();
+    }
+  }, 15_000);
+
+  it("reports missing repository credentials distinctly", async () => {
+    const registration = registerFauxProvider({
+      provider: "colony-faux-workspace-missing-credentials",
+      models: [{ id: "colony-faux-workspace-missing-credentials-model" }],
+    });
+    const packet = {
+      ...taskPacket(),
+      repo: { ...repo },
+    };
+
     try {
       const adapter = new PiAgentRuntimeAdapter(
         new PiCodingAgentRunner({
@@ -207,11 +245,13 @@ describe("pi runners", () => {
       const metadata = await adapter.startRun(packet, await runEnvironment());
 
       expect(metadata.status).toBe("failed");
-      expect(metadata.rejectionReason).toBe("workspace_provision_failed");
+      expect(metadata.rejectionReason).toBe(
+        "workspace_provision_failed:missing_credentials",
+      );
     } finally {
       registration.unregister();
     }
-  }, 15_000);
+  });
 
   it("runs the reviewer through a workspace-enabled coding-agent session", async () => {
     const registration = registerFauxProvider({

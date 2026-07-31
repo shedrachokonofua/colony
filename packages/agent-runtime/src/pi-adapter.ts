@@ -6,6 +6,11 @@ import type {
   AgentRunOutput,
 } from "./adapter.js";
 import { parseEnvelope, truncate } from "./adapter.js";
+import {
+  packetRepo,
+  resolvePacketCloneUrl,
+  sanitizeSecret,
+} from "./pi-runner-common.js";
 import { hashEnvelope, hashPacket } from "./packet-builders.js";
 
 export interface PiRunRequest {
@@ -72,8 +77,11 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         result.envelope &&
         typeof result.envelope === "object" &&
         "__unfinished" in result.envelope;
-      const failureReason =
-        result.reason ?? (unfinished ? "finalize_no_submission" : undefined);
+      const failureReason = result.reason
+        ? redactPacketSecret(result.reason, packet)
+        : unfinished
+          ? "finalize_no_submission"
+          : undefined;
       const output =
         parsed.ok && !failureReason
           ? {
@@ -112,7 +120,10 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         rejectionReason:
           current?.status === "canceled"
             ? undefined
-            : truncate(err instanceof Error ? err.message : String(err)),
+            : redactPacketSecret(
+                err instanceof Error ? err.message : String(err),
+                packet,
+              ),
       };
       this.runs.set(runId, metadata);
       return metadata;
@@ -150,9 +161,25 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     ) {
       return withoutOutput(current);
     }
+
     const canceled = { ...current, status: "canceled" as const };
     this.runs.set(runId, canceled);
     return withoutOutput(canceled);
+  }
+}
+function redactPacketSecret(
+  reason: string,
+  packet: AgentRuntimePacket,
+): string {
+  const repo = packetRepo(packet);
+  if (!repo) return reason;
+  try {
+    return sanitizeSecret(
+      reason,
+      resolvePacketCloneUrl(repo.url, repo.credentials?.token).secret,
+    );
+  } catch {
+    return sanitizeSecret(reason, repo.credentials?.token);
   }
 }
 

@@ -144,14 +144,19 @@ export function provisionRepoWorkspace(
   const repo = packetRepo(packet);
   if (!repo || (options.requireCredentials && !repo.credentials?.token)) {
     if (options.requireCredentials) {
-      throw new Error("workspace_provision_failed");
+      throw new Error("workspace_provision_failed:missing_credentials");
     }
     return provisionScratchDir(runId, packet);
   }
 
   const clone = resolvePacketCloneUrl(repo.url, repo.credentials?.token);
   const dir = join(tmpdir(), "colony-pi-runs", runId);
-  let lastError: unknown;
+  let lastFailure:
+    | {
+        readonly stage: "clone" | "checkout" | "packet_seed";
+        readonly error: unknown;
+      }
+    | undefined;
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dirname(dir), { recursive: true });
@@ -160,22 +165,45 @@ export function provisionRepoWorkspace(
         ["clone", "--quiet", "--no-single-branch", clone.cloneUrl, dir],
         dirname(dir),
       );
+    } catch (err) {
+      lastFailure = { stage: "clone", error: err };
+      if (attempt < 4) sleepSync(1500);
+      continue;
+    }
+
+    try {
       try {
         git(["checkout", "--quiet", repo.branch], dir);
       } catch (err) {
         if (!isBranchNotFoundError(err)) throw err;
         git(["checkout", "--quiet", "-B", repo.branch, repo.base_commit], dir);
       }
+    } catch (err) {
+      lastFailure = { stage: "checkout", error: err };
+      if (attempt < 4) sleepSync(1500);
+      continue;
+    }
+
+    try {
       writeFileSync(join(dir, "PACKET.json"), JSON.stringify(packet, null, 2), {
         encoding: "utf8",
       });
       return dir;
     } catch (err) {
-      lastError = err;
+      lastFailure = { stage: "packet_seed", error: err };
       if (attempt < 4) sleepSync(1500);
     }
   }
 
+  const failure = lastFailure ?? {
+    stage: "clone" as const,
+    error: new Error("git did not report a failure"),
+  };
+  const reason = formatWorkspaceProvisionFailure(
+    failure.stage,
+    failure.error,
+    clone.secret,
+  );
   options.logger?.warn?.(
     {
       runId,
@@ -183,15 +211,54 @@ export function provisionRepoWorkspace(
       branch: repo.branch,
       baseCommit: repo.base_commit,
       attempts: 4,
-      error: sanitizeSecret(
-        lastError instanceof Error ? lastError.message : String(lastError),
-        clone.secret,
-      ),
+      error: gitFailureDetail(failure.error, clone.secret),
     },
     "agent_workspace_clone_failed",
   );
   rmSync(dir, { recursive: true, force: true });
-  throw new Error("workspace_provision_failed");
+  throw new Error(reason);
+}
+
+function formatWorkspaceProvisionFailure(
+  stage: "clone" | "checkout" | "packet_seed",
+  error: unknown,
+  secret: string | undefined,
+): string {
+  const label =
+    stage === "clone"
+      ? "clone_failed"
+      : stage === "checkout"
+        ? "checkout_failed"
+        : "packet_seed_failed";
+  return `workspace_provision_failed:${label}:${gitFailureDetail(error, secret)}`;
+}
+
+function gitFailureDetail(error: unknown, secret: string | undefined): string {
+  const candidate =
+    error && typeof error === "object"
+      ? (error as {
+          readonly status?: unknown;
+          readonly stderr?: unknown;
+        })
+      : {};
+  const status =
+    typeof candidate.status === "number" || typeof candidate.status === "string"
+      ? String(candidate.status)
+      : undefined;
+  const stderr =
+    typeof candidate.stderr === "string"
+      ? candidate.stderr
+      : candidate.stderr instanceof Buffer
+        ? candidate.stderr.toString("utf8")
+        : undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  const rawDetail = (stderr?.trim() || message.trim()).replace(/\s+/g, " ");
+  const safeDetail = sanitizeSecret(rawDetail, secret).trim();
+  const shortDetail =
+    safeDetail.length > 240 ? `${safeDetail.slice(0, 240)}…` : safeDetail;
+  return status && !shortDetail.includes(status)
+    ? `exit_status=${status}:${shortDetail}`
+    : shortDetail || (status ? `exit_status=${status}` : "unknown");
 }
 
 function isBranchNotFoundError(error: unknown): boolean {
@@ -255,7 +322,7 @@ export function resolvePacketCloneUrl(
     return {
       cloneUrl: url.href,
       displayUrl: display.href,
-      secret: token,
+      secret: (token ?? url.password) || undefined,
     };
   }
 
@@ -282,7 +349,7 @@ export function resolvePacketCloneUrl(
   return {
     cloneUrl: url.href,
     displayUrl: display.href,
-    secret: token,
+    secret: (token ?? url.password) || undefined,
   };
 }
 

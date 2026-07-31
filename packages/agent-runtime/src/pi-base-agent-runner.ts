@@ -119,12 +119,21 @@ export class PiBaseAgentRunner implements PiRunner {
     let failureReason: string | undefined;
     let timeoutTriggered = false;
 
-    const cwd = provisionProfileWorkspace(
-      runId,
-      request.packet,
-      this.profile,
-      this.options,
-    );
+    let cwd: string;
+    try {
+      cwd = provisionProfileWorkspace(
+        runId,
+        request.packet,
+        this.profile,
+        this.options,
+      );
+    } catch (err) {
+      return {
+        sandboxId,
+        envelope: { __unfinished: true },
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
