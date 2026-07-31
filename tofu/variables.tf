@@ -58,15 +58,15 @@ variable "kubeconfig_path" {
 }
 
 variable "temporal_address" {
-  description = "Temporal frontend gRPC address. Preview reuses the Aether Dokku Temporal deployment."
+  description = "Temporal frontend gRPC address. Temporal runs in-cluster in the `temporal` namespace on Aether."
   type        = string
-  default     = "grpc.temporal.home.shdr.ch:443"
+  default     = "temporal-server.temporal.svc.cluster.local:7233"
 }
 
 variable "temporal_tls" {
-  description = "Enable TLS when connecting to Temporal."
+  description = "Enable TLS when connecting to Temporal. In-cluster gRPC is plaintext."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "temporal_tls_server_name" {

@@ -8,8 +8,8 @@ It intentionally avoids Aether repo changes for the first preview:
 - Gateway API routes attach to Aether's existing `default/main-gateway`.
 - Images are pulled from the Colony GitLab project registry.
 - Runtime GitLab provider secrets are read from OpenBao `kv/colony/gitlab`.
-- Temporal is reused from the existing Aether Dokku VM deployment at
-  `grpc.temporal.home.shdr.ch:443` with Temporal SDK TLS enabled.
+- Temporal is the in-cluster deployment in the `temporal` namespace
+  (`temporal-server.temporal.svc.cluster.local:7233`, plaintext gRPC).
 - Postgres is a small in-namespace StatefulSet for the preview. It can be
   replaced with CNPG later if the host cluster gets that operator.
 

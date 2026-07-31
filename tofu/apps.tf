@@ -51,6 +51,13 @@ resource "kubernetes_deployment_v1" "http_app" {
       spec {
         service_account_name = kubernetes_service_account_v1.app[each.key].metadata[0].name
 
+        volume {
+          name = "agent-runtime-config"
+          config_map {
+            name = kubernetes_config_map_v1.agent_runtime_config.metadata[0].name
+          }
+        }
+
         security_context {
           run_as_non_root = true
           run_as_user     = 1000
@@ -76,6 +83,12 @@ resource "kubernetes_deployment_v1" "http_app" {
             secret_ref {
               name = kubernetes_secret_v1.app_env.metadata[0].name
             }
+          }
+
+          volume_mount {
+            name       = "agent-runtime-config"
+            mount_path = "/etc/colony"
+            read_only  = true
           }
 
           security_context {
