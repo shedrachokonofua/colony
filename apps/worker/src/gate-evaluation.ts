@@ -464,6 +464,20 @@ function roleForApprover(
   return null;
 }
 
+export function isReReviewEligible(input: {
+  readonly missing: readonly Role[];
+  readonly head_commit_sha: string;
+  readonly pipeline_status: PipelineStatusValue | null;
+  readonly pipeline_commit_sha: string | null;
+}): boolean {
+  return (
+    input.missing.includes("reviewer") &&
+    input.pipeline_status === "success" &&
+    input.head_commit_sha.length > 0 &&
+    input.pipeline_commit_sha === input.head_commit_sha
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Public driver: evaluate the gate; promote task to merge_ready when open.
 // ---------------------------------------------------------------------------
@@ -482,6 +496,12 @@ export type CheckMrGateResult =
       readonly gate_open: boolean;
       readonly reasons: readonly string[];
       readonly missing: readonly Role[];
+      /** True when a green current-head pipeline can satisfy a missing reviewer approval. */
+      readonly needs_re_review?: boolean;
+      readonly review_attempts?: number;
+      readonly head_commit_sha?: string;
+      readonly pipeline_status?: PipelineStatusValue | null;
+      readonly pipeline_commit_sha?: string | null;
     };
 
 export function createCheckMrGate(deps: GateDependencies) {
@@ -529,10 +549,23 @@ export function createCheckMrGate(deps: GateDependencies) {
     if (!gate) return { checked: false, reason: "no_open_gate" };
 
     const approvals = await deps.reviewGate.listActiveApprovals(artifact.id);
-    const review = await deps.reviewGate.latestResolvedReview(task.id);
+    const reviews = await deps.reviewGate.listReviewsForTask(task.id);
+    const review = reviews.find((candidate) => candidate.resolved_at);
+    let mirrorHeadCommitSha: string | null = null;
+    if (mrMirror.source_version) {
+      try {
+        const decoded = JSON.parse(mrMirror.source_version) as {
+          readonly head_commit_sha?: string;
+        };
+        mirrorHeadCommitSha = decoded.head_commit_sha ?? null;
+      } catch {
+        // ignore malformed mirror payload
+      }
+    }
     const head_commit_sha =
-      approvals.find((a) => a.commit_sha)?.commit_sha ??
+      mirrorHeadCommitSha ??
       artifact.hash ??
+      approvals.find((a) => a.commit_sha)?.commit_sha ??
       review?.envelope_hash ??
       "";
 
@@ -569,6 +602,12 @@ export function createCheckMrGate(deps: GateDependencies) {
     });
 
     if (!evaluation.open) {
+      const needs_re_review = isReReviewEligible({
+        missing: evaluation.missing,
+        head_commit_sha,
+        pipeline_status,
+        pipeline_commit_sha,
+      });
       return {
         checked: true,
         task_id: task.id,
@@ -576,6 +615,11 @@ export function createCheckMrGate(deps: GateDependencies) {
         gate_open: false,
         reasons: evaluation.reasons,
         missing: evaluation.missing,
+        needs_re_review,
+        review_attempts: Math.max(0, reviews.length - 1),
+        head_commit_sha,
+        pipeline_status,
+        pipeline_commit_sha,
       };
     }
 

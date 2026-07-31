@@ -11,6 +11,7 @@ import {
   type SupervisorActivities,
   operatorOverrideSignal,
   providerEventSignal,
+  pipelineUpdateSignal,
   reconcileActivityIdempotencyKey,
   scopeSupervisorWorkflow,
   supervisorWorkflowId,
@@ -949,6 +950,99 @@ describe.runIf(temporalTestEnabled)(
         };
       await runSupervisorTestScenario(activities);
       expect(calls).toContain("override:task:block");
+    }, 120_000);
+
+    it("re-reviews once after an invalidated approval when the head pipeline is green", async () => {
+      const calls: string[] = [];
+      let reviewerRuns = 0;
+      let gateChecks = 0;
+      const baseActivities = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...baseActivities,
+          readScopeState: () =>
+            resolved({
+              scope: { id: "col-extra", state: "active", state_version: 1 },
+              hitl_mode: "gated",
+              tasks: [
+                {
+                  id: "col-extra.1",
+                  state: "review_requested",
+                  state_version: 2,
+                  claim_version: 1,
+                },
+              ],
+            }),
+          claimReadyTask: () => resolved({ claimed: false }),
+          scopeHeartbeatTick: () =>
+            resolved({
+              scope_id: "col-extra",
+              status: "scope_terminal" as const,
+            }),
+          recordPipelineStatus: () =>
+            resolved({ recorded: true, invalidated_approvals: 1 }),
+          checkMrGate: () => {
+            gateChecks += 1;
+            return resolved(
+              gateChecks === 1
+                ? {
+                    checked: true as const,
+                    task_id: "col-extra.1",
+                    final_state: "review_requested" as const,
+                    gate_open: false,
+                    reasons: ["missing approvals from: reviewer"],
+                    missing: ["reviewer"],
+                    needs_re_review: true,
+                    review_attempts: 0,
+                    head_commit_sha: "head-1",
+                    pipeline_status: "success",
+                    pipeline_commit_sha: "head-1",
+                  }
+                : {
+                    checked: true as const,
+                    task_id: "col-extra.1",
+                    final_state: "merge_ready" as const,
+                    gate_open: true,
+                    reasons: [],
+                    missing: [],
+                  },
+            );
+          },
+          startReviewerRun: (input) => {
+            reviewerRuns += 1;
+            expect(input.head_commit_sha).toBe("head-1");
+            return resolved({
+              started: true,
+              task_id: "col-extra.1",
+              run_id: `review-${reviewerRuns}`,
+              review_id: `review-${reviewerRuns}`,
+              envelope_status: "succeeded" as const,
+              review_result: "approved" as const,
+              final_state: "review_requested" as const,
+            });
+          },
+        };
+      await runSupervisorTestScenario(activities, async (unknownHandle) => {
+        const handle = unknownHandle as {
+          signal: (
+            signal: typeof pipelineUpdateSignal,
+            payload: unknown,
+          ) => Promise<void>;
+        };
+        await handle.signal(pipelineUpdateSignal, {
+          provider: "fake",
+          pipeline_id: "pipeline-1",
+          status: "success",
+          commit_sha: "head-1",
+          task_id: "col-extra.1",
+        });
+      });
+      expect(reviewerRuns).toBe(1);
+      expect(gateChecks).toBe(2);
     }, 120_000);
 
     it("fires heartbeat while signals remain continuously queued", async () => {

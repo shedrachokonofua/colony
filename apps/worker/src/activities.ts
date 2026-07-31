@@ -1,3 +1,7 @@
+import {
+  developerCompletionEnvelopeSchema,
+  type DeveloperCompletionEnvelope,
+} from "@colony/schemas";
 import type { AgentRuntimeAdapter } from "@colony/agent-runtime";
 import {
   createPool,
@@ -282,9 +286,62 @@ export async function startPlanReviewRun(
   );
 }
 
+type StartReviewerActivityInput = Omit<
+  StartReviewerRunInput,
+  "developer_envelope"
+> & {
+  readonly developer_envelope?: unknown;
+  readonly head_commit_sha?: string;
+};
+async function loadDeveloperEnvelopeForReview(
+  input: StartReviewerActivityInput,
+): Promise<{
+  readonly envelope: DeveloperCompletionEnvelope | null;
+  readonly head_commit_sha?: string;
+}> {
+  if (input.developer_envelope !== undefined) {
+    const parsed = developerCompletionEnvelopeSchema.safeParse(
+      input.developer_envelope,
+    );
+    if (parsed.success) {
+      return { envelope: parsed.data, head_commit_sha: input.head_commit_sha };
+    }
+  }
+  const mirror = (
+    await getProviderProjects().listMirrorsForColony({
+      colony_id: input.task_id,
+      entity_kind: "mr_pr",
+    })
+  )[0];
+  if (!mirror?.source_version) return { envelope: null };
+  try {
+    const source = JSON.parse(mirror.source_version) as {
+      readonly developer_envelope?: unknown;
+      readonly head_commit_sha?: string;
+    };
+    const parsed = developerCompletionEnvelopeSchema.safeParse(
+      source.developer_envelope,
+    );
+    return {
+      envelope: parsed.success ? parsed.data : null,
+      head_commit_sha: input.head_commit_sha ?? source.head_commit_sha,
+    };
+  } catch {
+    return { envelope: null };
+  }
+}
+
 export async function startReviewerRun(
-  input: StartReviewerRunInput,
+  input: StartReviewerActivityInput,
 ): Promise<StartReviewerRunResult> {
+  const loaded = await loadDeveloperEnvelopeForReview(input);
+  if (!loaded.envelope) {
+    return {
+      started: false,
+      task_id: input.task_id,
+      reason: "developer_envelope_missing_for_review",
+    };
+  }
   const run = createReviewerRun({
     repo: getRepository(),
     providerProjects: getProviderProjects(),
@@ -292,7 +349,14 @@ export async function startReviewerRun(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("reviewer"),
   });
-  return throwRetryableAgentRunFailure(run(input));
+  return throwRetryableAgentRunFailure(
+    run({
+      task_id: input.task_id,
+      reviewer: input.reviewer,
+      developer_envelope: loaded.envelope,
+      head_commit_sha: loaded.head_commit_sha,
+    }),
+  );
 }
 
 type AgentRunActivityResult =

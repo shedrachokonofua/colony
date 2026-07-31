@@ -131,6 +131,107 @@ describe.runIf(TEST_URL)("scopeHeartbeatTick integration", () => {
     );
   });
 
+  it("trips the durable recovery breaker and resets after success", async () => {
+    await repo.createScope(
+      { id: SCOPE_ID, title: "failing architect", description: "draft" },
+      { actor: SUPERVISOR, capability: "graph.write", reason: "test" },
+    );
+    for (let i = 1; i <= 5; i += 1) {
+      await pool.query(
+        `INSERT INTO agent_runs
+           (id, scope_id, role, packet_hash, status, started_at, finished_at)
+         VALUES ($1, $2, 'architect', $3, 'failed',
+                 now() - interval '10 minutes', now() - interval '10 minutes')`,
+        [`run-hb-${i}`, SCOPE_ID, `packet-${i}`],
+      );
+    }
+    await pool.query(
+      `UPDATE scopes SET updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [SCOPE_ID],
+    );
+
+    const tick = createScopeHeartbeatTick({ repo });
+    const tripped = await tick({
+      scope_id: SCOPE_ID,
+      stall_threshold_ms: 60_000,
+      idempotency_key: "breaker-1",
+    });
+    expect(tripped.recovery_circuit_open).toBe(true);
+    expect(tripped.recovery_failure_count).toBe(5);
+    expect(tripped.recovery_allowed).toBe(false);
+    expect(tripped.last_failure_reason).toBe("agent_run_failed");
+    const blocked = await repo.getScope(SCOPE_ID);
+    expect(blocked?.state).toBe("blocked");
+    const audit = await audit_(pool, SCOPE_ID);
+    expect(
+      audit.some((a) => a.action === "scope.heartbeat.recovery_circuit_open"),
+    ).toBe(true);
+
+    await repo.updateScopeState(SCOPE_ID, blocked!.state_version, "draft", {
+      actor: SUPERVISOR,
+      capability: "graph.write",
+      reason: "operator_reset",
+    });
+    await pool.query(
+      `INSERT INTO agent_runs
+         (id, scope_id, role, packet_hash, status, started_at, finished_at)
+       VALUES ($1, $2, 'architect', $3, 'succeeded', now(), now())`,
+      ["run-hb-success", SCOPE_ID, "packet-success"],
+    );
+    await pool.query(
+      `UPDATE scopes SET updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [SCOPE_ID],
+    );
+    const reset = await tick({
+      scope_id: SCOPE_ID,
+      stall_threshold_ms: 60_000,
+      idempotency_key: "breaker-2",
+    });
+    expect(reset.recovery_failure_count).toBe(0);
+    expect(reset.recovery_circuit_open).toBe(false);
+    expect(reset.recovery_allowed).toBe(true);
+  });
+
+  it("backs off a failed recovery before allowing the next tick", async () => {
+    await repo.createScope(
+      { id: SCOPE_ID, title: "backoff", description: "draft" },
+      { actor: SUPERVISOR, capability: "graph.write", reason: "test" },
+    );
+    await pool.query(
+      `INSERT INTO agent_runs
+         (id, scope_id, role, packet_hash, status, started_at, finished_at)
+       VALUES ($1, $2, 'architect', $3, 'failed', now(), now())`,
+      ["run-hb-backoff", SCOPE_ID, "packet-backoff"],
+    );
+    await pool.query(
+      `UPDATE scopes SET updated_at = now() - interval '1 hour' WHERE id = $1`,
+      [SCOPE_ID],
+    );
+    const tick = createScopeHeartbeatTick({ repo });
+    const deferred = await tick({
+      scope_id: SCOPE_ID,
+      stall_threshold_ms: 60_000,
+      idempotency_key: "backoff-1",
+    });
+    expect(deferred.recovery_allowed).toBe(false);
+    expect(deferred.recovery_backoff_ticks).toBe(1);
+
+    await pool.query(
+      `UPDATE agent_runs
+          SET started_at = now() - interval '2 minutes',
+              finished_at = now() - interval '2 minutes'
+        WHERE id = $1`,
+      ["run-hb-backoff"],
+    );
+    const allowed = await tick({
+      scope_id: SCOPE_ID,
+      stall_threshold_ms: 60_000,
+      idempotency_key: "backoff-2",
+    });
+    expect(allowed.recovery_allowed).toBe(true);
+    expect(allowed.recovery_backoff_ticks).toBe(0);
+  });
+
   it("classifies an active scope with ready tasks as unclaimed_ready", async () => {
     await repo.createScope(
       {

@@ -1,17 +1,20 @@
-import type { TaskGraphRepository } from "@colony/db";
+import type { RecoveryFailureState, TaskGraphRepository } from "@colony/db";
 import { isScopeId, type ActorId, type Scope, type Task } from "@colony/domain";
+import {
+  HEARTBEAT_RECOVERY_BACKOFF_CAP_TICKS,
+  HEARTBEAT_RECOVERY_FAILURE_LIMIT,
+} from "@colony/workflows";
+
+const HEARTBEAT_TICK_MS = 60_000;
 
 /**
  * COL-3.x — per-scope supervisor heartbeat.
  *
- * Called from `scopeSupervisorWorkflow`'s heartbeat timer (every 5 min
- * when no signals have arrived). Classifies forward-progress stalls
- * and writes a typed audit row per tick. Recovery is intentionally
- * conservative: the activity flags the stall and writes evidence; it
- * doesn't mutate state beyond the audit row. The supervisor workflow
- * receives the classifier and can choose whether to fire follow-up
- * activities (`claimAndDriveReadyTask` etc.) — but the audit row is
- * the authoritative liveness signal regardless.
+ * Called from `scopeSupervisorWorkflow`'s heartbeat timer (every minute
+ * when no signals have arrived). Classifies forward-progress stalls,
+ * persists durable recovery evidence, and dispatches bounded recovery.
+ * Repeated failures apply exponential backoff and eventually stop the line
+ * by transitioning the scope to blocked until an operator or success resets it.
  *
  * Stall classifiers:
  *
@@ -52,6 +55,11 @@ export type ScopeHeartbeatTickResult = {
   readonly status: "healthy" | "stalled" | "recovered" | "scope_terminal";
   readonly classifier?: string;
   readonly recovery?: string;
+  readonly recovery_allowed?: boolean;
+  readonly recovery_failure_count?: number;
+  readonly recovery_backoff_ticks?: number;
+  readonly recovery_circuit_open?: boolean;
+  readonly last_failure_reason?: string;
   readonly last_progress_age_ms?: number;
 };
 
@@ -101,6 +109,63 @@ export function createScopeHeartbeatTick(deps: ScopeHeartbeatDeps) {
 
     const classifier = classifyStall(scope, tasks);
     const recovery = recoveryHintFor(classifier);
+    const role = recoveryRoleFor(classifier);
+    const failureState = role
+      ? await deps.repo.getRecoveryFailureState({
+          scope_id: input.scope_id,
+          role,
+        })
+      : undefined;
+    const recoveryBackoffTicks = failureState
+      ? backoffTicksFor(failureState, now)
+      : 0;
+    let recoveryAllowed = true;
+    let circuitOpen = false;
+    let scopeBlocked = false;
+
+    if (failureState?.latest_status === "running") {
+      recoveryAllowed = false;
+    } else if (
+      failureState &&
+      failureState.failure_count >= HEARTBEAT_RECOVERY_FAILURE_LIMIT
+    ) {
+      recoveryAllowed = false;
+      circuitOpen = true;
+      if (scope.state !== "blocked") {
+        await deps.repo.updateScopeState(
+          input.scope_id,
+          scope.state_version,
+          "blocked",
+          {
+            actor: SUPERVISOR_ACTOR,
+            capability: "graph.write",
+            reason: `heartbeat_recovery_circuit_open:${classifier}`,
+          },
+        );
+        scopeBlocked = true;
+      }
+      await deps.repo.writeAudit({
+        scope_id: input.scope_id,
+        actor: SUPERVISOR_ACTOR,
+        action: "scope.heartbeat.recovery_circuit_open",
+        capability: "graph.write",
+        target_kind: "scope",
+        target_id: input.scope_id,
+        previous_state: scope.state,
+        new_state: "blocked",
+        reason: `recovery_failure_limit:${classifier}`,
+        evidence: {
+          classifier,
+          attempt_count: failureState.failure_count,
+          last_failure_reason:
+            failureState.last_failure_reason ?? "agent_run_failed",
+          operator_action: "operator override or successful signal required",
+        },
+      });
+    } else if (failureState && recoveryBackoffTicks > 0) {
+      recoveryAllowed = false;
+    }
+
     await deps.repo.writeAudit({
       scope_id: input.scope_id,
       actor: SUPERVISOR_ACTOR,
@@ -111,8 +176,13 @@ export function createScopeHeartbeatTick(deps: ScopeHeartbeatDeps) {
       reason: classifier,
       evidence: {
         last_progress_age_ms: ageMs,
-        scope_state: scope.state,
+        scope_state: scopeBlocked ? "blocked" : scope.state,
         recovery_hint: recovery,
+        recovery_allowed: recoveryAllowed,
+        recovery_failure_count: failureState?.failure_count ?? 0,
+        recovery_backoff_ticks: recoveryBackoffTicks,
+        recovery_circuit_open: circuitOpen,
+        last_failure_reason: failureState?.last_failure_reason,
         idempotency_key: input.idempotency_key,
       },
     });
@@ -121,9 +191,51 @@ export function createScopeHeartbeatTick(deps: ScopeHeartbeatDeps) {
       status: "stalled",
       classifier,
       recovery,
+      recovery_allowed: recoveryAllowed,
+      recovery_failure_count: failureState?.failure_count ?? 0,
+      recovery_backoff_ticks: recoveryBackoffTicks,
+      recovery_circuit_open: circuitOpen,
+      last_failure_reason: failureState?.last_failure_reason,
       last_progress_age_ms: ageMs,
     };
   };
+}
+
+function recoveryRoleFor(
+  classifier: string,
+): "architect" | "reviewer" | undefined {
+  switch (classifier) {
+    case "awaiting_architect":
+      return "architect";
+    case "awaiting_decomposition_review_or_approval":
+    case "awaiting_review":
+      return "reviewer";
+    default:
+      return undefined;
+  }
+}
+
+function backoffTicksFor(state: RecoveryFailureState, now: number): number {
+  const failedTerminalRun =
+    state.latest_status === "failed" ||
+    state.latest_status === "canceled" ||
+    state.latest_status === "envelope_rejected";
+  if (
+    state.failure_count <= 0 ||
+    !failedTerminalRun ||
+    !state.latest_finished_at
+  ) {
+    return 0;
+  }
+  const required = Math.min(
+    2 ** Math.max(0, state.failure_count - 1),
+    HEARTBEAT_RECOVERY_BACKOFF_CAP_TICKS,
+  );
+  const elapsedTicks = Math.floor(
+    Math.max(0, now - new Date(state.latest_finished_at).getTime()) /
+      HEARTBEAT_TICK_MS,
+  );
+  return elapsedTicks >= required ? 0 : required - elapsedTicks;
 }
 
 function computeLastProgressAt(scope: Scope, tasks: readonly Task[]): number {

@@ -94,6 +94,8 @@ export interface StartReviewerRunInput {
   readonly reviewer: string;
   /** Latest developer completion envelope; needed for the review packet. */
   readonly developer_envelope: DeveloperCompletionEnvelope;
+  /** Current provider head; re-reviews must bind approvals to this sha. */
+  readonly head_commit_sha?: string;
 }
 
 export type StartReviewerRunResult =
@@ -252,7 +254,10 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
           reason: "mr_fetch_failed",
         };
       }
-      const commit_sha = developerCommitFromEnvelope(input.developer_envelope);
+      const commit_sha =
+        mr.head_commit_sha ??
+        input.head_commit_sha ??
+        developerCommitFromEnvelope(input.developer_envelope);
 
       // Persist (or upsert) the MR artifact so reviews/approvals can hang off it.
       const artifact = await deps.reviewGate.upsertArtifact({
@@ -282,7 +287,12 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         },
       });
 
-      const freshness = freshnessFor(task, project, input.developer_envelope);
+      const freshness = freshnessFor(
+        task,
+        project,
+        input.developer_envelope,
+        commit_sha,
+      );
       let diff_summary: string;
       try {
         diff_summary = await fetchDiffSummary(
@@ -747,11 +757,12 @@ function freshnessFor(
   task: Task,
   project: ProviderProject,
   developer: DeveloperCompletionEnvelope,
+  commit_sha: string,
 ): Freshness {
   return {
     task_graph_version: `task:${task.state_version}`,
     provider_event_ts: new Date(0).toISOString(),
-    commit_sha: developerCommitFromEnvelope(developer),
+    commit_sha,
     policy_version: developer.freshness.policy_version,
     memory_bundle_version: developer.freshness.memory_bundle_version,
     packet_hash: "sha256:packet-hash-uncomputed",

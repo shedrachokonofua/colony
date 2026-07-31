@@ -353,6 +353,12 @@ export type CheckGateResult =
       readonly final_state: TaskLifecycleState;
       readonly gate_open: boolean;
       readonly reasons: readonly string[];
+      readonly missing?: readonly string[];
+      readonly needs_re_review?: boolean;
+      readonly review_attempts?: number;
+      readonly head_commit_sha?: string;
+      readonly pipeline_status?: string | null;
+      readonly pipeline_commit_sha?: string | null;
     };
 
 export type MergeResult =
@@ -573,7 +579,8 @@ export interface SupervisorActivities {
   readonly startReviewerRun: (input: {
     readonly task_id: TaskId;
     readonly reviewer: string;
-    readonly developer_envelope: unknown;
+    readonly developer_envelope?: unknown;
+    readonly head_commit_sha?: string;
   }) => Promise<ReviewerRunResult>;
   readonly markTaskFailed: (input: {
     readonly task_id: TaskId;
@@ -702,6 +709,11 @@ export interface SupervisorActivities {
     readonly status: "healthy" | "stalled" | "recovered" | "scope_terminal";
     readonly classifier?: string;
     readonly recovery?: string;
+    readonly recovery_allowed?: boolean;
+    readonly recovery_failure_count?: number;
+    readonly recovery_backoff_ticks?: number;
+    readonly recovery_circuit_open?: boolean;
+    readonly last_failure_reason?: string;
     readonly last_progress_age_ms?: number;
   }>;
 }
@@ -731,6 +743,11 @@ export const RECONCILE_INTERVAL = "5 minutes" as const;
  * stuck mid-flow).
  */
 export const HEARTBEAT_INTERVAL = "1 minute" as const;
+
+/** Consecutive recovery failures before the supervisor line stops. */
+export const HEARTBEAT_RECOVERY_FAILURE_LIMIT = 5;
+/** Maximum exponential backoff between heartbeat recovery attempts. */
+export const HEARTBEAT_RECOVERY_BACKOFF_CAP_TICKS = 8;
 
 /**
  * After this much wall time without any scope/task update, the
@@ -1159,6 +1176,62 @@ async function consumeReconciliationResult(
   });
 }
 
+async function recoverReviewerForCurrentHead(input: {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+  readonly gate: Extract<CheckGateResult, { readonly checked: true }>;
+  readonly signal_seq: number;
+}): Promise<void> {
+  if (!input.gate.needs_re_review) return;
+  const attempts = input.gate.review_attempts ?? 0;
+  if (attempts >= TASK_REFINEMENT_LOOP_CAP) {
+    await blockTaskAndAudit({
+      scope_id: input.scope_id,
+      task_id: input.task_id,
+      signal_seq: input.signal_seq,
+      reason: "review_re_review_loop_cap_exhausted",
+      evidence: {
+        attempts,
+        head_commit_sha: input.gate.head_commit_sha,
+        pipeline_status: input.gate.pipeline_status,
+      },
+    });
+    return;
+  }
+  if (!input.gate.head_commit_sha) return;
+  let review: ReviewerRunResult;
+  try {
+    review = await agentActivities.startReviewerRun({
+      task_id: input.task_id,
+      reviewer: REVIEWER_ASSIGNEE,
+      head_commit_sha: input.gate.head_commit_sha,
+    });
+  } catch (err) {
+    await blockTaskAndAudit({
+      scope_id: input.scope_id,
+      task_id: input.task_id,
+      signal_seq: input.signal_seq,
+      reason: `review_recovery_activity_failed:${activityFailureReason(err)}`,
+      evidence: {
+        head_commit_sha: input.gate.head_commit_sha,
+        pipeline_status: input.gate.pipeline_status,
+      },
+    });
+    return;
+  }
+  if (!review.started) {
+    await blockTaskAndAudit({
+      scope_id: input.scope_id,
+      task_id: input.task_id,
+      signal_seq: input.signal_seq,
+      reason: review.reason ?? "review_recovery_not_started",
+      evidence: {
+        head_commit_sha: input.gate.head_commit_sha,
+        pipeline_status: input.gate.pipeline_status,
+      },
+    });
+  }
+}
 async function evaluateAndAdvanceTask(
   scope_id: ScopeId,
   task_id: TaskId,
@@ -1174,13 +1247,27 @@ async function evaluateAndAdvanceTask(
       reviewer_result: "approved",
     });
   }
-  const gate = await activities.checkMrGate({
+  let gate = await activities.checkMrGate({
     task_id,
     allow_service_approval: allowServiceApproval,
   });
-  if (!gate.checked || !gate.gate_open) return;
-  const merge = await activities.mergeTask({ task_id });
-  if (!merge.merged) return;
+  if (!gate.checked) return;
+  if (!gate.gate_open) {
+    await recoverReviewerForCurrentHead({
+      scope_id,
+      task_id,
+      gate,
+      signal_seq: reconcileSeq,
+    });
+    if (!gate.needs_re_review) return;
+    gate = await activities.checkMrGate({
+      task_id,
+      allow_service_approval: allowServiceApproval,
+    });
+    if (!gate.checked || !gate.gate_open) return;
+  }
+  const mergeResult = await activities.mergeTask({ task_id });
+  if (!mergeResult.merged) return;
 
   const webhookConfirmed = await condition(
     () => queue.some((signal) => isMergedProviderSignal(signal, task_id)),
@@ -1189,7 +1276,7 @@ async function evaluateAndAdvanceTask(
   if (webhookConfirmed) {
     await activities.closeTaskAfterMerge({
       task_id,
-      merge_commit_sha: merge.merge_commit_sha,
+      merge_commit_sha: mergeResult.merge_commit_sha,
       verified_by_webhook: true,
     });
     return;
@@ -1212,7 +1299,7 @@ async function evaluateAndAdvanceTask(
   if (mergedByReconcile) {
     await activities.closeTaskAfterMerge({
       task_id,
-      merge_commit_sha: merge.merge_commit_sha,
+      merge_commit_sha: mergeResult.merge_commit_sha,
       verified_by_webhook: false,
     });
   } else {
@@ -1419,16 +1506,29 @@ export async function scopeSupervisorWorkflow(
           sequence: nextHeartbeatSeq++,
         }),
       });
-      if (heartbeat.status === "scope_terminal") {
-        // Scope reached closed/canceled — exit the workflow loop.
-        return;
-      }
-
-      if (heartbeat.status === "stalled" && heartbeat.classifier) {
+      if (
+        heartbeat.status === "stalled" &&
+        heartbeat.classifier &&
+        heartbeat.recovery_allowed !== false
+      ) {
         switch (heartbeat.classifier) {
           case "awaiting_architect":
             await driveArchitectThenReview(scope_id, "svc:supervisor");
             break;
+          case "awaiting_review": {
+            const state = await activities.readScopeState({ scope_id });
+            for (const task of state.tasks) {
+              if (task.state !== "review_requested") continue;
+              await evaluateAndAdvanceTask(
+                scope_id,
+                task.id,
+                queue,
+                nextReconcileSeq++,
+                hitl_mode,
+              );
+            }
+            break;
+          }
           case "awaiting_decomposition_review_or_approval": {
             const review =
               await longRunningActivities.startDecompositionReviewRun({

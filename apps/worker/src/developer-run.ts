@@ -473,6 +473,7 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
         source_version: JSON.stringify({
           envelope_hash: hashEnvelope(developerEnvelope),
           head_commit_sha: headCommitSha,
+          developer_envelope: developerEnvelope,
         }),
       });
 

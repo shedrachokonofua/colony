@@ -244,6 +244,18 @@ export interface StartAgentRunInput {
   readonly sandbox_id?: string;
   readonly packet_hash: string;
 }
+export interface RecoveryFailureState {
+  readonly failure_count: number;
+  readonly latest_status?: AgentRunStatus;
+  readonly latest_run_id?: string;
+  readonly latest_finished_at?: Iso8601;
+  readonly last_failure_reason?: string;
+}
+
+export interface RecoveryFailureQuery {
+  readonly scope_id: ScopeId;
+  readonly role: Role;
+}
 export interface FinishAgentRunInput {
   readonly id: string;
   readonly status: AgentRunStatus;
@@ -932,6 +944,7 @@ export class TaskGraphRepository {
 
   async commitDecompositionProposal(
     input: CommitDecompositionProposalInput,
+
     ctx: ActorContext,
   ): Promise<{
     readonly scope: Scope;
@@ -942,6 +955,82 @@ export class TaskGraphRepository {
     return this.withTransaction((tx) =>
       tx.commitDecompositionProposal(input, ctx),
     );
+  }
+  /**
+   * Return the terminal failure streak for one scope/recovery role. The
+   * streak is calculated from durable agent_runs, with the newest successful
+   * run acting as the reset boundary.
+   */
+  async getRecoveryFailureState(
+    input: RecoveryFailureQuery,
+  ): Promise<RecoveryFailureState> {
+    type RecoveryRow = {
+      failure_count: number | string;
+      latest_status: AgentRunStatus | null;
+      latest_run_id: string | null;
+      latest_finished_at: Date | null;
+      last_failure_reason: string | null;
+    };
+    const { rows } = await queryRows<RecoveryRow>(
+      this.pool,
+      `WITH ordered AS (
+         SELECT
+           id,
+           status,
+           started_at,
+           finished_at,
+           row_number() OVER (ORDER BY started_at DESC, id DESC) AS rn
+         FROM agent_runs
+         WHERE scope_id = $1
+           AND role = $2
+       ),
+       boundary AS (
+         SELECT COALESCE(
+           MIN(rn) FILTER (WHERE status = 'succeeded'),
+           (SELECT COUNT(*) + 1 FROM ordered)
+         ) AS reset_rn
+         FROM ordered
+       ),
+       latest_failure AS (
+         SELECT o.id, o.status
+         FROM ordered o
+         WHERE o.rn = 1
+           AND o.status IN ('failed', 'canceled', 'envelope_rejected')
+       )
+       SELECT
+         (
+           SELECT COUNT(*)
+           FROM ordered o, boundary b
+           WHERE o.rn < b.reset_rn
+             AND o.status IN ('failed', 'canceled', 'envelope_rejected')
+         ) AS failure_count,
+         (SELECT status FROM ordered WHERE rn = 1) AS latest_status,
+         (SELECT id FROM ordered WHERE rn = 1) AS latest_run_id,
+         (SELECT finished_at FROM ordered WHERE rn = 1) AS latest_finished_at,
+         (
+           SELECT COALESCE(a.reason, 'agent_run_' || lf.status)
+           FROM latest_failure lf
+           LEFT JOIN LATERAL (
+             SELECT reason
+             FROM audit_log
+             WHERE target_kind = 'agent_run'
+               AND target_id = lf.id
+             ORDER BY recorded_at DESC
+             LIMIT 1
+           ) a ON true
+         ) AS last_failure_reason`,
+      [input.scope_id, input.role],
+    );
+    const row = rows[0];
+    return {
+      failure_count: Number(row?.failure_count ?? 0),
+      latest_status: row?.latest_status ?? undefined,
+      latest_run_id: row?.latest_run_id ?? undefined,
+      latest_finished_at: row?.latest_finished_at
+        ? toIso(row.latest_finished_at)
+        : undefined,
+      last_failure_reason: row?.last_failure_reason ?? undefined,
+    };
   }
 
   async listAuditForScope(
