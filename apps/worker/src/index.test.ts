@@ -14,6 +14,7 @@ describe("@colony/worker", () => {
   it("rejects invalid activity IDs before touching the database", async () => {
     await expect(readScopeState({ scope_id: "not-a-scope" })).resolves.toEqual({
       scope: null,
+      hitl_mode: "gated",
       tasks: [],
     });
 

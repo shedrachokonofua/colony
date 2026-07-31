@@ -136,6 +136,15 @@ export const AGENT_ROLES = [
 
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
+const hitlSchema = z
+  .object({
+    mode: z.enum(["gated", "yolo"]).default("gated"),
+  })
+  .strict()
+  .default({ mode: "gated" });
+
+export type HitlMode = "gated" | "yolo";
+
 export const colonyConfigFileSchema = z
   .object({
     agent_runtime: z.enum(["fake", "pi"]).default("fake"),
@@ -145,6 +154,7 @@ export const colonyConfigFileSchema = z
      * caller is responsible for encryption. Default false.
      */
     allow_literal_keys: z.boolean().default(false),
+    hitl: hitlSchema,
     providers: z.record(z.string().min(1), providerSchema).default({}),
     agents: z
       .object({
@@ -216,6 +226,7 @@ export interface ResolvedAgentConfig {
 
 export interface ColonyConfig {
   readonly agentRuntime: "fake" | "pi";
+  readonly hitlMode: HitlMode;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
   readonly oauthProviderKeys: readonly string[];
   forAgent(role: AgentRole): ResolvedAgentConfig;
@@ -323,6 +334,7 @@ export function loadColonyConfig(
 
   return {
     agentRuntime,
+    hitlMode: file.hitl.mode,
     oauthProviderKeys,
     forAgent(role) {
       const agentEntry = file.agents[role];

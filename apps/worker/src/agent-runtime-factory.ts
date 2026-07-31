@@ -84,14 +84,18 @@ export async function createAgentRuntimeWiring(
 
   const logger = consoleLogger();
   return {
+    // Per-task breakdown runs on the architect model, not the developer
+    // model: the plan gate is where task-level design is decided, so it
+    // gets the stronger reasoning model. The coder still runs on the
+    // developer model, and the plan reviewer on the reviewer model.
     developerPlanner: new PiAgentRuntimeAdapter(
       new PiDeveloperPlanRunner({
         broker,
-        model: modelFromConfig(developer),
-        maxTurns: developer.ceilings.maxTurns,
-        maxUsd: developer.ceilings.maxUsdPerRun,
-        runTimeoutMs: developer.ceilings.timeoutMs,
-        thinkingLevel: developer.thinkingLevel,
+        model: modelFromConfig(architect),
+        maxTurns: architect.ceilings.maxTurns,
+        maxUsd: architect.ceilings.maxUsdPerRun,
+        runTimeoutMs: architect.ceilings.timeoutMs,
+        thinkingLevel: architect.thinkingLevel,
         logger,
       }),
     ),

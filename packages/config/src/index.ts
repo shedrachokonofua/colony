@@ -78,6 +78,7 @@ export {
   type AgentRole,
   type ColonyConfig,
   type ColonyConfigFile,
+  type HitlMode,
   type LoadColonyConfigOptions,
   type PiApiKind,
   type ResolvedAgentConfig,

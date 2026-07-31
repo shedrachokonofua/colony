@@ -1,3 +1,4 @@
+import type { AgentRuntimeAdapter } from "@colony/agent-runtime";
 import {
   createPool,
   PolicyRepository,
@@ -40,6 +41,16 @@ import {
   type ApplyDecompositionCommandInput,
   type ApplyDecompositionCommandResult,
 } from "./decomposition-command.js";
+import {
+  createMergeSpecMergeRequest,
+  type MergeSpecMergeRequestInput,
+  type MergeSpecMergeRequestResult,
+} from "./spec-merge.js";
+import {
+  createCommitDecompositionProposal,
+  type CommitDecompositionProposalInput,
+  type CommitDecompositionProposalResult,
+} from "./decomposition-commit.js";
 import {
   createRequestTaskRework,
   type RequestTaskReworkInput,
@@ -122,8 +133,7 @@ import {
   type ReconcileReport,
   type ReconcileScopeInput,
 } from "./reconciliation.js";
-import type { AgentRuntimeAdapter } from "@colony/agent-runtime";
-import { env } from "@colony/config";
+import { env, loadColonyConfig, type HitlMode } from "@colony/config";
 import {
   createAgentRuntimeWiring,
   type AgentRuntimeWiring,
@@ -141,6 +151,8 @@ import {
 import type { ProviderAdapter } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
 import type {
+  AutoApproveDecompositionResult,
+  AutoApproveTaskMergeResult,
   ClaimReadyTaskInput,
   ClaimReadyTaskResult,
   RecordWorkflowEventInput,
@@ -181,6 +193,14 @@ function getProviderProjects(): ProviderProjectRepository {
     providerProjects = new ProviderProjectRepository(getPool());
   }
   return providerProjects;
+}
+
+function readConfiguredHitlMode(): HitlMode {
+  try {
+    return loadColonyConfig({ path: env().COLONY_CONFIG_PATH }).hitlMode;
+  } catch {
+    return "gated";
+  }
 }
 
 function getPolicyRepository(): PolicyRepository {
@@ -422,6 +442,87 @@ export async function applyDecompositionCommand(
   return run(input);
 }
 
+export async function autoApproveDecomposition(input: {
+  readonly scope_id: ScopeId;
+  readonly reviewer_result: "approved";
+  readonly reason?: string;
+}): Promise<AutoApproveDecompositionResult> {
+  if (readConfiguredHitlMode() !== "yolo") {
+    return { approved: false, reason: "hitl_mode_gated" };
+  }
+  if (!isScopeId(input.scope_id)) {
+    return { approved: false, reason: "invalid_scope_id" };
+  }
+  const repository = getRepository();
+  const proposal = await repository.getLatestDecompositionProposal(
+    input.scope_id,
+  );
+  if (!proposal) {
+    return { approved: false, reason: "no_active_proposal" };
+  }
+  if (
+    proposal.status === "human_approved" &&
+    proposal.human_approved_by === undefined
+  ) {
+    return {
+      approved: true,
+      proposal_id: proposal.id,
+      envelope_hash: proposal.envelope_hash,
+    };
+  }
+  if (
+    proposal.status !== "review_approved" ||
+    proposal.reviewer_result !== "approved"
+  ) {
+    return {
+      approved: false,
+      reason: `review_precondition_not_met:${proposal.status}:${proposal.reviewer_result ?? "missing"}`,
+    };
+  }
+  const scope = await repository.getScope(input.scope_id);
+  if (!scope) {
+    return { approved: false, reason: "scope_not_found" };
+  }
+  await repository.autoApproveDecompositionProposal(
+    {
+      scope_id: input.scope_id,
+      proposal_id: proposal.id,
+      expected_scope_state_version: scope.state_version,
+      envelope_hash: proposal.envelope_hash,
+      reviewer_result: input.reviewer_result,
+    },
+    {
+      actor: SUPERVISOR_ACTOR,
+      capability: "policy.override",
+      reason: input.reason ?? "yolo_mode_reviewer_approved",
+    },
+  );
+  return {
+    approved: true,
+    proposal_id: proposal.id,
+    envelope_hash: proposal.envelope_hash,
+  };
+}
+
+export async function mergeSpecMergeRequest(
+  input: MergeSpecMergeRequestInput,
+): Promise<MergeSpecMergeRequestResult> {
+  const run = createMergeSpecMergeRequest({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
+  });
+  return run(input);
+}
+
+export async function commitDecompositionProposal(
+  input: CommitDecompositionProposalInput,
+): Promise<CommitDecompositionProposalResult> {
+  const run = createCommitDecompositionProposal({
+    repo: getRepository(),
+  });
+  return run(input);
+}
 export async function requestTaskRework(
   input: RequestTaskReworkInput,
 ): Promise<RequestTaskReworkResult> {
@@ -511,6 +612,67 @@ export async function closeScope(
   return run(input);
 }
 
+export async function autoCloseScope(input: {
+  readonly scope_id: ScopeId;
+  readonly review_result: "approved";
+}): Promise<CloseScopeResult> {
+  if (readConfiguredHitlMode() !== "yolo") {
+    return { applied: false, reason: "hitl_mode_gated" };
+  }
+  if (!isScopeId(input.scope_id)) {
+    return { applied: false, reason: "invalid_scope_id" };
+  }
+  const repository = getRepository();
+  const scope = await repository.getScope(input.scope_id);
+  if (!scope)
+    return {
+      applied: false,
+      scope_id: input.scope_id,
+      reason: "scope_not_found",
+    };
+  if (scope.state !== "scope_review_approved") {
+    return {
+      applied: false,
+      scope_id: scope.id,
+      reason: `review_precondition_not_met:${scope.state}`,
+    };
+  }
+  const readiness = await evaluateScopeCloseReadiness({ scope_id: scope.id });
+  if (
+    !readiness.ready ||
+    readiness.pending_sync_task_ids.length > 0 ||
+    readiness.conflict_task_ids.length > 0
+  ) {
+    return {
+      applied: false,
+      scope_id: scope.id,
+      reason: `close_readiness_not_met:${readiness.reasons.join(",")}`,
+    };
+  }
+  const result = await closeScope({
+    scope_id: scope.id,
+    actor: SUPERVISOR_ACTOR,
+    reason: "yolo_mode_scope_review_approved",
+  });
+  if (result.applied) {
+    await repository.writeAudit({
+      scope_id: scope.id,
+      actor: SUPERVISOR_ACTOR,
+      action: "scope.close.auto_approved",
+      capability: "policy.override",
+      target_kind: "scope",
+      target_id: scope.id,
+      reason: "yolo_mode_scope_review_and_close_readiness",
+      evidence: {
+        review_result: input.review_result,
+        pending_sync_task_ids: readiness.pending_sync_task_ids,
+        conflict_task_ids: readiness.conflict_task_ids,
+      },
+    });
+  }
+  return result;
+}
+
 export async function scopeHeartbeatTick(
   input: ScopeHeartbeatTickInput,
 ): Promise<ScopeHeartbeatTickResult> {
@@ -549,6 +711,106 @@ export async function recordPipelineStatus(
     reviewGate: getReviewGateRepository(),
     policy: getPolicyRepository(),
   })(input);
+}
+
+export async function autoApproveTaskMerge(input: {
+  readonly task_id: string;
+  readonly reviewer_result: "approved";
+}): Promise<AutoApproveTaskMergeResult> {
+  if (readConfiguredHitlMode() !== "yolo") {
+    return { recorded: false, reason: "hitl_mode_gated" };
+  }
+  if (!isTaskId(input.task_id)) {
+    return { recorded: false, reason: "invalid_task_id" };
+  }
+  const repository = getRepository();
+  const task = await repository.getTask(input.task_id);
+  if (!task) return { recorded: false, reason: "task_not_found" };
+  const review = await getReviewGateRepository().latestResolvedReview(task.id);
+  if (!review || review.result !== input.reviewer_result) {
+    return { recorded: false, reason: "review_precondition_not_met" };
+  }
+  const mirror = (
+    await getProviderProjects().listMirrorsForColony({
+      colony_id: task.id,
+      entity_kind: "mr_pr",
+    })
+  )[0];
+  if (!mirror) return { recorded: false, reason: "no_mr_mirror" };
+  const project = mirror.provider_project_id
+    ? await getProviderProjects().getProject(mirror.provider_project_id)
+    : null;
+  if (!project)
+    return { recorded: false, reason: "provider_project_not_found" };
+  const artifact = await getReviewGateRepository().getArtifactByProviderRef({
+    provider: project.provider,
+    kind: "mr",
+    provider_id: mirror.provider_id,
+  });
+  const gate = await getReviewGateRepository().findOpenGate("mr_pr", task.id);
+  if (!artifact || !gate) return { recorded: false, reason: "gate_not_open" };
+  const approvals = await getReviewGateRepository().listActiveApprovals(
+    artifact.id,
+  );
+  const head_commit_sha =
+    approvals.find((approval) => approval.commit_sha)?.commit_sha ??
+    artifact.hash ??
+    review.envelope_hash ??
+    "";
+  if (!head_commit_sha)
+    return { recorded: false, reason: "head_commit_missing" };
+  const pipelineMirror = (
+    await getProviderProjects().listMirrorsForColony({
+      colony_id: task.id,
+      entity_kind: "pipeline",
+    })
+  )[0];
+  if (!pipelineMirror?.source_version) {
+    return { recorded: false, reason: "pipeline_missing" };
+  }
+  let pipeline: { status?: string; commit_sha?: string };
+  try {
+    pipeline = JSON.parse(pipelineMirror.source_version) as {
+      status?: string;
+      commit_sha?: string;
+    };
+  } catch {
+    return { recorded: false, reason: "pipeline_malformed" };
+  }
+  if (
+    pipeline.status !== "success" ||
+    pipeline.commit_sha !== head_commit_sha
+  ) {
+    return { recorded: false, reason: "pipeline_not_green_at_head" };
+  }
+  const existingApproval = approvals.find(
+    (approval) =>
+      approval.actor.startsWith("human:") ||
+      approval.actor === SUPERVISOR_ACTOR,
+  );
+  if (existingApproval) {
+    return { recorded: true, approval_id: existingApproval.id };
+  }
+  const result = await createRecordHumanApproval({
+    repo: repository,
+    providerProjects: getProviderProjects(),
+    reviewGate: getReviewGateRepository(),
+    policy: getPolicyRepository(),
+  })({
+    task_id: task.id,
+    actor: SUPERVISOR_ACTOR,
+    commit_sha: head_commit_sha,
+    pipeline_id: pipelineMirror.provider_id,
+    auto_approved: true,
+    evidence: {
+      reviewer_result: input.reviewer_result,
+      commit_sha: head_commit_sha,
+      pipeline_id: pipelineMirror.provider_id,
+      pipeline_status: pipeline.status,
+    },
+  });
+  if (!result.recorded) return result;
+  return { recorded: true, approval_id: result.approval_id };
 }
 
 export async function checkMrGate(
@@ -792,18 +1054,18 @@ export async function claimReadyTask(
     provider_projection,
   };
 }
-
 export async function readScopeState(input: {
   readonly scope_id: ScopeId;
 }): Promise<ScopeStateSnapshot> {
+  const hitl_mode = readConfiguredHitlMode();
   if (!isScopeId(input.scope_id)) {
-    return { scope: null, tasks: [] };
+    return { scope: null, hitl_mode, tasks: [] };
   }
 
   const repository = getRepository();
   const scope = await repository.getScope(input.scope_id);
   if (!scope) {
-    return { scope: null, tasks: [] };
+    return { scope: null, hitl_mode, tasks: [] };
   }
 
   const tasks = await repository.listTasks(input.scope_id);
@@ -813,6 +1075,7 @@ export async function readScopeState(input: {
       state: scope.state,
       state_version: scope.state_version,
     },
+    hitl_mode,
     tasks: tasks.map((task) => ({
       id: task.id,
       state: task.state,
@@ -892,8 +1155,11 @@ export async function recordWorkflowEvent(
 export const activities = {
   claimReadyTask,
   readScopeState,
+  mergeSpecMergeRequest,
+  commitDecompositionProposal,
   recordWorkflowEvent,
   applyDecompositionCommand,
+  autoApproveDecomposition,
   applyOperatorOverride,
   checkProviderHealth,
   closeScope,
@@ -903,6 +1169,7 @@ export const activities = {
   markTaskFailed,
   recordTaskConflict,
   requestScopeReview,
+  autoCloseScope,
   requestTaskRework,
   requeueBlockedTask,
   resolveTaskConflict,
@@ -915,6 +1182,7 @@ export const activities = {
   startReviewerRun,
   openMrGate,
   recordHumanApproval,
+  autoApproveTaskMerge,
   recordPipelineStatus,
   checkMrGate,
   mergeTask,

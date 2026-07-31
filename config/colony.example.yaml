@@ -14,6 +14,10 @@
 
 agent_runtime: pi
 allow_literal_keys: false
+# Human approval gates. `yolo` removes human approval; only use it when
+# unattended operation is explicitly intended and bot evidence is trusted.
+hitl:
+  mode: gated
 
 providers:
   # ── OpenAI-compatible gateway/provider ───────────────────────────────

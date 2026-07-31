@@ -158,6 +158,8 @@ interface GitLabWebhookBody {
   readonly project_id?: unknown;
   readonly issue?: unknown;
   readonly merge_request?: unknown;
+  /** Push/pipeline payloads carry the git ref at the top level. */
+  readonly ref?: unknown;
 }
 
 export type GitLabWebhookClassification =
@@ -495,6 +497,16 @@ function classificationForComment(
 }
 
 /**
+ * `ProviderEventSignal` is readonly to consumers, but the dispatcher owns the
+ * only writes that happen before dispatch. Keep that mutation in one typed
+ * place instead of asserting a shape at each call site.
+ */
+function setSignalTaskId(signal: ProviderEventSignal, task_id: string): void {
+  const mutable: { task_id?: string } = signal;
+  mutable.task_id = task_id;
+}
+
+/**
  * After classification, look up the noteable's Colony mirror so a
  * `/approve` posted on a scope-level issue routes to the decomposition
  * gate, not a task gate. Mutates `signal.attributes` in place to keep
@@ -524,7 +536,7 @@ export async function enrichSignalWithMirrorContext(
     isTaskId(mirror.colony_id) &&
     !signal.task_id
   ) {
-    (signal as { task_id: string }).task_id = mirror.colony_id;
+    setSignalTaskId(signal, mirror.colony_id);
   }
 
   const commandKind = signal.attributes?.command_kind;
@@ -899,6 +911,35 @@ function scopeIdFromMirror(mirror: MirrorContext | null): ScopeId | undefined {
   return undefined;
 }
 
+/**
+ * Resolve Colony targets from a provider ref when no mirror matches.
+ *
+ * Branch pipelines carry no `merge_request` object, so the mirror lookup
+ * (which prefers `mr_pr` for pipeline events) finds nothing and the event
+ * would be dropped as `missing_scope_id` — leaving the merge gate's
+ * green-pipeline requirement permanently unsatisfiable. Colony names its
+ * branches deterministically, so the ref itself identifies the target:
+ *   `colony/<task_id>`        -> developer branch (developer-run.ts)
+ *   `colony/spec-<scope_id>`  -> architect spec branch (architect-run.ts)
+ */
+export function colonyTargetsFromRef(ref: string | undefined): {
+  readonly scope_id?: ScopeId;
+  readonly task_id?: string;
+} {
+  if (!ref) return {};
+  const name = ref.replace(/^refs\/heads\//, "");
+  if (!name.startsWith("colony/")) return {};
+  const tail = name.slice("colony/".length);
+
+  if (tail.startsWith("spec-")) {
+    const scope_id = tail.slice("spec-".length);
+    return isScopeId(scope_id) ? { scope_id } : {};
+  }
+  if (!isTaskId(tail)) return {};
+  const scope_id = tail.slice(0, tail.lastIndexOf("."));
+  return isScopeId(scope_id) ? { scope_id, task_id: tail } : { task_id: tail };
+}
+
 export function buildApp(
   overrides: Partial<WebhookDispatcherDeps> = {},
 ): OpenAPIHono {
@@ -975,7 +1016,17 @@ export function buildApp(
           depsForRequest.mirrors,
         )
       : null;
-    const scope_id = classified.scope_id ?? scopeIdFromMirror(mirror);
+    // Mirror lookup first; fall back to Colony's deterministic branch
+    // naming so branch pipelines (no merge_request in the payload) still
+    // bind to their task/scope instead of being dropped.
+    const refTargets = colonyTargetsFromRef(
+      asString(asRecord(body.object_attributes)?.ref) ?? asString(body.ref),
+    );
+    if (refTargets.task_id && !classified.signal.task_id) {
+      setSignalTaskId(classified.signal, refTargets.task_id);
+    }
+    const scope_id =
+      classified.scope_id ?? scopeIdFromMirror(mirror) ?? refTargets.scope_id;
     if (!scope_id) {
       return c.json(
         {

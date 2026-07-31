@@ -8,6 +8,7 @@ import {
 import {
   buildApp,
   classifyGitLabWebhook,
+  colonyTargetsFromRef,
   enrichSignalWithMirrorContext,
   type MirrorLookup,
   type WebhookDispatcherDeps,
@@ -720,5 +721,37 @@ describe("@colony/webhook-dispatcher", () => {
       );
       expect(signal.attributes?.command_target).toBeUndefined();
     });
+  });
+});
+
+describe("colonyTargetsFromRef", () => {
+  it("resolves task and scope from a developer branch ref", () => {
+    expect(colonyTargetsFromRef("colony/col-tempodd7a.1")).toEqual({
+      scope_id: "col-tempodd7a",
+      task_id: "col-tempodd7a.1",
+    });
+  });
+
+  it("resolves scope from an architect spec branch ref", () => {
+    expect(colonyTargetsFromRef("colony/spec-col-tempodd7a")).toEqual({
+      scope_id: "col-tempodd7a",
+    });
+  });
+
+  it("strips a refs/heads/ prefix", () => {
+    expect(
+      colonyTargetsFromRef("refs/heads/colony/col-tempodd7a.1").task_id,
+    ).toBe("col-tempodd7a.1");
+  });
+
+  it("ignores refs outside the colony namespace", () => {
+    expect(colonyTargetsFromRef("main")).toEqual({});
+    expect(colonyTargetsFromRef("feature/colony-ish")).toEqual({});
+    expect(colonyTargetsFromRef(undefined)).toEqual({});
+  });
+
+  it("ignores a colony ref whose tail is not a task or scope id", () => {
+    expect(colonyTargetsFromRef("colony/not-a-task")).toEqual({});
+    expect(colonyTargetsFromRef("colony/spec-nope")).toEqual({});
   });
 });

@@ -133,6 +133,7 @@ export interface RecordHumanApprovalInput {
   readonly pipeline_id?: string;
   /** Provenance for audit (provider event id, comment id). */
   readonly evidence?: Readonly<Record<string, unknown>>;
+  readonly auto_approved?: boolean;
 }
 
 export type RecordHumanApprovalResult =
@@ -153,40 +154,52 @@ export function createRecordHumanApproval(deps: GateDependencies) {
     const task = await deps.repo.getTask(input.task_id);
     if (!task) return { recorded: false, reason: "task_not_found" };
     const actor = input.actor as ActorId;
-
-    // Capability check: human must hold `policy.override` (which doubles as
-    // the gate-approve capability for HITL approvals in Phase 2; tightened
-    // policy in COL-4.4 splits these). Refusing without capability ensures a
-    // /approve from an unauthorized commenter never closes a gate.
+    const autoApproved = input.auto_approved === true;
+    if (autoApproved && actor !== SUPERVISOR_ACTOR) {
+      return { recorded: false, reason: "invalid_auto_approval_actor" };
+    }
+    if (
+      autoApproved &&
+      (input.commit_sha === undefined ||
+        input.pipeline_id === undefined ||
+        input.evidence?.reviewer_result !== "approved" ||
+        input.evidence?.pipeline_status !== "success" ||
+        input.evidence?.commit_sha !== input.commit_sha)
+    ) {
+      return { recorded: false, reason: "auto_approval_evidence_incomplete" };
+    }
     const capability: Capability = "policy.override";
-    const grants = await deps.policy.getCapabilityGrantsForActor(
-      actor,
-      task.scope_id,
-    );
-    const identity = await deps.policy.getProviderIdentity(actor);
-    const policyDecision = evaluatePolicy({
-      action: "task.claim",
-      requiredCapability: capability,
-      granted: grants,
-      providerIdentity: identity,
-      effectivePolicy: null,
-    });
-    if (!policyDecision.allowed) {
-      await deps.repo.writeAudit({
-        scope_id: task.scope_id,
-        task_id: task.id,
+    if (!autoApproved) {
+      // Capability check: human must hold `policy.override`.
+      const grants = await deps.policy.getCapabilityGrantsForActor(
         actor,
-        action: "approval.denied",
-        capability,
-        target_kind: "task",
-        target_id: task.id,
-        reason: policyDecision.reason,
-        evidence: input.evidence ?? {},
+        task.scope_id,
+      );
+      const identity = await deps.policy.getProviderIdentity(actor);
+      const policyDecision = evaluatePolicy({
+        action: "task.claim",
+        requiredCapability: capability,
+        granted: grants,
+        providerIdentity: identity,
+        effectivePolicy: null,
       });
-      return {
-        recorded: false,
-        reason: `capability_denied:${policyDecision.reason}`,
-      };
+      if (!policyDecision.allowed) {
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor,
+          action: "approval.denied",
+          capability,
+          target_kind: "task",
+          target_id: task.id,
+          reason: policyDecision.reason,
+          evidence: input.evidence ?? {},
+        });
+        return {
+          recorded: false,
+          reason: `capability_denied:${policyDecision.reason}`,
+        };
+      }
     }
 
     const mrMirror = (
@@ -232,11 +245,15 @@ export function createRecordHumanApproval(deps: GateDependencies) {
       scope_id: task.scope_id,
       task_id: task.id,
       actor,
-      action: "approval.record",
+      action: autoApproved
+        ? "approval.record.auto_approved"
+        : "approval.record",
       capability,
       target_kind: "approval",
       target_id: approval.id,
-      reason: "human_approve_command",
+      reason: autoApproved
+        ? "yolo_mode_reviewer_and_pipeline_preconditions"
+        : "human_approve_command",
       evidence: {
         ...(input.evidence ?? {}),
         artifact_id: artifact.id,
@@ -373,6 +390,7 @@ export interface GateEvaluationContext {
   readonly approvals: readonly Approval[];
   readonly pipeline_status: PipelineStatusValue | null;
   readonly pipeline_commit_sha: string | null;
+  readonly allow_service_approval?: boolean;
 }
 
 export interface GateEvaluationResult {
@@ -400,8 +418,8 @@ export function evaluateMrGate(
       );
       continue;
     }
-    const role = roleForApprover(approval.actor);
-    if (role) matchedRoles.add(role);
+    const role = roleForApprover(approval.actor, ctx.allow_service_approval);
+    if (role && required.has(role)) matchedRoles.add(role);
   }
   const missing: Role[] = [];
   for (const role of required) {
@@ -430,7 +448,11 @@ export function evaluateMrGate(
   };
 }
 
-function roleForApprover(actor: ActorId): Role | null {
+function roleForApprover(
+  actor: ActorId,
+  allowServiceApproval = false,
+): Role | null {
+  if (allowServiceApproval && actor === SUPERVISOR_ACTOR) return "human";
   // Convention from bot bootstrap (COL-1.1c): bots use `bot:<role>` actor IDs.
   // Humans use `human:<id>`. Anything else falls back to null and won't
   // satisfy a required approval.
@@ -448,6 +470,7 @@ function roleForApprover(actor: ActorId): Role | null {
 
 export interface CheckMrGateInput {
   readonly task_id: string;
+  readonly allow_service_approval?: boolean;
 }
 
 export type CheckMrGateResult =
@@ -542,6 +565,7 @@ export function createCheckMrGate(deps: GateDependencies) {
       approvals,
       pipeline_status,
       pipeline_commit_sha,
+      allow_service_approval: input.allow_service_approval,
     });
 
     if (!evaluation.open) {

@@ -6,14 +6,15 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 import { describe, expect, it } from "vitest";
 import {
   RECONCILE_INTERVAL,
+  architectRequestedSignal,
   type LongRunningSupervisorActivities,
   type SupervisorActivities,
   operatorOverrideSignal,
+  providerEventSignal,
   reconcileActivityIdempotencyKey,
   scopeSupervisorWorkflow,
   supervisorWorkflowId,
 } from "./index.js";
-
 describe("@colony/workflows reconciliation timer helpers", () => {
   it("uses the Phase 3 periodic reconciliation cadence", () => {
     expect(RECONCILE_INTERVAL).toBe("5 minutes");
@@ -192,6 +193,32 @@ describe.runIf(temporalTestEnabled)(
               reason: "not_merged",
             }),
           applyDecompositionCommand: () =>
+            resolved({
+              applied: false,
+              reason: "not_used",
+            }),
+          commitDecompositionProposal: () =>
+            resolved({
+              committed: false,
+              reason: "not_used",
+            }),
+          mergeSpecMergeRequest: () =>
+            resolved({
+              merged: true,
+              scope_id: scopeId,
+              already_merged: true,
+            }),
+          autoApproveDecomposition: () =>
+            resolved({
+              approved: false,
+              reason: "not_used",
+            }),
+          autoApproveTaskMerge: () =>
+            resolved({
+              recorded: false,
+              reason: "not_used",
+            }),
+          autoCloseScope: () =>
             resolved({
               applied: false,
               reason: "not_used",
@@ -446,6 +473,32 @@ describe.runIf(temporalTestEnabled)(
               applied: false,
               reason: "not_used",
             }),
+          commitDecompositionProposal: () =>
+            resolved({
+              committed: false,
+              reason: "not_used",
+            }),
+          mergeSpecMergeRequest: () =>
+            resolved({
+              merged: true,
+              scope_id: scopeId,
+              already_merged: true,
+            }),
+          autoApproveDecomposition: () =>
+            resolved({
+              approved: false,
+              reason: "not_used",
+            }),
+          autoApproveTaskMerge: () =>
+            resolved({
+              recorded: false,
+              reason: "not_used",
+            }),
+          autoCloseScope: () =>
+            resolved({
+              applied: false,
+              reason: "not_used",
+            }),
           requestTaskRework: () =>
             resolved({
               applied: false,
@@ -545,6 +598,116 @@ describe.runIf(temporalTestEnabled)(
         "scopeHeartbeatTick",
       ]);
     }, 150_000);
+    it("auto-approves and commits a reviewer-approved decomposition in yolo mode", async () => {
+      const address = process.env["TEMPORAL_ADDRESS"] ?? "localhost:7233";
+      const namespace = process.env["TEMPORAL_NAMESPACE"] ?? "default";
+      const connection = await Connection.connect({ address });
+      const nativeConnection = await NativeConnection.connect({ address });
+      const client = new Client({ connection, namespace });
+      const taskQueue = `colony-workflow-yolo-${randomUUID()}`;
+      const scopeId = "col-yolo";
+      const calls: string[] = [];
+      const base = makeSupervisorTestActivities(scopeId, "col-yolo.1", calls);
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...base,
+          readScopeState: () =>
+            resolved({
+              scope: {
+                id: scopeId,
+                state: "decomposition_proposed",
+                state_version: 2,
+              },
+              hitl_mode: "yolo" as const,
+              tasks: [],
+            }),
+          claimReadyTask: () => resolved({ claimed: false }),
+          startArchitectRun: () => {
+            calls.push("startArchitectRun");
+            return resolved({
+              started: true as const,
+              scope_id: scopeId,
+              run_id: "architect-1",
+              envelope_status: "succeeded" as const,
+              proposal_id: "proposal-1",
+            });
+          },
+          startDecompositionReviewRun: () => {
+            calls.push("startDecompositionReviewRun");
+            return resolved({
+              started: true as const,
+              scope_id: scopeId,
+              proposal_id: "proposal-1",
+              run_id: "decomposition-review-1",
+              envelope_status: "succeeded" as const,
+              review_result: "approved" as const,
+            });
+          },
+          autoApproveDecomposition: () => {
+            calls.push("autoApproveDecomposition");
+            return resolved({
+              approved: true as const,
+              proposal_id: "proposal-1",
+              envelope_hash: "envelope-1",
+            });
+          },
+          commitDecompositionProposal: () => {
+            calls.push("commitDecompositionProposal");
+            return resolved({
+              committed: true as const,
+              scope_id: scopeId,
+              proposal_id: "proposal-1",
+              task_count: 0,
+              dependency_count: 0,
+            });
+          },
+          mergeSpecMergeRequest: () => {
+            calls.push("mergeSpecMergeRequest");
+            return resolved({ merged: true as const, scope_id: scopeId });
+          },
+          autoApproveTaskMerge: () =>
+            resolved({ recorded: false as const, reason: "not_used" }),
+          autoCloseScope: () =>
+            resolved({ applied: false as const, reason: "not_used" }),
+          scopeHeartbeatTick: () =>
+            resolved({ scope_id: scopeId, status: "scope_terminal" as const }),
+        };
+      const worker = await Worker.create({
+        connection: nativeConnection,
+        namespace,
+        taskQueue,
+        workflowsPath: resolve(
+          dirname(fileURLToPath(import.meta.url)),
+          "index.ts",
+        ),
+        activities,
+      });
+      const run = worker.run();
+      try {
+        const handle = await client.workflow.start(scopeSupervisorWorkflow, {
+          taskQueue,
+          workflowId: `workflow-${randomUUID()}`,
+          args: [scopeId],
+        });
+        await handle.signal(architectRequestedSignal, {
+          actor: "human:test",
+          reason: "start yolo decomposition",
+        });
+        await waitFor(
+          () =>
+            calls.includes("autoApproveDecomposition") &&
+            calls.includes("commitDecompositionProposal"),
+          15_000,
+        );
+        expect(calls).toContain("mergeSpecMergeRequest");
+        expect(calls).not.toContain("recordHumanApproval");
+      } finally {
+        worker.shutdown();
+        await run;
+        await nativeConnection.close();
+        await connection.close();
+      }
+    }, 120_000);
   },
 );
 
@@ -634,6 +797,10 @@ function makeSupervisorTestActivities(
       resolved({ closed: false, task_id: taskId, reason: "not_merged" }),
     applyDecompositionCommand: () =>
       resolved({ applied: false, reason: "not_used" }),
+    commitDecompositionProposal: () =>
+      resolved({ committed: false, reason: "not_used" }),
+    mergeSpecMergeRequest: () =>
+      resolved({ merged: true, scope_id: scopeId, already_merged: true }),
     requestTaskRework: () =>
       resolved({ applied: false, task_id: taskId, reason: "not_used" }),
     applyOperatorOverride: (input) => {
@@ -674,6 +841,12 @@ function makeSupervisorTestActivities(
       resolved({ started: false, scope_id: scopeId, reason: "not_used" }),
     startDecompositionReviewRun: () =>
       resolved({ started: false, scope_id: scopeId, reason: "not_used" }),
+    autoApproveDecomposition: () =>
+      resolved({ approved: false as const, reason: "not_used" }),
+    autoApproveTaskMerge: () =>
+      resolved({ recorded: false as const, reason: "not_used" }),
+    autoCloseScope: () =>
+      resolved({ applied: false as const, reason: "not_used" }),
   };
 }
 
@@ -787,6 +960,61 @@ describe.runIf(temporalTestEnabled)(
         }
       });
       expect(calls).toContain("heartbeat");
+    }, 120_000);
+    it("merges the spec MR immediately after a successful DAG commit", async () => {
+      const calls: string[] = [];
+      const baseActivities = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...baseActivities,
+          applyDecompositionCommand: () =>
+            resolved({
+              applied: true,
+              proposal_id: "proposal-1",
+              action: "human_approved",
+            }),
+          commitDecompositionProposal: () => {
+            calls.push("commitDecompositionProposal");
+            return resolved({
+              committed: true,
+              scope_id: "col-extra",
+              proposal_id: "proposal-1",
+              task_count: 1,
+              dependency_count: 0,
+            });
+          },
+          mergeSpecMergeRequest: () => {
+            calls.push("mergeSpecMergeRequest");
+            return resolved({ merged: true, scope_id: "col-extra" });
+          },
+        };
+      await runSupervisorTestScenario(activities, async (unknownHandle) => {
+        const handle = unknownHandle as {
+          signal: (
+            signal: typeof providerEventSignal,
+            payload: unknown,
+          ) => Promise<void>;
+        };
+        await handle.signal(providerEventSignal, {
+          provider: "fake",
+          event_type: "note",
+          event_id: "event-1",
+          object_kind: "merge_request",
+          object_id: "mr-1",
+          attributes: {
+            command_target: "scope_decomposition",
+            command_kind: "approve",
+          },
+        });
+      });
+      expect(calls.indexOf("commitDecompositionProposal")).toBeGreaterThan(-1);
+      expect(calls.indexOf("mergeSpecMergeRequest")).toBeGreaterThan(
+        calls.indexOf("commitDecompositionProposal"),
+      );
     }, 120_000);
   },
 );

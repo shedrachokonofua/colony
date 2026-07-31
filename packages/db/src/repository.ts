@@ -129,6 +129,14 @@ export interface ApproveDecompositionProposalInput {
   readonly envelope_hash: string;
 }
 
+export interface AutoApproveDecompositionProposalInput {
+  readonly scope_id: ScopeId;
+  readonly proposal_id: string;
+  readonly expected_scope_state_version: number;
+  readonly envelope_hash: string;
+  readonly reviewer_result: "approved";
+}
+
 export interface CommitDecompositionProposalInput {
   readonly scope_id: ScopeId;
   readonly proposal_id: string;
@@ -855,6 +863,18 @@ export class TaskGraphRepository {
   }> {
     return this.withTransaction((tx) =>
       tx.approveDecompositionProposal(input, ctx),
+    );
+  }
+
+  async autoApproveDecompositionProposal(
+    input: AutoApproveDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<{
+    readonly scope: Scope;
+    readonly proposal: DecompositionProposal;
+  }> {
+    return this.withTransaction((tx) =>
+      tx.autoApproveDecompositionProposal(input, ctx),
     );
   }
 
@@ -1752,6 +1772,122 @@ export class TaskGraphTransaction {
       scope.state_version,
       "decomposition_approved",
       { ...ctx, reason: ctx.reason ?? "spec_dag_human_approved" },
+    );
+    return { scope: updatedScope, proposal: updatedProposal };
+  }
+
+  async autoApproveDecompositionProposal(
+    input: AutoApproveDecompositionProposalInput,
+    ctx: ActorContext,
+  ): Promise<{
+    readonly scope: Scope;
+    readonly proposal: DecompositionProposal;
+  }> {
+    const scope = await this.lockScopeRow(input.scope_id);
+    if (!scope) {
+      throw new RepositoryError("NOT_FOUND", "scope not found", {
+        scope_id: input.scope_id,
+      });
+    }
+    if (scope.state_version !== input.expected_scope_state_version) {
+      throw new RepositoryError(
+        "STATE_VERSION_MISMATCH",
+        "scope state version mismatch",
+        {
+          scope_id: input.scope_id,
+          expected: input.expected_scope_state_version,
+          actual: scope.state_version,
+        },
+      );
+    }
+    if (scope.state !== "decomposition_proposed") {
+      throw new RepositoryError(
+        "INVALID_SCOPE_STATE",
+        "scope is not awaiting decomposition approval",
+        {
+          scope_id: input.scope_id,
+          state: scope.state,
+        },
+      );
+    }
+    const proposal = await this.lockDecompositionProposalRow(
+      input.scope_id,
+      input.proposal_id,
+    );
+    if (!proposal) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        "decomposition proposal not found",
+        {
+          scope_id: input.scope_id,
+          proposal_id: input.proposal_id,
+        },
+      );
+    }
+    if (proposal.envelope_hash !== input.envelope_hash) {
+      throw new RepositoryError(
+        "STALE_DECOMPOSITION_ENVELOPE",
+        "decomposition envelope hash mismatch",
+        {
+          expected: proposal.envelope_hash,
+          actual: input.envelope_hash,
+        },
+      );
+    }
+    if (
+      proposal.status !== "review_approved" ||
+      proposal.reviewer_result !== "approved"
+    ) {
+      throw new RepositoryError(
+        "REVIEW_NOT_APPROVED",
+        "proposal reviewer precondition is not approved",
+        {
+          status: proposal.status,
+          reviewer_result: proposal.reviewer_result,
+        },
+      );
+    }
+    const { rows } = await queryRows<DecompositionProposalRow>(
+      this.client,
+      `UPDATE decomposition_proposals
+       SET status = 'human_approved',
+           human_approved_by = NULL,
+           human_approved_at = now(),
+           updated_at = now()
+       WHERE scope_id = $1 AND id = $2
+       RETURNING *`,
+      [input.scope_id, input.proposal_id],
+    );
+    const updatedProposal = mapDecompositionProposal(rows[0]);
+    await this.writeAudit({
+      scope_id: input.scope_id,
+      actor: ctx.actor,
+      action: "decomposition.approval.auto_approved",
+      capability: ctx.capability,
+      target_kind: "decomposition_proposal",
+      target_id: input.proposal_id,
+      reason: ctx.reason ?? "yolo_mode_reviewer_approved",
+      evidence: {
+        reviewer_result: input.reviewer_result,
+        envelope_hash: input.envelope_hash,
+      },
+    });
+    await this.recordEvent({
+      scope_id: input.scope_id,
+      kind: "approval_recorded",
+      actor: ctx.actor,
+      payload: {
+        proposal_id: input.proposal_id,
+        envelope_hash: input.envelope_hash,
+        mode: "yolo",
+        auto_approved: true,
+      },
+    });
+    const updatedScope = await this.updateScopeState(
+      input.scope_id,
+      scope.state_version,
+      "decomposition_approved",
+      { ...ctx, reason: ctx.reason ?? "yolo_mode_reviewer_approved" },
     );
     return { scope: updatedScope, proposal: updatedProposal };
   }

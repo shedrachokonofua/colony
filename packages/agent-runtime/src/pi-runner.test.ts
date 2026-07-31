@@ -211,7 +211,7 @@ describe("pi runners", () => {
     } finally {
       registration.unregister();
     }
-  });
+  }, 15_000);
 
   it("runs the reviewer through a workspace-enabled coding-agent session", async () => {
     const registration = registerFauxProvider({

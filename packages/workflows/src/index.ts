@@ -144,6 +144,7 @@ export interface ScopeStateSnapshot {
     readonly state: string;
     readonly state_version: number;
   } | null;
+  readonly hitl_mode?: "gated" | "yolo";
   readonly tasks: ReadonlyArray<{
     readonly id: TaskId;
     readonly state: string;
@@ -332,6 +333,10 @@ export type HumanApprovalResult =
   | { readonly recorded: false; readonly reason: string }
   | { readonly recorded: true; readonly approval_id: string };
 
+export type AutoApproveTaskMergeResult =
+  | { readonly recorded: false; readonly reason: string }
+  | { readonly recorded: true; readonly approval_id: string };
+
 export type PipelineStatusResult =
   | { readonly recorded: false; readonly reason: string }
   | { readonly recorded: true; readonly invalidated_approvals: number };
@@ -371,6 +376,19 @@ export type CloseResult =
       readonly final_state: TaskLifecycleState;
     };
 
+export type AutoCloseScopeResult =
+  | {
+      readonly applied: false;
+      readonly scope_id?: ScopeId;
+      readonly reason: string;
+    }
+  | {
+      readonly applied: true;
+      readonly scope_id: ScopeId;
+      readonly previous_state: "scope_review_approved";
+      readonly new_state: "closed";
+    };
+
 export type DecompositionCommandResult =
   | { readonly applied: false; readonly reason: string }
   | {
@@ -380,6 +398,22 @@ export type DecompositionCommandResult =
         | "review_recorded"
         | "human_approved"
         | "changes_requested";
+    };
+
+export type CommitDecompositionProposalResult =
+  | {
+      readonly committed: false;
+      readonly scope_id?: ScopeId;
+      readonly proposal_id?: string;
+      readonly reason: string;
+    }
+  | {
+      readonly committed: true;
+      readonly scope_id: ScopeId;
+      readonly proposal_id: string;
+      readonly task_count: number;
+      readonly dependency_count: number;
+      readonly already_committed?: boolean;
     };
 
 export type TaskReworkResult =
@@ -470,6 +504,14 @@ export type DecompositionReviewActivityResult =
       readonly reason?: string;
     };
 
+export type AutoApproveDecompositionResult =
+  | { readonly approved: false; readonly reason: string }
+  | {
+      readonly approved: true;
+      readonly proposal_id: string;
+      readonly envelope_hash: string;
+    };
+
 export interface LongRunningSupervisorActivities {
   readonly startArchitectRun: (input: {
     readonly scope_id: ScopeId;
@@ -495,6 +537,11 @@ export interface SupervisorActivities {
   readonly reconcileScope: (
     input: ReconcileScopeInput,
   ) => Promise<ReconcileScopeResult>;
+  readonly autoApproveDecomposition: (input: {
+    readonly scope_id: ScopeId;
+    readonly reviewer_result: "approved";
+    readonly reason?: string;
+  }) => Promise<AutoApproveDecompositionResult>;
   readonly startDeveloperRun: (input: {
     readonly task_id: TaskId;
     readonly assignee: string;
@@ -539,6 +586,10 @@ export interface SupervisorActivities {
     readonly pipeline_id?: string;
     readonly evidence?: Readonly<Record<string, unknown>>;
   }) => Promise<HumanApprovalResult>;
+  readonly autoApproveTaskMerge: (input: {
+    readonly task_id: TaskId;
+    readonly reviewer_result: "approved";
+  }) => Promise<AutoApproveTaskMergeResult>;
   readonly recordPipelineStatus: (input: {
     readonly task_id: TaskId;
     readonly pipeline_id: string;
@@ -547,6 +598,7 @@ export interface SupervisorActivities {
   }) => Promise<PipelineStatusResult>;
   readonly checkMrGate: (input: {
     readonly task_id: TaskId;
+    readonly allow_service_approval?: boolean;
   }) => Promise<CheckGateResult>;
   readonly mergeTask: (input: {
     readonly task_id: TaskId;
@@ -557,12 +609,41 @@ export interface SupervisorActivities {
     readonly merge_commit_sha?: string;
     readonly verified_by_webhook?: boolean;
   }) => Promise<CloseResult>;
+  readonly autoCloseScope: (input: {
+    readonly scope_id: ScopeId;
+    readonly review_result: "approved";
+  }) => Promise<AutoCloseScopeResult>;
   readonly applyDecompositionCommand: (input: {
     readonly scope_id: ScopeId;
     readonly action: "approve" | "changes";
     readonly actor: string;
     readonly reason?: string;
   }) => Promise<DecompositionCommandResult>;
+  readonly commitDecompositionProposal: (input: {
+    readonly scope_id: ScopeId;
+    readonly proposal_id: string;
+    readonly actor: string;
+    readonly reason?: string;
+  }) => Promise<CommitDecompositionProposalResult>;
+  readonly mergeSpecMergeRequest: (input: {
+    readonly scope_id: ScopeId;
+    readonly proposal_id?: string;
+  }) => Promise<
+    | {
+        readonly merged: false;
+        readonly scope_id?: ScopeId;
+        readonly mr_id?: string;
+        readonly reason: string;
+        readonly detailed_merge_status?: string;
+      }
+    | {
+        readonly merged: true;
+        readonly scope_id: ScopeId;
+        readonly mr_id?: string;
+        readonly already_merged?: boolean;
+        readonly already_closed?: boolean;
+      }
+  >;
   readonly requestTaskRework: (input: {
     readonly task_id: TaskId;
     readonly actor: string;
@@ -1067,8 +1148,20 @@ async function evaluateAndAdvanceTask(
   task_id: TaskId,
   queue: ReadonlyArray<SupervisorSignal & { readonly seq: number }>,
   reconcileSeq: number,
+  hitl_mode: "gated" | "yolo",
 ): Promise<void> {
-  const gate = await activities.checkMrGate({ task_id });
+  const allowServiceApproval =
+    hitl_mode === "yolo" && activities.autoApproveTaskMerge !== undefined;
+  if (allowServiceApproval) {
+    await activities.autoApproveTaskMerge({
+      task_id,
+      reviewer_result: "approved",
+    });
+  }
+  const gate = await activities.checkMrGate({
+    task_id,
+    allow_service_approval: allowServiceApproval,
+  });
   if (!gate.checked || !gate.gate_open) return;
   const merge = await activities.mergeTask({ task_id });
   if (!merge.merged) return;
@@ -1167,15 +1260,76 @@ async function driveArchitectThenReview(
   const isStalledAtReview =
     !arch.started && arch.reason?.startsWith("scope_not_draft:");
   if (proposedFresh) {
-    await longRunningActivities.startDecompositionReviewRun({
+    const review = await longRunningActivities.startDecompositionReviewRun({
       scope_id,
-      proposal_id: arch.proposal_id,
+      proposal_id: proposedFresh,
     });
+    if (
+      review.started &&
+      review.review_result === "approved" &&
+      activities.autoApproveDecomposition
+    ) {
+      const state = await activities.readScopeState({ scope_id });
+      if (state.hitl_mode === "yolo") {
+        const approval = await activities.autoApproveDecomposition({
+          scope_id,
+          reviewer_result: "approved",
+          reason: "yolo_mode_reviewer_approved",
+        });
+        if (approval.approved) {
+          await commitApprovedDecomposition({
+            scope_id,
+            proposal_id: approval.proposal_id,
+            actor: "svc:supervisor",
+            reason: "yolo_mode_decomposition_commit",
+          });
+        }
+      }
+    }
   } else if (isStalledAtReview) {
-    await longRunningActivities.startDecompositionReviewRun({
+    const review = await longRunningActivities.startDecompositionReviewRun({
       scope_id,
     });
+    if (
+      review.started &&
+      review.review_result === "approved" &&
+      activities.autoApproveDecomposition
+    ) {
+      const state = await activities.readScopeState({ scope_id });
+      if (state.hitl_mode === "yolo") {
+        const approval = await activities.autoApproveDecomposition({
+          scope_id,
+          reviewer_result: "approved",
+          reason: "yolo_mode_reviewer_approved",
+        });
+        if (approval.approved) {
+          await commitApprovedDecomposition({
+            scope_id,
+            proposal_id: approval.proposal_id,
+            actor: "svc:supervisor",
+            reason: "yolo_mode_decomposition_commit",
+          });
+        }
+      }
+    }
   }
+}
+
+async function commitApprovedDecomposition(input: {
+  readonly scope_id: ScopeId;
+  readonly proposal_id: string;
+  readonly actor: string;
+  readonly reason?: string;
+}): Promise<void> {
+  const commit = await activities.commitDecompositionProposal(input);
+  if (!commit.committed) return;
+  // The DAG is already durable and the scope is active at this point. A
+  // provider preflight failure is audited by the merge activity and must not
+  // strand the scope or roll back the committed graph.
+  await activities.mergeSpecMergeRequest({
+    scope_id: input.scope_id,
+    proposal_id: input.proposal_id,
+  });
 }
 
 export async function scopeSupervisorWorkflow(
@@ -1208,7 +1362,8 @@ export async function scopeSupervisorWorkflow(
     queue.push({ seq: nextSignalSeq++, name: "architect_requested", payload });
   });
 
-  await activities.readScopeState({ scope_id });
+  const initialState = await activities.readScopeState({ scope_id });
+  const hitl_mode = initialState.hitl_mode ?? "gated";
   await claimAndDriveReadyTask(scope_id);
 
   let nextHeartbeatSeq = continuation?.next_heartbeat_seq ?? 1;
@@ -1252,10 +1407,45 @@ export async function scopeSupervisorWorkflow(
           case "awaiting_architect":
             await driveArchitectThenReview(scope_id, "svc:supervisor");
             break;
-          case "awaiting_decomposition_review_or_approval":
-            await longRunningActivities.startDecompositionReviewRun({
-              scope_id,
-            });
+          case "awaiting_decomposition_review_or_approval": {
+            const review =
+              await longRunningActivities.startDecompositionReviewRun({
+                scope_id,
+              });
+            if (
+              review.started &&
+              review.review_result === "approved" &&
+              activities.autoApproveDecomposition
+            ) {
+              const state = await activities.readScopeState({ scope_id });
+              if (state.hitl_mode === "yolo") {
+                const approval = await activities.autoApproveDecomposition({
+                  scope_id,
+                  reviewer_result: "approved",
+                  reason: "yolo_mode_reviewer_approved",
+                });
+                if (approval.approved) {
+                  await commitApprovedDecomposition({
+                    scope_id,
+                    proposal_id: approval.proposal_id,
+                    actor: "svc:supervisor",
+                    reason: "yolo_mode_decomposition_commit",
+                  });
+                }
+              }
+            }
+            break;
+          }
+          case "awaiting_scope_close":
+            if (activities.autoCloseScope) {
+              const state = await activities.readScopeState({ scope_id });
+              if (state.hitl_mode === "yolo") {
+                await activities.autoCloseScope({
+                  scope_id,
+                  review_result: "approved",
+                });
+              }
+            }
             break;
         }
       }
@@ -1400,12 +1590,23 @@ export async function scopeSupervisorWorkflow(
             kind === "changes" && typeof attrs?.command_prose === "string"
               ? attrs.command_prose
               : undefined;
-          await activities.applyDecompositionCommand({
+          const decomposition = await activities.applyDecompositionCommand({
             scope_id,
             action: kind === "approve" ? "approve" : "changes",
             actor: signal.payload.actor ?? "unknown",
             reason,
           });
+          if (
+            decomposition.applied &&
+            decomposition.action === "human_approved"
+          ) {
+            await commitApprovedDecomposition({
+              scope_id,
+              proposal_id: decomposition.proposal_id,
+              actor: signal.payload.actor ?? "unknown",
+              reason: "decomposition_human_approved_commit",
+            });
+          }
         }
         // Task-level /changes: kick the task back into developer rework
         // and queue it to re-drive after the signal batch drains.
@@ -1433,6 +1634,7 @@ export async function scopeSupervisorWorkflow(
         task_id,
         queue,
         nextReconcileSeq++,
+        hitl_mode,
       );
     }
     // Re-drive developer + reviewer for any task that was just kicked

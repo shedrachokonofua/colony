@@ -64,6 +64,21 @@ describe("loadColonyConfig", () => {
     expect(reviewer.ceilings.maxTurns).toBe(20);
   });
 
+  it("defaults hitl mode to gated and parses yolo", () => {
+    const gated = loadColonyConfig({
+      path: tempConfig(VALID_YAML),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(gated.hitlMode).toBe("gated");
+
+    const yolo = loadColonyConfig({
+      path: tempConfig(`hitl: { mode: yolo }
+${VALID_YAML}`),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(yolo.hitlMode).toBe("yolo");
+  });
+
   it("preserves OpenAI-compatible base_url and arbitrary env var auth names", () => {
     const path = tempConfig(`
 agent_runtime: pi
