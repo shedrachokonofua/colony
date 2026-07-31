@@ -71,8 +71,12 @@ export interface ApprovalSignal extends SupervisorSignalBase {
   readonly actor: string;
   readonly artifact_id: string;
   readonly approval_id?: string;
+  /** Exact provider revision that was approved. */
   readonly commit_sha?: string;
   readonly pipeline_id?: string;
+  /** Immutable artifact/envelope evidence bound to the approval. */
+  readonly artifact_hash?: string;
+  readonly envelope_hash?: string;
 }
 
 export interface ChangesRequestedSignal extends SupervisorSignalBase {
@@ -1520,18 +1524,45 @@ export async function scopeSupervisorWorkflow(
         run_id: info.runId,
         payload: signal.payload,
       });
-      if (signal.name === "approval" && signal.payload.task_id) {
-        await activities.recordHumanApproval({
-          task_id: signal.payload.task_id,
-          actor: signal.payload.actor,
+      if (signal.name === "approval") {
+        const evidence = {
+          artifact_id: signal.payload.artifact_id,
+          approval_id: signal.payload.approval_id,
+          artifact_hash: signal.payload.artifact_hash,
+          envelope_hash: signal.payload.envelope_hash,
           commit_sha: signal.payload.commit_sha,
-          pipeline_id: signal.payload.pipeline_id,
-          evidence: {
-            artifact_id: signal.payload.artifact_id,
-            approval_id: signal.payload.approval_id,
-          },
-        });
-        taskIdsToEvaluate.push(signal.payload.task_id);
+        };
+        const hasImmutableEvidence =
+          typeof signal.payload.commit_sha === "string" &&
+          Boolean(signal.payload.artifact_hash || signal.payload.envelope_hash);
+        if (signal.payload.task_id && hasImmutableEvidence) {
+          await activities.recordHumanApproval({
+            task_id: signal.payload.task_id,
+            actor: signal.payload.actor,
+            commit_sha: signal.payload.commit_sha,
+            pipeline_id: signal.payload.pipeline_id,
+            evidence,
+          });
+          taskIdsToEvaluate.push(signal.payload.task_id);
+        } else if (!signal.payload.task_id && hasImmutableEvidence) {
+          const decomposition = await activities.applyDecompositionCommand({
+            scope_id,
+            action: "approve",
+            actor: signal.payload.actor,
+            reason: "gitlab_spec_mr_approval",
+          });
+          if (
+            decomposition.applied &&
+            decomposition.action === "human_approved"
+          ) {
+            await commitApprovedDecomposition({
+              scope_id,
+              proposal_id: decomposition.proposal_id,
+              actor: signal.payload.actor,
+              reason: "decomposition_human_approved_commit",
+            });
+          }
+        }
       }
       if (
         signal.name === "pipeline_update" &&
@@ -1582,9 +1613,14 @@ export async function scopeSupervisorWorkflow(
         const attrs = signal.payload.attributes;
         const target = attrs?.command_target;
         const kind = attrs?.command_kind;
+        const hasImmutableEvidence =
+          Boolean(
+            attrs?.commit_sha || attrs?.approval_commit_sha || attrs?.sha,
+          ) && Boolean(attrs?.artifact_hash || attrs?.envelope_hash);
         if (
           target === "scope_decomposition" &&
-          (kind === "approve" || kind === "changes")
+          (kind === "approve" || kind === "changes") &&
+          (kind === "changes" || hasImmutableEvidence)
         ) {
           const reason =
             kind === "changes" && typeof attrs?.command_prose === "string"
@@ -1607,6 +1643,23 @@ export async function scopeSupervisorWorkflow(
               reason: "decomposition_human_approved_commit",
             });
           }
+        }
+        const scopeCloseApproval =
+          target === "scope_close" ||
+          attrs?.gate_kind === "scope_close" ||
+          signal.payload.event_type.toLowerCase().includes("scope_close");
+        if (
+          scopeCloseApproval &&
+          (kind === "approve" ||
+            kind === "approved" ||
+            attrs?.approval_status === "approved" ||
+            attrs?.action === "approved") &&
+          hasImmutableEvidence
+        ) {
+          await activities.autoCloseScope({
+            scope_id,
+            review_result: "approved",
+          });
         }
         // Task-level /changes: kick the task back into developer rework
         // and queue it to re-drive after the signal batch drains.

@@ -3,6 +3,7 @@ import {
   prepareSandboxToolEnvironment,
   selectRuntimeBinding,
   type AgentRunEnvironment,
+  type AgentRunMetadata,
   type AgentRuntimeAdapter,
   type DeployerRuntimeBinding,
 } from "@colony/agent-runtime";
@@ -285,224 +286,253 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
     const runEnvironment =
       (await deps.buildRunEnvironment?.(scope)) ??
       (await defaultArchitectEnvironment());
-
-    let metadata;
+    let metadata: AgentRunMetadata;
+    let persistedRunId: string | undefined;
+    let terminalStatus: "succeeded" | "failed" | "envelope_rejected" = "failed";
+    let terminalEnvelopeHash: string | undefined;
     try {
-      metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
-    } finally {
-      await revokeEphemeralProjectAgentToken(
-        {
-          repo: deps.repo,
-          providerAdapter: deps.providerAdapter,
-        },
-        {
-          project: primaryProjectRef,
-          token: agentToken,
-          audit: {
-            scope_id: scope.id,
-            actor: SUPERVISOR_ACTOR,
-            capability: "graph.read",
-            reason: "architect_run_finished",
-            purpose: "architect",
-          },
-        },
-      );
-    }
-
-    if (metadata.status !== "succeeded") {
-      await deps.repo.writeAudit({
+      const persistedRun = await deps.repo.startAgentRun({
         scope_id: scope.id,
-        actor: SUPERVISOR_ACTOR,
-        action: "architect.run.rejected",
-        capability: "graph.write",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
-        evidence: {
-          run_id: metadata.runId,
-          status: metadata.status,
-          packet_hash: metadata.packetHash,
-          runtime_binding_hash: metadata.runtimeBindingHash,
-          rejection_reason: metadata.rejectionReason,
-        },
+        role: "architect",
+        packet_hash: packet.freshness.packet_hash,
       });
-      return {
-        started: true,
-        scope_id: scope.id,
-        run_id: metadata.runId,
-        envelope_status:
+      persistedRunId = persistedRun.id;
+      try {
+        metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+      } finally {
+        await revokeEphemeralProjectAgentToken(
+          {
+            repo: deps.repo,
+            providerAdapter: deps.providerAdapter,
+          },
+          {
+            project: primaryProjectRef,
+            token: agentToken,
+            audit: {
+              scope_id: scope.id,
+              actor: SUPERVISOR_ACTOR,
+              capability: "graph.read",
+              reason: "architect_run_finished",
+              purpose: "architect",
+            },
+          },
+        );
+      }
+      if (metadata.status !== "succeeded") {
+        terminalStatus =
           metadata.status === "envelope_rejected"
             ? "envelope_rejected"
-            : "failed",
-        reason: `agent_run_${metadata.status}`,
-      };
-    }
-
-    const output = await deps.agentRuntime.getRunOutput(metadata.runId);
-    const envelope = parseArchitectEnvelope(output?.envelope);
-    if (!output || !envelope || envelope.scope_id !== scope.id) {
-      return {
-        started: true,
-        scope_id: scope.id,
-        run_id: metadata.runId,
-        envelope_status: "envelope_rejected",
-        reason: "envelope_missing_or_mismatched",
-      };
-    }
-    if (envelope.freshness.packet_hash !== packet.freshness.packet_hash) {
-      await deps.repo.writeAudit({
-        scope_id: scope.id,
-        actor: SUPERVISOR_ACTOR,
-        action: "architect.envelope.stale",
-        capability: "graph.write",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: "freshness_mismatch",
-        evidence: {
-          run_id: metadata.runId,
-          packet_hash: metadata.packetHash,
-          envelope_packet_hash: envelope.freshness.packet_hash,
-        },
-      });
-      return {
-        started: true,
-        scope_id: scope.id,
-        run_id: metadata.runId,
-        envelope_status: "envelope_rejected",
-        reason: "envelope_freshness_mismatch",
-      };
-    }
-
-    const actor = (input.actor ?? ARCHITECT_ACTOR) as ActorId;
-    const proposedTasks = envelope.role_specific.proposed_tasks.map((task) => ({
-      proposed_task_id: task.proposed_task_id as TaskId,
-      title: task.title,
-      description: task.description,
-      acceptance_criteria: task.acceptance_criteria,
-      non_goals: task.non_goals,
-      suggested_role: task.suggested_role,
-      suggested_capabilities: task.suggested_capabilities,
-      estimated_effort_minutes: task.estimated_effort_minutes,
-    }));
-    const proposal = await deps.repo.submitDecompositionProposal(
-      {
-        scope_id: scope.id,
-        scope_state_version: scope.state_version,
-        scope_brief_version: packet.scope_brief_version,
-        proposed_tasks: proposedTasks,
-        proposed_dependencies: envelope.role_specific.proposed_dependencies.map(
-          (dep) => ({
-            from_task_id: dep.from_task_id as TaskId,
-            to_task_id: dep.to_task_id as TaskId,
-            kind: dep.kind,
-          }),
-        ),
-        target_project_mapping: defaultTaskTargetMapping(
-          proposedTasks,
-          primaryProject,
-        ),
-        assumptions: envelope.role_specific.assumptions,
-        open_questions: envelope.role_specific.open_questions,
-        packet_hash: packet.freshness.packet_hash,
-        envelope_hash: output.envelopeHash,
-        envelope,
-      },
-      {
-        actor,
-        capability: "graph.write",
-        reason: "architect_run_submission",
-      },
-    );
-
-    // Open or update a spec MR carrying the proposal so reviewers
-    // (agent + human) can read the architect's output as a real GitLab
-    // MR diff and post /approve or /changes via comments. The
-    // webhook-dispatcher's mirror lookup picks this up as
-    // `entity_kind=mr_pr` linked to the *scope* (not a task), and the
-    // supervisor workflow's command_target=scope_decomposition routing
-    // fires the existing applyDecompositionCommand path. Best-effort:
-    // if the provider adapter doesn't support commit/MR open we return
-    // success on the proposal alone — the API path still exposes the
-    // proposal for direct approval.
-    //
-    // Rework semantics: when an architect run produces a fresh
-    // proposal for a scope that already has an open spec MR (e.g.
-    // reviewer requested changes and the architect re-decomposed),
-    // push a new commit to the same branch and update the existing
-    // mirror instead of opening a parallel MR. One MR thread per
-    // scope = one place for review comments.
-    const existingSpecMrMirror = (
-      await deps.providerProjects.listMirrorsForColony({
-        colony_id: scope.id,
-        entity_kind: "mr_pr",
-      })
-    )[0];
-    let architectMr: { readonly id: string; readonly url?: string } | undefined;
-    try {
-      architectMr = await openOrUpdateSpecMergeRequest({
-        adapter: deps.providerAdapter,
-        primaryProject,
-        scope,
-        proposal,
-        proposedTasks,
-        proposedDependencies: envelope.role_specific.proposed_dependencies,
-        assumptions: envelope.role_specific.assumptions,
-        openQuestions: envelope.role_specific.open_questions,
-        existingMrId: existingSpecMrMirror?.provider_id,
-      });
-      if (architectMr) {
-        await deps.providerProjects.upsertMirror({
-          colony_id: scope.id,
-          entity_kind: "mr_pr",
-          provider: primaryProject.provider,
-          provider_id: architectMr.id,
-          provider_project_id: primaryProject.id,
-          provider_project_path: primaryProject.path,
-          source_version: proposal.envelope_hash,
-        });
+            : "failed";
         await deps.repo.writeAudit({
           scope_id: scope.id,
-          actor,
-          action: existingSpecMrMirror
-            ? "architect.spec_mr.updated"
-            : "architect.spec_mr.opened",
+          actor: SUPERVISOR_ACTOR,
+          action: "architect.run.rejected",
           capability: "graph.write",
-          target_kind: "merge_request",
-          target_id: architectMr.id,
-          reason: existingSpecMrMirror
-            ? "architect_rework_submission"
-            : "architect_run_submission",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
           evidence: {
-            proposal_id: proposal.id,
-            mr_url: architectMr.url,
+            run_id: metadata.runId,
+            status: metadata.status,
+            packet_hash: metadata.packetHash,
+            runtime_binding_hash: metadata.runtimeBindingHash,
+            rejection_reason: metadata.rejectionReason,
+          },
+        });
+        terminalStatus = "envelope_rejected";
+        return {
+          started: true,
+          scope_id: scope.id,
+          run_id: metadata.runId,
+          envelope_status:
+            metadata.status === "envelope_rejected"
+              ? "envelope_rejected"
+              : "failed",
+          reason: `agent_run_${metadata.status}`,
+        };
+      }
+
+      const output = await deps.agentRuntime.getRunOutput(metadata.runId);
+      const envelope = parseArchitectEnvelope(output?.envelope);
+      if (!output || !envelope || envelope.scope_id !== scope.id) {
+        terminalStatus = "envelope_rejected";
+        return {
+          started: true,
+          scope_id: scope.id,
+          run_id: metadata.runId,
+          envelope_status: "envelope_rejected",
+          reason: "envelope_missing_or_mismatched",
+        };
+      }
+      if (envelope.freshness.packet_hash !== packet.freshness.packet_hash) {
+        terminalStatus = "envelope_rejected";
+        await deps.repo.writeAudit({
+          scope_id: scope.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "architect.envelope.stale",
+          capability: "graph.write",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: "freshness_mismatch",
+          evidence: {
+            run_id: metadata.runId,
+            packet_hash: metadata.packetHash,
+            envelope_packet_hash: envelope.freshness.packet_hash,
+          },
+        });
+        return {
+          started: true,
+          scope_id: scope.id,
+          run_id: metadata.runId,
+          envelope_status: "envelope_rejected",
+          reason: "envelope_freshness_mismatch",
+        };
+      }
+
+      const actor = (input.actor ?? ARCHITECT_ACTOR) as ActorId;
+      const proposedTasks = envelope.role_specific.proposed_tasks.map(
+        (task) => ({
+          proposed_task_id: task.proposed_task_id as TaskId,
+          title: task.title,
+          description: task.description,
+          acceptance_criteria: task.acceptance_criteria,
+          non_goals: task.non_goals,
+          suggested_role: task.suggested_role,
+          suggested_capabilities: task.suggested_capabilities,
+          estimated_effort_minutes: task.estimated_effort_minutes,
+        }),
+      );
+      const proposal = await deps.repo.submitDecompositionProposal(
+        {
+          scope_id: scope.id,
+          scope_state_version: scope.state_version,
+          scope_brief_version: packet.scope_brief_version,
+          proposed_tasks: proposedTasks,
+          proposed_dependencies:
+            envelope.role_specific.proposed_dependencies.map((dep) => ({
+              from_task_id: dep.from_task_id as TaskId,
+              to_task_id: dep.to_task_id as TaskId,
+              kind: dep.kind,
+            })),
+          target_project_mapping: defaultTaskTargetMapping(
+            proposedTasks,
+            primaryProject,
+          ),
+          assumptions: envelope.role_specific.assumptions,
+          open_questions: envelope.role_specific.open_questions,
+          packet_hash: packet.freshness.packet_hash,
+          envelope_hash: output.envelopeHash,
+          envelope,
+        },
+        {
+          actor,
+          capability: "graph.write",
+          reason: "architect_run_submission",
+        },
+      );
+
+      // Open or update a spec MR carrying the proposal so reviewers
+      // (agent + human) can read the architect's output as a real GitLab
+      // MR diff and post /approve or /changes via comments. The
+      // webhook-dispatcher's mirror lookup picks this up as
+      // `entity_kind=mr_pr` linked to the *scope* (not a task), and the
+      // supervisor workflow's command_target=scope_decomposition routing
+      // fires the existing applyDecompositionCommand path. Best-effort:
+      // if the provider adapter doesn't support commit/MR open we return
+      // success on the proposal alone — the API path still exposes the
+      // proposal for direct approval.
+      //
+      // Rework semantics: when an architect run produces a fresh
+      // proposal for a scope that already has an open spec MR (e.g.
+      // reviewer requested changes and the architect re-decomposed),
+      // push a new commit to the same branch and update the existing
+      // mirror instead of opening a parallel MR. One MR thread per
+      // scope = one place for review comments.
+      const existingSpecMrMirror = (
+        await deps.providerProjects.listMirrorsForColony({
+          colony_id: scope.id,
+          entity_kind: "mr_pr",
+        })
+      )[0];
+      let architectMr:
+        | { readonly id: string; readonly url?: string }
+        | undefined;
+      try {
+        architectMr = await openOrUpdateSpecMergeRequest({
+          adapter: deps.providerAdapter,
+          primaryProject,
+          scope,
+          proposal,
+          proposedTasks,
+          proposedDependencies: envelope.role_specific.proposed_dependencies,
+          assumptions: envelope.role_specific.assumptions,
+          openQuestions: envelope.role_specific.open_questions,
+          existingMrId: existingSpecMrMirror?.provider_id,
+        });
+        if (architectMr) {
+          await deps.providerProjects.upsertMirror({
+            colony_id: scope.id,
+            entity_kind: "mr_pr",
             provider: primaryProject.provider,
+            provider_id: architectMr.id,
             provider_project_id: primaryProject.id,
+            provider_project_path: primaryProject.path,
+            source_version: proposal.envelope_hash,
+          });
+          await deps.repo.writeAudit({
+            scope_id: scope.id,
+            actor,
+            action: existingSpecMrMirror
+              ? "architect.spec_mr.updated"
+              : "architect.spec_mr.opened",
+            capability: "graph.write",
+            target_kind: "merge_request",
+            target_id: architectMr.id,
+            reason: existingSpecMrMirror
+              ? "architect_rework_submission"
+              : "architect_run_submission",
+            evidence: {
+              proposal_id: proposal.id,
+              mr_url: architectMr.url,
+              provider: primaryProject.provider,
+              provider_project_id: primaryProject.id,
+            },
+          });
+        }
+      } catch (err) {
+        await deps.repo.writeAudit({
+          scope_id: scope.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "architect.spec_mr.failed",
+          capability: "graph.write",
+          target_kind: "decomposition_proposal",
+          target_id: proposal.id,
+          reason: "spec_mr_open_failed",
+          evidence: {
+            message: err instanceof Error ? err.message : String(err),
           },
         });
       }
-    } catch (err) {
-      await deps.repo.writeAudit({
-        scope_id: scope.id,
-        actor: SUPERVISOR_ACTOR,
-        action: "architect.spec_mr.failed",
-        capability: "graph.write",
-        target_kind: "decomposition_proposal",
-        target_id: proposal.id,
-        reason: "spec_mr_open_failed",
-        evidence: {
-          message: err instanceof Error ? err.message : String(err),
-        },
-      });
-    }
 
-    return {
-      started: true,
-      scope_id: scope.id,
-      run_id: metadata.runId,
-      envelope_status: "succeeded",
-      proposal_id: proposal.id,
-      spec_mr: architectMr,
-    };
+      terminalStatus = "succeeded";
+      terminalEnvelopeHash = output.envelopeHash;
+      return {
+        started: true,
+        scope_id: scope.id,
+        run_id: metadata.runId,
+        envelope_status: "succeeded",
+        proposal_id: proposal.id,
+        spec_mr: architectMr,
+      };
+    } finally {
+      if (persistedRunId) {
+        await deps.repo.finishAgentRun({
+          id: persistedRunId,
+          status: terminalStatus,
+          envelope_hash: terminalEnvelopeHash,
+        });
+      }
+    }
   };
 }
 

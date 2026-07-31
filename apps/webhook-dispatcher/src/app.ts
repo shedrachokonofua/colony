@@ -133,6 +133,12 @@ export interface MirrorLookup {
 interface MirrorContext {
   readonly entity_kind: ProviderEntityKind;
   readonly colony_id: string;
+  /**
+   * Provider projections carry immutable evidence for the revision currently
+   * represented by the mirror. The dispatcher copies this into approval
+   * signals so a webhook cannot approve an unbound artifact.
+   */
+  readonly source_version?: string;
 }
 
 export interface WebhookDispatcherDeps {
@@ -279,6 +285,9 @@ function getDefaultDeps(): WebhookDispatcherDeps {
           return {
             entity_kind: row.entity_kind,
             colony_id: row.colony_id,
+            ...(row.source_version
+              ? { source_version: row.source_version }
+              : {}),
           };
         },
       },
@@ -517,6 +526,31 @@ function setSignalTaskId(signal: ProviderEventSignal, task_id: string): void {
  *    classifier from `objectAttributes.noteable_id`/`target_id` etc.)
  * 2. `signal.object_id` as a last resort
  */
+function mirrorEvidence(source_version: string | undefined): {
+  readonly head_commit_sha?: string;
+  readonly artifact_hash?: string;
+  readonly envelope_hash?: string;
+} {
+  if (!source_version) return {};
+  try {
+    const parsed = JSON.parse(source_version) as unknown;
+    const record = asRecord(parsed);
+    if (record) {
+      const head_commit_sha = asString(record.head_commit_sha);
+      const artifact_hash = asString(record.artifact_hash);
+      const envelope_hash = asString(record.envelope_hash);
+      return {
+        ...(head_commit_sha ? { head_commit_sha } : {}),
+        ...(artifact_hash ? { artifact_hash } : {}),
+        ...(envelope_hash ? { envelope_hash } : {}),
+      };
+    }
+  } catch {
+    // Architect spec mirrors store the envelope hash directly.
+  }
+  return { envelope_hash: source_version };
+}
+
 export async function enrichSignalWithMirrorContext(
   signal: ProviderEventSignal,
   mirrors: MirrorLookup,
@@ -540,7 +574,18 @@ export async function enrichSignalWithMirrorContext(
   }
 
   const commandKind = signal.attributes?.command_kind;
-  if (typeof commandKind !== "string") return mirror;
+  const isApproval =
+    signal.attributes?.classification === "approval" ||
+    lower(signal.event_type).includes("approval") ||
+    lower(signal.object_kind).includes("approval");
+  const evidence = mirrorEvidence(mirror.source_version);
+  if (
+    typeof commandKind !== "string" &&
+    !isApproval &&
+    Object.keys(evidence).length === 0
+  ) {
+    return mirror;
+  }
   const target =
     mirror.entity_kind === "scope" ? "scope_decomposition" : mirror.entity_kind;
   // attributes is readonly; rebuild the same object with the extra key.
@@ -548,8 +593,21 @@ export async function enrichSignalWithMirrorContext(
   // Record; webhook dispatcher owns the only writes to it pre-dispatch.
   const enriched: Record<string, JsonScalar> = {
     ...(signal.attributes ?? {}),
-    command_target: target,
-    command_target_colony_id: mirror.colony_id,
+    ...(typeof commandKind === "string"
+      ? {
+          command_target: target,
+          command_target_colony_id: mirror.colony_id,
+        }
+      : {}),
+    ...(evidence.head_commit_sha
+      ? { current_head_sha: evidence.head_commit_sha }
+      : {}),
+    ...(evidence.artifact_hash
+      ? { artifact_hash: evidence.artifact_hash }
+      : {}),
+    ...(evidence.envelope_hash
+      ? { envelope_hash: evidence.envelope_hash }
+      : {}),
   };
   (signal as { attributes: typeof enriched }).attributes = enriched;
   return mirror;
@@ -568,7 +626,9 @@ function providerObjectId(input: {
   if (
     input.providerProjectId &&
     iid &&
-    (objectKind.includes("issue") || objectKind.includes("merge"))
+    (objectKind.includes("issue") ||
+      objectKind.includes("merge") ||
+      objectKind.includes("approval"))
   ) {
     return scopedProviderId(input.providerProjectId, iid);
   }
@@ -704,6 +764,32 @@ export function classifyGitLabWebhook(input: {
     objectAttributes?.updated_at,
     objectAttributes?.created_at,
   );
+  const objectLastCommit = asRecord(objectAttributes?.last_commit);
+  const mergeRequestLastCommit = asRecord(mergeRequest?.last_commit);
+  const currentHeadSha = firstString(
+    objectAttributes?.head_commit_sha,
+    objectAttributes?.head_sha,
+    mergeRequest?.head_commit_sha,
+    mergeRequest?.head_sha,
+    mergeRequest?.sha,
+    mergeRequestLastCommit?.id,
+  );
+  const approvalCommitSha = firstString(
+    objectAttributes?.commit_sha,
+    objectAttributes?.approved_commit_sha,
+    objectAttributes?.sha,
+    objectLastCommit?.id,
+    mergeRequest?.commit_sha,
+    mergeRequestLastCommit?.id,
+  );
+  const artifactHash = firstString(
+    objectAttributes?.artifact_hash,
+    objectAttributes?.evidence_hash,
+  );
+  const envelopeHash = firstString(
+    objectAttributes?.envelope_hash,
+    objectAttributes?.proposal_envelope_hash,
+  );
   const body = commentBody(objectAttributes, attributes);
   const isComment =
     lower(eventKind).includes("note") ||
@@ -783,6 +869,10 @@ export function classifyGitLabWebhook(input: {
     attributes: {
       classification,
       ...scalarAttributes(attributes, objectAttributes),
+      ...(currentHeadSha ? { current_head_sha: currentHeadSha } : {}),
+      ...(approvalCommitSha ? { approval_commit_sha: approvalCommitSha } : {}),
+      ...(artifactHash ? { artifact_hash: artifactHash } : {}),
+      ...(envelopeHash ? { envelope_hash: envelopeHash } : {}),
       ...(body ? { provider_text: body } : {}),
       ...(commentClassification?.attributes ?? {}),
     },
@@ -800,16 +890,29 @@ export function classifyGitLabWebhook(input: {
 function approvalFromProviderSignal(
   signal: ProviderEventSignal,
 ): ApprovalSignal | null {
-  if (!signal.task_id) return null;
+  const commit_sha = firstString(
+    signal.attributes?.commit_sha,
+    signal.attributes?.approval_commit_sha,
+    signal.attributes?.sha,
+  );
+  const current_head_sha = firstString(signal.attributes?.current_head_sha);
+  const artifact_hash = firstString(signal.attributes?.artifact_hash);
+  const envelope_hash = firstString(signal.attributes?.envelope_hash);
+  const providerActor = signal.actor ?? "unknown";
+  const actor = providerActor.startsWith("human:")
+    ? providerActor
+    : `human:${providerActor}`;
+  if (!commit_sha) return null;
+  if (current_head_sha && current_head_sha !== commit_sha) return null;
+  if (!artifact_hash && !envelope_hash) return null;
   return {
-    task_id: signal.task_id,
-    actor: signal.actor ?? "unknown",
+    ...(signal.task_id ? { task_id: signal.task_id } : {}),
+    actor,
     artifact_id: signal.reference?.object_id ?? signal.object_id,
     approval_id: signal.object_id,
-    commit_sha: firstString(
-      signal.attributes?.commit_sha,
-      signal.attributes?.sha,
-    ),
+    commit_sha,
+    ...(artifact_hash ? { artifact_hash } : {}),
+    ...(envelope_hash ? { envelope_hash } : {}),
     pipeline_id: firstString(
       signal.attributes?.pipeline_id,
       signal.attributes?.pipeline,
@@ -860,8 +963,12 @@ async function dispatchWebhookSignal(
   classified: Exclude<ClassifiedGitLabWebhook, { readonly kind: "noop" }>,
 ): Promise<{ readonly workflow_id: string }> {
   if (classified.kind === "approval") {
+    const scopeCloseApproval =
+      classified.signal.attributes?.gate_kind === "scope_close" ||
+      classified.signal.attributes?.approval_target === "scope_close" ||
+      lower(classified.signal.object_kind).includes("scope_close");
     const approval = approvalFromProviderSignal(classified.signal);
-    if (approval) {
+    if (approval && !scopeCloseApproval) {
       return deps.supervisor.signalApproval(scope_id, approval);
     }
   }
@@ -1032,6 +1139,19 @@ export function buildApp(
         {
           accepted: false as const,
           error: "missing_scope_id",
+        },
+        400,
+      );
+    }
+
+    if (
+      classified.kind === "approval" &&
+      approvalFromProviderSignal(classified.signal) === null
+    ) {
+      return c.json(
+        {
+          accepted: false as const,
+          error: "approval_evidence_invalid_or_stale",
         },
         400,
       );

@@ -1008,6 +1008,8 @@ describe.runIf(temporalTestEnabled)(
           attributes: {
             command_target: "scope_decomposition",
             command_kind: "approve",
+            commit_sha: "spec-head-1",
+            envelope_hash: "sha256:spec-envelope",
           },
         });
       });

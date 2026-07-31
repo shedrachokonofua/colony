@@ -5,6 +5,7 @@ import {
   prepareSandboxToolEnvironment,
   selectRuntimeBinding,
   type AgentRunEnvironment,
+  type AgentRunMetadata,
   type AgentRuntimeAdapter,
   type DeployerRuntimeBinding,
 } from "@colony/agent-runtime";
@@ -187,6 +188,9 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
     let agentToken: Awaited<ReturnType<typeof mintTaskAgentToken>> | null =
       null;
     let taskForTokenCleanup: Task | null = null;
+    let persistedRunId: string | undefined;
+    let terminalStatus: "succeeded" | "failed" | "envelope_rejected" = "failed";
+    let terminalEnvelopeHash: string | undefined;
     try {
       agentToken = await mintTaskAgentToken(
         {
@@ -373,8 +377,36 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
       const runEnvironment =
         (await deps.buildRunEnvironment?.(task)) ??
         (await defaultReviewerEnvironment());
-      const metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+      const persistedRun = await deps.repo.startAgentRun({
+        task_id: task.id,
+        review_id: review.id,
+        role: "reviewer",
+        packet_hash: packet.freshness.packet_hash,
+      });
+      persistedRunId = persistedRun.id;
+      let metadata: AgentRunMetadata;
+      try {
+        metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+      } finally {
+        if (taskForTokenCleanup) {
+          await revokeTaskAgentToken(
+            {
+              repo: deps.repo,
+              providerAdapter: deps.providerAdapter,
+            },
+            {
+              task: taskForTokenCleanup,
+              project: projectRef,
+              reason: "reviewer_run_finished",
+            },
+          );
+        }
+      }
       if (metadata.status !== "succeeded") {
+        terminalStatus =
+          metadata.status === "envelope_rejected"
+            ? "envelope_rejected"
+            : "failed";
         await deps.repo.writeAudit({
           scope_id: task.scope_id,
           task_id: task.id,
@@ -409,6 +441,7 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
       const output = await deps.agentRuntime.getRunOutput(metadata.runId);
       const envelope = parseReviewerEnvelope(output?.envelope);
       if (!output || !envelope || envelope.task_id !== task.id) {
+        terminalStatus = "envelope_rejected";
         await deps.repo.writeAudit({
           scope_id: task.scope_id,
           task_id: task.id,
@@ -431,6 +464,7 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         };
       }
       if (envelope.freshness.packet_hash !== packet.freshness.packet_hash) {
+        terminalStatus = "envelope_rejected";
         await deps.repo.writeAudit({
           scope_id: task.scope_id,
           task_id: task.id,
@@ -570,6 +604,8 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
           finding_count: envelope.role_specific.findings.length,
         },
       });
+      terminalStatus = "succeeded";
+      terminalEnvelopeHash = envelopeHash;
 
       return {
         started: true,
@@ -583,18 +619,12 @@ export function createReviewerRun(deps: ReviewerRunDependencies) {
         comment_id: comment?.id,
       };
     } finally {
-      if (taskForTokenCleanup) {
-        await revokeTaskAgentToken(
-          {
-            repo: deps.repo,
-            providerAdapter: deps.providerAdapter,
-          },
-          {
-            task: taskForTokenCleanup,
-            project: projectRef,
-            reason: "reviewer_run_finished",
-          },
-        );
+      if (persistedRunId) {
+        await deps.repo.finishAgentRun({
+          id: persistedRunId,
+          status: terminalStatus,
+          envelope_hash: terminalEnvelopeHash,
+        });
       }
     }
   };

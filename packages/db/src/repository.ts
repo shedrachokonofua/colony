@@ -4,6 +4,8 @@ import {
   assertScopeTransition,
   assertTaskTransition,
   type ActorId,
+  type AgentRun,
+  type AgentRunStatus,
   type AuditId,
   type AuditRecord,
   type Capability,
@@ -12,6 +14,8 @@ import {
   type EventKind,
   type Iso8601,
   type ProviderProjectId,
+  type ReviewId,
+  type Role,
   type Scope,
   type ScopeId,
   type ScopeState,
@@ -232,6 +236,20 @@ export interface RecordCodeReviewInput {
   readonly envelope: Readonly<Record<string, unknown>>;
 }
 
+export interface StartAgentRunInput {
+  readonly scope_id?: ScopeId;
+  readonly task_id?: TaskId;
+  readonly review_id?: ReviewId;
+  readonly role: Role;
+  readonly sandbox_id?: string;
+  readonly packet_hash: string;
+}
+export interface FinishAgentRunInput {
+  readonly id: string;
+  readonly status: AgentRunStatus;
+  readonly envelope_hash?: string;
+}
+
 type Executor = Pool | PoolClient;
 
 // ---------------------------------------------------------------------------
@@ -274,6 +292,19 @@ interface TaskRow {
   updated_at: Date;
 }
 
+interface AgentRunRow {
+  scope_id: string | null;
+  id: string;
+  task_id: string | null;
+  review_id: string | null;
+  role: Role;
+  sandbox_id: string | null;
+  packet_hash: string;
+  envelope_hash: string | null;
+  status: AgentRunStatus;
+  started_at: Date;
+  finished_at: Date | null;
+}
 interface DependencyRow {
   id: string;
   from_task_id: string;
@@ -356,6 +387,19 @@ const mapTask = (r: TaskRow): Task => ({
   last_code_review_hash: r.last_code_review_hash ?? undefined,
   created_at: toIso(r.created_at),
   updated_at: toIso(r.updated_at),
+});
+
+const mapAgentRun = (r: AgentRunRow): AgentRun => ({
+  id: r.id as AgentRun["id"],
+  task_id: r.task_id ? (r.task_id as TaskId) : undefined,
+  review_id: r.review_id ? (r.review_id as AgentRun["review_id"]) : undefined,
+  role: r.role,
+  sandbox_id: r.sandbox_id ?? undefined,
+  packet_hash: r.packet_hash,
+  envelope_hash: r.envelope_hash ?? undefined,
+  status: r.status,
+  started_at: toIso(r.started_at),
+  finished_at: r.finished_at ? toIso(r.finished_at) : undefined,
 });
 
 const mapDependency = (r: DependencyRow): TaskDependency => ({
@@ -582,6 +626,14 @@ export class TaskGraphRepository {
     ctx: ActorContext,
   ): Promise<Task> {
     return this.withTransaction((tx) => tx.recordCodeReview(input, ctx));
+  }
+
+  async startAgentRun(input: StartAgentRunInput): Promise<AgentRun> {
+    return this.withTransaction((tx) => tx.startAgentRun(input));
+  }
+
+  async finishAgentRun(input: FinishAgentRunInput): Promise<AgentRun> {
+    return this.withTransaction((tx) => tx.finishAgentRun(input));
   }
 
   async listActiveTaskAgentTokens(
@@ -983,6 +1035,52 @@ export class TaskGraphTransaction {
       evidence: { title: task.title },
     });
     return task;
+  }
+  async startAgentRun(input: StartAgentRunInput): Promise<AgentRun> {
+    if (!input.scope_id && !input.task_id && !input.review_id) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        "agent run requires scope_id, task_id, or review_id",
+      );
+    }
+    const { rows } = await queryRows<AgentRunRow>(
+      this.client,
+      `INSERT INTO agent_runs
+         (id, scope_id, task_id, review_id, role, sandbox_id, packet_hash, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'running')
+       RETURNING *`,
+      [
+        randomUUID(),
+        input.scope_id ?? null,
+        input.task_id ?? null,
+        input.review_id ?? null,
+        input.role,
+        input.sandbox_id ?? null,
+        input.packet_hash,
+      ],
+    );
+    return mapAgentRun(rows[0]);
+  }
+
+  async finishAgentRun(input: FinishAgentRunInput): Promise<AgentRun> {
+    const { rows } = await queryRows<AgentRunRow>(
+      this.client,
+      `UPDATE agent_runs
+          SET status = $2,
+              envelope_hash = COALESCE($3, envelope_hash),
+              finished_at = now()
+        WHERE id = $1
+        RETURNING *`,
+      [input.id, input.status, input.envelope_hash ?? null],
+    );
+    if (!rows[0]) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        `agent run not found: ${input.id}`,
+        { id: input.id },
+      );
+    }
+    return mapAgentRun(rows[0]);
   }
 
   async updateTaskState(

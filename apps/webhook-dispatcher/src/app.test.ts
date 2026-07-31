@@ -166,6 +166,10 @@ describe("@colony/webhook-dispatcher", () => {
           return Promise.resolve({
             entity_kind: "mr_pr",
             colony_id: "col-hook.1",
+            source_version: JSON.stringify({
+              head_commit_sha: "abc123",
+              envelope_hash: "sha256:developer-envelope",
+            }),
           });
         },
       },
@@ -204,13 +208,152 @@ describe("@colony/webhook-dispatcher", () => {
         scope_id: "col-hook",
         signal: expect.objectContaining({
           task_id: "col-hook.1",
-          actor: "human-op",
+          actor: "human:human-op",
           artifact_id: "100:7",
           approval_id: "100:7",
           commit_sha: "abc123",
+          envelope_hash: "sha256:developer-envelope",
         }) as ApprovalSignal,
       },
     ]);
+  });
+
+  it("dispatches a spec-MR approval as a scope-level approval signal", async () => {
+    const approvalSignals: Array<{
+      scope_id: string;
+      signal: ApprovalSignal;
+    }> = [];
+    const app = buildApp({
+      ...testDeps({ approvalSignals }),
+      mirrors: {
+        findMirror: () =>
+          Promise.resolve({
+            entity_kind: "scope",
+            colony_id: "col-hook",
+            source_version: "sha256:spec-envelope",
+          }),
+      },
+    });
+    const res = await app.request("http://x/webhook/gitlab", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gitlab-Event": "Merge request approvals Hook",
+        "X-Gitlab-Event-UUID": "evt-spec-approval",
+      },
+      body: JSON.stringify({
+        object_kind: "approval",
+        object_attributes: {
+          iid: 24,
+          sha: "spec-head-1",
+          action: "approved",
+        },
+        user: { username: "human-spec-reviewer" },
+        project: { id: 100, path_with_namespace: "colony/dev" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(approvalSignals).toHaveLength(1);
+    expect(approvalSignals[0]?.scope_id).toBe("col-hook");
+    expect(approvalSignals[0]?.signal).toMatchObject({
+      actor: "human:human-spec-reviewer",
+      commit_sha: "spec-head-1",
+      envelope_hash: "sha256:spec-envelope",
+    });
+    expect(approvalSignals[0]?.signal.task_id).toBeUndefined();
+  });
+
+  it("does not turn a prose-only comment into a gate approval", async () => {
+    const approvalSignals: Array<{
+      scope_id: string;
+      signal: ApprovalSignal;
+    }> = [];
+    const providerSignals: Array<{
+      scope_id: string;
+      signal: ProviderEventSignal;
+    }> = [];
+    const app = buildApp({
+      ...testDeps({ approvalSignals, signals: providerSignals }),
+      mirrors: {
+        findMirror: () =>
+          Promise.resolve({
+            entity_kind: "mr_pr",
+            colony_id: "col-hook.1",
+          }),
+      },
+    });
+    const res = await app.request("http://x/webhook/gitlab", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gitlab-Event": "Note Hook",
+        "X-Gitlab-Event-UUID": "evt-prose-only",
+      },
+      body: JSON.stringify({
+        object_kind: "note",
+        object_attributes: {
+          id: 9,
+          note: "Looks good to me.",
+          noteable_type: "MergeRequest",
+          noteable_id: 24,
+        },
+        user: { username: "human-spec-reviewer" },
+        project: { id: 100, path_with_namespace: "colony/dev" },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(approvalSignals).toEqual([]);
+    expect(providerSignals[0]?.signal.attributes?.classification).toBe(
+      "review_feedback",
+    );
+  });
+
+  it("rejects an approval whose SHA is stale against the current MR head", async () => {
+    const approvalSignals: Array<{
+      scope_id: string;
+      signal: ApprovalSignal;
+    }> = [];
+    const app = buildApp({
+      ...testDeps({ approvalSignals }),
+      mirrors: {
+        findMirror: () =>
+          Promise.resolve({
+            entity_kind: "mr_pr",
+            colony_id: "col-hook.1",
+            source_version: JSON.stringify({
+              head_commit_sha: "current-head",
+              envelope_hash: "sha256:developer-envelope",
+            }),
+          }),
+      },
+    });
+    const res = await app.request("http://x/webhook/gitlab", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gitlab-Event": "Merge request approvals Hook",
+        "X-Gitlab-Event-UUID": "evt-stale-approval",
+      },
+      body: JSON.stringify({
+        object_kind: "approval",
+        object_attributes: {
+          iid: 7,
+          sha: "old-head",
+          action: "approved",
+        },
+        user: { username: "human-op" },
+        project: { id: 100, path_with_namespace: "colony/dev" },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      accepted: false,
+      error: "approval_evidence_invalid_or_stale",
+    });
+    expect(approvalSignals).toEqual([]);
   });
 
   it("dispatches pipeline webhooks to the workflow pipeline signal when the related MR mirror resolves the task", async () => {

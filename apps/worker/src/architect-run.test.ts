@@ -246,6 +246,17 @@ function makeStubs(
       audits.push(input);
       return Promise.resolve("audit-id");
     },
+    startAgentRun: () =>
+      Promise.resolve({
+        id: "agent-run-1",
+        task_id: undefined,
+        review_id: undefined,
+        role: "architect" as const,
+        packet_hash: "sha256:packet",
+        status: "running" as const,
+        started_at: TODAY,
+      }),
+    finishAgentRun: () => Promise.resolve({}),
   };
 
   const providerProjects = {

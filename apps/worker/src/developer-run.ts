@@ -269,246 +269,274 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
       (await defaultRunEnvironment());
 
     let metadata: AgentRunMetadata;
+    let persistedRunId: string | undefined;
+    let terminalStatus: "succeeded" | "failed" | "envelope_rejected" = "failed";
+    let terminalEnvelopeHash: string | undefined;
     try {
-      metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
-    } finally {
-      if (taskForTokenCleanup) {
-        await revokeTaskAgentToken(
-          {
-            repo: deps.repo,
-            providerAdapter: deps.providerAdapter,
-          },
-          {
-            task: taskForTokenCleanup,
-            project: projectRef,
-            reason: "developer_run_finished",
-          },
-        );
-      }
-    }
-
-    if (metadata.status !== "succeeded") {
-      await deps.repo.writeAudit({
-        scope_id: task.scope_id,
+      const persistedRun = await deps.repo.startAgentRun({
         task_id: task.id,
-        actor: SUPERVISOR_ACTOR,
-        action: "developer.run.rejected",
-        capability: "task.assign",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: metadata.rejectionReason ?? "envelope_rejected",
-        evidence: {
-          run_id: metadata.runId,
-          status: metadata.status,
-          packet_hash: metadata.packetHash,
-          runtime_binding_hash: metadata.runtimeBindingHash,
-          rejection_reason: metadata.rejectionReason,
-        },
+        role: "developer",
+        packet_hash: packet.freshness.packet_hash,
       });
-      return {
-        started: true,
-        task_id: task.id,
-        run_id: metadata.runId,
-        envelope_status:
+      persistedRunId = persistedRun.id;
+      try {
+        metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+      } finally {
+        if (taskForTokenCleanup) {
+          await revokeTaskAgentToken(
+            {
+              repo: deps.repo,
+              providerAdapter: deps.providerAdapter,
+            },
+            {
+              task: taskForTokenCleanup,
+              project: projectRef,
+              reason: "developer_run_finished",
+            },
+          );
+        }
+      }
+      if (metadata.status !== "succeeded") {
+        terminalStatus =
           metadata.status === "envelope_rejected"
             ? "envelope_rejected"
-            : "failed",
-        final_state: task.state,
-        reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
-      };
-    }
+            : "failed";
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "developer.run.rejected",
+          capability: "task.assign",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: metadata.rejectionReason ?? "envelope_rejected",
+          evidence: {
+            run_id: metadata.runId,
+            status: metadata.status,
+            packet_hash: metadata.packetHash,
+            runtime_binding_hash: metadata.runtimeBindingHash,
+            rejection_reason: metadata.rejectionReason,
+          },
+        });
+        return {
+          started: true,
+          task_id: task.id,
+          run_id: metadata.runId,
+          envelope_status:
+            metadata.status === "envelope_rejected"
+              ? "envelope_rejected"
+              : "failed",
+          final_state: task.state,
+          reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
+        };
+      }
 
-    const output = await deps.agentRuntime.getRunOutput(metadata.runId);
-    const developerEnvelope = parseDeveloperEnvelope(output?.envelope);
-    if (
-      !output ||
-      !developerEnvelope ||
-      developerEnvelope.task_id !== task.id
-    ) {
-      await deps.repo.writeAudit({
-        scope_id: task.scope_id,
-        task_id: task.id,
-        actor: SUPERVISOR_ACTOR,
-        action: "developer.envelope.rejected",
-        capability: "task.assign",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: "envelope_missing_or_mismatched",
-        evidence: { run_id: metadata.runId },
+      const output = await deps.agentRuntime.getRunOutput(metadata.runId);
+      const developerEnvelope = parseDeveloperEnvelope(output?.envelope);
+      if (
+        !output ||
+        !developerEnvelope ||
+        developerEnvelope.task_id !== task.id
+      ) {
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "developer.envelope.rejected",
+          capability: "task.assign",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: "envelope_missing_or_mismatched",
+          evidence: { run_id: metadata.runId },
+        });
+        terminalStatus = "envelope_rejected";
+        return {
+          started: true,
+          task_id: task.id,
+          run_id: metadata.runId,
+          envelope_status: "envelope_rejected",
+          final_state: task.state,
+          reason: "envelope_missing_or_mismatched",
+        };
+      }
+      if (
+        developerEnvelope.freshness.packet_hash !== packet.freshness.packet_hash
+      ) {
+        terminalStatus = "envelope_rejected";
+        await writeStaleEnvelopeAudit(deps, task, metadata, developerEnvelope);
+        return {
+          started: true,
+          task_id: task.id,
+          run_id: metadata.runId,
+          envelope_status: "envelope_rejected",
+          final_state: task.state,
+          reason: "envelope_freshness_mismatch",
+        };
+      }
+      if (
+        developerEnvelope.result === "blocked" ||
+        developerEnvelope.result === "escalate"
+      ) {
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor: SUPERVISOR_ACTOR,
+          action:
+            developerEnvelope.result === "blocked"
+              ? "developer.envelope.blocked"
+              : "developer.envelope.escalated",
+          capability: "task.assign",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: `developer_envelope_${developerEnvelope.result}`,
+          evidence: {
+            run_id: metadata.runId,
+            envelope_result: developerEnvelope.result,
+          },
+        });
+        terminalStatus = "succeeded";
+        terminalEnvelopeHash = hashEnvelope(developerEnvelope);
+        return {
+          started: true,
+          task_id: task.id,
+          run_id: metadata.runId,
+          envelope_status: "succeeded",
+          outcome: developerEnvelope.result,
+          final_state: task.state,
+          developer_envelope: developerEnvelope,
+        };
+      }
+      if (developerEnvelope.result !== "done") {
+        return {
+          started: true,
+          task_id: task.id,
+          run_id: metadata.runId,
+          envelope_status: "failed",
+          final_state: task.state,
+          reason: `unsupported_developer_envelope_result:${developerEnvelope.result}`,
+        };
+      }
+
+      const existingMrMirror = await primaryMirror(deps, task.id, "mr_pr");
+      const headCommitSha = developerCommitFromEnvelope(developerEnvelope);
+
+      let mrResult: {
+        readonly action: "opened" | "updated";
+        readonly mr: ProviderMergeRequest;
+      };
+      try {
+        mrResult = await openOrUpdateMergeRequest({
+          adapter: deps.providerAdapter,
+          project: projectRef,
+          title: task.title,
+          description: developerMrDescription(
+            task,
+            metadata,
+            developerEnvelope,
+            packet.freshness.packet_hash,
+          ),
+          source_branch: sourceBranch,
+          target_branch: project.default_branch,
+          existing_mr_id: existingMrMirror?.provider_id,
+        });
+      } catch (err) {
+        const reason = `mr_provider_failed:${err instanceof Error ? err.message : String(err)}`;
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "developer.mr.open_failed",
+          capability: "provider.mr.open",
+          target_kind: "merge_request",
+          target_id: existingMrMirror?.provider_id ?? sourceBranch,
+          reason,
+          evidence: { run_id: metadata.runId, provider: project.provider },
+        });
+        return {
+          started: true,
+          task_id: task.id,
+          run_id: metadata.runId,
+          envelope_status: "failed",
+          final_state: task.state,
+          reason,
+        };
+      }
+      const { mr } = mrResult;
+
+      await deps.providerProjects.upsertMirror({
+        colony_id: task.id,
+        entity_kind: "mr_pr",
+        provider: project.provider,
+        provider_id: mr.id,
+        provider_project_id: project.id,
+        provider_project_path: project.path,
+        source_version: JSON.stringify({
+          envelope_hash: hashEnvelope(developerEnvelope),
+          head_commit_sha: headCommitSha,
+        }),
       });
-      return {
-        started: true,
-        task_id: task.id,
-        run_id: metadata.runId,
-        envelope_status: "envelope_rejected",
-        final_state: task.state,
-        reason: "envelope_missing_or_mismatched",
-      };
-    }
-    if (
-      developerEnvelope.freshness.packet_hash !== packet.freshness.packet_hash
-    ) {
-      await writeStaleEnvelopeAudit(deps, task, metadata, developerEnvelope);
-      return {
-        started: true,
-        task_id: task.id,
-        run_id: metadata.runId,
-        envelope_status: "envelope_rejected",
-        final_state: task.state,
-        reason: "envelope_freshness_mismatch",
-      };
-    }
-    if (
-      developerEnvelope.result === "blocked" ||
-      developerEnvelope.result === "escalate"
-    ) {
+
       await deps.repo.writeAudit({
         scope_id: task.scope_id,
         task_id: task.id,
         actor: SUPERVISOR_ACTOR,
         action:
-          developerEnvelope.result === "blocked"
-            ? "developer.envelope.blocked"
-            : "developer.envelope.escalated",
-        capability: "task.assign",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: `developer_envelope_${developerEnvelope.result}`,
+          mrResult.action === "updated"
+            ? "provider.mr.updated"
+            : "provider.mr.opened",
+        capability: "provider.mr.open",
+        target_kind: "merge_request",
+        target_id: mr.id,
+        reason: "developer_run_completed",
         evidence: {
           run_id: metadata.runId,
-          envelope_result: developerEnvelope.result,
+          source_branch: mr.source_branch,
+          target_branch: mr.target_branch,
+          provider: project.provider,
+          provider_project_id: project.id,
+          envelope_hash: output.envelopeHash,
+          head_commit_sha: headCommitSha,
+          mr_action: mrResult.action,
         },
       });
+
+      const finalTask = await deps.repo.updateTaskState(
+        task.id,
+        task.state_version,
+        "review_requested",
+        {
+          actor: SUPERVISOR_ACTOR,
+          capability: "task.assign",
+          reason: "developer_envelope_request_review",
+        },
+      );
+
+      terminalStatus = "succeeded";
+      terminalEnvelopeHash = output.envelopeHash;
       return {
         started: true,
         task_id: task.id,
         run_id: metadata.runId,
         envelope_status: "succeeded",
-        outcome: developerEnvelope.result,
-        final_state: task.state,
+        outcome: "done",
+        final_state: finalTask.state,
+        mr: {
+          id: mr.id,
+          source_branch: mr.source_branch,
+          target_branch: mr.target_branch,
+          url: mr.metadata.web_url,
+        },
         developer_envelope: developerEnvelope,
       };
+    } finally {
+      if (persistedRunId) {
+        await deps.repo.finishAgentRun({
+          id: persistedRunId,
+          status: terminalStatus,
+          envelope_hash: terminalEnvelopeHash,
+        });
+      }
     }
-    if (developerEnvelope.result !== "done") {
-      return {
-        started: true,
-        task_id: task.id,
-        run_id: metadata.runId,
-        envelope_status: "failed",
-        final_state: task.state,
-        reason: `unsupported_developer_envelope_result:${developerEnvelope.result}`,
-      };
-    }
-
-    const existingMrMirror = await primaryMirror(deps, task.id, "mr_pr");
-    const headCommitSha = developerCommitFromEnvelope(developerEnvelope);
-
-    let mrResult: {
-      readonly action: "opened" | "updated";
-      readonly mr: ProviderMergeRequest;
-    };
-    try {
-      mrResult = await openOrUpdateMergeRequest({
-        adapter: deps.providerAdapter,
-        project: projectRef,
-        title: task.title,
-        description: developerMrDescription(
-          task,
-          metadata,
-          developerEnvelope,
-          packet.freshness.packet_hash,
-        ),
-        source_branch: sourceBranch,
-        target_branch: project.default_branch,
-        existing_mr_id: existingMrMirror?.provider_id,
-      });
-    } catch (err) {
-      const reason = `mr_provider_failed:${err instanceof Error ? err.message : String(err)}`;
-      await deps.repo.writeAudit({
-        scope_id: task.scope_id,
-        task_id: task.id,
-        actor: SUPERVISOR_ACTOR,
-        action: "developer.mr.open_failed",
-        capability: "provider.mr.open",
-        target_kind: "merge_request",
-        target_id: existingMrMirror?.provider_id ?? sourceBranch,
-        reason,
-        evidence: { run_id: metadata.runId, provider: project.provider },
-      });
-      return {
-        started: true,
-        task_id: task.id,
-        run_id: metadata.runId,
-        envelope_status: "failed",
-        final_state: task.state,
-        reason,
-      };
-    }
-    const { mr } = mrResult;
-
-    await deps.providerProjects.upsertMirror({
-      colony_id: task.id,
-      entity_kind: "mr_pr",
-      provider: project.provider,
-      provider_id: mr.id,
-      provider_project_id: project.id,
-      provider_project_path: project.path,
-      source_version: JSON.stringify({
-        envelope_hash: hashEnvelope(developerEnvelope),
-        head_commit_sha: headCommitSha,
-      }),
-    });
-
-    await deps.repo.writeAudit({
-      scope_id: task.scope_id,
-      task_id: task.id,
-      actor: SUPERVISOR_ACTOR,
-      action:
-        mrResult.action === "updated"
-          ? "provider.mr.updated"
-          : "provider.mr.opened",
-      capability: "provider.mr.open",
-      target_kind: "merge_request",
-      target_id: mr.id,
-      reason: "developer_run_completed",
-      evidence: {
-        run_id: metadata.runId,
-        source_branch: mr.source_branch,
-        target_branch: mr.target_branch,
-        provider: project.provider,
-        provider_project_id: project.id,
-        envelope_hash: output.envelopeHash,
-        head_commit_sha: headCommitSha,
-        mr_action: mrResult.action,
-      },
-    });
-
-    const finalTask = await deps.repo.updateTaskState(
-      task.id,
-      task.state_version,
-      "review_requested",
-      {
-        actor: SUPERVISOR_ACTOR,
-        capability: "task.assign",
-        reason: "developer_envelope_request_review",
-      },
-    );
-
-    return {
-      started: true,
-      task_id: task.id,
-      run_id: metadata.runId,
-      envelope_status: "succeeded",
-      outcome: "done",
-      final_state: finalTask.state,
-      mr: {
-        id: mr.id,
-        source_branch: mr.source_branch,
-        target_branch: mr.target_branch,
-        url: mr.metadata.web_url,
-      },
-      developer_envelope: developerEnvelope,
-    };
   };
 }
 

@@ -3,6 +3,7 @@ import {
   prepareSandboxToolEnvironment,
   selectRuntimeBinding,
   type AgentRunEnvironment,
+  type AgentRunMetadata,
   type AgentRuntimeAdapter,
   type DeployerRuntimeBinding,
 } from "@colony/agent-runtime";
@@ -351,214 +352,240 @@ export function createDecompositionReviewRun(
     const runEnvironment =
       (await deps.buildRunEnvironment?.(scope)) ??
       (await defaultReviewerEnvironment());
-
-    let metadata;
+    let metadata: AgentRunMetadata;
+    let persistedRunId: string | undefined;
+    let terminalStatus: "succeeded" | "failed" | "envelope_rejected" = "failed";
+    let terminalEnvelopeHash: string | undefined;
     try {
-      metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
-    } finally {
-      if (primaryProjectRef && deps.providerAdapter) {
-        await revokeEphemeralProjectAgentToken(
-          {
-            repo: deps.repo,
-            providerAdapter: deps.providerAdapter,
-          },
-          {
-            project: primaryProjectRef,
-            token: agentToken,
-            audit: {
-              scope_id: scopeId,
-              actor: SUPERVISOR_ACTOR,
-              capability: "graph.read",
-              reason: "decomposition_review_run_finished",
-              purpose: "decomposition-reviewer",
+      const persistedRun = await deps.repo.startAgentRun({
+        scope_id: scopeId,
+        role: "reviewer",
+        packet_hash: packet.freshness.packet_hash,
+      });
+      persistedRunId = persistedRun.id;
+      try {
+        metadata = await deps.agentRuntime.startRun(packet, runEnvironment);
+      } finally {
+        if (primaryProjectRef && deps.providerAdapter) {
+          await revokeEphemeralProjectAgentToken(
+            {
+              repo: deps.repo,
+              providerAdapter: deps.providerAdapter,
             },
-          },
-        );
-      }
-    }
-    if (metadata.status !== "succeeded") {
-      await deps.repo.writeAudit({
-        scope_id: scopeId,
-        actor: SUPERVISOR_ACTOR,
-        action: "decomposition.review.run_rejected",
-        capability: "graph.write",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
-        evidence: {
-          run_id: metadata.runId,
-          status: metadata.status,
-          packet_hash: metadata.packetHash,
-          rejection_reason: metadata.rejectionReason,
-          proposal_id: proposalId,
-        },
-      });
-      return {
-        started: true,
-        scope_id: scopeId,
-        proposal_id: proposalId,
-        run_id: metadata.runId,
-        envelope_status:
-          metadata.status === "envelope_rejected"
-            ? "envelope_rejected"
-            : "failed",
-        reason: `agent_run_${metadata.status}`,
-      };
-    }
-
-    const output = await deps.agentRuntime.getRunOutput(metadata.runId);
-    const envelope = parseReviewerEnvelope(output?.envelope);
-    if (!output || !envelope || envelope.task_id !== synthTaskId) {
-      await deps.repo.writeAudit({
-        scope_id: scopeId,
-        actor: SUPERVISOR_ACTOR,
-        action: "decomposition.review.envelope_rejected",
-        capability: "graph.write",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: "envelope_missing_or_mismatched",
-        evidence: {
-          run_id: metadata.runId,
-          proposal_id: proposalId,
-          envelope_task_id:
-            (output?.envelope as { task_id?: string } | undefined)?.task_id ??
-            null,
-          expected_task_id: synthTaskId,
-        },
-      });
-      return {
-        started: true,
-        scope_id: scopeId,
-        proposal_id: proposalId,
-        run_id: metadata.runId,
-        envelope_status: "envelope_rejected",
-        reason: "envelope_missing_or_mismatched",
-      };
-    }
-    if (envelope.freshness.packet_hash !== packet.freshness.packet_hash) {
-      await deps.repo.writeAudit({
-        scope_id: scopeId,
-        actor: SUPERVISOR_ACTOR,
-        action: "decomposition.review.envelope_stale",
-        capability: "graph.write",
-        target_kind: "agent_run",
-        target_id: metadata.runId,
-        reason: "freshness_mismatch",
-        evidence: {
-          run_id: metadata.runId,
-          proposal_id: proposalId,
-          packet_hash: metadata.packetHash,
-          envelope_packet_hash: envelope.freshness.packet_hash,
-        },
-      });
-      return {
-        started: true,
-        scope_id: scopeId,
-        proposal_id: proposalId,
-        run_id: metadata.runId,
-        envelope_status: "envelope_rejected",
-        reason: "envelope_freshness_mismatch",
-      };
-    }
-
-    const reviewer = (input.reviewer ?? REVIEWER_ACTOR) as ActorId;
-    const reviewResult = mapReviewerResult(envelope.result);
-    await deps.repo.recordDecompositionReview(
-      {
-        scope_id: scopeId,
-        proposal_id: proposalId,
-        envelope_hash: proposal.envelope_hash,
-        reviewer,
-        result: reviewResult,
-      },
-      {
-        actor: reviewer,
-        capability: "graph.write",
-        reason: "decomposition_review_run",
-      },
-    );
-
-    // Surface the reviewer's verdict on the architect's spec MR (if one
-    // exists) — comment with rationale + findings, and on `approved`
-    // also call mergeRequests.approve so GitLab's MR view shows a real
-    // approval. This closes the loop the user expects: human-readable
-    // reviewer feedback on the MR + a green checkmark when the agent
-    // approves.
-    if (deps.providerAdapter && primary) {
-      if (specMrMirror) {
-        try {
-          await postSpecReviewComment({
-            adapter: deps.providerAdapter,
-            project: { id: primary.provider_id, path: primary.path },
-            mrId: specMrMirror.provider_id,
-            envelope,
-            reviewResult,
-          });
-          if (reviewResult === "approved") {
-            await deps.providerAdapter.mergeRequests
-              .approve(
-                { id: primary.provider_id, path: primary.path },
-                specMrMirror.provider_id,
-              )
-              .catch(() => {
-                // Approval API is best-effort; the colony-side review row
-                // is the source of truth for the gate.
-              });
-            await deps.repo.writeAudit({
-              scope_id: scopeId,
-              actor: reviewer,
-              action: "architect.spec_mr.approved",
-              capability: "provider.mr.approve",
-              target_kind: "merge_request",
-              target_id: specMrMirror.provider_id,
-              reason: "decomposition_review_approved",
-              evidence: { proposal_id: proposalId },
-            });
-          }
-        } catch (err) {
-          await deps.repo.writeAudit({
-            scope_id: scopeId,
-            actor: SUPERVISOR_ACTOR,
-            action: "architect.spec_mr.review_comment_failed",
-            capability: "graph.write",
-            target_kind: "merge_request",
-            target_id: specMrMirror.provider_id,
-            reason: "spec_mr_comment_failed",
-            evidence: {
-              message: err instanceof Error ? err.message : String(err),
+            {
+              project: primaryProjectRef,
+              token: agentToken,
+              audit: {
+                scope_id: scopeId,
+                actor: SUPERVISOR_ACTOR,
+                capability: "graph.read",
+                reason: "decomposition_review_run_finished",
+                purpose: "decomposition-reviewer",
+              },
             },
-          });
+          );
         }
       }
+      if (metadata.status !== "succeeded") {
+        terminalStatus =
+          metadata.status === "envelope_rejected"
+            ? "envelope_rejected"
+            : "failed";
+        await deps.repo.writeAudit({
+          scope_id: scopeId,
+          actor: SUPERVISOR_ACTOR,
+          action: "decomposition.review.run_rejected",
+          capability: "graph.write",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: metadata.rejectionReason ?? `agent_run_${metadata.status}`,
+          evidence: {
+            run_id: metadata.runId,
+            status: metadata.status,
+            packet_hash: metadata.packetHash,
+            rejection_reason: metadata.rejectionReason,
+            proposal_id: proposalId,
+          },
+        });
+        return {
+          started: true,
+          scope_id: scopeId,
+          proposal_id: proposalId,
+          run_id: metadata.runId,
+          envelope_status:
+            metadata.status === "envelope_rejected"
+              ? "envelope_rejected"
+              : "failed",
+          reason: `agent_run_${metadata.status}`,
+        };
+      }
+
+      const output = await deps.agentRuntime.getRunOutput(metadata.runId);
+      const envelope = parseReviewerEnvelope(output?.envelope);
+      if (!output || !envelope || envelope.task_id !== synthTaskId) {
+        terminalStatus = "envelope_rejected";
+        await deps.repo.writeAudit({
+          scope_id: scopeId,
+          actor: SUPERVISOR_ACTOR,
+          action: "decomposition.review.envelope_rejected",
+          capability: "graph.write",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: "envelope_missing_or_mismatched",
+          evidence: {
+            run_id: metadata.runId,
+            proposal_id: proposalId,
+            envelope_task_id:
+              (output?.envelope as { task_id?: string } | undefined)?.task_id ??
+              null,
+            expected_task_id: synthTaskId,
+          },
+        });
+        return {
+          started: true,
+          scope_id: scopeId,
+          proposal_id: proposalId,
+          run_id: metadata.runId,
+          envelope_status: "envelope_rejected",
+          reason: "envelope_missing_or_mismatched",
+        };
+      }
+      if (envelope.freshness.packet_hash !== packet.freshness.packet_hash) {
+        terminalStatus = "envelope_rejected";
+        await deps.repo.writeAudit({
+          scope_id: scopeId,
+          actor: SUPERVISOR_ACTOR,
+          action: "decomposition.review.envelope_stale",
+          capability: "graph.write",
+          target_kind: "agent_run",
+          target_id: metadata.runId,
+          reason: "freshness_mismatch",
+          evidence: {
+            run_id: metadata.runId,
+            proposal_id: proposalId,
+            packet_hash: metadata.packetHash,
+            envelope_packet_hash: envelope.freshness.packet_hash,
+          },
+        });
+        return {
+          started: true,
+          scope_id: scopeId,
+          proposal_id: proposalId,
+          run_id: metadata.runId,
+          envelope_status: "envelope_rejected",
+          reason: "envelope_freshness_mismatch",
+        };
+      }
+
+      const reviewer = (input.reviewer ?? REVIEWER_ACTOR) as ActorId;
+      const reviewResult = mapReviewerResult(envelope.result);
+      await deps.repo.recordDecompositionReview(
+        {
+          scope_id: scopeId,
+          proposal_id: proposalId,
+          envelope_hash: proposal.envelope_hash,
+          reviewer,
+          result: reviewResult,
+        },
+        {
+          actor: reviewer,
+          capability: "graph.write",
+          reason: "decomposition_review_run",
+        },
+      );
+
+      // Surface the reviewer's verdict on the architect's spec MR (if one
+      // exists) — comment with rationale + findings, and on `approved`
+      // also call mergeRequests.approve so GitLab's MR view shows a real
+      // approval. This closes the loop the user expects: human-readable
+      // reviewer feedback on the MR + a green checkmark when the agent
+      // approves.
+      if (deps.providerAdapter && primary) {
+        if (specMrMirror) {
+          try {
+            await postSpecReviewComment({
+              adapter: deps.providerAdapter,
+              project: { id: primary.provider_id, path: primary.path },
+              mrId: specMrMirror.provider_id,
+              envelope,
+              reviewResult,
+            });
+            if (reviewResult === "approved") {
+              await deps.providerAdapter.mergeRequests
+                .approve(
+                  { id: primary.provider_id, path: primary.path },
+                  specMrMirror.provider_id,
+                )
+                .catch(() => {
+                  // Approval API is best-effort; the colony-side review row
+                  // is the source of truth for the gate.
+                });
+              await deps.repo.writeAudit({
+                scope_id: scopeId,
+                actor: reviewer,
+                action: "architect.spec_mr.approved",
+                capability: "provider.mr.approve",
+                target_kind: "merge_request",
+                target_id: specMrMirror.provider_id,
+                reason: "decomposition_review_approved",
+                evidence: { proposal_id: proposalId },
+              });
+            }
+          } catch (err) {
+            await deps.repo.writeAudit({
+              scope_id: scopeId,
+              actor: SUPERVISOR_ACTOR,
+              action: "architect.spec_mr.review_comment_failed",
+              capability: "graph.write",
+              target_kind: "merge_request",
+              target_id: specMrMirror.provider_id,
+              reason: "spec_mr_comment_failed",
+              evidence: {
+                message: err instanceof Error ? err.message : String(err),
+              },
+            });
+          }
+        }
+      }
+
+      await deps.repo.writeAudit({
+        scope_id: scopeId,
+        actor: reviewer,
+        action:
+          reviewResult === "approved"
+            ? "decomposition.review.approved"
+            : reviewResult === "changes_requested"
+              ? "decomposition.review.changes_requested"
+              : reviewResult === "blocked"
+                ? "decomposition.review.blocked"
+                : "decomposition.review.escalated",
+        capability: "graph.write",
+        target_kind: "decomposition_proposal",
+        target_id: proposalId,
+        reason: `decomposition_review_${reviewResult}`,
+        evidence: { run_id: metadata.runId, proposal_id: proposalId },
+      });
+
+      terminalStatus = "succeeded";
+      terminalEnvelopeHash = output.envelopeHash;
+      return {
+        started: true,
+        scope_id: scopeId,
+        proposal_id: proposalId,
+        run_id: metadata.runId,
+        envelope_status: "succeeded",
+        outcome: reviewResult,
+        review_result: reviewResult,
+      };
+    } finally {
+      if (persistedRunId) {
+        await deps.repo.finishAgentRun({
+          id: persistedRunId,
+          status: terminalStatus,
+          envelope_hash: terminalEnvelopeHash,
+        });
+      }
     }
-
-    await deps.repo.writeAudit({
-      scope_id: scopeId,
-      actor: reviewer,
-      action:
-        reviewResult === "approved"
-          ? "decomposition.review.approved"
-          : reviewResult === "changes_requested"
-            ? "decomposition.review.changes_requested"
-            : reviewResult === "blocked"
-              ? "decomposition.review.blocked"
-              : "decomposition.review.escalated",
-      capability: "graph.write",
-      target_kind: "decomposition_proposal",
-      target_id: proposalId,
-      reason: `decomposition_review_${reviewResult}`,
-      evidence: { run_id: metadata.runId, proposal_id: proposalId },
-    });
-
-    return {
-      started: true,
-      scope_id: scopeId,
-      proposal_id: proposalId,
-      run_id: metadata.runId,
-      envelope_status: "succeeded",
-      outcome: reviewResult,
-      review_result: reviewResult,
-    };
   };
 }
 

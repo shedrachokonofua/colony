@@ -233,6 +233,27 @@ describe.runIf(liveEnabled)("COL-2.14 Phase 2 flow (fake provider)", () => {
     expect(devResult.envelope_status).toBe("succeeded");
     expect(devResult.outcome).toBe("done");
     expect(devResult.final_state).toBe("review_requested");
+
+    const agentRuns = await pgClient.query<{
+      role: string;
+      status: string;
+      packet_hash: string;
+      envelope_hash: string | null;
+    }>(
+      `SELECT role, status, packet_hash, envelope_hash
+         FROM agent_runs
+        WHERE task_id = $1
+        ORDER BY started_at DESC
+        LIMIT 1`,
+      [task.id],
+    );
+    expect(agentRuns.rows).toHaveLength(1);
+    expect(agentRuns.rows[0]).toMatchObject({
+      role: "developer",
+      status: "succeeded",
+    });
+    expect(agentRuns.rows[0].packet_hash).toMatch(/^sha256:/);
+    expect(agentRuns.rows[0].envelope_hash).toMatch(/^sha256:/);
     const mrId = devResult.mr?.id;
     if (!mrId) throw new Error("expected MR id");
     const tokenAfterDeveloper = await repo.getTask(task.id);
