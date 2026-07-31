@@ -569,26 +569,46 @@ export function createCheckMrGate(deps: GateDependencies) {
       review?.envelope_hash ??
       "";
 
-    const pipelineMirror = (
-      await deps.providerProjects.listMirrorsForColony({
-        colony_id: task.id,
-        entity_kind: "pipeline",
-      })
-    )[0];
-    let pipeline_status: PipelineStatusValue | null = null;
-    let pipeline_commit_sha: string | null = null;
-    if (pipelineMirror?.source_version) {
+    // A task accumulates one pipeline mirror per pipeline id, so picking an
+    // arbitrary row makes the gate evaluate a stale run: a task whose head
+    // has since gone green kept reading an older failed pipeline and could
+    // never open. Prefer the mirror recorded for the current head, and fall
+    // back to the newest row only when nothing matches the head.
+    const pipelineMirrors = await deps.providerProjects.listMirrorsForColony({
+      colony_id: task.id,
+      entity_kind: "pipeline",
+    });
+    const decodedPipelines: Array<{
+      status: PipelineStatusValue | null;
+      commit_sha: string | null;
+    }> = [];
+    for (const mirror of pipelineMirrors) {
+      if (!mirror.source_version) continue;
       try {
-        const decoded = JSON.parse(pipelineMirror.source_version) as {
+        const decoded = JSON.parse(mirror.source_version) as {
           readonly status?: PipelineStatusValue;
           readonly commit_sha?: string;
         };
-        pipeline_status = decoded.status ?? null;
-        pipeline_commit_sha = decoded.commit_sha ?? null;
+        decodedPipelines.push({
+          status: decoded.status ?? null,
+          commit_sha: decoded.commit_sha ?? null,
+        });
       } catch {
         // ignore malformed mirror payload
       }
     }
+    const selectedPipeline =
+      (head_commit_sha === ""
+        ? undefined
+        : decodedPipelines.find(
+            (value) => value.commit_sha === head_commit_sha,
+          )) ??
+      decodedPipelines[decodedPipelines.length - 1] ??
+      null;
+    const pipeline_status: PipelineStatusValue | null =
+      selectedPipeline?.status ?? null;
+    const pipeline_commit_sha: string | null =
+      selectedPipeline?.commit_sha ?? null;
 
     const evaluation = evaluateMrGate({
       task,
