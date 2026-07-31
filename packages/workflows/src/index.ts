@@ -2,6 +2,7 @@ import {
   condition,
   continueAsNew,
   defineSignal,
+  patched,
   proxyActivities,
   setHandler,
   sleep,
@@ -820,6 +821,21 @@ const DEVELOPER_ASSIGNEE = "bot:engine" as const;
 const REVIEWER_ASSIGNEE = "bot:reviewer" as const;
 const TASK_REFINEMENT_LOOP_CAP = 50;
 
+/**
+ * Temporal patch markers.
+ *
+ * Any change that adds, removes or reorders a workflow command (activity
+ * call, timer, signal wait) breaks replay for executions already in flight —
+ * they fail with `[TMPRL1100] Nondeterminism error` and stop making progress
+ * while still reporting `Running`. Guard such changes with `patched(id)` so
+ * old histories keep replaying the old path.
+ *
+ * Convention: `colony-<yyyy-mm-dd>-<short-description>`, never reused, never
+ * renamed. Once every execution predating a marker has closed, the guard can
+ * be retired with `deprecatePatch(id)` and then deleted.
+ */
+const PATCH_STARTUP_TASK_SYNC = "colony-2026-07-31-startup-task-sync";
+
 async function blockTaskAndAudit(input: {
   readonly scope_id: ScopeId;
   readonly task_id: TaskId;
@@ -1469,7 +1485,15 @@ export async function scopeSupervisorWorkflow(
   });
   // Recovery for scopes committed before this activity existed. The activity
   // is idempotent and skips tasks that already have mirrors.
-  await activities.syncCommittedTasksToProvider({ scope_id });
+  //
+  // Guarded by `patched()` because inserting an activity call changes the
+  // command sequence, and an in-flight execution replaying its history would
+  // fail with TMPRL1100 (nondeterminism) — that happened on 2026-07-31 and
+  // wedged every running scope. Executions started before this marker replay
+  // the old path; new ones run the sync. See docs/adr/007 for the convention.
+  if (patched(PATCH_STARTUP_TASK_SYNC)) {
+    await activities.syncCommittedTasksToProvider({ scope_id });
+  }
 
   const initialState = await activities.readScopeState({ scope_id });
   const hitl_mode = initialState.hitl_mode ?? "gated";
