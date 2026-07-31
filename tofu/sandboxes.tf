@@ -31,6 +31,12 @@ resource "kubernetes_namespace_v1" "sandboxes" {
   metadata {
     name = local.sandbox_namespace
     labels = merge(local.sandbox_common_labels, {
+      # Aether namespace contract (mirrors aether's colony-sandboxes-dev entry).
+      "aether.shdr.ch/tier"           = "sandbox"
+      "aether.shdr.ch/owner"          = "colony"
+      "aether.shdr.ch/backup"         = "none"
+      "aether.shdr.ch/exposure"       = "none"
+      "aether.shdr.ch/gateway-access" = "none"
       # Restricted Pod Security: sandboxes must not run privileged containers.
       "pod-security.kubernetes.io/enforce" = "restricted"
       # Selector for cross-namespace NetworkPolicy refs into this namespace.

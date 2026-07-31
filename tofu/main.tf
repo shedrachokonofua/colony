@@ -92,10 +92,21 @@ locals {
   }
 }
 
+# Aether's Kyverno namespace contract defaults any unset `aether.shdr.ch/*`
+# label to none/unknown/unclassified. Colony creates its own namespace, so it
+# must declare the contract itself — otherwise `gateway-access` defaults to
+# `none`, the main-gateway listener selector (gateway-access=internal) stops
+# matching, and every HTTPRoute reports NotAllowedByListeners (404 at the
+# edge). Values mirror aether's contract entry for this namespace.
 resource "kubernetes_namespace_v1" "colony" {
   metadata {
     name = local.namespace
     labels = merge(local.common_labels, {
+      "aether.shdr.ch/tier"                = "guest"
+      "aether.shdr.ch/owner"               = "colony"
+      "aether.shdr.ch/backup"              = "standard"
+      "aether.shdr.ch/exposure"            = "internal"
+      "aether.shdr.ch/gateway-access"      = "internal"
       "pod-security.kubernetes.io/enforce" = "baseline"
     })
   }
