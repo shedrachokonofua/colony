@@ -235,6 +235,8 @@ describe.runIf(temporalTestEnabled)(
               invalidated_approvals: 0,
               rework_count: 1,
             }),
+          requestArchitectReplan: () =>
+            resolved({ replanned: false, reason: "not_used" }),
           applyOperatorOverride: (input) => {
             calls.push(`applyOperatorOverride:${input.target}:${input.action}`);
             return resolved({
@@ -510,6 +512,8 @@ describe.runIf(temporalTestEnabled)(
               task_id: taskId,
               reason: "not_used",
             }),
+          requestArchitectReplan: () =>
+            resolved({ replanned: false, reason: "not_used" }),
           applyOperatorOverride: () =>
             resolved({
               applied: false,
@@ -722,9 +726,145 @@ describe.runIf(temporalTestEnabled)(
         await connection.close();
       }
     }, 120_000);
+    it("re-drives a changes_requested task instead of leaving it parked", async () => {
+      const calls: string[] = [];
+      const base = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...base,
+          readScopeState: () =>
+            resolved({
+              scope: { id: "col-extra", state: "active", state_version: 0 },
+              tasks: [
+                {
+                  id: "col-extra.1",
+                  state: "changes_requested",
+                  state_version: 3,
+                  claim_version: 1,
+                  assignee: "bot:engine",
+                },
+              ],
+            }),
+          claimReadyTask: () => resolved({ claimed: false }),
+        };
+      await runSupervisorTestScenario(activities, async (handle) => {
+        await waitFor(() => calls.includes("startReviewerRun"), 15_000);
+        await signalOperatorBlock(handle, "col-extra.1");
+      });
+      expect(calls).toContain("startDeveloperPlanRun");
+      expect(calls).toContain("startDeveloperRun");
+      expect(calls).toContain("startReviewerRun");
+    }, 120_000);
+
+    it("routes a planner escalation into the architect tier", async () => {
+      const calls: string[] = [];
+      const base = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...base,
+          startDeveloperPlanRun: () =>
+            resolved({
+              started: true,
+              task_id: "col-extra.1",
+              envelope_status: "succeeded",
+              outcome: "escalate",
+              final_state: "claimed",
+              reason: "planner cannot resolve dependency",
+            }),
+          requestArchitectReplan: (input) => {
+            calls.push(`requestArchitectReplan:${input.attempt}`);
+            return resolved({
+              replanned: true,
+              reason: "split the task",
+              task_ids: ["col-extra.1"],
+            });
+          },
+        };
+      await runSupervisorTestScenario(activities, async (handle) => {
+        await waitFor(() => calls.includes("requestArchitectReplan:1"), 15_000);
+        await signalOperatorBlock(handle, "col-extra.1");
+      });
+      expect(calls).toContain("requestArchitectReplan:1");
+      expect(
+        calls.filter((call) => call === "override:task:block"),
+      ).toHaveLength(1);
+    }, 120_000);
+
+    it("blocks after architect re-plan exhaustion with ladder evidence", async () => {
+      const calls: string[] = [];
+      const blockedEvidence: unknown[] = [];
+      const ladderEvents: object[] = [];
+      const base = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...base,
+          readScopeState: () =>
+            resolved({
+              scope: { id: "col-extra", state: "active", state_version: 0 },
+              tasks: [
+                {
+                  id: "col-extra.1",
+                  state: "claimed",
+                  state_version: 3,
+                  claim_version: 1,
+                  assignee: "bot:engine",
+                  tier2_attempts: 2,
+                  tier3_attempts: 2,
+                },
+              ],
+            }),
+          startDeveloperPlanRun: () =>
+            resolved({
+              started: true,
+              task_id: "col-extra.1",
+              envelope_status: "succeeded",
+              outcome: "escalate",
+              final_state: "claimed",
+              reason: "planner cannot resolve dependency",
+            }),
+          applyOperatorOverride: (input) => {
+            if (input.target === "task" && input.action === "block") {
+              blockedEvidence.push(input.evidence ?? {});
+            }
+            return resolved({
+              applied: true,
+              target: input.target,
+              previous_state: "claimed",
+              new_state: input.target === "task" ? "blocked" : "canceled",
+            });
+          },
+          recordWorkflowEvent: (input) => {
+            if (input.kind === "task_escalation_ladder") {
+              ladderEvents.push(input.payload);
+            }
+            return resolved({ recorded: true });
+          },
+        };
+      await runSupervisorTestScenario(activities, async (handle) => {
+        await waitFor(() => blockedEvidence.length > 0, 15_000);
+        await signalOperatorBlock(handle, "col-extra.1");
+      });
+      expect(
+        ladderEvents.some((event) => "tier" in event && event.tier === 2),
+      ).toBe(true);
+      expect(blockedEvidence).toContainEqual(
+        expect.objectContaining({ tier: 4, attempt: 3 }),
+      );
+    }, 120_000);
   },
 );
-
 function makeSupervisorTestActivities(
   scopeId: string,
   taskId: string,
@@ -819,6 +959,8 @@ function makeSupervisorTestActivities(
       resolved({ merged: true, scope_id: scopeId, already_merged: true }),
     requestTaskRework: () =>
       resolved({ applied: false, task_id: taskId, reason: "not_used" }),
+    requestArchitectReplan: () =>
+      resolved({ replanned: false, reason: "not_used" }),
     applyOperatorOverride: (input) => {
       calls.push(`override:${input.target}:${input.action}`);
       return resolved({
@@ -1138,3 +1280,26 @@ describe.runIf(temporalTestEnabled)(
     }, 120_000);
   },
 );
+
+async function signalOperatorBlock(
+  handle: unknown,
+  taskId: string,
+): Promise<void> {
+  if (
+    !handle ||
+    typeof handle !== "object" ||
+    !("signal" in handle) ||
+    typeof handle.signal !== "function"
+  ) {
+    throw new Error("workflow handle cannot signal");
+  }
+  await Reflect.apply(handle.signal, handle, [
+    operatorOverrideSignal,
+    {
+      actor: "human:test",
+      action: "block",
+      reason: "end test",
+      task_id: taskId,
+    },
+  ]);
+}

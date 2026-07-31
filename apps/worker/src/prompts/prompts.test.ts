@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildTaskPacket, buildReviewPacket } from "@colony/agent-runtime";
+import {
+  buildTaskPacket,
+  buildReviewPacket,
+  buildArchitectSystemPrompt,
+} from "@colony/agent-runtime";
 import type {
   DeveloperCompletionEnvelope,
   DeveloperPlanEnvelope,
@@ -704,5 +708,29 @@ describe("buildPlanReviewerPrompt", () => {
     expect(user).toContain("- review_count: 1");
     expect(user).toContain("- packet_hash: sha256:");
     expect(user).toContain("call `submit_plan_review` exactly once");
+  });
+});
+
+describe("buildArchitectSystemPrompt", () => {
+  it("requires a repository-aware CI bootstrap before dependent work", () => {
+    const prompt = buildArchitectSystemPrompt();
+
+    expect(prompt).toContain(
+      "CI bootstrap is part of the decomposition whenever the target repository does not already have working continuous integration",
+    );
+    expect(prompt).toContain(
+      "the FIRST proposed task in the DAG must establish ecosystem-appropriate automated verification",
+    );
+    expect(prompt).toContain(
+      "installs dependencies and runs the project's tests, and make it green for an empty or minimal test suite",
+    );
+    expect(prompt).toContain(
+      "test runner that exits non-zero when no test files exist yet",
+    );
+    expect(prompt).toContain("Auto DevOps");
+    expect(prompt).toContain(
+      "Every other proposed task must depend on the CI bootstrap task directly or transitively",
+    );
+    expect(prompt).not.toMatch(/\b(?:Node|npm)\b/);
   });
 });

@@ -17,7 +17,8 @@ export type RepositoryErrorCode =
   | "MISSING_ACCEPTANCE_CRITERIA"
   | "UNKNOWN_DEPENDENCY_TASK"
   | "SELF_DEPENDENCY"
-  | "UNKNOWN_TARGET_TASK";
+  | "UNKNOWN_TARGET_TASK"
+  | "INVALID_TASK_STATE";
 
 export class RepositoryError extends Error {
   readonly code: RepositoryErrorCode;

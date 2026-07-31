@@ -810,7 +810,7 @@ function providerArtifactUri(
   return providerId;
 }
 
-async function defaultArchitectEnvironment(): Promise<AgentRunEnvironment> {
+export async function defaultArchitectEnvironment(): Promise<AgentRunEnvironment> {
   // Architect runs don't require any CLI tools — they read the packet,
   // produce an envelope. Skip the nix profile entirely.
   const tools = await prepareSandboxToolEnvironment(

@@ -36,6 +36,11 @@ import {
   type StartArchitectRunResult,
 } from "./architect-run.js";
 import {
+  createRequestArchitectReplan,
+  type RequestArchitectReplanInput,
+  type RequestArchitectReplanResult,
+} from "./architect-replan.js";
+import {
   createDecompositionReviewRun,
   type StartDecompositionReviewRunInput,
   type StartDecompositionReviewRunResult,
@@ -483,6 +488,18 @@ export async function startArchitectRun(
   input: StartArchitectRunInput,
 ): Promise<StartArchitectRunResult> {
   const run = createArchitectRun({
+    repo: getRepository(),
+    providerProjects: getProviderProjects(),
+    providerAdapter: getProviderAdapter(),
+    agentRuntime: await getAgentRuntime("architect"),
+  });
+  return run(input);
+}
+
+export async function requestArchitectReplan(
+  input: RequestArchitectReplanInput,
+): Promise<RequestArchitectReplanResult> {
+  const run = createRequestArchitectReplan({
     repo: getRepository(),
     providerProjects: getProviderProjects(),
     providerAdapter: getProviderAdapter(),
@@ -1173,6 +1190,15 @@ export async function readScopeState(input: {
   }
 
   const tasks = await repository.listTasks(input.scope_id);
+  const auditByTask = await Promise.all(
+    tasks.map(async (task) => ({
+      task,
+      audits: await repository.listAuditForScope(scope.id, {
+        task_id: task.id,
+        limit: 500,
+      }),
+    })),
+  );
   return {
     scope: {
       id: scope.id,
@@ -1180,12 +1206,20 @@ export async function readScopeState(input: {
       state_version: scope.state_version,
     },
     hitl_mode,
-    tasks: tasks.map((task) => ({
+    tasks: auditByTask.map(({ task, audits }) => ({
       id: task.id,
       state: task.state,
       state_version: task.state_version,
       claim_version: task.claim_version,
       assignee: task.assignee,
+      tier2_attempts: audits.filter(
+        (audit) =>
+          audit.action === "event.record" && audit.evidence?.tier === 2,
+      ).length,
+      tier3_attempts: audits.filter(
+        (audit) =>
+          audit.action === "event.record" && audit.evidence?.tier === 3,
+      ).length,
     })),
   };
 }
@@ -1244,6 +1278,7 @@ export async function recordWorkflowEvent(
         kind: input.kind,
         workflow_id: input.workflow_id,
         run_id: input.run_id,
+        ...input.payload,
       },
     });
     return { ev, audit_id };
@@ -1282,6 +1317,7 @@ export const activities = {
   startDeveloperPlanRun,
   startPlanReviewRun,
   startArchitectRun,
+  requestArchitectReplan,
   startDecompositionReviewRun,
   startDeveloperRun,
   startReviewerRun,

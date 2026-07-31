@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   assertScopeTransition,
   assertTaskTransition,
+  isScopeId,
   type ActorId,
   type AgentRun,
   type AgentRunStatus,
@@ -53,6 +54,14 @@ export interface CreateTaskInput {
   readonly acceptance_criteria?: readonly string[];
   readonly non_goals?: readonly string[];
   readonly state?: TaskState;
+}
+
+export interface SupersedeTaskWithReplacementsInput {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+  readonly replacements: readonly CreateTaskInput[];
+  readonly dependencies: readonly ProposedDecompositionDependencyInput[];
+  readonly attempt: number;
 }
 
 export interface ListTasksFilter {
@@ -563,6 +572,15 @@ export class TaskGraphRepository {
 
   async createTask(input: CreateTaskInput, ctx: ActorContext): Promise<Task> {
     return this.withTransaction((tx) => tx.createTask(input, ctx));
+  }
+
+  async supersedeTaskWithReplacements(
+    input: SupersedeTaskWithReplacementsInput,
+    ctx: ActorContext,
+  ): Promise<readonly Task[]> {
+    return this.withTransaction((tx) =>
+      tx.supersedeTaskWithReplacements(input, ctx),
+    );
   }
 
   async getTask(id: TaskId): Promise<Task | null> {
@@ -1124,6 +1142,255 @@ export class TaskGraphTransaction {
       evidence: { title: task.title },
     });
     return task;
+  }
+
+  async supersedeTaskWithReplacements(
+    input: SupersedeTaskWithReplacementsInput,
+    ctx: ActorContext,
+  ): Promise<readonly Task[]> {
+    const source = await this.lockTaskRow(input.task_id);
+    if (!source || source.scope_id !== input.scope_id) {
+      throw new RepositoryError("NOT_FOUND", "superseded task not found", {
+        task_id: input.task_id,
+        scope_id: input.scope_id,
+      });
+    }
+    if (source.state === "merged" || source.state === "closed") {
+      throw new RepositoryError(
+        "INVALID_TASK_STATE",
+        "merged or closed tasks cannot be superseded",
+        { task_id: source.id, state: source.state },
+      );
+    }
+    if (input.replacements.length === 0) {
+      throw new RepositoryError(
+        "EMPTY_DECOMPOSITION",
+        "architect re-plan must provide replacement tasks",
+      );
+    }
+    const replacementIds = input.replacements.map((task) => task.id);
+    if (new Set(replacementIds).size !== replacementIds.length) {
+      throw new RepositoryError(
+        "DUPLICATE_TASK_ID",
+        "architect re-plan contains duplicate replacement task ids",
+      );
+    }
+    const { rows: existingReplacementRows } = await queryRows<{
+      id: string;
+      scope_id: string;
+      state: TaskState;
+    }>(
+      this.client,
+      `SELECT id, scope_id, state FROM tasks WHERE id = ANY($1::text[])`,
+      [replacementIds],
+    );
+    if (existingReplacementRows.length > 0) {
+      throw new RepositoryError(
+        "DUPLICATE_TASK_ID",
+        "architect re-plan replacement ids must be fresh",
+        { task_ids: existingReplacementRows.map((row) => row.id) },
+      );
+    }
+
+    const { rows: incoming } = await queryRows<{
+      from_task_id: string;
+      kind: DependencyKind;
+    }>(
+      this.client,
+      `SELECT from_task_id, kind FROM task_dependencies
+       WHERE to_task_id = $1`,
+      [source.id],
+    );
+    const { rows: outgoing } = await queryRows<{
+      to_task_id: string;
+      kind: DependencyKind;
+      state: TaskState;
+    }>(
+      this.client,
+      `SELECT d.to_task_id, d.kind, t.state
+       FROM task_dependencies d
+       JOIN tasks t ON t.id = d.to_task_id
+       WHERE d.from_task_id = $1`,
+      [source.id],
+    );
+
+    const dependencyTaskIds = [
+      ...new Set(
+        input.dependencies.flatMap((edge) => [
+          edge.from_task_id,
+          edge.to_task_id,
+        ]),
+      ),
+    ];
+    if (dependencyTaskIds.length > 0) {
+      const { rows: dependencyTasks } = await queryRows<{
+        id: string;
+        scope_id: string;
+        state: TaskState;
+      }>(
+        this.client,
+        `SELECT id, scope_id, state FROM tasks WHERE id = ANY($1::text[])`,
+        [dependencyTaskIds],
+      );
+      if (
+        dependencyTasks.some(
+          (candidate) =>
+            candidate.scope_id !== input.scope_id ||
+            candidate.state === "merged" ||
+            candidate.state === "closed",
+        )
+      ) {
+        throw new RepositoryError(
+          "UNKNOWN_DEPENDENCY_TASK",
+          "re-plan dependencies cannot modify another scope or merged/closed task",
+        );
+      }
+    }
+
+    const replacementTasks: Task[] = [];
+    for (const replacement of input.replacements) {
+      replacementTasks.push(
+        await this.createTask(
+          {
+            ...replacement,
+            scope_id: input.scope_id,
+            state: "ready",
+          },
+          { ...ctx, reason: ctx.reason ?? "architect_replan_replacement" },
+        ),
+      );
+    }
+
+    const canceled = await this.updateTaskState(
+      source.id as TaskId,
+      source.state_version,
+      "canceled",
+      {
+        ...ctx,
+        reason: ctx.reason ?? "architect_replan_superseded",
+      },
+    );
+
+    // Keep historical edges to terminal dependents intact. Non-terminal
+    // dependents must no longer wait on the canceled task.
+    await queryRows(
+      this.client,
+      `DELETE FROM task_dependencies
+       WHERE from_task_id = $1
+         AND to_task_id = ANY($2::text[])
+         AND to_task_id IN (
+           SELECT id FROM tasks WHERE state NOT IN ('merged', 'closed')
+         )`,
+      [
+        source.id,
+        outgoing
+          .filter((edge) => edge.state !== "merged" && edge.state !== "closed")
+          .map((edge) => edge.to_task_id),
+      ],
+    );
+
+    const edgeKeys = new Set<string>();
+    const addEdge = async (
+      from_task_id: TaskId,
+      to_task_id: TaskId,
+      kind: DependencyKind,
+    ): Promise<void> => {
+      const key = `${from_task_id}:${to_task_id}:${kind}`;
+      if (edgeKeys.has(key)) return;
+      edgeKeys.add(key);
+      await this.addDependency(from_task_id, to_task_id, kind, ctx);
+    };
+
+    for (const replacement of replacementTasks) {
+      await this.linkTaskTargetForReplan(replacement.id);
+      await addEdge(source.id as TaskId, replacement.id, "parent_child");
+      for (const edge of incoming) {
+        await addEdge(edge.from_task_id as TaskId, replacement.id, edge.kind);
+      }
+      for (const edge of input.dependencies) {
+        if (
+          edge.from_task_id !== source.id &&
+          edge.to_task_id === replacement.id
+        ) {
+          await addEdge(edge.from_task_id, edge.to_task_id, edge.kind);
+        }
+      }
+    }
+    for (const edge of outgoing) {
+      if (edge.state === "merged" || edge.state === "closed") continue;
+      const explicitlyRewired = input.dependencies
+        .filter(
+          (candidate) =>
+            candidate.to_task_id === edge.to_task_id &&
+            replacementIds.includes(candidate.from_task_id),
+        )
+        .map((candidate) => candidate.from_task_id);
+      const targets =
+        explicitlyRewired.length > 0
+          ? explicitlyRewired
+          : replacementTasks.map((replacement) => replacement.id);
+      for (const replacementId of targets) {
+        await addEdge(replacementId, edge.to_task_id as TaskId, edge.kind);
+      }
+    }
+    for (const edge of input.dependencies) {
+      if (
+        edge.from_task_id !== source.id &&
+        !replacementIds.includes(edge.to_task_id)
+      ) {
+        await addEdge(edge.from_task_id, edge.to_task_id, edge.kind);
+      }
+    }
+
+    await this.writeAudit({
+      scope_id: input.scope_id,
+      task_id: source.id as TaskId,
+      actor: ctx.actor,
+      action: "task.replan.applied",
+      capability: ctx.capability,
+      target_kind: "task",
+      target_id: source.id,
+      reason: ctx.reason,
+      evidence: {
+        tier: 3,
+        attempt: input.attempt,
+        superseded_task_id: source.id,
+        replacement_task_ids: replacementTasks.map((task) => task.id),
+        preserved_terminal_dependents: outgoing
+          .filter((edge) => edge.state === "merged" || edge.state === "closed")
+          .map((edge) => edge.to_task_id),
+        canceled_state_version: canceled.state_version,
+      },
+    });
+    return replacementTasks;
+  }
+
+  private async linkTaskTargetForReplan(task_id: TaskId): Promise<void> {
+    const { rows } = await queryRows<{ provider_project_id: string }>(
+      this.client,
+      `SELECT provider_project_id FROM task_targets
+       WHERE task_id = $1
+       LIMIT 1`,
+      [task_id],
+    );
+    if (rows.length > 0) return;
+    const lockedScopeId = (await this.lockTaskRow(task_id))!.scope_id;
+    if (!isScopeId(lockedScopeId)) {
+      throw new RepositoryError(
+        "NOT_FOUND",
+        "replacement task has an unusable scope id",
+        { task_id, scope_id: lockedScopeId },
+      );
+    }
+    const project = await this.primaryScopeTarget(lockedScopeId);
+    if (!project) {
+      throw new RepositoryError(
+        "MISSING_TASK_TARGET",
+        "replacement task has no provider project target",
+        { task_id },
+      );
+    }
+    await this.linkTaskTarget(task_id, project);
   }
   async startAgentRun(input: StartAgentRunInput): Promise<AgentRun> {
     if (!input.scope_id && !input.task_id && !input.review_id) {

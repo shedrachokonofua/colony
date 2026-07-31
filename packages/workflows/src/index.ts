@@ -156,6 +156,8 @@ export interface ScopeStateSnapshot {
     readonly state_version: number;
     readonly claim_version: number;
     readonly assignee?: string;
+    readonly tier2_attempts?: number;
+    readonly tier3_attempts?: number;
   }>;
 }
 
@@ -530,6 +532,11 @@ export interface SyncCommittedTasksToProviderResult {
   readonly failed: number;
   readonly failures: readonly string[];
 }
+export interface ArchitectReplanResult {
+  readonly replanned: boolean;
+  readonly reason?: string;
+  readonly task_ids?: readonly TaskId[];
+}
 
 export interface LongRunningSupervisorActivities {
   readonly startArchitectRun: (input: {
@@ -541,6 +548,12 @@ export interface LongRunningSupervisorActivities {
     readonly proposal_id?: string;
     readonly reviewer?: string;
   }) => Promise<DecompositionReviewActivityResult>;
+  readonly requestArchitectReplan: (input: {
+    readonly scope_id: ScopeId;
+    readonly task_id: TaskId;
+    readonly reason: string;
+    readonly attempt: number;
+  }) => Promise<ArchitectReplanResult>;
 }
 
 export interface SupervisorActivities {
@@ -820,6 +833,7 @@ const longRunningActivities = proxyActivities<LongRunningSupervisorActivities>({
 const DEVELOPER_ASSIGNEE = "bot:engine" as const;
 const REVIEWER_ASSIGNEE = "bot:reviewer" as const;
 const TASK_REFINEMENT_LOOP_CAP = 50;
+const TASK_ARCHITECT_REPLAN_CAP = 2;
 
 /**
  * Temporal patch markers.
@@ -835,22 +849,33 @@ const TASK_REFINEMENT_LOOP_CAP = 50;
  * be retired with `deprecatePatch(id)` and then deleted.
  */
 const PATCH_STARTUP_TASK_SYNC = "colony-2026-07-31-startup-task-sync";
+const PATCH_ESCALATION_LADDER = "colony-2026-07-31-escalation-ladder";
+const PATCH_REDRIVE_CHANGES_REQUESTED =
+  "colony-2026-07-31-redrive-changes-requested";
 
 async function blockTaskAndAudit(input: {
   readonly scope_id: ScopeId;
   readonly task_id: TaskId;
   readonly reason: string;
   readonly signal_seq: number;
+  readonly tier: 2 | 3 | 4;
+  readonly attempt: number;
   readonly evidence?: Readonly<Record<string, unknown>>;
 }): Promise<void> {
   const info = workflowInfo();
+  const evidence = {
+    tier: input.tier,
+    classified_reason: input.reason,
+    attempt: input.attempt,
+    ...(input.evidence ?? {}),
+  };
   await activities.applyOperatorOverride({
     target: "task",
     task_id: input.task_id,
     action: "block",
     actor: "svc:supervisor",
     reason: input.reason,
-    evidence: input.evidence,
+    evidence,
   });
   await activities.recordWorkflowEvent({
     scope_id: input.scope_id,
@@ -864,9 +889,113 @@ async function blockTaskAndAudit(input: {
     payload: {
       action: "block",
       reason: input.reason,
-      ...(input.evidence ?? {}),
+      ...evidence,
     },
   });
+}
+
+async function readLadderAttempts(input: {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+}): Promise<{ readonly tier2: number; readonly tier3: number }> {
+  const state = await activities.readScopeState({ scope_id: input.scope_id });
+  const task = state.tasks.find((candidate) => candidate.id === input.task_id);
+  return {
+    tier2: task?.tier2_attempts ?? 0,
+    tier3: task?.tier3_attempts ?? 0,
+  };
+}
+
+async function recordLadderTransition(input: {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+  readonly tier: 2 | 3;
+  readonly attempt: number;
+  readonly reason: string;
+  readonly signal_seq: number;
+}): Promise<void> {
+  const info = workflowInfo();
+  await activities.recordWorkflowEvent({
+    scope_id: input.scope_id,
+    task_id: input.task_id,
+    signal_seq: input.signal_seq,
+    signal: "operator_override",
+    kind: "task_escalation_ladder",
+    actor: "svc:supervisor",
+    workflow_id: info.workflowId,
+    run_id: info.runId,
+    payload: {
+      tier: input.tier,
+      classified_reason: input.reason,
+      attempt: input.attempt,
+      action: input.tier === 2 ? "replan_with_feedback" : "architect_replan",
+    },
+  });
+}
+
+async function routeFailureToLadder(input: {
+  readonly scope_id: ScopeId;
+  readonly task_id: TaskId;
+  readonly reason: string;
+  readonly signal_seq: number;
+  readonly evidence?: Readonly<Record<string, unknown>>;
+}): Promise<void> {
+  // Existing histories must keep the old command sequence. New histories use
+  // the durable ladder, including the additional state query and architect
+  // activity command.
+  if (!patched(PATCH_ESCALATION_LADDER)) {
+    await blockTaskAndAudit({
+      ...input,
+      tier: 4,
+      attempt: 1,
+    });
+    return;
+  }
+  const attempts = await readLadderAttempts(input);
+  const tier2Attempt = attempts.tier2 + 1;
+  await recordLadderTransition({
+    ...input,
+    tier: 2,
+    attempt: tier2Attempt,
+  });
+  const tier3Attempt = attempts.tier3 + 1;
+  if (tier3Attempt > TASK_ARCHITECT_REPLAN_CAP) {
+    await blockTaskAndAudit({
+      ...input,
+      tier: 4,
+      attempt: tier3Attempt,
+      reason: "architect_replan_cap_exhausted",
+      evidence: {
+        ...(input.evidence ?? {}),
+        tier3_attempts: attempts.tier3,
+        tier3_cap: TASK_ARCHITECT_REPLAN_CAP,
+      },
+    });
+    return;
+  }
+  await recordLadderTransition({
+    ...input,
+    tier: 3,
+    attempt: tier3Attempt,
+  });
+  const replan = await longRunningActivities.requestArchitectReplan({
+    scope_id: input.scope_id,
+    task_id: input.task_id,
+    reason: input.reason,
+    attempt: tier3Attempt,
+  });
+  if (!replan.replanned) {
+    await blockTaskAndAudit({
+      ...input,
+      tier: 4,
+      attempt: tier3Attempt,
+      reason: replan.reason ?? "architect_replan_declined",
+      evidence: {
+        ...(input.evidence ?? {}),
+        tier3_attempts: tier3Attempt,
+      },
+    });
+  }
 }
 
 async function driveClaimedTask(input: {
@@ -892,7 +1021,7 @@ async function driveClaimedTask(input: {
           planOutcome === "blocked" ||
           planOutcome === "escalate"
         ) {
-          await blockTaskAndAudit({
+          await routeFailureToLadder({
             ...input,
             signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
             reason:
@@ -911,7 +1040,7 @@ async function driveClaimedTask(input: {
         }
         if (plan.envelope_status !== "succeeded" || !plan.developer_plan) {
           if (attempt < TASK_REFINEMENT_LOOP_CAP) continue;
-          await blockTaskAndAudit({
+          await routeFailureToLadder({
             ...input,
             signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
             reason: "developer_plan_refinement_loop_cap_exhausted",
@@ -935,7 +1064,7 @@ async function driveClaimedTask(input: {
           planReviewOutcome === "blocked" ||
           planReviewOutcome === "escalate"
         ) {
-          await blockTaskAndAudit({
+          await routeFailureToLadder({
             ...input,
             signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
             reason:
@@ -955,7 +1084,7 @@ async function driveClaimedTask(input: {
         }
         if (planReview.envelope_status !== "succeeded") {
           if (attempt < TASK_REFINEMENT_LOOP_CAP) continue;
-          await blockTaskAndAudit({
+          await routeFailureToLadder({
             ...input,
             signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
             reason: "plan_review_refinement_loop_cap_exhausted",
@@ -971,7 +1100,7 @@ async function driveClaimedTask(input: {
         } else if (planReview.review_result === "changes_requested") {
           continue;
         } else {
-          await blockTaskAndAudit({
+          await routeFailureToLadder({
             ...input,
             signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + attempt,
             reason: "plan_review_no_approval",
@@ -981,7 +1110,7 @@ async function driveClaimedTask(input: {
         }
       }
       if (!planApproved) {
-        await blockTaskAndAudit({
+        await routeFailureToLadder({
           ...input,
           signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP,
           reason: "plan_refinement_loop_cap_exhausted",
@@ -1001,7 +1130,7 @@ async function driveClaimedTask(input: {
         devOutcome === "escalate" ||
         !dev.developer_envelope
       ) {
-        await blockTaskAndAudit({
+        await routeFailureToLadder({
           ...input,
           signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 10_000,
           reason:
@@ -1019,7 +1148,7 @@ async function driveClaimedTask(input: {
 
       const gate = await activities.openMrGate({ task_id: input.task_id });
       if (!gate.opened) {
-        await blockTaskAndAudit({
+        await routeFailureToLadder({
           ...input,
           signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 20_000,
           reason: `open_mr_gate_failed:${gate.reason ?? "unknown"}`,
@@ -1038,7 +1167,7 @@ async function driveClaimedTask(input: {
         reviewOutcome === "blocked" ||
         reviewOutcome === "escalate"
       ) {
-        await blockTaskAndAudit({
+        await routeFailureToLadder({
           ...input,
           signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 30_000,
           reason:
@@ -1057,7 +1186,7 @@ async function driveClaimedTask(input: {
       }
       if (review.review_result === "approved") return;
       if (review.review_result !== "changes_requested") {
-        await blockTaskAndAudit({
+        await routeFailureToLadder({
           ...input,
           signal_seq: cycle * TASK_REFINEMENT_LOOP_CAP + 30_001,
           reason: "review_no_approval",
@@ -1066,7 +1195,7 @@ async function driveClaimedTask(input: {
         return;
       }
     }
-    await blockTaskAndAudit({
+    await routeFailureToLadder({
       ...input,
       signal_seq: TASK_REFINEMENT_LOOP_CAP * TASK_REFINEMENT_LOOP_CAP,
       reason: "task_refinement_loop_cap_exhausted",
@@ -1074,6 +1203,8 @@ async function driveClaimedTask(input: {
   } catch (err) {
     await blockTaskAndAudit({
       ...input,
+      tier: 4,
+      attempt: 1,
       signal_seq: 2_000_000,
       reason: `agent_activity_failed:${activityFailureReason(err)}`,
     });
@@ -1104,6 +1235,22 @@ async function claimAndDriveReadyTask(scope_id: ScopeId): Promise<void> {
   });
 }
 
+async function redriveChangesRequestedTasks(
+  scope_id: ScopeId,
+  existingState?: ScopeStateSnapshot,
+): Promise<void> {
+  const state =
+    existingState ?? (await activities.readScopeState({ scope_id }));
+  for (const task of state.tasks) {
+    if (task.state !== "changes_requested") continue;
+    await driveClaimedTask({
+      scope_id,
+      task_id: task.id,
+      assignee: task.assignee ?? DEVELOPER_ASSIGNEE,
+    });
+    return;
+  }
+}
 function isMergedProviderSignal(
   signal: SupervisorSignal & { readonly seq: number },
   task_id: TaskId,
@@ -1205,6 +1352,8 @@ async function recoverReviewerForCurrentHead(input: {
       scope_id: input.scope_id,
       task_id: input.task_id,
       signal_seq: input.signal_seq,
+      tier: 4,
+      attempt: attempts,
       reason: "review_re_review_loop_cap_exhausted",
       evidence: {
         attempts,
@@ -1227,6 +1376,8 @@ async function recoverReviewerForCurrentHead(input: {
       scope_id: input.scope_id,
       task_id: input.task_id,
       signal_seq: input.signal_seq,
+      tier: 4,
+      attempt: 1,
       reason: `review_recovery_activity_failed:${activityFailureReason(err)}`,
       evidence: {
         head_commit_sha: input.gate.head_commit_sha,
@@ -1235,17 +1386,32 @@ async function recoverReviewerForCurrentHead(input: {
     });
     return;
   }
-  if (!review.started) {
-    await blockTaskAndAudit({
+  const reviewOutcome = "outcome" in review ? review.outcome : undefined;
+  if (
+    !review.started ||
+    review.envelope_status !== "succeeded" ||
+    reviewOutcome === "blocked" ||
+    reviewOutcome === "escalate"
+  ) {
+    await routeFailureToLadder({
       scope_id: input.scope_id,
       task_id: input.task_id,
       signal_seq: input.signal_seq,
-      reason: review.reason ?? "review_recovery_not_started",
+      reason:
+        review.reason ??
+        (reviewOutcome === "blocked" || reviewOutcome === "escalate"
+          ? `review_recovery_${reviewOutcome}`
+          : "review_recovery_envelope_failed"),
       evidence: {
+        envelope_status: review.started
+          ? review.envelope_status
+          : "not_started",
+        outcome: reviewOutcome,
         head_commit_sha: input.gate.head_commit_sha,
         pipeline_status: input.gate.pipeline_status,
       },
     });
+    return;
   }
 }
 async function evaluateAndAdvanceTask(
@@ -1498,6 +1664,9 @@ export async function scopeSupervisorWorkflow(
   const initialState = await activities.readScopeState({ scope_id });
   const hitl_mode = initialState.hitl_mode ?? "gated";
   await claimAndDriveReadyTask(scope_id);
+  if (patched(PATCH_REDRIVE_CHANGES_REQUESTED)) {
+    await redriveChangesRequestedTasks(scope_id, initialState);
+  }
 
   let nextHeartbeatSeq = continuation?.next_heartbeat_seq ?? 1;
   let heartbeatTickCount = continuation?.heartbeat_tick_count ?? 0;
@@ -1634,6 +1803,12 @@ export async function scopeSupervisorWorkflow(
           reconciliation,
           nextReconcileSeq++,
         );
+      }
+      if (
+        patched(PATCH_REDRIVE_CHANGES_REQUESTED) &&
+        heartbeat.status !== "scope_terminal"
+      ) {
+        await redriveChangesRequestedTasks(scope_id);
       }
       processedWorkCount += 1;
       if (processedWorkCount >= 100 || workflowInfo().continueAsNewSuggested) {
