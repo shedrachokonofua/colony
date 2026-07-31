@@ -253,7 +253,7 @@ export function createRequestArchitectReplan(
           description: "architect re-decomposition envelope",
         },
       ],
-      tool_permissions: [],
+      tool_permissions: ["git"],
       sandbox_profile: "architect-default",
       known_risks: [
         `escalation_reason:${input.reason}`,

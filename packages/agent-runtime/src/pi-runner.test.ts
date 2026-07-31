@@ -19,6 +19,10 @@ import {
 import { PiCodingAgentRunner } from "./pi-coding-agent-runner.js";
 import { DEFAULT_REVIEWER_TOOLS, PiMonoRunner } from "./pi-mono-runner.js";
 import {
+  DEFAULT_ARCHITECT_TOOLS,
+  PiArchitectRunner,
+} from "./pi-architect-runner.js";
+import {
   developerCompletionEnvelopeSchema,
   developerPlanEnvelopeSchema,
   planReviewEnvelopeSchema,
@@ -154,6 +158,42 @@ describe("pi runners", () => {
       expect(metadata.status).toBe("succeeded");
       expect(output?.envelope).toEqual(
         developerCompletionEnvelopeSchema.parse(envelope),
+      );
+    } finally {
+      registration.unregister();
+    }
+  });
+
+  it("requires architect repository access and read-only exploration tools", async () => {
+    expect(DEFAULT_ARCHITECT_TOOLS).toEqual([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]);
+    const registration = registerFauxProvider({
+      provider: "colony-faux-architect-workspace",
+      models: [{ id: "colony-faux-architect-workspace-model" }],
+    });
+
+    try {
+      const adapter = new PiAgentRuntimeAdapter(
+        new PiArchitectRunner({
+          broker: { resolve: () => "test-api-key" },
+          model: registration.getModel(),
+          runTimeoutMs: 2_000,
+        }),
+      );
+      const environment = {
+        ...(await runEnvironment()),
+        role: "architect" as const,
+      };
+      const metadata = await adapter.startRun(taskPacket(), environment);
+
+      expect(metadata.status).toBe("failed");
+      expect(metadata.rejectionReason).toMatch(
+        /^workspace_provision_failed:missing_credentials/,
       );
     } finally {
       registration.unregister();
@@ -345,6 +385,13 @@ describe("pi runners", () => {
     registration.setResponses([
       fauxAssistantMessage(
         [
+          fauxText("Inspecting the repository before planning."),
+          fauxToolCall("read", { path: "PACKET.json" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        [
           fauxText("Submitting the developer plan."),
           fauxToolCall("submit_developer_plan", envelope),
         ],
@@ -376,6 +423,42 @@ describe("pi runners", () => {
     }
   });
 
+  it("rejects a developer plan submitted without repository inspection", async () => {
+    const registration = registerFauxProvider({
+      provider: "colony-faux-ungrounded-plan",
+      models: [{ id: "colony-faux-ungrounded-plan-model" }],
+    });
+    const packet = taskPacket();
+    registration.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText("Submitting without inspecting source."),
+          fauxToolCall("submit_developer_plan", developerPlanEnvelope(packet)),
+        ],
+        { stopReason: "toolUse" },
+      ),
+    ]);
+
+    try {
+      const adapter = new PiAgentRuntimeAdapter(
+        new PiDeveloperPlanRunner({
+          broker: { resolve: () => "test-api-key" },
+          model: registration.getModel(),
+          runTimeoutMs: 2_000,
+          scratchDir: "/tmp/colony-pi-agent-runtime-tests",
+        }),
+      );
+      const metadata = await adapter.startRun(
+        packet,
+        await runEnvironment("developer_planner"),
+      );
+
+      expect(metadata.status).toBe("failed");
+      expect(metadata.rejectionReason).toBe("repository_inspection_required");
+    } finally {
+      registration.unregister();
+    }
+  });
   it("captures plan review through submit_plan_review", async () => {
     const registration = registerFauxProvider({
       provider: "colony-faux-plan-review",
@@ -400,6 +483,13 @@ describe("pi runners", () => {
       },
     };
     registration.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText("Inspecting the repository before reviewing the plan."),
+          fauxToolCall("read", { path: "PACKET.json" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
       fauxAssistantMessage(
         [
           fauxText("Submitting the plan review."),

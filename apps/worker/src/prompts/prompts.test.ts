@@ -732,5 +732,12 @@ describe("buildArchitectSystemPrompt", () => {
       "Every other proposed task must depend on the CI bootstrap task directly or transitively",
     );
     expect(prompt).not.toMatch(/\b(?:Node|npm)\b/);
+    expect(prompt).toContain(
+      "Your current working directory is a read-only clone of the target repository",
+    );
+    expect(prompt).toContain("Repository exploration is mandatory");
+    expect(prompt).toContain("Do not invent state machines");
+    expect(prompt).toContain("repo_evidence:<path>:<observed fact>");
+    expect(prompt).not.toContain("You do not have access to source files");
   });
 });

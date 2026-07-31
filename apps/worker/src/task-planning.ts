@@ -181,7 +181,7 @@ export function createStartDeveloperPlanRun(deps: TaskPlanningDependencies) {
           description: "developer_plan envelope",
         },
       ],
-      tool_permissions: [],
+      tool_permissions: ["git"],
       sandbox_profile: "developer-planner-default",
       known_risks: planningContext?.code_review
         ? planningContext.code_review.role_specific.findings.map(
@@ -506,7 +506,7 @@ export function createStartPlanReviewRun(deps: TaskPlanningDependencies) {
       required_outputs: [
         { kind: "review_envelope", description: "plan_review envelope" },
       ],
-      tool_permissions: [],
+      tool_permissions: ["git"],
       sandbox_profile: "plan-reviewer-default",
       known_risks: [],
       time_budget_minutes: 10,

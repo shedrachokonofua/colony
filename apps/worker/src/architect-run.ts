@@ -276,7 +276,7 @@ export function createArchitectRun(deps: ArchitectRunDependencies) {
           description: "architect decomposition envelope",
         },
       ],
-      tool_permissions: [],
+      tool_permissions: ["git"],
       sandbox_profile: "architect-default",
       known_risks: [],
       time_budget_minutes: 60,
@@ -811,8 +811,8 @@ function providerArtifactUri(
 }
 
 export async function defaultArchitectEnvironment(): Promise<AgentRunEnvironment> {
-  // Architect runs don't require any CLI tools — they read the packet,
-  // produce an envelope. Skip the nix profile entirely.
+  // Pi's built-in read-only tools inspect the cloned repository. No
+  // additional CLI extensions or Nix profile are required.
   const tools = await prepareSandboxToolEnvironment(
     {
       skillMounts: [],

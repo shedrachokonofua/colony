@@ -25,12 +25,21 @@ const TODAY = new Date("2026-04-29T00:00:00.000Z").toISOString();
 describe("createArchitectRun (fake runtime)", () => {
   it("submits a decomposition proposal from a fake architect envelope", async () => {
     const stubs = makeStubs();
+    let capturedPacket:
+      | Parameters<FakeAgentRuntimeAdapter["startRun"]>[0]
+      | undefined;
+    const agentRuntime = new FakeAgentRuntimeAdapter();
+    const startRun = agentRuntime.startRun.bind(agentRuntime);
+    agentRuntime.startRun = (packet, environment) => {
+      capturedPacket = packet;
+      return startRun(packet, environment);
+    };
     const run = createArchitectRun({
       repo: stubs.repo as unknown as TaskGraphRepository,
       providerProjects:
         stubs.providerProjects as unknown as ProviderProjectRepository,
       providerAdapter: stubs.providerAdapter as unknown as ProviderAdapter,
-      agentRuntime: new FakeAgentRuntimeAdapter(),
+      agentRuntime,
     });
 
     const result = await run({ scope_id: SCOPE_ID });
@@ -56,6 +65,7 @@ describe("createArchitectRun (fake runtime)", () => {
     expect(submitted.input.target_project_mapping).toEqual({
       [`${SCOPE_ID}.1`]: PROJECT_ID,
     });
+    expect(capturedPacket?.tool_permissions).toContain("git");
   });
 
   it("rejects scopes that are not in draft", async () => {

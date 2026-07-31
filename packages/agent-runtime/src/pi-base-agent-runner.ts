@@ -86,6 +86,7 @@ export interface PiRoleProfile {
   readonly workspaceMode: PiWorkspaceMode;
   readonly includeProgressNote: boolean;
   readonly skipPromptWithoutWorkTools?: boolean;
+  readonly requireRepositoryInspection?: boolean;
 }
 
 export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
@@ -118,6 +119,7 @@ export class PiBaseAgentRunner implements PiRunner {
     const workTools = this.options.tools ?? this.profile.defaultTools;
     let failureReason: string | undefined;
     let timeoutTriggered = false;
+    let repositoryInspected = false;
 
     let cwd: string;
     try {
@@ -236,6 +238,17 @@ export class PiBaseAgentRunner implements PiRunner {
       session.agent.beforeToolCall = async (context, signal) => {
         const base = await previousBeforeToolCall?.(context, signal);
         if (base?.block) return base;
+        if (
+          context.toolCall.name === submitTool.name &&
+          this.profile.requireRepositoryInspection &&
+          !repositoryInspected
+        ) {
+          return {
+            block: true,
+            reason:
+              "Inspect repository source or tests with read/grep before submitting.",
+          };
+        }
         const authorized = await broker.authorizeTool?.({
           toolName: context.toolCall.name,
           args: context.args,
@@ -251,6 +264,12 @@ export class PiBaseAgentRunner implements PiRunner {
       const previousAfterToolCall = session.agent.afterToolCall;
       session.agent.afterToolCall = async (context, signal) => {
         const base = await previousAfterToolCall?.(context, signal);
+        if (
+          !context.isError &&
+          (context.toolCall.name === "read" || context.toolCall.name === "grep")
+        ) {
+          repositoryInspected = true;
+        }
         this.options.logger?.info?.(
           {
             runId,
@@ -287,7 +306,13 @@ export class PiBaseAgentRunner implements PiRunner {
         unsubscribeGuards();
       }
 
-      if (capturedEnvelope === undefined) {
+      if (
+        capturedEnvelope === undefined &&
+        this.profile.requireRepositoryInspection &&
+        !repositoryInspected
+      ) {
+        failureReason ??= "repository_inspection_required";
+      } else if (capturedEnvelope === undefined) {
         const rawEnvelope = await finalizeEnvelopeWithStructuredOutput({
           model,
           apiKey: await broker.resolve({
@@ -387,6 +412,14 @@ export const DEFAULT_PLAN_TOOLS = [
   "ls",
 ] as const;
 
+export const DEFAULT_ARCHITECT_TOOLS = [
+  "read",
+  "bash",
+  "grep",
+  "find",
+  "ls",
+] as const;
+
 export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
   role: "developer",
   kind: "pi-coding-agent",
@@ -437,6 +470,7 @@ export const DEVELOPER_PLANNER_ROLE_PROFILE: PiRoleProfile = {
   defaultLimits: { maxTurns: 20, maxUsd: 3 },
   workspaceMode: "repo-required",
   includeProgressNote: false,
+  requireRepositoryInspection: true,
 };
 
 export const PLAN_REVIEWER_ROLE_PROFILE: PiRoleProfile = {
@@ -454,6 +488,7 @@ export const PLAN_REVIEWER_ROLE_PROFILE: PiRoleProfile = {
   defaultLimits: { maxTurns: 20, maxUsd: 3 },
   workspaceMode: "repo-required",
   includeProgressNote: false,
+  requireRepositoryInspection: true,
 };
 
 export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
@@ -466,9 +501,10 @@ export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
   typeboxSchema: architectDecompositionEnvelopeTypeBox,
   submitTool: createArchitectSubmitTool,
   validate: zodValidator(architectDecompositionEnvelopeSchema),
-  defaultTools: [],
+  defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",
   defaultLimits: { maxTurns: 80, maxUsd: 25 },
-  workspaceMode: "scratch",
+  workspaceMode: "repo-required",
   includeProgressNote: false,
+  requireRepositoryInspection: true,
 };
