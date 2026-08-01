@@ -1,3 +1,7 @@
+import {
+  beginAgentRun,
+  type AgentMetricAttributes,
+} from "@colony/observability";
 import type {
   AgentRunEnvironment,
   AgentRuntimeAdapter,
@@ -36,6 +40,11 @@ export interface PiRunner {
   cancel?(runId: string): Promise<void>;
 }
 
+export interface PiAdapterTelemetry {
+  readonly provider: string;
+  readonly model: string;
+}
+
 export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
   private nextId = 1;
   private readonly runs = new Map<
@@ -43,13 +52,24 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     AgentRunMetadata & { readonly output?: AgentRunOutput }
   >();
 
-  constructor(private readonly runner: PiRunner) {}
+  constructor(
+    private readonly runner: PiRunner,
+    private readonly telemetry: PiAdapterTelemetry = {
+      provider: "unknown",
+      model: "unknown",
+    },
+  ) {}
 
   async startRun(
     packet: AgentRuntimePacket,
     runEnvironment: AgentRunEnvironment,
   ): Promise<AgentRunMetadata> {
     const runId = `${this.runner.kind}-${this.nextId++}`;
+    const finishMetrics = beginAgentRun({
+      role: runEnvironment.role,
+      provider: this.telemetry.provider,
+      model: this.telemetry.model,
+    } satisfies AgentMetricAttributes);
     const running: AgentRunMetadata = {
       runId,
       sandboxId: `pending-${runId}`,
@@ -70,6 +90,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
       });
       const current = this.runs.get(runId);
       if (current?.status === "canceled") {
+        finishMetrics(current.status, current.rejectionReason);
         return withoutOutput(current);
       }
       const parsed = parseEnvelope(runEnvironment.role, result.envelope);
@@ -110,6 +131,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
             : truncate(describeRejection(result.envelope, parsed.reason), 800),
       };
       this.runs.set(runId, { ...metadata, output });
+      finishMetrics(metadata.status, metadata.rejectionReason);
       return metadata;
     } catch (err) {
       const current = this.runs.get(runId);
@@ -126,6 +148,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
               ),
       };
       this.runs.set(runId, metadata);
+      finishMetrics(metadata.status, metadata.rejectionReason);
       return metadata;
     }
   }

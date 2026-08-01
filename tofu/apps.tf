@@ -78,11 +78,32 @@ resource "kubernetes_deployment_v1" "http_app" {
             name           = "http"
             container_port = each.value.port
           }
+          dynamic "port" {
+            for_each = each.value.telemetry ? [1] : []
+            content {
+              name           = "metrics"
+              container_port = 9464
+            }
+          }
 
           env_from {
             secret_ref {
               name = kubernetes_secret_v1.app_env.metadata[0].name
             }
+          }
+          env {
+            name  = "COLONY_VERSION"
+            value = var.image_tag
+          }
+
+          env {
+            name  = "COLONY_METRICS_PORT"
+            value = each.value.telemetry ? "9464" : ""
+          }
+
+          env {
+            name  = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
+            value = each.value.telemetry ? "http://otel-cluster-opentelemetry-collector.observability.svc.cluster.local:4318/v1/metrics" : ""
           }
 
           volume_mount {
@@ -203,10 +224,29 @@ resource "kubernetes_deployment_v1" "worker" {
           image             = local.images.worker
           image_pull_policy = var.image_pull_policy
 
+          port {
+            name           = "metrics"
+            container_port = 9464
+          }
+
           env_from {
             secret_ref {
               name = kubernetes_secret_v1.app_env.metadata[0].name
             }
+          }
+          env {
+            name  = "COLONY_VERSION"
+            value = var.image_tag
+          }
+
+          env {
+            name  = "COLONY_METRICS_PORT"
+            value = "9464"
+          }
+
+          env {
+            name  = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
+            value = "http://otel-cluster-opentelemetry-collector.observability.svc.cluster.local:4318/v1/metrics"
           }
 
           env {
@@ -271,6 +311,40 @@ resource "kubernetes_service_v1" "http_app" {
       name        = "http"
       port        = each.value.port
       target_port = "http"
+    }
+
+    dynamic "port" {
+      for_each = each.value.telemetry ? [1] : []
+      content {
+        name        = "metrics"
+        port        = 9464
+        target_port = "metrics"
+      }
+    }
+
+    type = "ClusterIP"
+  }
+}
+
+resource "kubernetes_service_v1" "worker_metrics" {
+  metadata {
+    name      = "colony-worker-metrics"
+    namespace = local.namespace
+    labels = merge(local.common_labels, {
+      "app.kubernetes.io/name"      = "colony-worker"
+      "app.kubernetes.io/component" = "worker"
+    })
+  }
+
+  spec {
+    selector = {
+      "app.kubernetes.io/name" = "colony-worker"
+    }
+
+    port {
+      name        = "metrics"
+      port        = 9464
+      target_port = "metrics"
     }
 
     type = "ClusterIP"

@@ -16,6 +16,7 @@
     "@colony/config": "*",
     "@colony/db": "*",
     "@colony/domain": "*",
+    "@colony/observability": "^0.0.0",
     "@colony/provider": "*",
     "@colony/provider-gitlab": "*",
     "@colony/schemas": "*",

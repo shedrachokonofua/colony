@@ -1,3 +1,9 @@
+import {
+  recordAgentLimit,
+  recordAgentMessage,
+  recordAgentToolCall,
+  type AgentMetricAttributes,
+} from "@colony/observability";
 import type { Api, Model, OAuthCredentials } from "@mariozechner/pi-ai";
 import {
   OAuthCredentialRepository,
@@ -82,7 +88,9 @@ export async function createAgentRuntimeWiring(
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");
 
-  const logger = consoleLogger();
+  const developerLogger = telemetryLogger(consoleLogger(), developer);
+  const reviewerLogger = telemetryLogger(consoleLogger(), reviewer);
+  const architectLogger = telemetryLogger(consoleLogger(), architect);
   return {
     // Per-task breakdown runs on the architect model, not the developer
     // model: the plan gate is where task-level design is decided, so it
@@ -96,8 +104,12 @@ export async function createAgentRuntimeWiring(
         maxUsd: architect.ceilings.maxUsdPerRun,
         runTimeoutMs: architect.ceilings.timeoutMs,
         thinkingLevel: architect.thinkingLevel,
-        logger,
+        logger: architectLogger,
       }),
+      {
+        provider: architect.providerKey,
+        model: architect.model.id,
+      },
     ),
     planReviewer: new PiAgentRuntimeAdapter(
       new PiPlanReviewRunner({
@@ -107,8 +119,12 @@ export async function createAgentRuntimeWiring(
         maxUsd: reviewer.ceilings.maxUsdPerRun,
         runTimeoutMs: reviewer.ceilings.timeoutMs,
         thinkingLevel: reviewer.thinkingLevel,
-        logger,
+        logger: reviewerLogger,
       }),
+      {
+        provider: reviewer.providerKey,
+        model: reviewer.model.id,
+      },
     ),
     developer: new PiAgentRuntimeAdapter(
       new PiCodingAgentRunner({
@@ -118,8 +134,12 @@ export async function createAgentRuntimeWiring(
         maxUsd: developer.ceilings.maxUsdPerRun,
         runTimeoutMs: developer.ceilings.timeoutMs,
         thinkingLevel: developer.thinkingLevel,
-        logger,
+        logger: developerLogger,
       }),
+      {
+        provider: developer.providerKey,
+        model: developer.model.id,
+      },
     ),
     reviewer: new PiAgentRuntimeAdapter(
       new PiMonoRunner({
@@ -129,8 +149,12 @@ export async function createAgentRuntimeWiring(
         maxUsd: reviewer.ceilings.maxUsdPerRun,
         runTimeoutMs: reviewer.ceilings.timeoutMs,
         thinkingLevel: reviewer.thinkingLevel,
-        logger,
+        logger: reviewerLogger,
       }),
+      {
+        provider: reviewer.providerKey,
+        model: reviewer.model.id,
+      },
     ),
     architect: new PiAgentRuntimeAdapter(
       new PiArchitectRunner({
@@ -140,13 +164,23 @@ export async function createAgentRuntimeWiring(
         maxUsd: architect.ceilings.maxUsdPerRun,
         runTimeoutMs: architect.ceilings.timeoutMs,
         thinkingLevel: architect.thinkingLevel,
-        logger,
+        logger: architectLogger,
       }),
+      {
+        provider: architect.providerKey,
+        model: architect.model.id,
+      },
     ),
   };
 }
 
-function consoleLogger() {
+interface RuntimeLogger {
+  info(fields: Record<string, unknown>, message: string): void;
+  warn(fields: Record<string, unknown>, message: string): void;
+  error(fields: Record<string, unknown>, message: string): void;
+}
+
+function consoleLogger(): RuntimeLogger {
   const fmt = (level: string, fields: Record<string, unknown>, msg: string) =>
     `[pi ${new Date().toISOString()} ${level}] ${msg} ${JSON.stringify(fields)}`;
   return {
@@ -157,6 +191,60 @@ function consoleLogger() {
     error: (f: Record<string, unknown>, m: string) =>
       console.error(fmt("error", f, m)),
   };
+}
+
+function telemetryLogger(
+  logger: RuntimeLogger,
+  agent: ResolvedAgentConfig,
+): RuntimeLogger {
+  const attributes: AgentMetricAttributes = {
+    role: agent.role,
+    provider: agent.providerKey,
+    model: agent.model.id,
+  };
+  return {
+    info(fields, message) {
+      if (message === "pi_usage") {
+        recordAgentMessage(attributes, {
+          input: numericField(fields, "inputTokens"),
+          output: numericField(fields, "outputTokens"),
+          cacheRead: numericField(fields, "cacheReadTokens"),
+          cacheWrite: numericField(fields, "cacheWriteTokens"),
+          costUsd: numericField(fields, "messageUsd"),
+          turnDurationSeconds: numericField(fields, "turnDurationSeconds"),
+        });
+      } else if (message === "pi_tool_call") {
+        recordAgentToolCall(
+          attributes,
+          typeof fields.tool === "string" ? fields.tool : "unknown",
+          fields.isError === true,
+        );
+      }
+      logger.info(fields, message);
+    },
+    warn(fields, message) {
+      if (message === "pi_run_limit_exceeded") {
+        recordAgentLimit(
+          attributes,
+          typeof fields.reason === "string" ? fields.reason : "unknown",
+        );
+      }
+      logger.warn(fields, message);
+    },
+    error(fields, message) {
+      logger.error(fields, message);
+    },
+  };
+}
+
+function numericField(
+  fields: Record<string, unknown>,
+  name: string,
+): number | undefined {
+  const value = fields[name];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function resolveArchitectAgent(

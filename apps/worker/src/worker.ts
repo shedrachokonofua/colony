@@ -1,8 +1,10 @@
+import { startTelemetryFromEnv } from "@colony/observability";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { env } from "@colony/config";
 import { activities, initializeAgentRuntime } from "./activities.js";
 
 async function main(): Promise<void> {
+  const stopTelemetry = startTelemetryFromEnv("colony-worker");
   const cfg = env();
   await initializeAgentRuntime();
   const tls =
@@ -27,7 +29,11 @@ async function main(): Promise<void> {
     `colony-worker connected to Temporal at ${cfg.TEMPORAL_ADDRESS}, polling queue "${cfg.TEMPORAL_TASK_QUEUE}"`,
   );
 
-  await worker.run();
+  try {
+    await worker.run();
+  } finally {
+    await stopTelemetry();
+  }
 }
 
 main().catch((err: unknown) => {

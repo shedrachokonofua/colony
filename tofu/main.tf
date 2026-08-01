@@ -70,24 +70,28 @@ locals {
       health_path = "/health"
       host        = var.hosts.api
       replicas    = var.replicas.api
+      telemetry   = true
     }
     webhook-dispatcher = {
       port        = 4100
       health_path = "/health"
       host        = var.hosts.webhook
       replicas    = var.replicas.webhook_dispatcher
+      telemetry   = true
     }
     tool-gateway = {
       port        = 4200
       health_path = "/health"
       host        = var.hosts.tool_gateway
       replicas    = var.replicas.tool_gateway
+      telemetry   = true
     }
     web = {
       port        = 3000
       health_path = "/"
       host        = var.hosts.web
       replicas    = var.replicas.web
+      telemetry   = false
     }
   }
 }

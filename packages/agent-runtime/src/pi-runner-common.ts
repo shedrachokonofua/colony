@@ -392,6 +392,7 @@ export function installRunGuards(
 ): () => void {
   let turns = 0;
   let usdSpent = 0;
+  let previousMessageAt = performance.now();
   const maxTurns = options.maxTurns ?? 60;
   const maxUsd = options.maxUsd ?? 10;
 
@@ -400,9 +401,24 @@ export function installRunGuards(
       turns += 1;
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
-      const messageUsd = event.message.usage?.cost.total ?? 0;
+      const usage = event.message.usage;
+      const messageUsd = usage?.cost.total ?? 0;
+      const messageCompletedAt = performance.now();
       usdSpent += messageUsd;
-      options.logger?.info?.({ runId, messageUsd, usdSpent }, "pi_usage");
+      options.logger?.info?.(
+        {
+          runId,
+          messageUsd,
+          usdSpent,
+          inputTokens: usage?.input,
+          outputTokens: usage?.output,
+          cacheReadTokens: usage?.cacheRead,
+          turnDurationSeconds: (messageCompletedAt - previousMessageAt) / 1_000,
+          cacheWriteTokens: usage?.cacheWrite,
+        },
+        "pi_usage",
+      );
+      previousMessageAt = messageCompletedAt;
     }
     const reason =
       turns >= maxTurns
