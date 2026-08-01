@@ -103,7 +103,7 @@ resource "kubernetes_deployment_v1" "http_app" {
 
           env {
             name  = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
-            value = each.value.telemetry ? "http://otel-cluster-opentelemetry-collector.observability.svc.cluster.local:4318/v1/metrics" : ""
+            value = each.value.telemetry ? "http://otel-daemonset-opentelemetry-collector.observability.svc.cluster.local:4318/v1/metrics" : ""
           }
 
           volume_mount {
@@ -246,7 +246,7 @@ resource "kubernetes_deployment_v1" "worker" {
 
           env {
             name  = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
-            value = "http://otel-cluster-opentelemetry-collector.observability.svc.cluster.local:4318/v1/metrics"
+            value = "http://otel-daemonset-opentelemetry-collector.observability.svc.cluster.local:4318/v1/metrics"
           }
 
           env {
