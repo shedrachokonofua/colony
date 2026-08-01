@@ -12,6 +12,7 @@ import {
   type Pool,
 } from "@colony/db";
 import { ApplicationFailure } from "@temporalio/common";
+import { Context } from "@temporalio/activity";
 import {
   createDeveloperRun,
   type StartDeveloperRunInput,
@@ -246,6 +247,29 @@ export async function initializeAgentRuntime(): Promise<void> {
   agentRuntimeWiring ??= await createAgentRuntimeWiring(env());
 }
 
+async function runWithActivityHeartbeat<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  let context: Context;
+  try {
+    context = Context.current();
+  } catch {
+    // Activity factories are also exercised directly by unit/integration tests.
+    return operation();
+  }
+  context.heartbeat({ phase: "started" });
+  const timer = setInterval(
+    () => context.heartbeat({ phase: "running" }),
+    15_000,
+  );
+  timer.unref();
+  try {
+    return await operation();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 function getReviewGateRepository(): ReviewGateRepository {
   if (!reviewGateRepo) {
     reviewGateRepo = new ReviewGateRepository(getPool());
@@ -262,32 +286,38 @@ export async function startDeveloperRun(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("developer"),
   });
-  return throwRetryableAgentRunFailure(run(input));
+  return runWithActivityHeartbeat(() =>
+    throwRetryableAgentRunFailure(run(input)),
+  );
 }
 
 export async function startDeveloperPlanRun(
   input: StartDeveloperPlanRunInput,
 ): Promise<StartDeveloperPlanRunResult> {
-  return throwRetryableAgentRunFailure(
-    createStartDeveloperPlanRun({
-      repo: getRepository(),
-      providerProjects: getProviderProjects(),
-      providerAdapter: getProviderAdapter(),
-      agentRuntime: await getAgentRuntime("developerPlanner"),
-    })(input),
+  return runWithActivityHeartbeat(async () =>
+    throwRetryableAgentRunFailure(
+      createStartDeveloperPlanRun({
+        repo: getRepository(),
+        providerProjects: getProviderProjects(),
+        providerAdapter: getProviderAdapter(),
+        agentRuntime: await getAgentRuntime("developerPlanner"),
+      })(input),
+    ),
   );
 }
 
 export async function startPlanReviewRun(
   input: StartPlanReviewRunInput,
 ): Promise<StartPlanReviewRunResult> {
-  return throwRetryableAgentRunFailure(
-    createStartPlanReviewRun({
-      repo: getRepository(),
-      providerProjects: getProviderProjects(),
-      providerAdapter: getProviderAdapter(),
-      agentRuntime: await getAgentRuntime("planReviewer"),
-    })(input),
+  return runWithActivityHeartbeat(async () =>
+    throwRetryableAgentRunFailure(
+      createStartPlanReviewRun({
+        repo: getRepository(),
+        providerProjects: getProviderProjects(),
+        providerAdapter: getProviderAdapter(),
+        agentRuntime: await getAgentRuntime("planReviewer"),
+      })(input),
+    ),
   );
 }
 
@@ -347,6 +377,7 @@ export async function startReviewerRun(
       reason: "developer_envelope_missing_for_review",
     };
   }
+  const developerEnvelope = loaded.envelope;
   const run = createReviewerRun({
     repo: getRepository(),
     providerProjects: getProviderProjects(),
@@ -354,13 +385,15 @@ export async function startReviewerRun(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("reviewer"),
   });
-  return throwRetryableAgentRunFailure(
-    run({
-      task_id: input.task_id,
-      reviewer: input.reviewer,
-      developer_envelope: loaded.envelope,
-      head_commit_sha: loaded.head_commit_sha,
-    }),
+  return runWithActivityHeartbeat(() =>
+    throwRetryableAgentRunFailure(
+      run({
+        task_id: input.task_id,
+        reviewer: input.reviewer,
+        developer_envelope: developerEnvelope,
+        head_commit_sha: loaded.head_commit_sha,
+      }),
+    ),
   );
 }
 
@@ -575,7 +608,7 @@ export async function startArchitectRun(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("architect"),
   });
-  return run(input);
+  return runWithActivityHeartbeat(() => run(input));
 }
 
 export async function requestArchitectReplan(
@@ -587,7 +620,7 @@ export async function requestArchitectReplan(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("architect"),
   });
-  return run(input);
+  return runWithActivityHeartbeat(() => run(input));
 }
 
 export async function startDecompositionReviewRun(
@@ -599,7 +632,7 @@ export async function startDecompositionReviewRun(
     providerAdapter: getProviderAdapter(),
     agentRuntime: await getAgentRuntime("reviewer"),
   });
-  return run(input);
+  return runWithActivityHeartbeat(() => run(input));
 }
 
 export async function applyDecompositionCommand(

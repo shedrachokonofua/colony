@@ -273,6 +273,22 @@ export function createDeveloperRun(deps: DeveloperRunDependencies) {
     let terminalStatus: "succeeded" | "failed" | "envelope_rejected" = "failed";
     let terminalEnvelopeHash: string | undefined;
     try {
+      const canceledStaleRuns = await deps.repo.cancelRunningAgentRunsForTask(
+        task.id,
+      );
+      if (canceledStaleRuns > 0) {
+        await deps.repo.writeAudit({
+          scope_id: task.scope_id,
+          task_id: task.id,
+          actor: SUPERVISOR_ACTOR,
+          action: "developer.stale_runs.canceled",
+          capability: "task.assign",
+          target_kind: "task",
+          target_id: task.id,
+          reason: "developer_activity_retry",
+          evidence: { canceled_agent_runs: canceledStaleRuns },
+        });
+      }
       const persistedRun = await deps.repo.startAgentRun({
         task_id: task.id,
         role: "developer",

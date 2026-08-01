@@ -236,12 +236,12 @@ resource "kubernetes_deployment_v1" "worker" {
 
           resources {
             requests = {
-              cpu    = "100m"
-              memory = "256Mi"
+              cpu    = "250m"
+              memory = "1Gi"
             }
             limits = {
-              cpu    = "1000m"
-              memory = "1Gi"
+              cpu    = "2000m"
+              memory = "4Gi"
             }
           }
         }

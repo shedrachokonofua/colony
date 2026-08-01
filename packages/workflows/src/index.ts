@@ -829,6 +829,7 @@ const agentActivities = proxyActivities<
 >({
   startToCloseTimeout: "30 minutes",
   scheduleToCloseTimeout: "2 hours",
+  heartbeatTimeout: "1 minute",
   retry: {
     initialInterval: "10 seconds",
     maximumInterval: "2 minutes",
@@ -844,6 +845,7 @@ const agentActivities = proxyActivities<
  */
 const longRunningActivities = proxyActivities<LongRunningSupervisorActivities>({
   startToCloseTimeout: "30 minutes",
+  heartbeatTimeout: "1 minute",
   retry: {
     maximumAttempts: 1,
   },
