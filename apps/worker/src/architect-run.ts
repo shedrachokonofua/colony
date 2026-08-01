@@ -25,6 +25,7 @@ import {
   type TaskId,
 } from "@colony/domain";
 import type { ProviderAdapter } from "@colony/provider";
+import { format } from "prettier";
 import {
   mintEphemeralProjectAgentToken,
   revokeEphemeralProjectAgentToken,
@@ -581,6 +582,20 @@ async function openOrUpdateSpecMergeRequest(args: {
   const commitMessage = branchExisted
     ? `feat(scope): refine decomposition ${args.proposal.id}`
     : `feat(scope): propose decomposition ${args.proposal.id}`;
+  const specMarkdown = await format(renderSpecMarkdown(args), {
+    parser: "markdown",
+  });
+  const decompositionJson = await format(
+    JSON.stringify({
+      proposal_id: args.proposal.id,
+      envelope_hash: args.proposal.envelope_hash,
+      proposed_tasks: args.proposedTasks,
+      proposed_dependencies: args.proposedDependencies,
+      assumptions: args.assumptions,
+      open_questions: args.openQuestions,
+    }),
+    { parser: "json" },
+  );
   await args.adapter.commits.create(projectRef, {
     branch: branchName,
     message: commitMessage,
@@ -588,23 +603,12 @@ async function openOrUpdateSpecMergeRequest(args: {
       {
         action: fileAction,
         file_path: `colony/scopes/${args.scope.id}/SPEC.md`,
-        content: renderSpecMarkdown(args),
+        content: specMarkdown,
       },
       {
         action: fileAction,
         file_path: `colony/scopes/${args.scope.id}/decomposition.json`,
-        content: JSON.stringify(
-          {
-            proposal_id: args.proposal.id,
-            envelope_hash: args.proposal.envelope_hash,
-            proposed_tasks: args.proposedTasks,
-            proposed_dependencies: args.proposedDependencies,
-            assumptions: args.assumptions,
-            open_questions: args.openQuestions,
-          },
-          null,
-          2,
-        ),
+        content: decompositionJson,
       },
     ],
   });
