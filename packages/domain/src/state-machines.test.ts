@@ -61,6 +61,7 @@ describe("scope state machine", () => {
   it("allows recovery from blocked back to a non-branch state", () => {
     expect(canTransitionScope("blocked", "active")).toBe(true);
     expect(canTransitionScope("conflict", "draft")).toBe(true);
+    expect(canTransitionScope("blocked", "canceled")).toBe(true);
   });
 
   it("assertScopeTransition throws DomainError on invalid", () => {
@@ -164,6 +165,12 @@ describe("task state machine", () => {
   it("allows recovery from pending_sync but not from terminal failed", () => {
     expect(canTransitionTask("pending_sync", "in_progress")).toBe(true);
     expect(canTransitionTask("failed", "in_progress")).toBe(false);
+  });
+
+  it("allows an operator to cancel a recoverable task", () => {
+    expect(canTransitionTask("blocked", "canceled")).toBe(true);
+    expect(canTransitionTask("conflict", "canceled")).toBe(true);
+    expect(canTransitionTask("pending_sync", "canceled")).toBe(true);
   });
 
   it("assertTaskTransition throws structured error on invalid", () => {

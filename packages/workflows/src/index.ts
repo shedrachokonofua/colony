@@ -871,6 +871,8 @@ const PATCH_ESCALATION_LADDER = "colony-2026-07-31-escalation-ladder";
 const PATCH_REDRIVE_CHANGES_REQUESTED =
   "colony-2026-07-31-redrive-changes-requested";
 const PATCH_INTERNAL_TASK_BLOCK = "colony-2026-08-01-internal-task-block";
+const PATCH_ACTIVITY_FAILURE_LADDER =
+  "colony-2026-08-01-activity-failure-ladder";
 
 async function blockTaskAndAudit(input: {
   readonly scope_id: ScopeId;
@@ -1236,12 +1238,21 @@ async function driveClaimedTask(input: {
       reason: "task_refinement_loop_cap_exhausted",
     });
   } catch (err) {
-    await blockTaskAndAudit({
+    const reason = `agent_activity_failed:${activityFailureReason(err)}`;
+    if (!patched(PATCH_ACTIVITY_FAILURE_LADDER)) {
+      await blockTaskAndAudit({
+        ...input,
+        tier: 4,
+        attempt: 1,
+        signal_seq: 2_000_000,
+        reason,
+      });
+      return;
+    }
+    await routeFailureToLadder({
       ...input,
-      tier: 4,
-      attempt: 1,
       signal_seq: 2_000_000,
-      reason: `agent_activity_failed:${activityFailureReason(err)}`,
+      reason,
     });
   }
 }

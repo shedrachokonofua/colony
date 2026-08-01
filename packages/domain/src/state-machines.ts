@@ -232,6 +232,14 @@ const TASK_RECOVERY_SOURCES: ReadonlyArray<TaskState> = [
   "conflict",
   "pending_sync",
 ];
+const SCOPE_RECOVERY_TARGETS: ReadonlyArray<ScopeState> = [
+  ...SCOPE_NON_BRANCH,
+  "canceled",
+];
+const TASK_RECOVERY_TARGETS: ReadonlyArray<TaskState> = [
+  ...TASK_NON_BRANCH,
+  "canceled",
+];
 
 const branchEntryPrecondition = (to: string): string => {
   switch (to) {
@@ -273,7 +281,7 @@ const TASK_BRANCH_ENTRY: ReadonlyArray<StateTransition<TaskState>> =
 const SCOPE_RECOVERY: ReadonlyArray<StateTransition<ScopeState>> =
   SCOPE_RECOVERY_SOURCES.flatMap(
     (from): ReadonlyArray<StateTransition<ScopeState>> =>
-      SCOPE_NON_BRANCH.map((to) => ({
+      SCOPE_RECOVERY_TARGETS.map((to) => ({
         from,
         to,
         owner: supervisor,
@@ -284,7 +292,7 @@ const SCOPE_RECOVERY: ReadonlyArray<StateTransition<ScopeState>> =
 const TASK_RECOVERY: ReadonlyArray<StateTransition<TaskState>> =
   TASK_RECOVERY_SOURCES.flatMap(
     (from): ReadonlyArray<StateTransition<TaskState>> =>
-      TASK_NON_BRANCH.map((to) => ({
+      TASK_RECOVERY_TARGETS.map((to) => ({
         from,
         to,
         owner: supervisor,

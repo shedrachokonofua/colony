@@ -73,7 +73,7 @@ describe.runIf(TEST_URL)("requestArchitectReplan integration", () => {
   });
 
   it("supersedes the failing task and rewires the existing graph transactionally", async () => {
-    await seedGraph();
+    await seedGraph("blocked");
     const runtime = new FakeAgentRuntimeAdapter({
       envelopeForRun: (packet) =>
         architectEnvelope(packet, [REPLACEMENT_A, REPLACEMENT_B]),
@@ -155,7 +155,9 @@ describe.runIf(TEST_URL)("requestArchitectReplan integration", () => {
     ).toBe(true);
   });
 
-  async function seedGraph() {
+  async function seedGraph(
+    failingState: "changes_requested" | "blocked" = "changes_requested",
+  ) {
     await repo.createScope(
       {
         id: SCOPE_ID,
@@ -190,7 +192,7 @@ describe.runIf(TEST_URL)("requestArchitectReplan integration", () => {
         scope_id: SCOPE_ID,
         title: "Website",
         description: "Edit the site",
-        state: "changes_requested",
+        state: failingState,
       },
       { actor: SUPERVISOR, capability: "graph.write", reason: "test" },
     );

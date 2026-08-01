@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client, Connection } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
+import { ApplicationFailure } from "@temporalio/common";
 import { describe, expect, it } from "vitest";
 import {
   RECONCILE_INTERVAL,
@@ -1051,6 +1052,7 @@ function makeSupervisorTestActivities(
 async function runSupervisorTestScenario(
   activities: SupervisorActivities & LongRunningSupervisorActivities,
   signaler?: (handle: unknown) => Promise<void>,
+  stopWhen?: () => boolean,
 ): Promise<void> {
   const address = process.env["TEMPORAL_ADDRESS"] ?? "localhost:7233";
   const namespace = process.env["TEMPORAL_NAMESPACE"] ?? "default";
@@ -1076,6 +1078,11 @@ async function runSupervisorTestScenario(
         args: ["col-extra"],
       });
       await signaler?.(handle);
+      if (stopWhen) {
+        await waitFor(stopWhen, 15_000);
+        await handle.terminate("expected activity observed");
+        return;
+      }
       await handle.result();
     });
   } finally {
@@ -1087,6 +1094,38 @@ async function runSupervisorTestScenario(
 describe.runIf(temporalTestEnabled)(
   "@colony/workflows supervisor failure ownership",
   () => {
+    it("routes a thrown agent activity failure through the architect tier", async () => {
+      const calls: string[] = [];
+      const baseActivities = makeSupervisorTestActivities(
+        "col-extra",
+        "col-extra.1",
+        calls,
+      );
+      const activities: SupervisorActivities & LongRunningSupervisorActivities =
+        {
+          ...baseActivities,
+          startDeveloperRun: () =>
+            Promise.reject(
+              ApplicationFailure.nonRetryable(
+                "simulated activity timeout",
+                "NonRetryableAgentRunError",
+              ),
+            ),
+          requestArchitectReplan: (input) => {
+            calls.push(`requestArchitectReplan:${input.attempt}`);
+            return resolved({
+              replanned: true,
+              task_ids: ["col-extra.2"],
+            });
+          },
+        };
+      await runSupervisorTestScenario(activities, undefined, () =>
+        calls.includes("requestArchitectReplan:1"),
+      );
+      expect(calls).toContain("requestArchitectReplan:1");
+      expect(calls).not.toContain("markTaskBlocked");
+    }, 120_000);
+
     it("blocks a task when the developer envelope fails", async () => {
       const calls: string[] = [];
       const baseActivities = makeSupervisorTestActivities(
