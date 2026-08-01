@@ -560,6 +560,59 @@ describe.runIf(TEST_URL)("TaskGraphRepository", () => {
     });
   });
 
+  describe("agent run recovery", () => {
+    it("cancels only running attempts for a timed-out task activity", async () => {
+      await repo.createScope(
+        { id: SCOPE_ID, title: "t", description: "d" },
+        { actor: SUPERVISOR },
+      );
+      await repo.createTask(
+        {
+          id: TASK_A,
+          scope_id: SCOPE_ID,
+          title: "a",
+          description: "d",
+          state: "in_progress",
+        },
+        { actor: SUPERVISOR },
+      );
+      const completed = await repo.startAgentRun({
+        task_id: TASK_A,
+        role: "developer",
+        packet_hash: "sha256:completed",
+      });
+      await repo.finishAgentRun({ id: completed.id, status: "succeeded" });
+      await repo.startAgentRun({
+        task_id: TASK_A,
+        role: "developer",
+        packet_hash: "sha256:running-1",
+      });
+      await repo.startAgentRun({
+        task_id: TASK_A,
+        role: "developer",
+        packet_hash: "sha256:running-2",
+      });
+
+      await expect(repo.cancelRunningAgentRunsForTask(TASK_A)).resolves.toBe(2);
+      const result = await pool.query<{
+        status: string;
+        finished_at: Date | null;
+      }>(
+        `SELECT status, finished_at
+           FROM agent_runs
+          WHERE task_id = $1
+          ORDER BY started_at`,
+        [TASK_A],
+      );
+      expect(result.rows.map((row) => row.status)).toEqual([
+        "succeeded",
+        "canceled",
+        "canceled",
+      ]);
+      expect(result.rows.every((row) => row.finished_at !== null)).toBe(true);
+    });
+  });
+
   describe("audit invariant", () => {
     it("every mutation writes at least one audit row", async () => {
       await repo.createScope(

@@ -269,6 +269,16 @@ describe.runIf(temporalTestEnabled)(
               new_state: "failed",
             });
           },
+          markTaskBlocked: () => {
+            calls.push("markTaskBlocked");
+            return resolved({
+              marked: true,
+              task_id: taskId,
+              previous_state: "in_progress",
+              new_state: "blocked",
+              canceled_agent_runs: 1,
+            });
+          },
           startArchitectRun: () =>
             resolved({
               started: false,
@@ -331,7 +341,7 @@ describe.runIf(temporalTestEnabled)(
         "startDeveloperRun:2",
         "openMrGate",
         "startReviewerRun:2",
-        "applyOperatorOverride:task:block",
+        "markTaskBlocked",
         "claimReadyTask",
         "startDeveloperPlanRun:4",
         "startPlanReviewRun:4",
@@ -540,6 +550,16 @@ describe.runIf(temporalTestEnabled)(
               task_id: taskId,
               previous_state: "plan_proposed",
               new_state: "failed",
+            });
+          },
+          markTaskBlocked: () => {
+            calls.push("markTaskBlocked");
+            return resolved({
+              marked: true,
+              task_id: taskId,
+              previous_state: "in_progress",
+              new_state: "blocked",
+              canceled_agent_runs: 1,
             });
           },
           startArchitectRun: () =>
@@ -845,6 +865,16 @@ describe.runIf(temporalTestEnabled)(
               new_state: input.target === "task" ? "blocked" : "canceled",
             });
           },
+          markTaskBlocked: (input) => {
+            blockedEvidence.push(input.evidence ?? {});
+            return resolved({
+              marked: true,
+              task_id: input.task_id,
+              previous_state: "claimed",
+              new_state: "blocked",
+              canceled_agent_runs: 1,
+            });
+          },
           recordWorkflowEvent: (input) => {
             if (input.kind === "task_escalation_ladder") {
               ladderEvents.push(input.payload);
@@ -991,6 +1021,16 @@ function makeSupervisorTestActivities(
         previous_state: "in_progress" as const,
         new_state: "failed" as const,
       }),
+    markTaskBlocked: () => {
+      calls.push("markTaskBlocked");
+      return resolved({
+        marked: true,
+        task_id: taskId,
+        previous_state: "in_progress" as const,
+        new_state: "blocked" as const,
+        canceled_agent_runs: 1,
+      });
+    },
     scopeHeartbeatTick: () => {
       calls.push("heartbeat");
       return resolved({ scope_id: scopeId, status: "scope_terminal" as const });
@@ -1068,7 +1108,7 @@ describe.runIf(temporalTestEnabled)(
             }),
         };
       await runSupervisorTestScenario(activities);
-      expect(calls).toContain("override:task:block");
+      expect(calls).toContain("markTaskBlocked");
     }, 120_000);
 
     it("blocks a task when the refinement loop cap is exhausted", async () => {
@@ -1091,7 +1131,7 @@ describe.runIf(temporalTestEnabled)(
             }),
         };
       await runSupervisorTestScenario(activities);
-      expect(calls).toContain("override:task:block");
+      expect(calls).toContain("markTaskBlocked");
     }, 120_000);
 
     it("re-reviews once after an invalidated approval when the head pipeline is green", async () => {

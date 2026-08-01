@@ -666,6 +666,12 @@ export class TaskGraphRepository {
     return this.withTransaction((tx) => tx.finishAgentRun(input));
   }
 
+  async cancelRunningAgentRunsForTask(task_id: TaskId): Promise<number> {
+    return this.withTransaction((tx) =>
+      tx.cancelRunningAgentRunsForTask(task_id),
+    );
+  }
+
   async listActiveTaskAgentTokens(
     input: {
       readonly states?: readonly TaskState[];
@@ -1437,6 +1443,20 @@ export class TaskGraphTransaction {
       );
     }
     return mapAgentRun(rows[0]);
+  }
+
+  async cancelRunningAgentRunsForTask(task_id: TaskId): Promise<number> {
+    const { rows } = await queryRows<{ id: string }>(
+      this.client,
+      `UPDATE agent_runs
+          SET status = 'canceled',
+              finished_at = now()
+        WHERE task_id = $1
+          AND status = 'running'
+      RETURNING id`,
+      [task_id],
+    );
+    return rows.length;
   }
 
   async updateTaskState(

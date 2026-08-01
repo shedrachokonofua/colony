@@ -612,6 +612,24 @@ export interface SupervisorActivities {
         readonly new_state: "failed";
       }
   >;
+  readonly markTaskBlocked: (input: {
+    readonly task_id: TaskId;
+    readonly reason: string;
+    readonly evidence?: Readonly<Record<string, unknown>>;
+  }) => Promise<
+    | {
+        readonly marked: false;
+        readonly task_id?: TaskId;
+        readonly reason: string;
+      }
+    | {
+        readonly marked: true;
+        readonly task_id: TaskId;
+        readonly previous_state: TaskLifecycleState;
+        readonly new_state: "blocked";
+        readonly canceled_agent_runs: number;
+      }
+  >;
   readonly recordHumanApproval: (input: {
     readonly task_id: TaskId;
     readonly actor: string;
@@ -852,6 +870,7 @@ const PATCH_STARTUP_TASK_SYNC = "colony-2026-07-31-startup-task-sync";
 const PATCH_ESCALATION_LADDER = "colony-2026-07-31-escalation-ladder";
 const PATCH_REDRIVE_CHANGES_REQUESTED =
   "colony-2026-07-31-redrive-changes-requested";
+const PATCH_INTERNAL_TASK_BLOCK = "colony-2026-08-01-internal-task-block";
 
 async function blockTaskAndAudit(input: {
   readonly scope_id: ScopeId;
@@ -869,26 +888,42 @@ async function blockTaskAndAudit(input: {
     attempt: input.attempt,
     ...(input.evidence ?? {}),
   };
-  await activities.applyOperatorOverride({
-    target: "task",
-    task_id: input.task_id,
-    action: "block",
-    actor: "svc:supervisor",
-    reason: input.reason,
-    evidence,
-  });
+  let blockApplied: boolean;
+  let blockFailure: string | undefined;
+  if (patched(PATCH_INTERNAL_TASK_BLOCK)) {
+    const result = await activities.markTaskBlocked({
+      task_id: input.task_id,
+      reason: input.reason,
+      evidence,
+    });
+    blockApplied = result.marked;
+    blockFailure = result.marked ? undefined : result.reason;
+  } else {
+    const result = await activities.applyOperatorOverride({
+      target: "task",
+      task_id: input.task_id,
+      action: "block",
+      actor: "svc:supervisor",
+      reason: input.reason,
+      evidence,
+    });
+    blockApplied = result.applied;
+    blockFailure = result.applied ? undefined : result.reason;
+  }
   await activities.recordWorkflowEvent({
     scope_id: input.scope_id,
     task_id: input.task_id,
     signal_seq: input.signal_seq,
     signal: "operator_override",
-    kind: "task_blocked",
+    kind: blockApplied ? "task_blocked" : "task_block_failed",
     actor: "svc:supervisor",
     workflow_id: info.workflowId,
     run_id: info.runId,
     payload: {
       action: "block",
+      applied: blockApplied,
       reason: input.reason,
+      ...(blockFailure ? { failure: blockFailure } : {}),
       ...evidence,
     },
   });

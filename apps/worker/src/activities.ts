@@ -484,6 +484,88 @@ export async function markTaskFailed(
   };
 }
 
+export interface MarkTaskBlockedInput {
+  readonly task_id: string;
+  readonly reason: string;
+  readonly evidence?: Readonly<Record<string, unknown>>;
+}
+
+export type MarkTaskBlockedResult =
+  | {
+      readonly marked: false;
+      readonly task_id?: string;
+      readonly reason: string;
+    }
+  | {
+      readonly marked: true;
+      readonly task_id: string;
+      readonly previous_state: string;
+      readonly new_state: "blocked";
+      readonly canceled_agent_runs: number;
+    };
+
+export async function markTaskBlocked(
+  input: MarkTaskBlockedInput,
+): Promise<MarkTaskBlockedResult> {
+  if (!isTaskId(input.task_id)) {
+    return { marked: false, reason: "invalid_task_id" };
+  }
+  const repository = getRepository();
+  const task = await repository.getTask(input.task_id);
+  if (!task) {
+    return {
+      marked: false,
+      task_id: input.task_id,
+      reason: "task_not_found",
+    };
+  }
+  if (
+    task.state === "merged" ||
+    task.state === "closed" ||
+    task.state === "canceled"
+  ) {
+    return {
+      marked: false,
+      task_id: task.id,
+      reason: `task_not_blockable:${task.state}`,
+    };
+  }
+  const previousState = task.state;
+  if (task.state !== "blocked") {
+    await repository.updateTaskState(task.id, task.state_version, "blocked", {
+      actor: SUPERVISOR_ACTOR,
+      capability: "task.assign",
+      reason: input.reason,
+    });
+  }
+  const canceledAgentRuns = await repository.cancelRunningAgentRunsForTask(
+    task.id,
+  );
+  await repository.writeAudit({
+    scope_id: task.scope_id,
+    task_id: task.id,
+    actor: SUPERVISOR_ACTOR,
+    action: "task.blocked.recorded",
+    capability: "task.assign",
+    target_kind: "task",
+    target_id: task.id,
+    previous_state: previousState,
+    new_state: "blocked",
+    reason: input.reason,
+    evidence: {
+      ...(input.evidence ?? {}),
+      canceled_agent_runs: canceledAgentRuns,
+    },
+  });
+  return {
+    marked: true,
+    task_id: task.id,
+    previous_state: previousState,
+    new_state: "blocked",
+    canceled_agent_runs: canceledAgentRuns,
+  };
+}
+
 export async function startArchitectRun(
   input: StartArchitectRunInput,
 ): Promise<StartArchitectRunResult> {
@@ -1307,6 +1389,7 @@ export const activities = {
   ingestBlockedEnvelope,
   markScopePendingSync,
   markTaskFailed,
+  markTaskBlocked,
   recordTaskConflict,
   requestScopeReview,
   autoCloseScope,
