@@ -19,6 +19,11 @@ allow_literal_keys: false
 hitl:
   mode: gated
 
+# LLM review of every MR before the merge gate. `required` dispatches a
+# reviewer run per head SHA; request_changes requeues the implementer.
+review:
+  mode: off
+
 providers:
   # ── OpenAI-compatible gateway/provider ───────────────────────────────
   openai_compatible:

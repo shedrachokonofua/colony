@@ -23,6 +23,7 @@ let provider: FakeProviderAdapter;
 let projectId: string;
 let handle: ColonydHandle;
 let configPath: string;
+let reviewConfigPath: string;
 
 /** Scripted fake runtime state shared with the scenarios. */
 const script = {
@@ -32,6 +33,11 @@ const script = {
   implementerCalls: new Map<string, number>(),
   gateFailOnceFor: undefined as string | undefined,
   gateCalls: new Map<string, number>(),
+  reviewerCalls: 0,
+  reviewerRejectFirst: false,
+  reviewerAlwaysReject: false,
+  distinctShas: false,
+  singleTask: false,
 };
 
 function fakeAgents(): FakeAgentRuntimeAdapter {
@@ -41,6 +47,13 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
       environment: AgentRunEnvironment,
     ) => {
       if (environment.role === "architect") {
+        if (script.singleTask) {
+          return {
+            kind: "architect_decomposition",
+            summary: "Single-task decomposition.",
+            tasks: [{ title: "Task A", spec: "Do A.", depends_on: [] }],
+          };
+        }
         return {
           kind: "architect_decomposition",
           summary: "Two-task decomposition: A then B.",
@@ -48,6 +61,36 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
             { title: "Task A", spec: "Do A.", depends_on: [] },
             { title: "Task B", spec: "Do B.", depends_on: [0] },
           ],
+        };
+      }
+      if (environment.role === "reviewer") {
+        const headSha =
+          typeof packet.head_sha === "string" ? packet.head_sha : SHA_A;
+        script.reviewerCalls += 1;
+        if (
+          script.reviewerAlwaysReject ||
+          (script.reviewerRejectFirst && script.reviewerCalls === 1)
+        ) {
+          return {
+            kind: "reviewer_verdict",
+            verdict: "request_changes",
+            summary: "Need changes.",
+            findings: [
+              {
+                severity: "major",
+                file: "index.js",
+                note: "version endpoint missing",
+              },
+            ],
+            head_sha: headSha,
+          };
+        }
+        return {
+          kind: "reviewer_verdict",
+          verdict: "approve",
+          summary: "Looks good.",
+          findings: [],
+          head_sha: headSha,
         };
       }
       const taskId = String(packet.task_id);
@@ -58,7 +101,15 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
       }
       const calls = (script.implementerCalls.get(taskId) ?? 0) + 1;
       script.implementerCalls.set(taskId, calls);
-      const headSha = taskId.endsWith(".1") ? SHA_A : SHA_B;
+      const headSha = script.distinctShas
+        ? (
+            (taskId.endsWith(".1") ? "a" : "b") +
+            String(calls).padStart(2, "0") +
+            "0".repeat(37)
+          ).slice(0, 40)
+        : taskId.endsWith(".1")
+          ? SHA_A
+          : SHA_B;
       const branch = `colony/${taskId}`;
       // The fake provider needs the branch to exist so envelope fact
       // verification (branch head == head_sha) passes.
@@ -92,7 +143,20 @@ function gateExecutor(): (input: {
   };
 }
 
-async function bootHeadless(dbPath: string): Promise<ColonydHandle> {
+function syncMrHead(adapter: FakeProviderAdapter): void {
+  const origGet = adapter.mergeRequests.get.bind(adapter.mergeRequests);
+  adapter.mergeRequests.get = async (project, id) => {
+    const mr = await origGet(project, id);
+    if (!mr.source_branch) return mr;
+    const head = await adapter.commits.get(project, mr.source_branch);
+    return { ...mr, head_commit_sha: head.sha };
+  };
+}
+
+async function bootHeadless(
+  dbPath: string,
+  options: { reviewRequired?: boolean } = {},
+): Promise<ColonydHandle> {
   process.env["NODE_ENV"] = "test";
   process.env["AGENT_RUNTIME"] = "fake";
   process.env["GITLAB_TOKEN"] = "";
@@ -100,14 +164,18 @@ async function bootHeadless(dbPath: string): Promise<ColonydHandle> {
   process.env["COLONYD_DB_PATH"] = dbPath;
   process.env["COLONYD_MAX_ATTEMPTS"] = "3";
   process.env["COLONYD_MAX_CONCURRENT"] = "1";
-  process.env["COLONY_CONFIG_PATH"] = configPath;
+  process.env["COLONY_CONFIG_PATH"] = options.reviewRequired
+    ? reviewConfigPath
+    : configPath;
   resetEnvCache();
+  if (options.reviewRequired) syncMrHead(provider);
   return boot({
     provider,
     agents: {
       runtime: "fake",
       architect: fakeAgents(),
       developer: fakeAgents(),
+      ...(options.reviewRequired ? { reviewer: fakeAgents() } : {}),
     },
     gateExecutor: gateExecutor(),
     headless: true,
@@ -157,6 +225,39 @@ beforeAll(() => {
     ].join("\n"),
     "utf8",
   );
+  reviewConfigPath = join(dir, "colony-review.yaml");
+  writeFileSync(
+    reviewConfigPath,
+    [
+      "agent_runtime: fake",
+      "allow_literal_keys: true",
+      "hitl:",
+      "  mode: yolo",
+      "review:",
+      "  mode: required",
+      "providers:",
+      "  fake_llm:",
+      "    api: openai-completions",
+      "    base_url: http://localhost:9/v1",
+      "    auth:",
+      "      kind: api_key",
+      "      value: fake-key",
+      "    models:",
+      "      - id: fake-model",
+      "        name: fake-model",
+      "agents:",
+      "  architect:",
+      "    provider: fake_llm",
+      "    model: fake-model",
+      "  developer:",
+      "    provider: fake_llm",
+      "    model: fake-model",
+      "  reviewer:",
+      "    provider: fake_llm",
+      "    model: fake-model",
+    ].join("\n"),
+    "utf8",
+  );
 });
 
 afterAll(() => {
@@ -168,6 +269,11 @@ beforeEach(async () => {
   script.implementerCalls.clear();
   script.gateFailOnceFor = undefined;
   script.gateCalls.clear();
+  script.reviewerCalls = 0;
+  script.reviewerRejectFirst = false;
+  script.reviewerAlwaysReject = false;
+  script.distinctShas = false;
+  script.singleTask = false;
   provider = new FakeProviderAdapter();
   const project = await provider.projects.create({
     name: "fake-e2e",
@@ -411,5 +517,85 @@ describe("colonyd fake end-to-end loop", () => {
     expect(provider.listAccessTokens().map((t) => t.id)).not.toContain(
       minted.id,
     );
+  }, 30_000);
+
+  it("review loop: request_changes requeues with findings then approve merges on one MR", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `review-loop-${Date.now()}.db`), {
+      reviewRequired: true,
+    });
+    script.reviewerRejectFirst = true;
+    script.distinctShas = true;
+
+    const scopeId = await createScope("review loop");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch A -> mr_open
+    const taskA = handle.ctx.store
+      .listTasks(scopeId)
+      .find((t) => t.id.endsWith(".1"))!;
+    expect(taskA.state).toBe("mr_open");
+
+    await tickAndSettle(); // review request_changes -> queued
+    let a = handle.ctx.store.getTask(taskA.id)!;
+    expect(a.state).toBe("queued");
+    expect(a.attempt).toBe(1);
+    const changes = handle.ctx.store
+      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .filter((row) => row.action === "review.changes_requested");
+    expect(changes).toHaveLength(1);
+
+    handle.ctx.store.clearRetryDelay(taskA.id);
+    await driveToDone(scopeId, 40);
+
+    a = handle.ctx.store.getTask(taskA.id)!;
+    expect(a.state).toBe("merged");
+    expect(a.attempt).toBe(1);
+    const scope = handle.ctx.store.getScope(scopeId)!;
+    expect(scope.status).toBe("done");
+
+    const audit = handle.ctx.store
+      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .slice()
+      .sort((x, y) => x.id - y.id)
+      .map((row) => row.action);
+    const requested = audit.indexOf("review.changes_requested");
+    const approved = audit.indexOf("review.approved");
+    expect(requested).toBeGreaterThanOrEqual(0);
+    expect(approved).toBeGreaterThan(requested);
+    expect(audit.filter((action) => action === "mr.opened")).toHaveLength(1);
+    expect(audit.filter((action) => action === "mr.reused")).toHaveLength(1);
+  }, 30_000);
+
+  it("review rejection cap: three consecutive request_changes blocks the task and scope", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `review-cap-${Date.now()}.db`), {
+      reviewRequired: true,
+    });
+    script.reviewerAlwaysReject = true;
+    script.distinctShas = true;
+    script.singleTask = true;
+
+    const scopeId = await createScope("review cap");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // dispatch A -> mr_open
+    const taskA = handle.ctx.store.listTasks(scopeId)[0]!;
+    expect(taskA.state).toBe("mr_open");
+
+    await tickAndSettle(); // review 1 -> queued attempt 1
+    expect(handle.ctx.store.getTask(taskA.id)!.state).toBe("queued");
+    handle.ctx.store.clearRetryDelay(taskA.id);
+    await tickAndSettle(); // implement 2 -> mr_open
+    await tickAndSettle(); // review 2 -> queued attempt 2
+    expect(handle.ctx.store.getTask(taskA.id)!.attempt).toBe(2);
+    handle.ctx.store.clearRetryDelay(taskA.id);
+    await tickAndSettle(); // implement 3 -> mr_open
+    await tickAndSettle(); // review 3 -> blocked
+    await tickAndSettle(); // closeScopes
+
+    const a = handle.ctx.store.getTask(taskA.id)!;
+    expect(a.state).toBe("blocked");
+    expect(a.blocked_reason).toBe("review rejected 3 consecutive times");
+    const scope = handle.ctx.store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
   }, 30_000);
 });

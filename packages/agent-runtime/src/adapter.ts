@@ -1,8 +1,10 @@
 import {
   type ArchitectDecompositionV2,
   type ImplementerCompletionV2,
+  type ReviewerVerdictV2,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
+  ReviewerVerdictV2 as reviewerVerdictV2Schema,
 } from "@colony/schemas";
 import { sha256Json } from "./hashing.js";
 
@@ -17,9 +19,10 @@ export interface AgentRuntimePacket {
 
 export type AgentRuntimeEnvelope =
   | ArchitectDecompositionV2
-  | ImplementerCompletionV2;
+  | ImplementerCompletionV2
+  | ReviewerVerdictV2;
 
-export type AgentRuntimeRole = "architect" | "developer";
+export type AgentRuntimeRole = "architect" | "developer" | "reviewer";
 
 export type AgentRunRuntimeStatus =
   | "queued"
@@ -175,7 +178,9 @@ export function parseEnvelope(
   const schema =
     role === "architect"
       ? architectDecompositionV2Schema
-      : implementerCompletionV2Schema;
+      : role === "reviewer"
+        ? reviewerVerdictV2Schema
+        : implementerCompletionV2Schema;
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     return { ok: false, reason: parsed.error.message };
@@ -206,6 +211,17 @@ function defaultEnvelope(
           depends_on: [],
         },
       ],
+    });
+  }
+
+  if (role === "reviewer") {
+    return reviewerVerdictV2Schema.parse({
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary: "Fake review approved.",
+      findings: [],
+      head_sha:
+        typeof packet.head_sha === "string" ? packet.head_sha : "a".repeat(40),
     });
   }
 

@@ -7,6 +7,7 @@ import { SERVICE_ACTOR } from "./context.js";
 import { runArchitect } from "./runs/architect.js";
 import { runImplement } from "./runs/implement.js";
 import { runMergeGate } from "./runs/merge-gate.js";
+import { reconcileRejectedReview, runReview } from "./runs/review.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
 
 /**
@@ -63,6 +64,9 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
       retryOrFailScope(ctx, run.scope_id, "lease_expired");
     } else if (run.kind === "merge_gate" && run.task_id) {
       requeueGateTask(ctx, run.task_id);
+    } else if (run.kind === "review") {
+      // Task stays mr_open; the next tick re-dispatches a review at the
+      // current head SHA. Review is evidence, not a task-state owner.
     }
   }
 
@@ -280,6 +284,39 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
     // Dispatch a gate when none succeeded at the current head SHA and no
     // gate run is active for the scope (serialize merges per scope).
     if (!headSha) continue;
+
+    if (ctx.config.reviewMode === "required") {
+      const reviews = ctx.store
+        .runsForTask(task.id)
+        .filter((r) => r.kind === "review");
+      const approvedAtHead = reviews.some(
+        (r) =>
+          r.status === "succeeded" &&
+          parseEvidence(r.evidence_json)?.verdict === "approve" &&
+          parseEvidence(r.evidence_json)?.head_sha === headSha,
+      );
+      if (!approvedAtHead) {
+        const latest = reviews.at(-1);
+        if (
+          latest?.status === "succeeded" &&
+          parseEvidence(latest.evidence_json)?.verdict === "request_changes" &&
+          parseEvidence(latest.evidence_json)?.head_sha === headSha
+        ) {
+          // Crash self-heal: handler died between finishRun and requeue.
+          reconcileRejectedReview(ctx, task);
+          continue;
+        }
+        if (latest?.status === "running") continue;
+        if (
+          ctx.store.activeRuns("review").some((r) => r.scope_id === scope.id)
+        ) {
+          continue;
+        }
+        void runReview(ctx, scope, task, headSha);
+        continue;
+      }
+    }
+
     if (lastGate?.status === "running") continue;
     if (
       lastGate?.status === "succeeded" &&
@@ -298,10 +335,13 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
 
 function parseEvidence(
   evidenceJson: string | null,
-): { head_sha?: string } | undefined {
+): { head_sha?: string; verdict?: string } | undefined {
   if (!evidenceJson) return undefined;
   try {
-    return JSON.parse(evidenceJson) as { head_sha?: string };
+    return JSON.parse(evidenceJson) as {
+      head_sha?: string;
+      verdict?: string;
+    };
   } catch {
     return undefined;
   }

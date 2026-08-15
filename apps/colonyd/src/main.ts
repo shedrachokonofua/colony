@@ -61,6 +61,11 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   await revokeTokensForRuns(store, provider, orphans);
 
   const agents = options.agents ?? (await createAgentWiring(config));
+  if (config.reviewMode === "required" && !agents.reviewer) {
+    throw new Error(
+      "review.mode is 'required' but no reviewer agent is configured",
+    );
+  }
 
   let tickRunning = false;
   let tickRequested = false;

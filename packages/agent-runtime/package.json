@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./pi-base-agent-runner": "./src/pi-base-agent-runner.ts",
     "./pi-coding-agent-runner": "./src/pi-coding-agent-runner.ts",
-    "./pi-architect-runner": "./src/pi-architect-runner.ts"
+    "./pi-architect-runner": "./src/pi-architect-runner.ts",
+    "./pi-reviewer-runner": "./src/pi-reviewer-runner.ts"
   },
   "scripts": {
     "test": "vitest run --root ../.. src/*.test.ts"

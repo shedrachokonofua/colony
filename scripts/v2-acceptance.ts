@@ -25,6 +25,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { config as loadDotenv } from "dotenv";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { resetEnvCache } from "@colony/config";
 import type { ProviderProjectInfo } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
@@ -952,15 +953,128 @@ async function scenarioCleanup(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Scenario 8 — LLM review loop before the merge gate
+// ---------------------------------------------------------------------------
+
+async function scenarioReviewLoop(port: number): Promise<void> {
+  const name = "8.review-loop";
+  const project = await createAcceptProject(`colony-v2-accept-8-${RUN_SUFFIX}`);
+  const files = baseNodeApp();
+  files["package-lock.json"] = packageLockForApp();
+  await seedFiles(project, "main", files);
+
+  const dbPath = join(tmpdir(), `colony-accept-8-${RUN_SUFFIX}.db`);
+  const reviewConfig = prepareYoloConfig({ reviewMode: "required" });
+  const handle = await launchColonyd(port, dbPath, reviewConfig);
+  try {
+    const scopeId = await createScopeViaHttp(
+      port,
+      "Add a /version endpoint to index.js that responds with JSON {version} taken from package.json, and extend test.js to cover it.",
+      project,
+    );
+    const final = await waitForScopeDone(port, scopeId, SCENARIO_BUDGET_MS);
+    if (!final)
+      throw new Error("scope did not reach a terminal state within budget");
+    if (final.scope.status !== "done") {
+      throw new Error(
+        `scope ended ${final.scope.status}: ${JSON.stringify(final.tasks)}`,
+      );
+    }
+    const merged = final.tasks.filter((t) => t.state === "merged");
+    if (merged.length < 1) throw new Error("no merged tasks");
+    for (const task of merged) {
+      const taskResponse = await http(port, "GET", `/tasks/${task.id}`);
+      if (taskResponse.status !== 200) {
+        throw new Error(`GET /tasks/${task.id} -> ${taskResponse.status}`);
+      }
+      const runs =
+        (
+          taskResponse.body as {
+            runs?: {
+              kind: string;
+              status: string;
+              evidence_json: string | null;
+            }[];
+          }
+        ).runs ?? [];
+      const gate = runs.find(
+        (run) => run.kind === "merge_gate" && run.status === "succeeded",
+      );
+      if (!gate?.evidence_json) {
+        throw new Error(`task ${task.id}: no succeeded merge_gate run`);
+      }
+      const gateEvidence = JSON.parse(gate.evidence_json) as {
+        head_sha?: string;
+      };
+      const approved = runs.find((run) => {
+        if (
+          run.kind !== "review" ||
+          run.status !== "succeeded" ||
+          !run.evidence_json
+        )
+          return false;
+        const evidence = JSON.parse(run.evidence_json) as {
+          verdict?: string;
+          head_sha?: string;
+        };
+        return (
+          evidence.verdict === "approve" &&
+          evidence.head_sha === gateEvidence.head_sha
+        );
+      });
+      if (!approved) {
+        throw new Error(
+          `task ${task.id}: no review approve at gate head ${gateEvidence.head_sha}`,
+        );
+      }
+      const auditResponse = await http(
+        port,
+        "GET",
+        `/audit?task_id=${encodeURIComponent(task.id)}&limit=1000`,
+      );
+      if (auditResponse.status !== 200) {
+        throw new Error(`GET /audit -> ${auditResponse.status}`);
+      }
+      const audit = (auditResponse.body as { id: number; action: string }[])
+        .slice()
+        .sort((a, b) => a.id - b.id);
+      const actions = audit.map((row) => row.action);
+      const approvedAt = actions.indexOf("review.approved");
+      const gatePassAt = actions.indexOf("gate.pass");
+      if (approvedAt < 0 || gatePassAt < 0 || approvedAt >= gatePassAt) {
+        throw new Error(
+          `task ${task.id}: expected review.approved before gate.pass; got ${actions.join(",")}`,
+        );
+      }
+    }
+    report(
+      name,
+      "PASS",
+      `${merged.length} merged task(s); review approved before gate`,
+    );
+  } catch (err) {
+    report(name, "FAIL", err instanceof Error ? err.message : String(err));
+  } finally {
+    await shutdownColonyd(handle);
+  }
+}
+
 /**
  * The live config/colony.yaml defaults to hitl: gated. Acceptance runs
- * automatically, so derive a temp copy with hitl.mode: yolo (prepended so it
- * overrides nothing else).
+ * automatically, so derive a temp copy with hitl.mode: yolo and review.mode
+ * off (unless overridden) so scenarios 1-7 keep their existing assertions.
  */
-function prepareYoloConfig(): string {
+function prepareYoloConfig(
+  overrides: { reviewMode?: "off" | "required" } = {},
+): string {
   const original = readFileSync(COLONY_CONFIG_PATH, "utf8");
-  const yoloPath = join(tmpdir(), `colony-accept-yolo-${RUN_SUFFIX}.yaml`);
-  writeFileSync(yoloPath, `hitl:\n  mode: yolo\n\n${original}`, "utf8");
+  const parsed = parseYaml(original) as Record<string, unknown>;
+  parsed["hitl"] = { mode: "yolo" };
+  parsed["review"] = { mode: overrides.reviewMode ?? "off" };
+  const suffix = overrides.reviewMode === "required" ? "review" : "yolo";
+  const yoloPath = join(tmpdir(), `colony-accept-${suffix}-${RUN_SUFFIX}.yaml`);
+  writeFileSync(yoloPath, stringifyYaml(parsed), "utf8");
   return yoloPath;
 }
 
@@ -1036,6 +1150,18 @@ async function main(): Promise<void> {
     } else {
       if (run("4")) await scenarioMigrationConflict(4504);
       if (run("5")) await scenarioCredentialLeak(4505);
+    }
+  }
+
+  if (run("8")) {
+    if (skipLlm) {
+      report(
+        "8.review-loop",
+        "SKIP",
+        "LiteLLM offline or llm scenarios excluded",
+      );
+    } else {
+      await scenarioReviewLoop(4508);
     }
   }
 

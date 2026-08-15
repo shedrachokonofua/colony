@@ -15,9 +15,13 @@ export * from "./tool-materialization.js";
 export {
   buildArchitectSystemPrompt,
   buildImplementerSystemPrompt,
+  buildReviewerSystemPrompt,
+  buildReviewerFinalizerPrompt,
   createArchitectSubmitTool,
   createImplementerSubmitTool,
+  createReviewerSubmitTool,
   architectDecompositionEnvelopeTypeBox,
   implementerCompletionEnvelopeTypeBox,
+  reviewerVerdictEnvelopeTypeBox,
 } from "./pi-runner-common.js";
 export type { PiRunnerLogger } from "./pi-runner-common.js";

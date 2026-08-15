@@ -145,6 +145,15 @@ const hitlSchema = z
 
 export type HitlMode = "gated" | "yolo";
 
+const reviewSchema = z
+  .object({
+    mode: z.enum(["off", "required"]).default("off"),
+  })
+  .strict()
+  .default({ mode: "off" });
+
+export type ReviewMode = "off" | "required";
+
 export const colonyConfigFileSchema = z
   .object({
     agent_runtime: z.enum(["fake", "pi"]).default("fake"),
@@ -155,6 +164,7 @@ export const colonyConfigFileSchema = z
      */
     allow_literal_keys: z.boolean().default(false),
     hitl: hitlSchema,
+    review: reviewSchema,
     providers: z.record(z.string().min(1), providerSchema).default({}),
     agents: z
       .object({
@@ -227,6 +237,7 @@ export interface ResolvedAgentConfig {
 export interface ColonyConfig {
   readonly agentRuntime: "fake" | "pi";
   readonly hitlMode: HitlMode;
+  readonly reviewMode: ReviewMode;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
   readonly oauthProviderKeys: readonly string[];
   forAgent(role: AgentRole): ResolvedAgentConfig;
@@ -335,6 +346,7 @@ export function loadColonyConfig(
   return {
     agentRuntime,
     hitlMode: file.hitl.mode,
+    reviewMode: file.review.mode,
     oauthProviderKeys,
     forAgent(role) {
       const agentEntry = file.agents[role];

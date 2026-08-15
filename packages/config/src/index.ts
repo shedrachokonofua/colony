@@ -69,6 +69,7 @@ export {
   type ColonyConfig,
   type ColonyConfigFile,
   type HitlMode,
+  type ReviewMode,
   type LoadColonyConfigOptions,
   type PiApiKind,
   type ResolvedAgentConfig,

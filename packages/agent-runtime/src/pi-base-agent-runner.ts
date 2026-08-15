@@ -19,8 +19,11 @@ import {
   buildImplementerFinalizerPrompt,
   buildImplementerSystemPrompt,
   buildPacketPrompt,
+  buildReviewerFinalizerPrompt,
+  buildReviewerSystemPrompt,
   createArchitectSubmitTool,
   createImplementerSubmitTool,
+  createReviewerSubmitTool,
   createSandboxId,
   finalizeEnvelopeWithStructuredOutput,
   implementerCompletionEnvelopeTypeBox,
@@ -29,6 +32,7 @@ import {
   provisionRepoWorkspace,
   provisionScratchDir,
   resolvePiModel,
+  reviewerVerdictEnvelopeTypeBox,
   runnerBroker,
   waitForIdleOrCapturedEnvelope,
   withRunTimeout,
@@ -36,6 +40,7 @@ import {
 import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
+  ReviewerVerdictV2 as reviewerVerdictV2Schema,
 } from "@colony/schemas";
 
 export type PiWorkspaceMode = "repo-required" | "scratch";
@@ -49,7 +54,10 @@ export interface PiRoleProfile {
   readonly sandboxPrefix: string;
   readonly systemPrompt: () => string;
   finalizerPrompt: (packet: AgentRuntimePacket) => string;
-  readonly schemaName: "implementer_completion" | "architect_decomposition";
+  readonly schemaName:
+    | "implementer_completion"
+    | "architect_decomposition"
+    | "reviewer_verdict";
   readonly typeboxSchema: unknown;
   readonly submitTool: (capture: (value: unknown) => void) => ToolDefinition;
   readonly validate: (value: unknown) => string[] | null;
@@ -404,6 +412,23 @@ export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",
   defaultLimits: { maxTurns: 80, maxUsd: 25 },
+  workspaceMode: "repo-required",
+  requireRepositoryInspection: true,
+};
+
+export const REVIEWER_ROLE_PROFILE: PiRoleProfile = {
+  role: "reviewer",
+  kind: "pi-reviewer",
+  sandboxPrefix: "pi-reviewer",
+  systemPrompt: buildReviewerSystemPrompt,
+  finalizerPrompt: buildReviewerFinalizerPrompt,
+  schemaName: "reviewer_verdict",
+  typeboxSchema: reviewerVerdictEnvelopeTypeBox,
+  submitTool: createReviewerSubmitTool,
+  validate: zodValidator(reviewerVerdictV2Schema),
+  defaultTools: DEFAULT_ARCHITECT_TOOLS,
+  defaultThinkingLevel: "medium",
+  defaultLimits: { maxTurns: 20, maxUsd: 3 },
   workspaceMode: "repo-required",
   requireRepositoryInspection: true,
 };

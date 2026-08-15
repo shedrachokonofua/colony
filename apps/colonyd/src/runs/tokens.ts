@@ -78,6 +78,8 @@ export function expectedRunTokenName(run: {
   if (run.kind === "implement" && run.task_id)
     return `colony-task-${run.task_id}`;
   if (run.kind === "architect") return `colony-architect-${run.scope_id}`;
+  if (run.kind === "review" && run.task_id)
+    return `colony-review-${run.task_id}`;
   return null;
 }
 

@@ -50,7 +50,7 @@ export interface Run {
   readonly id: string;
   readonly scope_id: ScopeId;
   readonly task_id: TaskId | null;
-  readonly kind: "architect" | "implement" | "merge_gate";
+  readonly kind: "architect" | "implement" | "merge_gate" | "review";
   readonly status: "running" | "succeeded" | "failed" | "canceled";
   readonly lease_expires_at: string;
   readonly base_sha: string | null;

@@ -79,6 +79,21 @@ ${VALID_YAML}`),
     expect(yolo.hitlMode).toBe("yolo");
   });
 
+  it("defaults review mode to off and parses required", () => {
+    const off = loadColonyConfig({
+      path: tempConfig(VALID_YAML),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(off.reviewMode).toBe("off");
+
+    const required = loadColonyConfig({
+      path: tempConfig(`review: { mode: required }
+${VALID_YAML}`),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(required.reviewMode).toBe("required");
+  });
+
   it("preserves OpenAI-compatible base_url and arbitrary env var auth names", () => {
     const path = tempConfig(`
 agent_runtime: pi

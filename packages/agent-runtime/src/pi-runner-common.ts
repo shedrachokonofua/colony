@@ -20,6 +20,7 @@ import {
   type ImplementerCompletionV2,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
+  ReviewerVerdictV2 as reviewerVerdictV2Schema,
 } from "@colony/schemas";
 import type { z } from "zod";
 import type { AgentRunEnvironment, AgentRuntimePacket } from "./adapter.js";
@@ -868,6 +869,92 @@ export function createImplementerSubmitTool(
       capture(params);
       return Promise.resolve({
         content: [{ type: "text", text: "implementer envelope captured" }],
+        details: {},
+        terminate: true,
+      });
+    },
+  };
+}
+
+export function buildReviewerSystemPrompt(): string {
+  return [
+    "You are the Colony Reviewer.",
+    "The repository is cloned at the head SHA of a merge request. Read the task spec in the packet body.",
+    "Run `git diff origin/<target_branch>...HEAD` (target branch is in the packet) and inspect changed files.",
+    "Judge spec compliance and obvious defects (dead UI, broken wiring, spec claims not implemented).",
+    "Do NOT edit files or push.",
+    "Finish by calling submit_reviewer_verdict exactly once with verdict, findings (each with severity + note, file where applicable), and the exact head_sha you inspected (`git rev-parse HEAD`).",
+    "request_changes requires at least one finding.",
+    "Your run is not complete until you call submit_reviewer_verdict. Do not finish with plain text.",
+    "Never include secrets in the envelope.",
+  ].join("\n");
+}
+
+export function buildReviewerFinalizerPrompt(
+  packet: AgentRuntimePacket,
+): string {
+  return [
+    "Review is complete. Submit exactly one schema-conforming reviewer_verdict envelope by calling submit_reviewer_verdict.",
+    "",
+    "Rules:",
+    '- kind is exactly "reviewer_verdict".',
+    '- verdict is "approve" or "request_changes".',
+    "- summary is a one-paragraph review summary.",
+    "- findings is an array; each finding has severity (blocker|major|minor), note, and optional file.",
+    "- request_changes requires at least one finding.",
+    "- head_sha must be the exact 40-hex SHA you inspected (`git rev-parse HEAD`).",
+    "- Do not add wrapper keys such as envelope, arguments, or data. The tool arguments are the envelope object.",
+    "",
+    `Task: ${typeof packet.goal === "string" ? packet.goal : "(see packet.body)"}`,
+  ].join("\n");
+}
+
+export const reviewerVerdictEnvelopeTypeBox = Type.Object(
+  {
+    kind: Type.Literal("reviewer_verdict"),
+    verdict: Type.Union([
+      Type.Literal("approve"),
+      Type.Literal("request_changes"),
+    ]),
+    summary: Type.String({ minLength: 1 }),
+    findings: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            severity: Type.Union([
+              Type.Literal("blocker"),
+              Type.Literal("major"),
+              Type.Literal("minor"),
+            ]),
+            file: Type.Optional(Type.String({ minLength: 1 })),
+            note: Type.String({ minLength: 1 }),
+          },
+          { additionalProperties: false },
+        ),
+      ),
+    ),
+    head_sha: Type.String({ pattern: "^[0-9a-f]{40}$" }),
+  },
+  { additionalProperties: false },
+);
+
+export function createReviewerSubmitTool(
+  capture: (value: unknown) => void,
+): AgentTool<typeof reviewerVerdictEnvelopeTypeBox> {
+  return {
+    name: "submit_reviewer_verdict",
+    label: "Submit reviewer verdict",
+    description:
+      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. request_changes requires at least one finding.",
+    parameters: reviewerVerdictEnvelopeTypeBox,
+    executionMode: "sequential",
+    prepareArguments: makeZodPrepare(reviewerVerdictV2Schema) as (
+      args: unknown,
+    ) => Static<typeof reviewerVerdictEnvelopeTypeBox>,
+    execute: (_toolCallId, params) => {
+      capture(params);
+      return Promise.resolve({
+        content: [{ type: "text", text: "reviewer envelope captured" }],
         details: {},
         terminate: true,
       });

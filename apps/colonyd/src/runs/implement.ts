@@ -284,7 +284,50 @@ function buildPacketBody(ctx: ColonydContext, task: Task): string {
   if (gateFailure) {
     sections.push("", "## Previous gate failure", gateFailure);
   }
+  const reviewFindings = latestReviewFindings(ctx, task);
+  if (reviewFindings) {
+    sections.push("", "## Previous review findings", reviewFindings);
+  }
   return sections.join("\n");
+}
+
+function latestReviewFindings(
+  ctx: ColonydContext,
+  task: Task,
+): string | undefined {
+  const runs = ctx.store
+    .runsForTask(task.id)
+    .filter((r) => r.kind === "review" && r.status === "succeeded");
+  for (const run of [...runs].reverse()) {
+    if (!run.evidence_json) continue;
+    let evidence: {
+      verdict?: string;
+      findings?: ReadonlyArray<{
+        severity?: string;
+        file?: string;
+        note?: string;
+      }>;
+    };
+    try {
+      evidence = JSON.parse(run.evidence_json) as typeof evidence;
+    } catch {
+      continue;
+    }
+    if (evidence.verdict !== "request_changes") continue;
+    const findings = evidence.findings ?? [];
+    if (findings.length === 0) {
+      return run.evidence_json;
+    }
+    return findings
+      .map((f) => {
+        const loc = f.file ? " `" + f.file + "`" : "";
+        return (
+          "- **" + (f.severity ?? "note") + "**" + loc + ": " + (f.note ?? "")
+        );
+      })
+      .join("\n");
+  }
+  return undefined;
 }
 
 function latestGateFailure(

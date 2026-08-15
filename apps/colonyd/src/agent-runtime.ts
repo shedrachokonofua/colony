@@ -11,6 +11,7 @@ export interface AgentWiring {
   readonly runtime: "fake" | "pi";
   readonly architect: AgentRuntimeAdapter;
   readonly developer: AgentRuntimeAdapter;
+  readonly reviewer?: AgentRuntimeAdapter;
 }
 
 /**
@@ -27,12 +28,22 @@ export async function createAgentWiring(
 ): Promise<AgentWiring> {
   if (config.agentRuntime === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
-    return { runtime: "fake", architect: fake, developer: fake };
+    return {
+      runtime: "fake",
+      architect: fake,
+      developer: fake,
+      reviewer: fake,
+    };
   }
 
   const architectConfig = config.forAgent("architect");
   const developerConfig = config.forAgent("developer");
-  for (const agent of [architectConfig, developerConfig]) {
+  const reviewerConfig =
+    config.reviewMode === "required" ? config.forAgent("reviewer") : undefined;
+  const agentsToCheck = reviewerConfig
+    ? [architectConfig, developerConfig, reviewerConfig]
+    : [architectConfig, developerConfig];
+  for (const agent of agentsToCheck) {
     if (agent.auth.kind === "oauth") {
       throw new Error(
         `agent ${agent.role} uses oauth auth; oauth is unsupported in colony v2 — use an api_key provider`,
@@ -40,10 +51,7 @@ export async function createAgentWiring(
     }
   }
 
-  const broker = createConfigCredentialBroker([
-    architectConfig,
-    developerConfig,
-  ]);
+  const broker = createConfigCredentialBroker(agentsToCheck);
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");
   const { PiCodingAgentRunner } =
@@ -51,6 +59,28 @@ export async function createAgentWiring(
 
   const architectLogger = consoleLogger("architect");
   const developerLogger = consoleLogger("developer");
+
+  let reviewer: AgentRuntimeAdapter | undefined;
+  if (reviewerConfig) {
+    const { PiReviewerRunner } =
+      await import("@colony/agent-runtime/pi-reviewer-runner");
+    const reviewerLogger = consoleLogger("reviewer");
+    reviewer = new PiAgentRuntimeAdapter(
+      new PiReviewerRunner({
+        broker,
+        model: modelFromConfig(reviewerConfig),
+        maxTurns: reviewerConfig.ceilings.maxTurns,
+        maxUsd: reviewerConfig.ceilings.maxUsdPerRun,
+        runTimeoutMs: reviewerConfig.ceilings.timeoutMs,
+        thinkingLevel: reviewerConfig.thinkingLevel,
+        logger: reviewerLogger,
+      }),
+      {
+        provider: reviewerConfig.providerKey,
+        model: reviewerConfig.model.id,
+      },
+    );
+  }
 
   return {
     runtime: "pi",
@@ -84,6 +114,7 @@ export async function createAgentWiring(
         model: developerConfig.model.id,
       },
     ),
+    reviewer,
   };
 }
 

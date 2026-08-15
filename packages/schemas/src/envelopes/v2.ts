@@ -34,3 +34,27 @@ export const ImplementerCompletionV2 = z
   .strict();
 
 export type ImplementerCompletionV2 = z.infer<typeof ImplementerCompletionV2>;
+
+export const ReviewerVerdictV2 = z
+  .object({
+    kind: z.literal("reviewer_verdict"),
+    verdict: z.enum(["approve", "request_changes"]),
+    summary: z.string().min(1),
+    findings: z
+      .array(
+        z.object({
+          severity: z.enum(["blocker", "major", "minor"]),
+          file: z.string().min(1).optional(),
+          note: z.string().min(1),
+        }),
+      )
+      .default([]),
+    // the SHA the reviewer actually inspected; colonyd rejects a mismatch
+    head_sha: z.string().regex(/^[0-9a-f]{40}$/),
+  })
+  .strict()
+  .refine((v) => v.verdict !== "request_changes" || v.findings.length > 0, {
+    message: "request_changes requires at least one finding",
+  });
+
+export type ReviewerVerdictV2 = z.infer<typeof ReviewerVerdictV2>;
