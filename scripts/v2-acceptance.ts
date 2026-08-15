@@ -973,7 +973,9 @@ async function main(): Promise<void> {
     );
     process.exit(2);
   }
-  const skipLlm = (!online && ACCEPT_OFFLINE) || !run("llm");
+  // Skip LLM scenarios only when the gateway is unreachable (the offline
+  // flag is required to get this far). Selecting "1,2,5" must still run them.
+  const skipLlm = !online;
 
   if (run("1") || run("2")) {
     if (skipLlm) {
