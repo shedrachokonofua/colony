@@ -652,6 +652,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
     },
   };
 
+  /** Test seam: inspect tokens the fake adapter still considers live. */
+  listAccessTokens(): ProviderAccessToken[] {
+    return [...this.accessTokensById.values()];
+  }
+
   async identity(): Promise<ProviderIdentitySnapshot> {
     return {
       user_id: "fake-bot",

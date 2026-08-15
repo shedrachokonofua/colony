@@ -7,6 +7,7 @@ import { SERVICE_ACTOR } from "./context.js";
 import { runArchitect } from "./runs/architect.js";
 import { runImplement } from "./runs/implement.js";
 import { runMergeGate } from "./runs/merge-gate.js";
+import { revokeTokensForRuns } from "./runs/tokens.js";
 
 /**
  * One reconciliation pass. Each phase is fail-isolated: a phase error is
@@ -49,6 +50,7 @@ async function phase(
 
 async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
   const expired = ctx.store.expireDeadLeases(now);
+  await revokeTokensForRuns(ctx.store, ctx.provider, expired);
   for (const run of expired) {
     ctx.store.audit(SERVICE_ACTOR, "run.lease_expired", {
       scope_id: run.scope_id,

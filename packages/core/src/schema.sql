@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS runs (
   workspace_path TEXT,
   envelope_json TEXT,                        -- validated agent envelope
   evidence_json TEXT,                        -- commands, exit codes, gate results, artifacts
+  token_id TEXT,                             -- provider access-token id; crash-reap revoke
   error TEXT,
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT

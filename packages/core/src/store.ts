@@ -58,6 +58,7 @@ export interface Run {
   readonly workspace_path: string | null;
   readonly envelope_json: string | null;
   readonly evidence_json: string | null;
+  readonly token_id: string | null;
   readonly error: string | null;
   readonly started_at: string;
   readonly finished_at: string | null;
@@ -111,6 +112,16 @@ export class Store {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.exec(SCHEMA_SQL);
+    this.ensureColumn("runs", "token_id", "TEXT");
+  }
+
+  /** Idempotent ADD COLUMN for DBs created before token_id existed. */
+  private ensureColumn(table: string, name: string, type: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as {
+      name: string;
+    }[];
+    if (columns.some((column) => column.name === name)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
   }
 
   close(): void {
@@ -440,6 +451,15 @@ export class Store {
     return this.db.prepare(`SELECT * FROM runs WHERE id = ?`).get(id) as
       | Run
       | undefined;
+  }
+
+  /** Persist the minted provider token id so crash-reap can revoke it. */
+  setRunToken(runId: string, tokenId: string): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET token_id = ? WHERE id = ? AND status = 'running'`,
+      )
+      .run(tokenId, runId);
   }
 
   heartbeatRun(runId: string, lease_ttl_ms: number): void {

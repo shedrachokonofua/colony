@@ -84,6 +84,15 @@ async function executeArchitect(
       singleToken: ctx.env.singleToken,
       fallbackToken: ctx.env.gitlabToken,
     });
+    if (minted?.token_id) ctx.store.setRunToken(runId, minted.token_id);
+    ctx.store.audit(SERVICE_ACTOR, "agent_token.minted", {
+      scope_id: scope.id,
+      run_id: runId,
+      detail: {
+        mode: ctx.env.singleToken ? "single_token" : "project_token",
+        token_id: minted?.token_id ?? null,
+      },
+    });
 
     const baseSha = (
       await ctx.provider.commits.get(project, scope.default_branch)

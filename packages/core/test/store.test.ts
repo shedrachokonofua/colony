@@ -258,6 +258,19 @@ describe("Store", () => {
     expect(store.activeRunCount()).toBe(0);
   });
 
+  it("preserves token_id across orphan expiry so crash-reap can revoke", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 30 * 60_000,
+    });
+    store.setRunToken(run.id, "glpat-token-99");
+    const expired = store.expireOrphanedRuns();
+    expect(expired[0]!.token_id).toBe("glpat-token-99");
+    expect(store.getRun(run.id)!.token_id).toBe("glpat-token-99");
+  });
+
   it("extends a lease via heartbeat", () => {
     const scopeId = seededScope();
     const run = store.startRun({

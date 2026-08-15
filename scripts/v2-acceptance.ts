@@ -373,9 +373,10 @@ function packageLockForApp(): string {
 
 async function listProjectAccessTokens(
   projectId: string,
-): Promise<{ name: string; active: boolean }[]> {
+): Promise<{ id: number; name: string; active: boolean }[]> {
   const tokens = await gitlabApi(`/projects/${projectId}/access_tokens`);
   return (Array.isArray(tokens) ? tokens : []) as {
+    id: number;
     name: string;
     active: boolean;
   }[];
@@ -885,18 +886,24 @@ async function scenarioCleanup(): Promise<void> {
     if (leftovers.length > 0) {
       throw new Error(`gate workspaces left behind: ${leftovers.join(", ")}`);
     }
+    const leaks: string[] = [];
     for (const project of PROJECTS) {
       const tokens = await listProjectAccessTokens(project.id);
       const colonyTokens = tokens.filter(
         (t) => t.name.startsWith("colony-") && t.active,
       );
       if (colonyTokens.length > 0) {
-        throw new Error(
+        leaks.push(
           `project ${project.path}: unrevoked tokens ${colonyTokens.map((t) => t.name).join(", ")}`,
         );
+        for (const token of colonyTokens) {
+          await gitlabApi(`/projects/${project.id}/access_tokens/${token.id}`, {
+            method: "DELETE",
+          }).catch(() => undefined);
+        }
       }
     }
-    // Delete throwaway projects.
+    // Always delete throwaway projects, even when the leak assertion fails.
     const provider = newProvider();
     for (const project of PROJECTS) {
       try {
@@ -919,6 +926,7 @@ async function scenarioCleanup(): Promise<void> {
       }
     }
     PROJECTS.length = 0;
+    if (leaks.length > 0) throw new Error(leaks.join("; "));
     report(
       name,
       "PASS",

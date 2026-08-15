@@ -12,6 +12,7 @@ import { buildApp } from "./http.js";
 import { consoleLogger } from "./logging.js";
 import { abortRuns, awaitPendingRuns } from "./runs/registry.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
+import { revokeTokensForRuns } from "./runs/tokens.js";
 import { tick } from "./tick.js";
 
 export interface BootOptions {
@@ -44,8 +45,6 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   });
 
   const store = new Store(environment.COLONYD_DB_PATH);
-  // Crash recovery: rows left `running` belong to a dead process.
-  store.expireOrphanedRuns();
 
   const provider =
     options.provider ??
@@ -55,6 +54,11 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
           baseUrl: environment.GITLAB_BASE_URL,
           token: environment.GITLAB_TOKEN || undefined,
         }));
+
+  // Crash recovery: rows left `running` belong to a dead process.
+  // Revoke any project tokens those runs minted before dying.
+  const orphans = store.expireOrphanedRuns();
+  await revokeTokensForRuns(store, provider, orphans);
 
   const agents = options.agents ?? (await createAgentWiring(config));
 

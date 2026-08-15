@@ -378,6 +378,17 @@ describe("colonyd fake end-to-end loop", () => {
       // process rather than waiting out the TTL.
       lease_ttl_ms: 30 * 60_000,
     });
+    const minted = await provider.accessTokens.mint(
+      { id: projectId, path: "so/fake-e2e" },
+      {
+        name: `colony-task-${taskA.id}`,
+        scopes: ["api", "write_repository"],
+        access_level: 30,
+        expires_at: "2099-01-01",
+      },
+    );
+    storeA.setRunToken(liveRun.id, minted.id);
+    expect(provider.listAccessTokens().map((t) => t.id)).toContain(minted.id);
     storeA.transitionTask(taskA.id, a.state_version, "running", "svc:colonyd");
     const runsBefore = storeA.runsForTask(taskA.id).length;
     const versionBefore = storeA.getTask(taskA.id)!.state_version;
@@ -397,5 +408,8 @@ describe("colonyd fake end-to-end loop", () => {
     expect(expired.status).toBe("failed");
     expect(expired.error).toBe("process_restart");
     expect(handle.ctx.store.runsForTask(taskA.id)).toHaveLength(runsBefore);
+    expect(provider.listAccessTokens().map((t) => t.id)).not.toContain(
+      minted.id,
+    );
   }, 30_000);
 });
