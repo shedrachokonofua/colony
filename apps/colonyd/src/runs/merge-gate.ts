@@ -379,8 +379,9 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
       input.workspace,
       input,
     );
-  } catch {
+  } catch (err) {
     const conflicts = conflictedFiles(input.workspace);
+    if (conflicts.length === 0) throw err;
     return { reason: "merge_conflict", files: conflicts };
   }
 
@@ -535,6 +536,17 @@ function git(
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 300_000,
+      // Prospective --no-ff merge creates a commit; CI images often have no
+      // git identity, which git otherwise reports as a merge failure.
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: process.env["GIT_AUTHOR_NAME"] || "colony-gate",
+        GIT_AUTHOR_EMAIL:
+          process.env["GIT_AUTHOR_EMAIL"] || "colony-gate@local",
+        GIT_COMMITTER_NAME: process.env["GIT_COMMITTER_NAME"] || "colony-gate",
+        GIT_COMMITTER_EMAIL:
+          process.env["GIT_COMMITTER_EMAIL"] || "colony-gate@local",
+      },
     });
   } catch (err) {
     const message = sanitizeGitError(
