@@ -1,189 +1,71 @@
 # Colony
 
-Colony is an AI software team control plane. A human opens a bounded **scope**, Colony decomposes it into a dependency graph of tasks, agents implement and review the work, and human-in-the-loop gates decide when specs, merges, releases, and closeout may proceed.
+Colony is an AI software factory. A human opens a bounded **scope**, colonyd decomposes it into a dependency graph of tasks with an architect agent, implementer agents build each task on a branch, and a deterministic prospective-merge gate decides whether the work merges. Everything is reconciled from two sources of truth: one SQLite file and the Git provider.
 
-The source of truth is Colony’s Task Graph and audit log; Git providers are the collaboration surface where humans review issues, comments, MRs/PRs, approvals, and pipelines. GitLab is the first adapter, and Temporal is the orchestration runtime for per-scope signals, waits, timers, and retries. Task hierarchy, DAG semantics, state, and audit stay in Colony’s Task Graph, not in Temporal or the provider mirror.
+V1 (Temporal per-scope supervisor, Postgres, five services) is preserved on the `v1-archive` branch / `v1-final` tag.
 
-## System diagram
+## Architecture
 
-```mermaid
-flowchart LR
-    subgraph Humans["Humans"]
-      Operator["Operator (Web UI)"]
-      Reviewer["Reviewer (Provider UI)"]
-    end
+One process, `apps/colonyd`:
 
-    subgraph Provider["Git provider — GitLab (first adapter)"]
-      GLIssues["Issues / Epics"]
-      GLMR["MRs / Approvals / Pipelines"]
-      GLWebhook["Webhooks"]
-    end
+- Hono HTTP API (`POST /scopes`, task/scope lifecycle, `/audit`, GitLab webhook intake)
+- `setInterval` reconciler tick, single-flight, fail-isolated phases:
+  1. expire dead run leases (requeue with backoff or block)
+  2. poll provider facts for `mr_open` tasks
+  3. advance tasks only on observed facts; dispatch prospective merge gates
+  4. scope planning: architect dispatch, plan materialization (`hitl.mode` yolo/gated)
+  5. dispatch implementers (bounded by `COLONYD_MAX_CONCURRENT`)
+  6. scope closure
+- In-process agent runs (architect / implementer / merge gate) via `packages/agent-runtime` (Pi)
 
-    subgraph Colony["Colony control plane"]
-      direction TB
-      WebUI["apps/web (SvelteKit)"]
-      API["apps/api (Hono + Zod-OpenAPI)"]
-      Dispatcher["apps/webhook-dispatcher (HMAC verify · dedup · classify)"]
-      Worker["apps/worker (Temporal Supervisor workflows)"]
-      ToolGw["apps/tool-gateway (allowlisted egress)"]
-    end
+State machine, SQLite persistence, and backoff live in `packages/core`; envelopes in `packages/schemas` (`ArchitectDecompositionV2`, `ImplementerCompletionV2`). Envelopes are evidence, never authority: colonyd verifies branch/SHA facts with the provider before any transition.
 
-    subgraph Persistence["Persistence + orchestration"]
-      Temporal["Temporal cluster"]
-      Postgres[("Postgres: colony · temporal · temporal_visibility")]
-    end
-
-    subgraph Sandboxes["Agent sandboxes (Aether — kubernetes-sigs/agent-sandbox)"]
-      Architect["Architect"]
-      Developer["Developer"]
-      ReviewerBot["Reviewer"]
-      Integrator["Integrator"]
-    end
-
-    Operator -->|OAuth / OIDC| WebUI
-    WebUI -->|HTTP + OpenAPI| API
-    Reviewer --> Provider
-
-    Provider -- webhooks --> GLWebhook
-    GLWebhook --> Dispatcher
-    Dispatcher -- Temporal signals --> Temporal
-    Temporal --- Worker
-
-    Worker --> API
-    API --> Postgres
-    Worker --> Postgres
-    Temporal --- Postgres
-
-    Worker -- task / review packets --> Sandboxes
-    Sandboxes -- structured envelopes --> Worker
-    Sandboxes -- git push · API calls --> ToolGw
-    ToolGw -- audited writes --> Provider
-    Worker -- provider writes --> Provider
-
-    classDef colony fill:#e8f0ff,stroke:#345,stroke-width:1px;
-    classDef store fill:#fff5d8,stroke:#a80,stroke-width:1px;
-    classDef sandbox fill:#eaffea,stroke:#383,stroke-width:1px;
-    classDef provider fill:#ffe8e8,stroke:#a33,stroke-width:1px;
-    class WebUI,API,Dispatcher,Worker,ToolGw colony;
-    class Temporal,Postgres store;
-    class Architect,Developer,ReviewerBot,Integrator sandbox;
-    class GLIssues,GLMR,GLWebhook provider;
-```
-
-The webhook dispatcher only **signals** — never writes the provider. Provider API writes are performed by Supervisor activities (via `apps/api`/`packages/provider-gitlab`); agent sandboxes use prepared CLI environments with scoped bot credentials for repo operations. Postgres holds Task Graph state, audit log, agent run metadata, and Temporal's own orchestration schemas (separate databases). See [`docs/design.md`](docs/design.md) §5 for the full architecture.
-
-## Agent workflow
-
-```mermaid
-flowchart TD
-    Scope["Human opens scope<br/>provider epic / parent issue"]
-    Architect["Architect proposes spec,<br/>tasks, and dependencies"]
-    SpecReview["Reviewer checks spec / DAG"]
-    SpecGate{"Human approves<br/>scope plan?"}
-    TaskGraph["Supervisor commits approved<br/>decomposition to Task Graph"]
-    Ready["Supervisor finds ready tasks<br/>and atomically claims work"]
-    Dev["Developer receives task packet,<br/>branches, implements, tests"]
-    MR["Developer opens MR/PR<br/>linked to provider issue"]
-    CodeReview["Reviewer reviews MR/PR<br/>against packet and acceptance criteria"]
-    Changes{"Changes<br/>requested?"}
-    MergeGate{"Merge gate open?<br/>approval + green pipeline + no blockers"}
-    Merge["Developer performs merge<br/>after gate opens"]
-    Reconcile["Supervisor reconciles<br/>Task Graph + provider + repo + audit"]
-    MoreTasks{"More unblocked<br/>tasks?"}
-    ScopeReview["Reviewer performs<br/>scope close review"]
-    CloseGate{"Human approves<br/>scope close?"}
-    Done["Supervisor / Integrator<br/>closes scope or releases"]
-
-    Scope --> Architect --> SpecReview --> SpecGate
-    SpecGate -- no --> Architect
-    SpecGate -- yes --> TaskGraph --> Ready --> Dev --> MR --> CodeReview --> Changes
-    Changes -- yes --> Dev
-    Changes -- no --> MergeGate
-    MergeGate -- no --> CodeReview
-    MergeGate -- yes --> Merge --> Reconcile --> MoreTasks
-    MoreTasks -- yes --> Ready
-    MoreTasks -- no --> ScopeReview --> CloseGate
-    CloseGate -- no --> ScopeReview
-    CloseGate -- yes --> Done
-```
-
-At the highest level, Colony treats agents as disposable workers behind a durable Supervisor workflow:
-
-- The **Architect** turns a human scope into an implementation plan: task list, dependencies, acceptance criteria, and known risks.
-- The **Reviewer** sits before each human-in-the-loop gate, reviewing the spec/DAG, MR/PR, and final scope closeout before a human approves the gated artifact.
-- The **Supervisor** is the only normal writer to the Task Graph. It claims ready work, issues bounded task/review packets, validates structured envelopes, records audit events, and projects state back to the provider.
-- The **Developer** works one claimed task at a time from a task packet, pushes a branch, opens an MR/PR, responds to review, and merges only after the merge gate opens.
-- The **Integrator / Release** role handles deployment, release tagging, environment promotion, and scope closeout when those actions are separate from the task merge path.
-
-Every state-affecting agent output must return a structured envelope. The Supervisor validates that envelope against schema, freshness, capability, policy, and current Task Graph state before advancing the workflow. Before merge, deploy, task close, scope close, or gate approval, Colony reconciles provider state, repo state, pipeline status, approvals, Task Graph state, and audit records; drift or stale evidence fails closed into a visible conflict.
-
-## Documentation
-
-| Document                               | Purpose                                                                                    |
-| -------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [`docs/seed.md`](docs/seed.md)         | Original architecture seed: roles, HITL policy, reconciliation, packets, deployment sketch |
-| [`docs/design.md`](docs/design.md)     | Technical design: components, domain model, APIs, security, rollout                        |
-| [`docs/tasks.md`](docs/tasks.md)       | Dependency-aware implementation plan (Phase 0–4), with per-task progress checkboxes        |
-| [`docs/dev-loop.md`](docs/dev-loop.md) | How to boot the local stack and run the dev loop                                           |
-| [`docs/adr/`](docs/adr/README.md)      | Architecture Decision Records                                                              |
+The merge gate clones the target branch fresh, prospectively merges the task head, scans for secrets/artifacts, runs `colony.gate.yaml` commands, rechecks the MR head, and merges with the gated SHA. Gates serialize per scope.
 
 ## Repository layout
 
 TypeScript **npm workspaces** monorepo (Node **24+**).
 
-**Applications** (`apps/`):
-
-- `api` — Hono HTTP API: Task Graph, health, OpenAPI docs
-- `worker` — Temporal worker for Supervisor workflows
-- `webhook-dispatcher` — Provider webhook ingress with HMAC verification
-- `tool-gateway` — Allowlisted tool/proxy egress (future)
-- `web` — SvelteKit operator web UI
-
-**Packages** (`packages/`):
-
-- `domain` — Core domain types and state (future)
-- `db` — Persistence layer (future)
-- `policy` — Capability / policy engine (future)
-- `provider` — Provider adapter interfaces and shared provider types (future)
-- `provider-gitlab` — GitLab provider adapter implementation (future)
-- `workflows` — Temporal workflow-safe deterministic code (future)
-- `agent-runtime` — Pi / sandbox run adapter boundary (future)
-- `config` — Shared environment and service configuration
-- `observability` — Shared logging, metrics, and tracing setup (future)
-- `schemas` — Zod / envelope schemas (future)
-- `testing` — Shared test helpers (future)
+- `apps/colonyd` — the single service (HTTP + reconciler + agent runs)
+- `packages/core` — SQLite store, state machine, retry backoff
+- `packages/domain` — branded ids + domain errors + roles
+- `packages/schemas` — V2 envelope schemas
+- `packages/config` — env contract + colony.yaml loader
+- `packages/provider`, `packages/provider-gitlab` — provider contract + GitLab adapter (also a fake adapter for tests)
+- `packages/agent-runtime` — Pi runner adapters, envelopes, workspace provisioning
+- `packages/observability` — OTel metrics
 
 ## Development
 
-The canonical toolchain lives in a **Nix flake** so local environments match CI and infrastructure assumptions (Node 24, Temporal CLI, Postgres client, Kubernetes client tooling, GitLab CLI, container tools, `docker-compose`). Local infrastructure (Temporal + Postgres) runs under **Docker Compose**; the Node apps run directly as `npm run dev` watch processes. There is no local Kubernetes — k8s validation happens on Aether. See [ADR-004](docs/adr/004-local-development-tooling.md).
-
-Quickstart:
-
 ```bash
 nix develop
-cp .env.example .env
+cp .env.example .env   # set GITLAB_TOKEN, COLONY_OPENAI_COMPATIBLE_API_KEY
 npm install
-docker-compose up -d
-npm run dev
+npm run dev            # colonyd in watch mode (port 4400)
 ```
 
-Then open http://localhost:3000 for the web UI and http://localhost:4000/docs for the API reference. Full walkthrough (including home-lab GitLab webhook setup) lives in [`docs/dev-loop.md`](docs/dev-loop.md). Architecture decisions are captured in [`docs/adr/`](docs/adr/README.md).
+Open a scope:
+
+```bash
+curl -X POST localhost:4400/scopes \
+  -H 'X-Actor-Id: human:op-1' \
+  -H 'content-type: application/json' \
+  -d '{"goal":"add /version endpoint","project":{"path":"so/my-project"}}'
+```
 
 Checks:
 
 ```bash
 npm run typecheck
-npm test
+npm test          # unit + fake e2e (loop.integration.test.ts)
+npm run test:unit # unit only
 npm run lint
-npm run format:check
 ```
 
-Validate the flake:
+Real-GitLab acceptance:
 
 ```bash
-nix flake check
+GITLAB_BASE_URL=https://gitlab.home.shdr.ch GITLAB_TOKEN=*** \
+COLONY_CONFIG_PATH=config/colony.yaml AGENT_RUNTIME=pi \
+npx tsx scripts/v2-acceptance.ts
 ```
-
----
-
-_Implementation status: Phase 0 foundations in progress; see [`docs/tasks.md`](docs/tasks.md) for the critical path._

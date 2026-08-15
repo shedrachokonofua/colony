@@ -19,3 +19,4 @@ plan.cache
 .claude/
 logs/
 .dev-logs/
+data/
