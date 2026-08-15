@@ -21,18 +21,6 @@ const envSchema = z.object({
     .enum(["development", "test", "production"])
     .default("development"),
 
-  // Postgres
-  DATABASE_URL: z
-    .string()
-    .default("postgres://colony:colony@localhost:5432/colony"),
-
-  // Temporal
-  TEMPORAL_ADDRESS: z.string().default("localhost:7233"),
-  TEMPORAL_TLS: boolFromEnv.default(false),
-  TEMPORAL_TLS_SERVER_NAME: optionalNonEmptyString,
-  TEMPORAL_NAMESPACE: z.string().default("default"),
-  TEMPORAL_TASK_QUEUE: z.string().default("colony-supervisor"),
-
   // Agent runtime
   AGENT_RUNTIME: z.enum(["fake", "pi"]).optional(),
   COLONY_CONFIG_PATH: optionalNonEmptyString,
@@ -41,16 +29,18 @@ const envSchema = z.object({
   GITLAB_BASE_URL: z.string().default("http://gitlab.local"),
   GITLAB_TOKEN: z.string().default(""),
   GITLAB_WEBHOOK_SECRET: z.string().default(""),
-  GITLAB_DEV_PROJECT_ID: z.string().default(""),
 
-  // Service ports
-  API_PORT: z.coerce.number().int().default(4000),
-  WEBHOOK_DISPATCHER_PORT: z.coerce.number().int().default(4100),
-  TOOL_GATEWAY_PORT: z.coerce.number().int().default(4200),
-  WEB_PORT: z.coerce.number().int().default(3000),
-
-  // Host for cross-service calls (the laptop's LAN name/IP when GitLab needs to reach the dispatcher)
+  // Host for cross-service calls (the laptop's LAN name/IP when GitLab needs to reach colonyd)
   PUBLIC_HOST: z.string().default("localhost"),
+
+  // colonyd
+  COLONYD_PORT: z.coerce.number().int().default(4400),
+  COLONYD_DB_PATH: z.string().default("data/colonyd.db"),
+  COLONYD_TICK_MS: z.coerce.number().int().default(15_000),
+  COLONYD_MAX_CONCURRENT: z.coerce.number().int().default(1),
+  COLONYD_MAX_ATTEMPTS: z.coerce.number().int().default(3),
+  /** Single-token mode: use GITLAB_TOKEN directly in packet credentials. */
+  COLONYD_SINGLE_TOKEN: boolFromEnv.default(false),
 });
 
 export type Env = z.infer<typeof envSchema>;

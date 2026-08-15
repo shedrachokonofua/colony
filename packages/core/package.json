@@ -1,5 +1,5 @@
 {
-  "name": "@colony/schemas",
+  "name": "@colony/core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,10 +7,14 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
-    "zod": "^4.3.6"
+    "@colony/domain": "*",
+    "@colony/schemas": "*",
+    "better-sqlite3": "^12.4.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
   }
 }

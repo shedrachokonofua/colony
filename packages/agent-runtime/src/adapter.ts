@@ -1,41 +1,25 @@
-import type { Role } from "@colony/domain";
 import {
-  type ArchitectDecompositionEnvelope,
-  type ArchitectPacket,
-  type DeveloperCompletionEnvelope,
-  type DeveloperPlanEnvelope,
-  type PlanReviewEnvelope,
-  type PlanReviewPacket,
-  type ReviewPacket,
-  type ReviewerReviewEnvelope,
-  type TaskPacket,
-  architectDecompositionEnvelopeSchema,
-  developerCompletionEnvelopeSchema,
-  developerPlanEnvelopeSchema,
-  planReviewEnvelopeSchema,
-  reviewerReviewEnvelopeSchema,
+  type ArchitectDecompositionV2,
+  type ImplementerCompletionV2,
+  ArchitectDecompositionV2 as architectDecompositionV2Schema,
+  ImplementerCompletionV2 as implementerCompletionV2Schema,
 } from "@colony/schemas";
-import type { SandboxRunExtensions } from "./run-extensions.js";
-import type { RuntimeBindingSelection } from "./runtime-bindings.js";
-import type { PreparedSandboxToolEnvironment } from "./tool-materialization.js";
-import { hashEnvelope, hashPacket } from "./packet-builders.js";
+import { sha256Json } from "./hashing.js";
 
-export type AgentRuntimePacket =
-  | TaskPacket
-  | PlanReviewPacket
-  | ReviewPacket
-  | ArchitectPacket;
+/**
+ * V2 packet shape. Structurally open: colonyd supplies `goal`/`task_id`,
+ * `body` (the markdown spec), `repo` (workspace ref), and optional context
+ * such as `previous_gate_failure`. Helpers cast defensively.
+ */
+export interface AgentRuntimePacket {
+  readonly [key: string]: unknown;
+}
+
 export type AgentRuntimeEnvelope =
-  | DeveloperPlanEnvelope
-  | PlanReviewEnvelope
-  | DeveloperCompletionEnvelope
-  | ReviewerReviewEnvelope
-  | ArchitectDecompositionEnvelope;
+  | ArchitectDecompositionV2
+  | ImplementerCompletionV2;
 
-export type AgentRuntimeRole =
-  | Extract<Role, "developer" | "reviewer" | "architect">
-  | "developer_planner"
-  | "plan_reviewer";
+export type AgentRuntimeRole = "architect" | "developer";
 
 export type AgentRunRuntimeStatus =
   | "queued"
@@ -47,10 +31,6 @@ export type AgentRunRuntimeStatus =
 
 export interface AgentRunEnvironment {
   readonly role: AgentRuntimeRole;
-  readonly sandboxProfile: string;
-  readonly runtimeBinding: RuntimeBindingSelection;
-  readonly runExtensions: SandboxRunExtensions;
-  readonly tools: PreparedSandboxToolEnvironment;
 }
 
 export interface AgentRunMetadata {
@@ -60,9 +40,6 @@ export interface AgentRunMetadata {
   readonly status: AgentRunRuntimeStatus;
   readonly packetHash: string;
   readonly outputEnvelopeHash?: string;
-  readonly runtimeBindingName: string;
-  readonly runtimeBindingHash: string;
-  readonly toolProfileHash: string;
   /**
    * Populated when status is `envelope_rejected` or `failed` — short reason
    * suitable for audit evidence. Truncated to a few hundred characters.
@@ -157,9 +134,6 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
       status,
       packetHash,
       outputEnvelopeHash: output?.envelopeHash,
-      runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
-      runtimeBindingHash: runEnvironment.runtimeBinding.hash,
-      toolProfileHash: runEnvironment.tools.manifest.profileHash,
       rejectionReason: parsed.ok ? undefined : truncate(parsed.reason),
     };
     this.runs.set(runId, { ...metadata, output });
@@ -197,15 +171,9 @@ export function parseEnvelope(
   value: unknown,
 ): EnvelopeParseResult {
   const schema =
-    role === "developer_planner"
-      ? developerPlanEnvelopeSchema
-      : role === "plan_reviewer"
-        ? planReviewEnvelopeSchema
-        : role === "developer"
-          ? developerCompletionEnvelopeSchema
-          : role === "reviewer"
-            ? reviewerReviewEnvelopeSchema
-            : architectDecompositionEnvelopeSchema;
+    role === "architect"
+      ? architectDecompositionV2Schema
+      : implementerCompletionV2Schema;
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     return { ok: false, reason: parsed.error.message };
@@ -213,136 +181,40 @@ export function parseEnvelope(
   return { ok: true, envelope: parsed.data };
 }
 
+export function hashPacket(packet: AgentRuntimePacket): string {
+  return sha256Json(packet);
+}
+
+export function hashEnvelope(envelope: unknown): string {
+  return sha256Json(envelope);
+}
+
 function defaultEnvelope(
   packet: AgentRuntimePacket,
   role: AgentRuntimeRole,
 ): AgentRuntimeEnvelope {
   if (role === "architect") {
-    const scopeId = packet.scope_id;
-    return architectDecompositionEnvelopeSchema.parse({
-      version: 1,
-      result: "done",
-      confidence: 0.7,
-      requires_human: true,
-      risk_level: "medium",
-      artifacts: [],
-      policy_flags: [],
-      next_action: "propose_decomposition",
-      freshness: packet.freshness,
-      rationale: "Fake architect run proposed a single-task decomposition.",
-      scope_id: scopeId,
-      role_specific: {
-        proposed_tasks: [
-          {
-            proposed_task_id: `${scopeId}.1`,
-            title: "Initial scope task",
-            description: "Placeholder task produced by fake architect run.",
-            acceptance_criteria: ["scope produces at least one task"],
-            non_goals: [],
-            suggested_role: "developer",
-            suggested_capabilities: [],
-          },
-        ],
-        proposed_dependencies: [],
-        open_questions: [],
-        assumptions: [],
-      },
-    });
-  }
-
-  // Both developer and reviewer envelopes carry task_id; only task/review
-  // packets reach this branch, and both expose `task_id`.
-  const taskId = (packet as TaskPacket).task_id;
-
-  if (role === "developer_planner") {
-    return developerPlanEnvelopeSchema.parse({
-      version: 1,
-      result: "done",
-      confidence: 0.75,
-      requires_human: false,
-      risk_level: "medium",
-      artifacts: [],
-      policy_flags: [],
-      next_action: "request_review",
-      freshness: packet.freshness,
-      rationale: "Fake developer planner prepared an implementation plan.",
-      task_id: taskId,
-      role_specific: {
-        approach:
-          "Inspect the existing implementation, make the smallest scoped change, and run the relevant verification.",
-        files_to_touch: [],
-        tests_to_add: ["Run the narrowest relevant test or check."],
-        risks: [],
-      },
-    });
-  }
-
-  if (role === "plan_reviewer") {
-    return planReviewEnvelopeSchema.parse({
-      version: 1,
-      result: "approved",
-      confidence: 0.8,
-      requires_human: false,
-      risk_level: "medium",
-      artifacts: [],
-      policy_flags: [],
-      next_action: "open_gate",
-      freshness: packet.freshness,
-      rationale: "Fake plan reviewer approved the implementation plan.",
-      task_id: taskId,
-      role_specific: {
-        findings: [],
-        summary: "Plan approved.",
-      },
-    });
-  }
-
-  if (role === "developer") {
-    return developerCompletionEnvelopeSchema.parse({
-      version: 1,
-      result: "done",
-      confidence: 0.8,
-      requires_human: false,
-      risk_level: "medium",
-      artifacts: [
+    return architectDecompositionV2Schema.parse({
+      kind: "architect_decomposition",
+      summary: "Fake architect run proposed a single-task decomposition.",
+      tasks: [
         {
-          kind: "commit",
-          id: "fake-commit",
-          uri: "fake://commit",
-          hash: "abc123",
+          title: "Initial scope task",
+          spec: "Placeholder task produced by fake architect run.",
+          depends_on: [],
         },
-        { kind: "mr", id: "fake-mr", uri: "fake://mr/1" },
       ],
-      policy_flags: [],
-      next_action: "request_review",
-      freshness: packet.freshness,
-      rationale: "Fake developer run completed.",
-      task_id: taskId,
-      role_specific: {
-        tests_added: [],
-        self_review_notes: "Fake run.",
-      },
     });
   }
 
-  return reviewerReviewEnvelopeSchema.parse({
-    version: 1,
-    result: "approved",
-    confidence: 0.8,
-    requires_human: false,
-    risk_level: "medium",
-    artifacts: [{ kind: "mr", id: "fake-mr", uri: "fake://mr/1" }],
-    policy_flags: [],
-    next_action: "merge",
-    freshness: packet.freshness,
-    rationale: "Fake reviewer run approved.",
-    task_id: taskId,
-    role_specific: {
-      findings: [],
-      summary: "No findings.",
-      mr_comment_body:
-        "Reviewer agent approved the change. No findings were reported.",
-    },
+  const taskId = typeof packet.task_id === "string" ? packet.task_id : "task";
+  return implementerCompletionV2Schema.parse({
+    kind: "implementer_completion",
+    status: "complete",
+    summary: "Fake developer run completed.",
+    branch: `colony/${taskId}`,
+    head_sha: "a".repeat(40),
+    commands: [],
   });
 }
 
@@ -356,9 +228,6 @@ function withoutOutput(
     status: run.status,
     packetHash: run.packetHash,
     outputEnvelopeHash: run.outputEnvelopeHash,
-    runtimeBindingName: run.runtimeBindingName,
-    runtimeBindingHash: run.runtimeBindingHash,
-    toolProfileHash: run.toolProfileHash,
     rejectionReason: run.rejectionReason,
   };
 }

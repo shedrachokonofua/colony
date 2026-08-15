@@ -5,19 +5,16 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@colony/db": ["./packages/db/src/index.ts"],
-      "@colony/domain": ["./packages/domain/src/index.ts"],
       "@colony/agent-runtime": ["./packages/agent-runtime/src/index.ts"],
       "@colony/config": ["./packages/config/src/index.ts"],
+      "@colony/core": ["./packages/core/src/index.ts"],
+      "@colony/domain": ["./packages/domain/src/index.ts"],
       "@colony/observability": ["./packages/observability/src/index.ts"],
-      "@colony/policy": ["./packages/policy/src/index.ts"],
       "@colony/provider": ["./packages/provider/src/index.ts"],
       "@colony/provider-gitlab": ["./packages/provider-gitlab/src/index.ts"],
-      "@colony/schemas": ["./packages/schemas/src/index.ts"],
-      "@colony/testing": ["./packages/testing/src/index.ts"],
-      "@colony/workflows": ["./packages/workflows/src/index.ts"]
+      "@colony/schemas": ["./packages/schemas/src/index.ts"]
     }
   },
   "include": ["apps/**/*.ts", "packages/**/*.ts", "vitest.config.ts"],
-  "exclude": ["node_modules", "dist", "apps/web", ".svelte-kit"]
+  "exclude": ["node_modules", "dist"]
 }

@@ -16,58 +16,40 @@ import {
   architectDecompositionEnvelopeTypeBox,
   buildArchitectFinalizerPrompt,
   buildArchitectSystemPrompt,
-  buildDeveloperFinalizerPrompt,
-  buildDeveloperPlannerSystemPrompt,
-  buildDeveloperPlanFinalizerPrompt,
-  buildDeveloperSystemPrompt,
+  buildImplementerFinalizerPrompt,
+  buildImplementerSystemPrompt,
   buildPacketPrompt,
-  buildPlanReviewFinalizerPrompt,
-  buildPlanReviewerSystemPrompt,
-  buildReviewerFinalizerPrompt,
-  buildReviewerSystemPrompt,
   createArchitectSubmitTool,
-  createDeveloperPlanSubmitTool,
-  createDeveloperSubmitTool,
-  createPlanReviewSubmitTool,
-  createPostProgressNoteTool,
-  createReviewerSubmitTool,
+  createImplementerSubmitTool,
   createSandboxId,
-  developerCompletionEnvelopeTypeBox,
-  developerPlanEnvelopeTypeBox,
   finalizeEnvelopeWithStructuredOutput,
+  implementerCompletionEnvelopeTypeBox,
   installRunGuards,
   noOpResourceLoader,
-  planReviewEnvelopeTypeBox,
   provisionRepoWorkspace,
   provisionScratchDir,
   resolvePiModel,
-  reviewerReviewEnvelopeTypeBox,
   runnerBroker,
   waitForIdleOrCapturedEnvelope,
   withRunTimeout,
 } from "./pi-runner-common.js";
 import {
-  architectDecompositionEnvelopeSchema,
-  developerCompletionEnvelopeSchema,
-  developerPlanEnvelopeSchema,
-  planReviewEnvelopeSchema,
-  reviewerReviewEnvelopeSchema,
+  ArchitectDecompositionV2 as architectDecompositionV2Schema,
+  ImplementerCompletionV2 as implementerCompletionV2Schema,
 } from "@colony/schemas";
 
 export type PiWorkspaceMode = "repo-required" | "scratch";
+
+/** Binding name reported to the credential broker for V2 runs. */
+export const PI_RUNTIME_BINDING_NAME = "colonyd";
 
 export interface PiRoleProfile {
   readonly role: AgentRuntimeRole;
   readonly kind: PiRunner["kind"];
   readonly sandboxPrefix: string;
   readonly systemPrompt: () => string;
-  readonly finalizerPrompt: (packet: AgentRuntimePacket) => string;
-  readonly schemaName:
-    | "developer_completion"
-    | "developer_plan"
-    | "plan_review"
-    | "reviewer_review"
-    | "architect_decomposition";
+  finalizerPrompt: (packet: AgentRuntimePacket) => string;
+  readonly schemaName: "implementer_completion" | "architect_decomposition";
   readonly typeboxSchema: unknown;
   readonly submitTool: (capture: (value: unknown) => void) => ToolDefinition;
   readonly validate: (value: unknown) => string[] | null;
@@ -84,7 +66,6 @@ export interface PiRoleProfile {
     readonly maxUsd: number;
   };
   readonly workspaceMode: PiWorkspaceMode;
-  readonly includeProgressNote: boolean;
   readonly skipPromptWithoutWorkTools?: boolean;
   readonly requireRepositoryInspection?: boolean;
 }
@@ -147,18 +128,12 @@ export class PiBaseAgentRunner implements PiRunner {
       capturedEnvelope = value;
       resolveCapturedEnvelope?.();
     });
-    const progressNote = this.profile.includeProgressNote
-      ? createPostProgressNoteTool({
-          packet: request.packet,
-          baseUrl: process.env["GITLAB_BASE_URL"],
-        })
-      : null;
 
     const authStorage = AuthStorage.inMemory();
     const initialApiKey = await broker.resolve({
       provider: model.provider,
       capability: `agent.llm.${model.provider}.invoke`,
-      bindingName: request.environment.runtimeBinding.binding.name,
+      bindingName: PI_RUNTIME_BINDING_NAME,
       environment: request.environment,
     });
     if (initialApiKey) {
@@ -168,20 +143,14 @@ export class PiBaseAgentRunner implements PiRunner {
       const value = broker.resolve({
         provider,
         capability: `agent.llm.${provider}.invoke`,
-        bindingName: request.environment.runtimeBinding.binding.name,
+        bindingName: PI_RUNTIME_BINDING_NAME,
         environment: request.environment,
       });
       return typeof value === "string" ? value : undefined;
     });
 
-    const customTools: ToolDefinition[] = progressNote
-      ? [submitTool, progressNote.tool as ToolDefinition]
-      : [submitTool];
-    const toolNames = [
-      ...workTools,
-      ...(progressNote ? [progressNote.tool.name] : []),
-      submitTool.name,
-    ];
+    const customTools: ToolDefinition[] = [submitTool];
+    const toolNames = [...workTools, submitTool.name];
     const clearTimeoutGuard = withRunTimeout(
       runId,
       this.options.runTimeoutMs,
@@ -222,7 +191,7 @@ export class PiBaseAgentRunner implements PiRunner {
         broker.resolve({
           provider,
           capability: `agent.llm.${provider}.invoke`,
-          bindingName: request.environment.runtimeBinding.binding.name,
+          bindingName: PI_RUNTIME_BINDING_NAME,
           environment: request.environment,
         });
 
@@ -318,7 +287,7 @@ export class PiBaseAgentRunner implements PiRunner {
           apiKey: await broker.resolve({
             provider: model.provider,
             capability: `agent.llm.${model.provider}.invoke`,
-            bindingName: request.environment.runtimeBinding.binding.name,
+            bindingName: PI_RUNTIME_BINDING_NAME,
             environment: request.environment,
           }),
           systemPrompt: this.profile.systemPrompt(),
@@ -327,7 +296,7 @@ export class PiBaseAgentRunner implements PiRunner {
           schemaName: this.profile.schemaName,
           typeboxSchema: this.profile.typeboxSchema,
           maxAttempts:
-            this.profile.schemaName === "developer_completion" ? 5 : 3,
+            this.profile.schemaName === "implementer_completion" ? 5 : 3,
           validate: this.profile.validate,
           logger: this.options.logger,
           runId,
@@ -358,6 +327,7 @@ export class PiBaseAgentRunner implements PiRunner {
     await this.activeRuns.get(runId)?.abort();
   }
 }
+
 function provisionProfileWorkspace(
   runId: string,
   packet: AgentRuntimePacket,
@@ -396,22 +366,6 @@ export const DEFAULT_DEVELOPER_TOOLS = [
   "ls",
 ] as const;
 
-export const DEFAULT_REVIEWER_TOOLS = [
-  "read",
-  "bash",
-  "grep",
-  "find",
-  "ls",
-] as const;
-
-export const DEFAULT_PLAN_TOOLS = [
-  "read",
-  "bash",
-  "grep",
-  "find",
-  "ls",
-] as const;
-
 export const DEFAULT_ARCHITECT_TOOLS = [
   "read",
   "bash",
@@ -424,71 +378,17 @@ export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
   role: "developer",
   kind: "pi-coding-agent",
   sandboxPrefix: "pi-dev",
-  systemPrompt: buildDeveloperSystemPrompt,
-  finalizerPrompt: buildDeveloperFinalizerPrompt,
-  schemaName: "developer_completion",
-  typeboxSchema: developerCompletionEnvelopeTypeBox,
-  submitTool: createDeveloperSubmitTool,
-  validate: zodValidator(developerCompletionEnvelopeSchema),
+  systemPrompt: buildImplementerSystemPrompt,
+  finalizerPrompt: buildImplementerFinalizerPrompt,
+  schemaName: "implementer_completion",
+  typeboxSchema: implementerCompletionEnvelopeTypeBox,
+  submitTool: createImplementerSubmitTool,
+  validate: zodValidator(implementerCompletionV2Schema),
   defaultTools: DEFAULT_DEVELOPER_TOOLS,
   defaultThinkingLevel: "medium",
   defaultLimits: { maxTurns: 60, maxUsd: 10 },
   workspaceMode: "repo-required",
-  includeProgressNote: true,
   skipPromptWithoutWorkTools: true,
-};
-
-export const REVIEWER_ROLE_PROFILE: PiRoleProfile = {
-  role: "reviewer",
-  kind: "pi-mono",
-  sandboxPrefix: "pi-review",
-  systemPrompt: buildReviewerSystemPrompt,
-  finalizerPrompt: buildReviewerFinalizerPrompt,
-  schemaName: "reviewer_review",
-  typeboxSchema: reviewerReviewEnvelopeTypeBox,
-  submitTool: createReviewerSubmitTool,
-  validate: zodValidator(reviewerReviewEnvelopeSchema),
-  defaultTools: DEFAULT_REVIEWER_TOOLS,
-  defaultThinkingLevel: "low",
-  defaultLimits: { maxTurns: 30, maxUsd: 5 },
-  workspaceMode: "repo-required",
-  includeProgressNote: true,
-};
-
-export const DEVELOPER_PLANNER_ROLE_PROFILE: PiRoleProfile = {
-  role: "developer_planner",
-  kind: "pi-developer-plan",
-  sandboxPrefix: "pi-dev-plan",
-  systemPrompt: buildDeveloperPlannerSystemPrompt,
-  finalizerPrompt: buildDeveloperPlanFinalizerPrompt,
-  schemaName: "developer_plan",
-  typeboxSchema: developerPlanEnvelopeTypeBox,
-  submitTool: createDeveloperPlanSubmitTool,
-  validate: zodValidator(developerPlanEnvelopeSchema),
-  defaultTools: DEFAULT_PLAN_TOOLS,
-  defaultThinkingLevel: "low",
-  defaultLimits: { maxTurns: 20, maxUsd: 3 },
-  workspaceMode: "repo-required",
-  includeProgressNote: false,
-  requireRepositoryInspection: true,
-};
-
-export const PLAN_REVIEWER_ROLE_PROFILE: PiRoleProfile = {
-  role: "plan_reviewer",
-  kind: "pi-plan-review",
-  sandboxPrefix: "pi-plan-review",
-  systemPrompt: buildPlanReviewerSystemPrompt,
-  finalizerPrompt: buildPlanReviewFinalizerPrompt,
-  schemaName: "plan_review",
-  typeboxSchema: planReviewEnvelopeTypeBox,
-  submitTool: createPlanReviewSubmitTool,
-  validate: zodValidator(planReviewEnvelopeSchema),
-  defaultTools: DEFAULT_PLAN_TOOLS,
-  defaultThinkingLevel: "low",
-  defaultLimits: { maxTurns: 20, maxUsd: 3 },
-  workspaceMode: "repo-required",
-  includeProgressNote: false,
-  requireRepositoryInspection: true,
 };
 
 export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
@@ -500,11 +400,10 @@ export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
   schemaName: "architect_decomposition",
   typeboxSchema: architectDecompositionEnvelopeTypeBox,
   submitTool: createArchitectSubmitTool,
-  validate: zodValidator(architectDecompositionEnvelopeSchema),
+  validate: zodValidator(architectDecompositionV2Schema),
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",
   defaultLimits: { maxTurns: 80, maxUsd: 25 },
   workspaceMode: "repo-required",
-  includeProgressNote: false,
   requireRepositoryInspection: true,
 };

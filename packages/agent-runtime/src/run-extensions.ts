@@ -1,4 +1,4 @@
-import type { Capability } from "@colony/domain";
+export type SandboxCapability = string;
 
 export type SandboxToolResolver = "nix" | "image" | "platform";
 
@@ -16,7 +16,7 @@ export interface SandboxCliTool {
   readonly executable: string;
   readonly packageRef?: string;
   readonly resolver: SandboxToolResolver;
-  readonly requiredCapabilities: readonly Capability[];
+  readonly requiredCapabilities: readonly SandboxCapability[];
   readonly envAllowlist: readonly string[];
   readonly argsPolicy?: string;
 }

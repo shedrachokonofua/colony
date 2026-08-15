@@ -1,4 +1,4 @@
-import type { Capability, Role } from "@colony/domain";
+import type { SandboxCapability } from "./run-extensions.js";
 import {
   EMPTY_SANDBOX_RUN_EXTENSIONS,
   type SandboxRunExtensions,
@@ -43,13 +43,13 @@ export interface SandboxResourceLimits {
 
 export interface SandboxLaunchProfile {
   readonly role: SandboxRole;
-  readonly actorRole: Role;
+  readonly actorRole: "developer" | "reviewer";
   readonly runtimeClass: SandboxRuntimeClass;
   readonly podLabels: Readonly<Record<string, string>>;
   readonly egressAllowlist: readonly SandboxEgressTarget[];
   readonly egressDenylist: readonly SandboxEgressDeny[];
   readonly envAllowlist: readonly string[];
-  readonly capabilities: readonly Capability[];
+  readonly capabilities: readonly SandboxCapability[];
   readonly runExtensions: SandboxRunExtensions;
   readonly resourceLimits: SandboxResourceLimits;
   readonly readOnlyRootFilesystem: boolean;
@@ -69,14 +69,14 @@ export const DEFAULT_SANDBOX_REFS: SandboxNamespaceRefs = {
   taskGraphApiServiceName: "colony-api",
 };
 
-const DEVELOPER_CAPABILITIES: readonly Capability[] = [
+const DEVELOPER_CAPABILITIES: readonly SandboxCapability[] = [
   "sandbox.exec",
   "tool.call",
   "provider.branches.push",
   "provider.commits.read",
 ];
 
-const REVIEWER_CAPABILITIES: readonly Capability[] = [
+const REVIEWER_CAPABILITIES: readonly SandboxCapability[] = [
   "sandbox.exec",
   "tool.call",
   "provider.commits.read",

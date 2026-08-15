@@ -9,13 +9,17 @@ import type {
   AgentRunMetadata,
   AgentRunOutput,
 } from "./adapter.js";
-import { parseEnvelope, truncate } from "./adapter.js";
+import {
+  hashEnvelope,
+  hashPacket,
+  parseEnvelope,
+  truncate,
+} from "./adapter.js";
 import {
   packetRepo,
   resolvePacketCloneUrl,
   sanitizeSecret,
 } from "./pi-runner-common.js";
-import { hashEnvelope, hashPacket } from "./packet-builders.js";
 
 export interface PiRunRequest {
   readonly runId: string;
@@ -30,12 +34,7 @@ export interface PiRunResult {
 }
 
 export interface PiRunner {
-  readonly kind:
-    | "pi-coding-agent"
-    | "pi-mono"
-    | "pi-architect"
-    | "pi-developer-plan"
-    | "pi-plan-review";
+  readonly kind: "pi-coding-agent" | "pi-architect";
   run(request: PiRunRequest): Promise<PiRunResult>;
   cancel?(runId: string): Promise<void>;
 }
@@ -76,9 +75,6 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
       role: runEnvironment.role,
       status: "running",
       packetHash: hashPacket(packet),
-      runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
-      runtimeBindingHash: runEnvironment.runtimeBinding.hash,
-      toolProfileHash: runEnvironment.tools.manifest.profileHash,
     };
     this.runs.set(runId, running);
 
@@ -121,9 +117,6 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
             : "envelope_rejected",
         packetHash: running.packetHash,
         outputEnvelopeHash: output?.envelopeHash,
-        runtimeBindingName: runEnvironment.runtimeBinding.binding.name,
-        runtimeBindingHash: runEnvironment.runtimeBinding.hash,
-        toolProfileHash: runEnvironment.tools.manifest.profileHash,
         rejectionReason: failureReason
           ? truncate(failureReason, 800)
           : parsed.ok
@@ -190,6 +183,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     return withoutOutput(canceled);
   }
 }
+
 function redactPacketSecret(
   reason: string,
   packet: AgentRuntimePacket,
@@ -216,9 +210,6 @@ function withoutOutput(
     status: run.status,
     packetHash: run.packetHash,
     outputEnvelopeHash: run.outputEnvelopeHash,
-    runtimeBindingName: run.runtimeBindingName,
-    runtimeBindingHash: run.runtimeBindingHash,
-    toolProfileHash: run.toolProfileHash,
     rejectionReason: run.rejectionReason,
   };
 }

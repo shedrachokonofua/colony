@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Colony pre-commit gate.
 #
-# Runs the full validate chain (format, lint, typecheck, generated-artifact
-# drift, openapi drift) plus unit tests before letting a commit land. Skip
+# Runs lint + typecheck + unit tests before letting a commit land. Skip
 # with `git commit --no-verify` when you genuinely need to.
 #
 # Tools come from the Nix dev shell — re-enter it transparently if the
@@ -21,15 +20,9 @@ if git diff --cached --quiet; then
   exit 0
 fi
 
-echo "→ format:check"
-npm run -s format:check
 echo "→ lint"
 npm run -s lint
 echo "→ typecheck"
 npm run -s typecheck
-echo "→ schemas:check"
-npm run -s schemas:check
-echo "→ openapi:check"
-npm run -s openapi:check
 echo "→ test:unit"
 npm run -s test:unit
