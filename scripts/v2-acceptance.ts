@@ -371,6 +371,27 @@ function packageLockForApp(): string {
   }
 }
 
+async function emptyProjectRegistry(projectId: string): Promise<void> {
+  const repos = await gitlabApi(`/projects/${projectId}/registry/repositories`);
+  if (!Array.isArray(repos)) return;
+  for (const repo of repos as { id: number }[]) {
+    const tags = await gitlabApi(
+      `/projects/${projectId}/registry/repositories/${repo.id}/tags`,
+    );
+    if (Array.isArray(tags)) {
+      for (const tag of tags as { name: string }[]) {
+        await gitlabApi(
+          `/projects/${projectId}/registry/repositories/${repo.id}/tags/${encodeURIComponent(tag.name)}`,
+          { method: "DELETE" },
+        ).catch(() => undefined);
+      }
+    }
+    await gitlabApi(`/projects/${projectId}/registry/repositories/${repo.id}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
+  }
+}
+
 async function listProjectAccessTokens(
   projectId: string,
 ): Promise<{ id: number; name: string; active: boolean }[]> {
@@ -905,28 +926,22 @@ async function scenarioCleanup(): Promise<void> {
     }
     // Always delete throwaway projects, even when the leak assertion fails.
     const provider = newProvider();
+    const undeleted: string[] = [];
     for (const project of PROJECTS) {
       try {
-        const repos = await gitlabApi(
-          `/projects/${project.id}/registry/repositories`,
-        );
-        if (Array.isArray(repos)) {
-          for (const repo of repos as { id: number }[]) {
-            await gitlabApi(
-              `/projects/${project.id}/registry/repositories/${repo.id}`,
-              { method: "DELETE" },
-            );
-          }
-        }
+        await emptyProjectRegistry(project.id);
         await provider.projects.delete(project.id);
       } catch (err) {
-        console.log(
-          `[cleanup] failed to delete ${project.path}: ${err instanceof Error ? err.message : String(err)}`,
+        undeleted.push(
+          `${project.path}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
     PROJECTS.length = 0;
     if (leaks.length > 0) throw new Error(leaks.join("; "));
+    if (undeleted.length > 0) {
+      throw new Error(`failed to delete projects: ${undeleted.join("; ")}`);
+    }
     report(
       name,
       "PASS",
