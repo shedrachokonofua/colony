@@ -31,6 +31,8 @@ export type AgentRunRuntimeStatus =
 
 export interface AgentRunEnvironment {
   readonly role: AgentRuntimeRole;
+  /** Caller-supplied run id; adapters use it so cancelRun(runId) addresses the same run. */
+  readonly runId?: string;
 }
 
 export interface AgentRunMetadata {
@@ -111,7 +113,7 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
     packet: AgentRuntimePacket,
     runEnvironment: AgentRunEnvironment,
   ): Promise<AgentRunMetadata> {
-    const runId = `run-${this.nextId++}`;
+    const runId = runEnvironment.runId ?? `run-${this.nextId++}`;
     const sandboxId = `sandbox-${runId}`;
     const packetHash = hashPacket(packet);
     const rawEnvelope =

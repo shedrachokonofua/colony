@@ -276,6 +276,27 @@ export class Store {
     ).map((row) => row.depends_on_task_id);
   }
 
+  /** All dependency edges among a scope's tasks. */
+  scopeDeps(
+    scopeId: ScopeId | string,
+  ): { task_id: TaskId; depends_on_task_id: TaskId }[] {
+    return this.db
+      .prepare(
+        `SELECT d.task_id, d.depends_on_task_id FROM task_deps d
+         JOIN tasks t ON t.id = d.task_id WHERE t.scope_id = ? ORDER BY d.task_id`,
+      )
+      .all(scopeId) as { task_id: TaskId; depends_on_task_id: TaskId }[];
+  }
+
+  /** Clear the retry backoff on a queued task so it dispatches immediately. */
+  clearRetryDelay(taskId: TaskId | string): void {
+    this.db
+      .prepare(
+        `UPDATE tasks SET next_retry_at = NULL, updated_at = ? WHERE id = ? AND state = 'queued'`,
+      )
+      .run(nowIso(), taskId);
+  }
+
   transitionTask(
     id: TaskId | string,
     expectedVersion: number,

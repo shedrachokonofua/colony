@@ -63,7 +63,8 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     packet: AgentRuntimePacket,
     runEnvironment: AgentRunEnvironment,
   ): Promise<AgentRunMetadata> {
-    const runId = `${this.runner.kind}-${this.nextId++}`;
+    const runId =
+      runEnvironment.runId ?? `${this.runner.kind}-${this.nextId++}`;
     const finishMetrics = beginAgentRun({
       role: runEnvironment.role,
       provider: this.telemetry.provider,

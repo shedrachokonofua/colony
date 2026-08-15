@@ -723,15 +723,20 @@ export class FakeProviderAdapter implements ProviderAdapter {
   readonly mergeRequests: ProviderAdapter["mergeRequests"] = {
     get: async (_project, id) => this.requireMr(id),
     open: async (project, input) => {
-      const id = `${project.id}:mr-${this.mrSeq++}`;
+      const iid = this.mrSeq++;
+      const id = `${project.id}:${iid}`;
+      const sourceHead = this.branchesByName.get(
+        branchKey(project, input.source_branch),
+      )?.commit_sha;
       const mr: ProviderMergeRequest = {
         id,
-        iid: this.mrSeq - 1,
+        iid,
         title: input.title,
         description: input.description,
         source_branch: input.source_branch,
         target_branch: input.target_branch,
         state: "opened",
+        head_commit_sha: sourceHead,
         metadata: this.meta(id),
       };
       this.mergeRequestsById.set(id, mr);
@@ -794,14 +799,27 @@ export class FakeProviderAdapter implements ProviderAdapter {
   };
 
   readonly commits: ProviderAdapter["commits"] = {
-    get: async (project, sha) => ({
-      id: `${project.id}:${sha}`,
-      sha,
-      metadata: this.meta(`${project.id}:${sha}`),
-    }),
+    get: async (project, ref) => {
+      // A branch name resolves to the branch head commit; any other ref is
+      // echoed back (test-controlled SHAs).
+      const branch = this.branchesByName.get(branchKey(project, ref));
+      const sha = branch ? branch.commit_sha : ref;
+      return {
+        id: `${project.id}:${sha}`,
+        sha,
+        metadata: this.meta(`${project.id}:${sha}`),
+      };
+    },
     diff: async () => [],
     create: async (project, input) => {
       const sha = `fake-sha-${Date.now()}-${input.branch.replace(/[^a-zA-Z0-9]/g, "-")}`;
+      const branch = this.branchesByName.get(branchKey(project, input.branch));
+      if (branch) {
+        this.branchesByName.set(branchKey(project, input.branch), {
+          ...branch,
+          commit_sha: sha,
+        });
+      }
       return {
         id: `${project.id}:${sha}`,
         sha,

@@ -1,0 +1,27 @@
+{
+  "name": "@colony/colonyd",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@colony/agent-runtime": "*",
+    "@colony/config": "*",
+    "@colony/core": "*",
+    "@colony/domain": "*",
+    "@colony/observability": "*",
+    "@colony/provider": "*",
+    "@colony/provider-gitlab": "*",
+    "@colony/schemas": "*",
+    "@hono/node-server": "^1.14.0",
+    "hono": "^4.9.0",
+    "yaml": "^2.8.3",
+    "zod": "^4.3.6"
+  }
+}
