@@ -67,42 +67,83 @@ export async function revokeRunToken(
 }
 
 /**
+ * Deterministic GitLab project-token name for a run. Crash-reap uses this
+ * to revoke tokens minted on the provider before token_id was persisted.
+ */
+export function expectedRunTokenName(run: {
+  readonly kind: string;
+  readonly scope_id: string;
+  readonly task_id: string | null;
+}): string | null {
+  if (run.kind === "implement" && run.task_id)
+    return `colony-task-${run.task_id}`;
+  if (run.kind === "architect") return `colony-architect-${run.scope_id}`;
+  return null;
+}
+
+/**
  * Revoke provider tokens persisted on runs that the process no longer owns
  * (crash-reap / lease expiry). Idempotent: GitLab 404 is swallowed by the
- * adapter; a missing token_id is a no-op (single-token mode).
+ * adapter. Falls back to listing tokens by the deterministic run name so a
+ * SIGKILL between mint and setRunToken cannot leak a live credential.
  */
 export async function revokeTokensForRuns(
   store: Store,
   provider: ProviderAdapter,
-  runs: readonly Pick<Run, "id" | "scope_id" | "task_id" | "token_id">[],
+  runs: readonly Pick<
+    Run,
+    "id" | "kind" | "scope_id" | "task_id" | "token_id"
+  >[],
 ): Promise<void> {
   if (!provider.accessTokens) return;
   for (const run of runs) {
-    if (!run.token_id) continue;
     const scope = store.getScope(run.scope_id);
     if (!scope) continue;
     const project: ProviderProjectRef = {
       id: scope.provider_project_id,
       path: scope.provider_project_path,
     };
-    try {
-      await provider.accessTokens.revoke(project, run.token_id);
-      store.audit(SERVICE_ACTOR, "agent_token.revoked", {
-        scope_id: run.scope_id,
-        task_id: run.task_id,
-        run_id: run.id,
-        detail: { reason: "crash_reap", token_id: run.token_id },
-      });
-    } catch (err) {
-      store.audit(SERVICE_ACTOR, "agent_token.revoke_failed", {
-        scope_id: run.scope_id,
-        task_id: run.task_id,
-        run_id: run.id,
-        detail: {
-          token_id: run.token_id,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      });
+    const ids = new Set<string>();
+    if (run.token_id) ids.add(run.token_id);
+    const expectedName = expectedRunTokenName(run);
+    if (expectedName && provider.accessTokens.list) {
+      try {
+        const listed = await provider.accessTokens.list(project);
+        for (const token of listed) {
+          if (token.name === expectedName) ids.add(token.id);
+        }
+      } catch (err) {
+        store.audit(SERVICE_ACTOR, "agent_token.revoke_failed", {
+          scope_id: run.scope_id,
+          task_id: run.task_id,
+          run_id: run.id,
+          detail: {
+            error: err instanceof Error ? err.message : String(err),
+            phase: "list",
+          },
+        });
+      }
+    }
+    for (const tokenId of ids) {
+      try {
+        await provider.accessTokens.revoke(project, tokenId);
+        store.audit(SERVICE_ACTOR, "agent_token.revoked", {
+          scope_id: run.scope_id,
+          task_id: run.task_id,
+          run_id: run.id,
+          detail: { reason: "crash_reap", token_id: tokenId },
+        });
+      } catch (err) {
+        store.audit(SERVICE_ACTOR, "agent_token.revoke_failed", {
+          scope_id: run.scope_id,
+          task_id: run.task_id,
+          run_id: run.id,
+          detail: {
+            token_id: tokenId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
     }
   }
 }

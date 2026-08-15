@@ -331,6 +331,7 @@ export interface ProviderAdapter {
       input: CreateProviderAccessTokenInput,
     ): Promise<ProviderAccessToken>;
     revoke(project: ProviderProjectRef, id: ProviderId): Promise<void>;
+    list(project: ProviderProjectRef): Promise<readonly ProviderAccessToken[]>;
   };
   readonly issues: {
     get(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
@@ -650,6 +651,10 @@ export class FakeProviderAdapter implements ProviderAdapter {
     revoke: async (_project, id) => {
       this.accessTokensById.delete(id);
     },
+    list: async (project) =>
+      [...this.accessTokensById.values()].filter(
+        (token) => token.project_id === project.id,
+      ),
   };
 
   /** Test seam: inspect tokens the fake adapter still considers live. */

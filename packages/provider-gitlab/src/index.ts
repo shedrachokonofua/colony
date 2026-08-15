@@ -123,6 +123,8 @@ interface GitLabProjectAccessToken extends GitLabEntity {
   readonly expires_at?: string;
   readonly access_level?: number;
   readonly project_id?: number | string;
+  readonly active?: boolean;
+  readonly revoked?: boolean;
 }
 
 export class GitLabProviderError extends Error {
@@ -263,6 +265,15 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         if (err instanceof GitLabProviderError && err.status === 404) return;
         throw err;
       }
+    },
+    list: async (project) => {
+      const tokens = await this.projectApi<GitLabProjectAccessToken[]>(
+        project.id,
+        "/access_tokens",
+      );
+      return (Array.isArray(tokens) ? tokens : [])
+        .filter((token) => token.active !== false && token.revoked !== true)
+        .map((token) => toAccessTokenListing(this.provider, project.id, token));
     },
   };
 
@@ -1346,11 +1357,20 @@ function toAccessToken(
       token,
     );
   }
+  return toAccessTokenListing(provider, projectId, token);
+}
+
+/** List responses omit the secret; mint responses include it. */
+function toAccessTokenListing(
+  provider: "gitlab",
+  projectId: ProviderId,
+  token: GitLabProjectAccessToken,
+): ProviderAccessToken {
   return {
     id: String(token.id),
     project_id: String(token.project_id ?? projectId),
     name: token.name ?? String(token.id),
-    token: token.token,
+    token: token.token ?? "",
     scopes: [...(token.scopes ?? [])],
     expires_at: token.expires_at ?? "",
     metadata: meta(provider, token),

@@ -323,6 +323,56 @@ describe("GitLabProviderAdapter accessTokens", () => {
     });
   });
 
+  it("lists active project access tokens without requiring the secret", async () => {
+    const fetchMock: typeof fetch = (url, init) => {
+      const method = init?.method ?? "GET";
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+      if (method === "GET" && path === "/projects/20/access_tokens") {
+        return Promise.resolve(
+          json([
+            {
+              id: 901,
+              project_id: 20,
+              name: "colony-task-col-demo.1",
+              scopes: ["api"],
+              expires_at: "2026-05-02",
+              active: true,
+            },
+            {
+              id: 902,
+              project_id: 20,
+              name: "colony-task-old",
+              scopes: ["api"],
+              expires_at: "2026-05-02",
+              active: false,
+            },
+          ]),
+        );
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+    const listed = await adapter.accessTokens.list({ id: "20" });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: "901",
+      name: "colony-task-col-demo.1",
+      token: "",
+    });
+  });
+
   it("treats revoke 404 as already revoked", async () => {
     const fetchMock: typeof fetch = (url, init) => {
       const method = init?.method ?? "GET";

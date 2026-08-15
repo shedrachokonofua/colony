@@ -387,7 +387,7 @@ describe("colonyd fake end-to-end loop", () => {
         expires_at: "2099-01-01",
       },
     );
-    storeA.setRunToken(liveRun.id, minted.id);
+    // Do not persist token_id: SIGKILL between GitLab mint and setRunToken.
     expect(provider.listAccessTokens().map((t) => t.id)).toContain(minted.id);
     storeA.transitionTask(taskA.id, a.state_version, "running", "svc:colonyd");
     const runsBefore = storeA.runsForTask(taskA.id).length;
