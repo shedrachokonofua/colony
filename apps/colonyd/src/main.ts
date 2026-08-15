@@ -44,6 +44,8 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   });
 
   const store = new Store(environment.COLONYD_DB_PATH);
+  // Crash recovery: rows left `running` belong to a dead process.
+  store.expireOrphanedRuns();
 
   const provider =
     options.provider ??

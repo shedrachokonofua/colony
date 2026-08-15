@@ -243,6 +243,21 @@ describe("Store", () => {
     expect(store.activeRunCount()).toBe(0);
   });
 
+  it("expires orphaned in-flight runs regardless of lease TTL", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 30 * 60_000,
+    });
+    const expired = store.expireOrphanedRuns();
+    expect(expired).toHaveLength(1);
+    expect(expired[0]!.id).toBe(run.id);
+    expect(store.getRun(run.id)!.status).toBe("failed");
+    expect(store.getRun(run.id)!.error).toBe("process_restart");
+    expect(store.activeRunCount()).toBe(0);
+  });
+
   it("extends a lease via heartbeat", () => {
     const scopeId = seededScope();
     const run = store.startRun({

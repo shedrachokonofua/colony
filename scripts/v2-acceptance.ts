@@ -107,6 +107,18 @@ async function gitlabApi(
   return text ? JSON.parse(text) : null;
 }
 
+async function gitlabRaw(path: string): Promise<string> {
+  const response = await fetch(`${GITLAB_BASE_URL}/api/v4${path}`, {
+    headers: { "PRIVATE-TOKEN": GITLAB_TOKEN },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `gitlab raw GET ${path} -> ${response.status}: ${await response.text()}`,
+    );
+  }
+  return response.text();
+}
+
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -421,10 +433,10 @@ async function scenarioHappyPath(port: number): Promise<void> {
     }
     const merged = final.tasks.filter((t) => t.state === "merged");
     if (merged.length < 1) throw new Error("no merged tasks");
-    const indexJs = await gitlabApi(
+    const indexJs = await gitlabRaw(
       `/projects/${project.id}/repository/files/${encodeURIComponent("index.js")}/raw?ref=main`,
     );
-    if (!String(indexJs).includes("version")) {
+    if (!indexJs.includes("version")) {
       throw new Error("default branch index.js lacks the /version change");
     }
     report(
@@ -448,23 +460,30 @@ function spawnColonyd(
   dbPath: string,
   configPath: string,
 ): ChildProcess {
-  const child = spawn("npx", ["tsx", "apps/colonyd/src/main.ts"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-      AGENT_RUNTIME: "pi",
-      COLONY_CONFIG_PATH: configPath,
-      COLONYD_PORT: String(port),
-      COLONYD_DB_PATH: dbPath,
-      COLONYD_TICK_MS: "5000",
-      COLONYD_MAX_CONCURRENT: "1",
-      COLONYD_MAX_ATTEMPTS: "3",
-      COLONYD_SINGLE_TOKEN: "0",
-      GITLAB_WEBHOOK_SECRET: "",
+  // Spawn node directly (not `npx tsx`) in a new process group so SIGKILL
+  // cannot leave the real colonyd process behind.
+  const child = spawn(
+    process.execPath,
+    ["--import", "tsx", "apps/colonyd/src/main.ts"],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+        AGENT_RUNTIME: "pi",
+        COLONY_CONFIG_PATH: configPath,
+        COLONYD_PORT: String(port),
+        COLONYD_DB_PATH: dbPath,
+        COLONYD_TICK_MS: "5000",
+        COLONYD_MAX_CONCURRENT: "1",
+        COLONYD_MAX_ATTEMPTS: "3",
+        COLONYD_SINGLE_TOKEN: "0",
+        GITLAB_WEBHOOK_SECRET: "",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  );
   child.stdout?.on("data", (chunk) =>
     process.stdout.write(`[colonyd:${port}] ${chunk}`),
   );
@@ -472,6 +491,40 @@ function spawnColonyd(
     process.stderr.write(`[colonyd:${port}:err] ${chunk}`),
   );
   return child;
+}
+
+function killColonyd(child: ChildProcess): void {
+  if (child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // process group may already be gone
+    }
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // already dead
+  }
+}
+
+async function waitForColonydDown(port: number): Promise<void> {
+  const down = await waitFor(
+    `colonyd :${port} down`,
+    async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/health`);
+        return !response.ok;
+      } catch {
+        return true;
+      }
+    },
+    15_000,
+    200,
+  );
+  if (!down) {
+    throw new Error(`colonyd on :${port} survived SIGKILL`);
+  }
 }
 
 async function scenarioRestart(port: number): Promise<void> {
@@ -509,8 +562,8 @@ async function scenarioRestart(port: number): Promise<void> {
       throw new Error("no task reached running before kill");
 
     const killedAt = new Date().toISOString();
-    child.kill("SIGKILL");
-    await sleep(2_000);
+    killColonyd(child);
+    await waitForColonydDown(port);
 
     child = spawnColonyd(port, dbPath, YOLO_CONFIG_PATH);
     const final = await waitForScopeDone(port, scopeId, SCENARIO_BUDGET_MS);
@@ -562,8 +615,8 @@ async function scenarioRestart(port: number): Promise<void> {
   } catch (err) {
     report(name, "FAIL", err instanceof Error ? err.message : String(err));
   } finally {
-    child.kill("SIGKILL");
-    await sleep(1_000);
+    killColonyd(child);
+    await waitForColonydDown(port).catch(() => undefined);
   }
 }
 
@@ -719,10 +772,15 @@ async function scenarioCredentialLeak(port: number): Promise<void> {
     );
 
     // Wait until the gate rejects the leak (secret_scan evidence) or budget.
+    let mergedLeak: string | undefined;
     const gateFailed = await waitFor(
       "gate secret_scan failure",
       async () => {
         const snap = await scopeSnapshot(port, scopeId);
+        if (snap.scope.status === "done") {
+          mergedLeak = "scope completed; leaked secret was merged";
+          return true;
+        }
         for (const task of snap.tasks) {
           const taskResponse = await http(port, "GET", `/tasks/${task.id}`);
           const runs =
@@ -750,6 +808,7 @@ async function scenarioCredentialLeak(port: number): Promise<void> {
       },
       SCENARIO_BUDGET_MS,
     );
+    if (mergedLeak) throw new Error(mergedLeak);
     if (!gateFailed) throw new Error("gate never reported secret_scan");
 
     // Stop the loop: abandon the scope, then verify nothing merged.
@@ -841,6 +900,17 @@ async function scenarioCleanup(): Promise<void> {
     const provider = newProvider();
     for (const project of PROJECTS) {
       try {
+        const repos = await gitlabApi(
+          `/projects/${project.id}/registry/repositories`,
+        );
+        if (Array.isArray(repos)) {
+          for (const repo of repos as { id: number }[]) {
+            await gitlabApi(
+              `/projects/${project.id}/registry/repositories/${repo.id}`,
+              { method: "DELETE" },
+            );
+          }
+        }
         await provider.projects.delete(project.id);
       } catch (err) {
         console.log(

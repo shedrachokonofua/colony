@@ -367,6 +367,12 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   }
   git(["fetch", "--quiet", "origin", input.taskBranch], input.workspace, input);
 
+  // Scan the incoming diff BEFORE the prospective merge. After merging
+  // headSha into target, `git diff target...headSha` is empty because
+  // headSha is an ancestor of target — that previously let secrets merge.
+  const scan = secretScan(input);
+  if (scan) return scan;
+
   try {
     git(
       ["merge", "--no-ff", "--no-edit", input.headSha],
@@ -377,9 +383,6 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
     const conflicts = conflictedFiles(input.workspace);
     return { reason: "merge_conflict", files: conflicts };
   }
-
-  const scan = secretScan(input);
-  if (scan) return scan;
 
   const gateConfig = readGateConfig(input.workspace);
   if (!gateConfig) return null; // missing colony.gate.yaml -> no commands, audit handled by caller
@@ -455,7 +458,7 @@ function secretScan(input: GateExecutionInput): GateFailure | null {
   for (const line of addedLines) {
     for (const pattern of SECRET_PATTERNS) {
       if (pattern.test(line)) {
-        return { reason: "secret_scan", files: [] };
+        return { reason: "secret_scan", files: changed };
       }
     }
   }

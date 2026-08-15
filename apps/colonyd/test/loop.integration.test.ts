@@ -351,7 +351,7 @@ describe("colonyd fake end-to-end loop", () => {
     await tickAndSettle(); // draft -> planning
     await tickAndSettle(); // planning -> active; dispatch A -> mr_open
 
-    // Rewind task A to running with a short live lease, simulating a crash
+    // Rewind task A to running with a still-valid lease, simulating a crash
     // mid-run: close the store while the run row is still 'running'.
     const storeA = handle.ctx.store;
     const taskA = storeA.listTasks(scopeId).find((t) => t.id.endsWith(".1"))!;
@@ -374,16 +374,16 @@ describe("colonyd fake end-to-end loop", () => {
       scope_id: scopeId,
       task_id: taskA.id,
       kind: "implement",
-      // Already-expired lease: a fresh colonyd boot must treat this run as
-      // dead immediately — no wall-clock wait needed for the restart contract.
-      lease_ttl_ms: -1_000,
+      // Live lease: boot must still reap it as an orphan of the previous
+      // process rather than waiting out the TTL.
+      lease_ttl_ms: 30 * 60_000,
     });
     storeA.transitionTask(taskA.id, a.state_version, "running", "svc:colonyd");
     const runsBefore = storeA.runsForTask(taskA.id).length;
     const versionBefore = storeA.getTask(taskA.id)!.state_version;
     await handle.shutdown();
 
-    // Boot a fresh colonyd on the same file; the lease is already expired.
+    // Boot a fresh colonyd on the same file; orphans are reaped on open.
     handle = await bootHeadless(dbPath);
     await tickAndSettle();
 
@@ -395,7 +395,7 @@ describe("colonyd fake end-to-end loop", () => {
     // The expired run failed; no new implement run was minted.
     const expired = handle.ctx.store.getRun(liveRun.id)!;
     expect(expired.status).toBe("failed");
-    expect(expired.error).toBe("lease_expired");
+    expect(expired.error).toBe("process_restart");
     expect(handle.ctx.store.runsForTask(taskA.id)).toHaveLength(runsBefore);
   }, 30_000);
 });

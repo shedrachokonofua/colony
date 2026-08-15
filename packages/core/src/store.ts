@@ -495,6 +495,20 @@ export class Store {
     return expired;
   }
 
+  /**
+   * Fail every in-flight run. A previous process's work cannot still be
+   * executing after this process opened the DB (single-process colonyd).
+   */
+  expireOrphanedRuns(): Run[] {
+    const orphans = this.db
+      .prepare(`SELECT * FROM runs WHERE status = 'running'`)
+      .all() as Run[];
+    for (const run of orphans) {
+      this.finishRun(run.id, "failed", { error: "process_restart" });
+    }
+    return orphans;
+  }
+
   activeRunCount(kind?: Run["kind"]): number {
     const row = kind
       ? (this.db
