@@ -145,6 +145,10 @@ const hitlSchema = z
 
 export type HitlMode = "gated" | "yolo";
 
+const sandboxEngineSchema = z.enum(["in-process"]);
+
+export type SandboxEngine = z.infer<typeof sandboxEngineSchema>;
+
 const reviewSchema = z
   .object({
     mode: z.enum(["off", "required"]).default("off"),
@@ -157,6 +161,10 @@ export type ReviewMode = "off" | "required";
 export const colonyConfigFileSchema = z
   .object({
     agent_runtime: z.enum(["fake", "pi"]).default("fake"),
+    sandbox: z
+      .object({ engine: sandboxEngineSchema.default("in-process") })
+      .strict()
+      .default({ engine: "in-process" }),
     /**
      * Allow literal `api_key.value` strings. Requires the file to be
      * SOPS-encrypted at rest; the loader does NOT verify SOPS itself —
@@ -238,6 +246,7 @@ export interface ResolvedAgentConfig {
 
 export interface ColonyConfig {
   readonly agentRuntime: "fake" | "pi";
+  readonly sandbox: { readonly engine: SandboxEngine };
   readonly hitlMode: HitlMode;
   readonly reviewMode: ReviewMode;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
@@ -262,6 +271,8 @@ export interface LoadColonyConfigOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Override `agent_runtime` (e.g. tests force `fake`). */
   readonly agentRuntimeOverride?: "fake" | "pi";
+  /** Override the sandbox engine (e.g. from COLONY_SANDBOX_ENGINE). */
+  readonly sandboxEngineOverride?: SandboxEngine;
   /**
    * When true, missing providers/agents/models are tolerated and
    * `forAgent()` throws lazily on first access. Useful in fake mode.
@@ -315,6 +326,10 @@ export function loadColonyConfig(
   }
   const file = parsed.data;
   const agentRuntime = opts.agentRuntimeOverride ?? file.agent_runtime;
+  const sandboxEngine = resolveSandboxEngine(
+    opts.sandboxEngineOverride,
+    file.sandbox.engine,
+  );
   const lazy = opts.lazyValidation ?? agentRuntime === "fake";
 
   // Validate cross-refs eagerly when not lazy. This catches misconfig at
@@ -349,6 +364,7 @@ export function loadColonyConfig(
 
   return {
     agentRuntime,
+    sandbox: { engine: sandboxEngine },
     hitlMode: file.hitl.mode,
     reviewMode: file.review.mode,
     oauthProviderKeys,
@@ -439,6 +455,22 @@ export function loadColonyConfig(
 function resolveConfigPath(path: string | undefined): string {
   const p = path ?? "config/colony.yaml";
   return isAbsolute(p) ? p : resolve(process.cwd(), p);
+}
+
+function resolveSandboxEngine(
+  override: SandboxEngine | undefined,
+  fileEngine: SandboxEngine,
+): SandboxEngine {
+  if (override === undefined) return fileEngine;
+  const parsed = sandboxEngineSchema.safeParse(override);
+  if (!parsed.success) {
+    throw new ColonyConfigError(
+      "VALIDATION",
+      `invalid sandbox engine override: ${parsed.error.message}`,
+      { engine: override },
+    );
+  }
+  return parsed.data;
 }
 
 function readYamlFile(path: string): unknown {

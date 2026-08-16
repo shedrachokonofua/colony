@@ -23,6 +23,9 @@ const envSchema = z.object({
 
   // Agent runtime
   AGENT_RUNTIME: z.enum(["fake", "pi"]).optional(),
+
+  // Sandbox
+  COLONY_SANDBOX_ENGINE: z.string().optional(),
   COLONY_CONFIG_PATH: optionalNonEmptyString,
 
   // GitLab (home-lab provider)
@@ -80,4 +83,5 @@ export {
   type PiApiKind,
   type ResolvedAgentConfig,
   type ResolvedAuth,
+  type SandboxEngine,
 } from "./colony-config.js";
