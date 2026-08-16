@@ -157,6 +157,10 @@ export type ReviewMode = "off" | "required";
 export const colonyConfigFileSchema = z
   .object({
     agent_runtime: z.enum(["fake", "pi"]).default("fake"),
+    sandbox: z
+      .object({ engine: z.enum(["in-process"]).default("in-process") })
+      .strict()
+      .default({ engine: "in-process" }),
     /**
      * Allow literal `api_key.value` strings. Requires the file to be
      * SOPS-encrypted at rest; the loader does NOT verify SOPS itself —
@@ -238,6 +242,7 @@ export interface ResolvedAgentConfig {
 
 export interface ColonyConfig {
   readonly agentRuntime: "fake" | "pi";
+  readonly sandbox: { readonly engine: string };
   readonly hitlMode: HitlMode;
   readonly reviewMode: ReviewMode;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
@@ -262,6 +267,8 @@ export interface LoadColonyConfigOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Override `agent_runtime` (e.g. tests force `fake`). */
   readonly agentRuntimeOverride?: "fake" | "pi";
+  /** Override the sandbox engine (e.g. from COLONY_SANDBOX_ENGINE). */
+  readonly sandboxEngineOverride?: string;
   /**
    * When true, missing providers/agents/models are tolerated and
    * `forAgent()` throws lazily on first access. Useful in fake mode.
@@ -315,6 +322,7 @@ export function loadColonyConfig(
   }
   const file = parsed.data;
   const agentRuntime = opts.agentRuntimeOverride ?? file.agent_runtime;
+  const sandboxEngine = opts.sandboxEngineOverride ?? file.sandbox.engine;
   const lazy = opts.lazyValidation ?? agentRuntime === "fake";
 
   // Validate cross-refs eagerly when not lazy. This catches misconfig at
@@ -349,6 +357,7 @@ export function loadColonyConfig(
 
   return {
     agentRuntime,
+    sandbox: { engine: sandboxEngine },
     hitlMode: file.hitl.mode,
     reviewMode: file.review.mode,
     oauthProviderKeys,

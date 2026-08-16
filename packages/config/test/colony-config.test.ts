@@ -346,4 +346,34 @@ agents:
       loadColonyConfig({ path: "/no/such/path/colony.yaml" }),
     ).toThrow(ColonyConfigError);
   });
+
+  it("defaults sandbox engine to in-process when no sandbox block", () => {
+    const cfg = loadColonyConfig({ path: tempConfig(VALID_YAML) });
+    expect(cfg.sandbox.engine).toBe("in-process");
+  });
+
+  it("round-trips an explicit sandbox engine value", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(`sandbox: { engine: "in-process" }
+${VALID_YAML}`),
+    });
+    expect(cfg.sandbox.engine).toBe("in-process");
+  });
+
+  it("honors the sandboxEngineOverride", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(VALID_YAML),
+      sandboxEngineOverride: "in-process",
+    });
+    expect(cfg.sandbox.engine).toBe("in-process");
+  });
+
+  it("rejects an unknown sandbox engine", () => {
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(`sandbox: { engine: "kubernetes" }
+${VALID_YAML}`),
+      }),
+    ).toThrow(/validation failed/);
+  });
 });
