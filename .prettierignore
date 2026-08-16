@@ -6,3 +6,4 @@ flake.lock
 secrets/
 data/
 apps/colonyd/ui/vendor/
+packages/console/vendor/
