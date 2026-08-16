@@ -74,11 +74,6 @@ variable "oidc_issuer" {
   default     = "https://auth.shdr.ch/realms/aether"
 }
 
-variable "oidc_realm" {
-  description = "Keycloak realm id holding the colony client."
-  type        = string
-  default     = "aether"
-}
 
 variable "oidc_client_id" {
   description = "Public PKCE client id for the operator console."
@@ -92,8 +87,3 @@ variable "oidc_required_role" {
   default     = "admin"
 }
 
-variable "manage_oidc_client" {
-  description = "Manage the Crossplane Keycloak Client CR. Requires admin RBAC; CI must leave this false."
-  type        = bool
-  default     = false
-}
