@@ -12,6 +12,7 @@
       "@colony/observability": ["./packages/observability/src/index.ts"],
       "@colony/provider": ["./packages/provider/src/index.ts"],
       "@colony/provider-gitlab": ["./packages/provider-gitlab/src/index.ts"],
+      "@colony/sandbox": ["./packages/sandbox/src/index.ts"],
       "@colony/schemas": ["./packages/schemas/src/index.ts"]
     }
   },

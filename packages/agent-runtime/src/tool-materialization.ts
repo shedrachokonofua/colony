@@ -4,7 +4,7 @@ import {
   type SandboxNixPackage,
   type SandboxRunExtensions,
   assertValidRunExtensions,
-} from "./run-extensions.js";
+} from "@colony/sandbox";
 
 export interface MaterializedCliTool {
   readonly name: string;
