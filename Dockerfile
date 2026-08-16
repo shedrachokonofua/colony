@@ -21,9 +21,11 @@ RUN npm ci --include=dev --no-audit --no-fund
 
 FROM docker.io/library/node:24-bookworm-slim AS runtime
 WORKDIR /workspace
+ARG COLONY_VERSION=unknown
 ENV NODE_ENV=production \
     HOME=/tmp \
-    TMPDIR=/tmp
+    TMPDIR=/tmp \
+    COLONY_VERSION=$COLONY_VERSION
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
@@ -31,5 +33,6 @@ COPY --from=deps /workspace/node_modules ./node_modules
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages ./packages
 COPY apps/colonyd ./apps/colonyd
+COPY config ./config
 USER node
 CMD ["npm", "--workspace", "@colony/colonyd", "run", "start"]

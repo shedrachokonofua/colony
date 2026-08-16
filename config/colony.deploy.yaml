@@ -1,0 +1,62 @@
+# Production agent config baked into the colonyd image (see Dockerfile).
+# The aether-side deployment points COLONY_CONFIG_PATH here; editing this
+# file redeploys colonyd through the normal image build on main.
+agent_runtime: pi
+allow_literal_keys: false
+
+hitl:
+  mode: yolo
+
+review:
+  mode: required
+
+providers:
+  openai_compatible:
+    api: openai-completions
+    base_url: https://litellm.home.shdr.ch/v1
+    auth:
+      kind: api_key
+      value: COLONY_OPENAI_COMPATIBLE_API_KEY
+    models:
+      - id: router/mimo-v2.5-pro
+        name: mimo-v2.5-pro
+        reasoning: true
+        context_window: 1000000
+        max_tokens: 131072
+        cost: { input: 0, output: 0 }
+      - id: router/glm-5.2
+        name: glm-5.2
+        reasoning: true
+        context_window: 1000000
+        max_tokens: 131072
+        cost: { input: 0, output: 0 }
+      - id: kimi/k3
+        name: kimi-k3
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 131072
+        cost: { input: 0, output: 0 }
+
+agents:
+  developer:
+    provider: openai_compatible
+    model: mimo-v2.5-pro
+    timeout_ms: 1800000
+    max_turns: 250
+    max_usd_per_run: 50
+  reviewer:
+    provider: openai_compatible
+    model: kimi-k3
+    timeout_ms: 1800000
+    max_turns: 200
+    max_usd_per_run: 30
+  architect:
+    provider: openai_compatible
+    model: glm-5.2
+    timeout_ms: 1800000
+    max_turns: 200
+    max_usd_per_run: 50
+  memory_consolidator:
+    provider: openai_compatible
+    model: glm-5.2
+    thinking_level: low
