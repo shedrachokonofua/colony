@@ -182,4 +182,69 @@ describe("operator console", () => {
     });
     expect(missing.status).toBe(404);
   });
+
+  it("holds merges in manual-approvals scopes until approved at head", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const ctx = fakeCtx(store);
+    const headSha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+    const withProvider: typeof ctx = {
+      ...ctx,
+      provider: {
+        mergeRequests: {
+          get: async () => ({ state: "opened", head_commit_sha: headSha }),
+        },
+      } as unknown as (typeof ctx)["provider"],
+    };
+    const app = buildApp(withProvider);
+
+    const auto = store.createScope({
+      goal: "auto scope",
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    expect(auto.approvals).toBe("auto");
+
+    const manual = store.createScope({
+      goal: "manual scope",
+      approvals: "manual",
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    expect(manual.approvals).toBe("manual");
+    store.setScopeStatus(manual.id, "planning", "svc:test");
+    const [task] = store.materializePlan(
+      manual.id,
+      {
+        summary: "one task",
+        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+      },
+      "human:op-1",
+    );
+    let current = store.transitionTask(
+      task.id,
+      task.state_version,
+      "running",
+      "svc:test",
+    );
+    current = store.transitionTask(
+      current.id,
+      current.state_version,
+      "mr_open",
+      "svc:test",
+      { mr_iid: 7, branch: "colony/t" },
+    );
+    expect(current.merge_approved_sha).toBeNull();
+
+    const res = await app.request(`/tasks/${current.id}/approve-merge`, {
+      method: "POST",
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(res.status).toBe(200);
+    const updated = (await res.json()) as { merge_approved_sha: string };
+    expect(updated.merge_approved_sha).toBe(headSha);
+    const audit = store.listAudit({ scope_id: manual.id });
+    expect(audit.some((row) => row.action === "merge.approved")).toBe(true);
+  });
 });

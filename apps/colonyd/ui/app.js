@@ -228,6 +228,17 @@ function waitingOnYou(scope, tasks) {
   if (scope.status === "blocked") {
     return scope.blocked_reason || "Scope is blocked.";
   }
+  if (scope.approvals === "manual") {
+    const awaiting = (tasks || []).filter(
+      (task) => task.state === "mr_open" && !task.merge_approved_sha,
+    );
+    if (awaiting.length === 1) {
+      return `Merge request !${awaiting[0].mr_iid} is waiting for your approval.`;
+    }
+    if (awaiting.length > 1) {
+      return `${awaiting.length} merge requests are waiting for your approval.`;
+    }
+  }
   const blocked = (tasks || []).filter((task) => task.state === "blocked");
   if (blocked.length === 1) {
     return `${blocked[0].title} is blocked.`;
@@ -526,6 +537,7 @@ async function submitOpenScope(event) {
   const goal = String(data.get("goal") || "").trim();
   const title = String(data.get("title") || "").trim();
   const path = String(data.get("path") || "").trim();
+  const approvals = String(data.get("approvals") || "auto");
   if (!goal || !path) return;
   try {
     const scope = await api("/scopes", {
@@ -533,6 +545,7 @@ async function submitOpenScope(event) {
       body: JSON.stringify({
         goal,
         ...(title ? { title } : {}),
+        approvals,
         project: { path },
       }),
     });
@@ -843,6 +856,30 @@ function taskActionButtons(task) {
       </button>`,
     );
   }
+  if (
+    task?.state === "mr_open" &&
+    state.detail?.scope?.approvals === "manual"
+  ) {
+    buttons.push(
+      task.merge_approved_sha
+        ? html`<button class="btn" disabled>
+            Merge approved — gate pending
+          </button>`
+        : state.confirm === "merge"
+          ? html`<button
+              class="btn btn-solid"
+              @click=${() => mutate(`/tasks/${task.id}/approve-merge`)}
+            >
+              Confirm merge approval
+            </button>`
+          : html`<button
+              class="btn btn-solid"
+              @click=${() => setConfirm("merge")}
+            >
+              Approve merge
+            </button>`,
+    );
+  }
   if (task?.state === "running") {
     buttons.push(
       state.confirm === "stop"
@@ -1039,6 +1076,17 @@ function renderBoard() {
                   autocomplete="off"
                 />
               </label>
+              <label class="field">
+                <span>Approvals</span>
+                <select name="approvals">
+                  <option value="auto">
+                    Automatic — plan and merges run unattended
+                  </option>
+                  <option value="manual">
+                    Manual — you approve the plan and every merge
+                  </option>
+                </select>
+              </label>
               <button class="btn btn-solid" type="submit">Open scope</button>
             </form>
           </div>
@@ -1073,6 +1121,9 @@ function renderSheet() {
       </div>
       <div class="sheet-head-side">
         <span class="chip" data-kind=${scope.status}>${scope.status}</span>
+        ${scope.approvals === "manual"
+          ? html`<span class="chip">manual approvals</span>`
+          : nothing}
         ${abandonButton(scope)}
       </div>
     </header>

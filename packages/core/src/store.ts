@@ -21,6 +21,7 @@ export interface Scope {
   readonly id: ScopeId;
   readonly goal: string;
   readonly title: string | null;
+  readonly approvals: ScopeApprovals;
   readonly status: ScopeStatus;
   readonly provider_project_id: string;
   readonly provider_project_path: string;
@@ -45,6 +46,7 @@ export interface Task {
   readonly blocked_reason: string | null;
   readonly created_at: string;
   readonly updated_at: string;
+  readonly merge_approved_sha: string | null;
 }
 
 export interface Run {
@@ -98,9 +100,12 @@ export interface AuditFilter {
   readonly limit?: number;
 }
 
+export type ScopeApprovals = "auto" | "manual";
+
 export interface CreateScopeInput {
   readonly goal: string;
   readonly title?: string;
+  readonly approvals?: ScopeApprovals;
   readonly provider_project_id: string;
   readonly provider_project_path: string;
   readonly default_branch?: string;
@@ -124,6 +129,8 @@ export class Store {
     this.db.exec(SCHEMA_SQL);
     this.ensureColumn("runs", "token_id", "TEXT");
     this.ensureColumn("scopes", "title", "TEXT");
+    this.ensureColumn("scopes", "approvals", "TEXT NOT NULL DEFAULT 'auto'");
+    this.ensureColumn("tasks", "merge_approved_sha", "TEXT");
   }
 
   /** Idempotent ADD COLUMN for DBs created before a column existed. */
@@ -147,13 +154,14 @@ export class Store {
     const id = `col-${randomBytes(4).toString("hex")}` as ScopeId;
     this.db
       .prepare(
-        `INSERT INTO scopes (id, goal, title, status, provider_project_id, provider_project_path, default_branch)
-         VALUES (@id, @goal, @title, 'draft', @provider_project_id, @provider_project_path, @default_branch)`,
+        `INSERT INTO scopes (id, goal, title, status, approvals, provider_project_id, provider_project_path, default_branch)
+         VALUES (@id, @goal, @title, 'draft', @approvals, @provider_project_id, @provider_project_path, @default_branch)`,
       )
       .run({
         id,
         goal: input.goal,
         title: input.title ?? null,
+        approvals: input.approvals ?? "auto",
         provider_project_id: input.provider_project_id,
         provider_project_path: input.provider_project_path,
         default_branch: input.default_branch ?? "main",
@@ -161,6 +169,22 @@ export class Store {
     const scope = this.getScope(id);
     if (!scope) throw new Error(`scope insert lost: ${id}`);
     return scope;
+  }
+
+  /**
+   * Record human approval to merge a task at an exact head SHA. The merge
+   * gate in manual-approvals scopes only dispatches when the approved SHA
+   * matches the MR head observed this tick.
+   */
+  approveMerge(taskId: TaskId | string, headSha: string): Task {
+    this.db
+      .prepare(
+        `UPDATE tasks SET merge_approved_sha = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(headSha, nowIso(), taskId);
+    const task = this.getTask(taskId);
+    if (!task) throw new Error(`task lost after merge approval: ${taskId}`);
+    return task;
   }
 
   getScope(id: ScopeId | string): Scope | undefined {

@@ -317,6 +317,12 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
       }
     }
 
+    // Manual approvals: the gate both validates and merges, so it only
+    // dispatches once a human approved this exact head SHA.
+    if (scope.approvals === "manual" && task.merge_approved_sha !== headSha) {
+      continue;
+    }
+
     if (lastGate?.status === "running") continue;
     if (
       lastGate?.status === "succeeded" &&
@@ -417,10 +423,10 @@ async function advanceScopePlanning(ctx: ColonydContext): Promise<void> {
           });
           continue;
         }
-        if (ctx.config.hitlMode === "yolo") {
+        if (ctx.config.hitlMode === "yolo" && scope.approvals !== "manual") {
           ctx.store.materializePlan(scope.id, plan, SERVICE_ACTOR);
         }
-        // gated: wait for POST /scopes/:id/approve-plan
+        // gated or manual approvals: wait for POST /scopes/:id/approve-plan
         continue;
       }
 

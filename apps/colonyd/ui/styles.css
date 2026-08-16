@@ -739,6 +739,16 @@ body {
   }
 }
 
+.field select {
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl);
+}
+
 /* ---------- DAG ---------- */
 
 .dag-card .card-body {

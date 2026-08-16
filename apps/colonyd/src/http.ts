@@ -25,6 +25,7 @@ const createScopeBody = z
   .object({
     goal: z.string().min(1),
     title: z.string().min(1).max(120).optional(),
+    approvals: z.enum(["auto", "manual"]).optional(),
     project: z
       .object({
         id: z.string().min(1).optional(),
@@ -157,6 +158,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const scope = ctx.store.createScope({
       goal: parsed.data.goal,
       title: parsed.data.title,
+      approvals: parsed.data.approvals,
       provider_project_id: project.id,
       provider_project_path: project.path,
       default_branch: project.default_branch || "main",
@@ -446,6 +448,69 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     });
     ctx.requestTick();
     return c.json(ctx.store.getTask(task.id));
+  });
+
+  // Manual-approvals scopes: record human approval to merge at the MR's
+  // current head SHA. The tick loop dispatches the gate once the approved
+  // SHA matches the head it observes.
+  app.post("/tasks/:id/approve-merge", async (c) => {
+    const task = ctx.store.getTask(c.req.param("id"));
+    if (!task) return notFound(c, "task");
+    const scope = ctx.store.getScope(task.scope_id);
+    if (!scope) return notFound(c, "scope");
+    if (scope.approvals !== "manual") {
+      return c.json(
+        {
+          error: {
+            code: "AUTO_MERGE_SCOPE",
+            message: "scope merges automatically; nothing to approve",
+          },
+        },
+        409,
+      );
+    }
+    if (task.state !== "mr_open" || !task.mr_iid) {
+      return c.json(
+        {
+          error: {
+            code: "NO_OPEN_MR",
+            message: "task has no open merge request",
+          },
+        },
+        409,
+      );
+    }
+    let mr;
+    try {
+      mr = await ctx.provider.mergeRequests.get(
+        { id: scope.provider_project_id, path: scope.provider_project_path },
+        `${scope.provider_project_id}:${task.mr_iid}`,
+      );
+    } catch {
+      return c.json(
+        {
+          error: {
+            code: "PROVIDER_UNREACHABLE",
+            message: "could not read the merge request head",
+          },
+        },
+        502,
+      );
+    }
+    if (!mr.head_commit_sha) {
+      return c.json(
+        { error: { code: "NO_HEAD_SHA", message: "MR has no head commit" } },
+        409,
+      );
+    }
+    const updated = ctx.store.approveMerge(task.id, mr.head_commit_sha);
+    ctx.store.audit(c.get("actor"), "merge.approved", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: { head_sha: mr.head_commit_sha },
+    });
+    ctx.requestTick();
+    return c.json(updated);
   });
 
   app.get("/runs/:id/events", (c) => {
