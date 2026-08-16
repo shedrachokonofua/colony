@@ -623,6 +623,122 @@ body {
   font-size: 0.78rem;
 }
 
+/* ---------- Task drawer ---------- */
+
+.drawer {
+  position: fixed;
+  top: 3.05rem;
+  right: 0;
+  bottom: 0;
+  width: 26rem;
+  max-width: 100vw;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  box-shadow: -18px 0 40px -30px rgba(16, 32, 58, 0.35);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem 0.6rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer-id {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.drawer-close {
+  margin-left: auto;
+  padding: 0.2rem 0.55rem;
+}
+
+.drawer-body {
+  padding: 0.9rem 1.1rem 1.2rem;
+  overflow-y: auto;
+}
+
+.drawer-runs-head {
+  margin: 1.1rem -1.1rem 0.7rem;
+  padding: 0.7rem 1.1rem 0.5rem;
+  border-top: 1px solid var(--line);
+  border-bottom: none;
+}
+
+.runs-inline {
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.runlog {
+  margin: 0.2rem 0 0.4rem 1.1rem;
+  padding: 0.45rem 0.6rem;
+  list-style: none;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  max-height: 14rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.runlog li {
+  display: flex;
+  gap: 0.55rem;
+  align-items: baseline;
+  font: 400 0.72rem var(--mono);
+  color: var(--muted);
+}
+
+.runlog .when {
+  flex: none;
+  color: var(--faint);
+}
+
+.runlog .ev {
+  color: var(--ink);
+}
+
+.runlog .evd {
+  color: var(--muted);
+}
+
+.runlog-empty {
+  margin-left: 1.1rem;
+  font-size: 0.78rem;
+}
+
+.field span em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--faint);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drawer {
+    animation: drawer-in 160ms ease-out;
+  }
+
+  @keyframes drawer-in {
+    from {
+      transform: translateX(1.5rem);
+      opacity: 0;
+    }
+    to {
+      transform: none;
+      opacity: 1;
+    }
+  }
+}
+
 /* ---------- DAG ---------- */
 
 .dag-card .card-body {

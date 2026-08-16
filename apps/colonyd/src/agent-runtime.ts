@@ -14,6 +14,12 @@ export interface AgentWiring {
   readonly reviewer?: AgentRuntimeAdapter;
 }
 
+export type RunEventSink = (
+  runId: string,
+  event: string,
+  detail: Record<string, unknown>,
+) => void;
+
 /**
  * Build the agent runtime wiring once at boot.
  *
@@ -25,6 +31,7 @@ export interface AgentWiring {
  */
 export async function createAgentWiring(
   config: ColonyConfig,
+  onRunEvent?: RunEventSink,
 ): Promise<AgentWiring> {
   if (config.agentRuntime === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
@@ -57,14 +64,14 @@ export async function createAgentWiring(
   const { PiCodingAgentRunner } =
     await import("@colony/agent-runtime/pi-coding-agent-runner");
 
-  const architectLogger = consoleLogger("architect");
-  const developerLogger = consoleLogger("developer");
+  const architectLogger = roleLogger("architect", onRunEvent);
+  const developerLogger = roleLogger("developer", onRunEvent);
 
   let reviewer: AgentRuntimeAdapter | undefined;
   if (reviewerConfig) {
     const { PiReviewerRunner } =
       await import("@colony/agent-runtime/pi-reviewer-runner");
-    const reviewerLogger = consoleLogger("reviewer");
+    const reviewerLogger = roleLogger("reviewer", onRunEvent);
     reviewer = new PiAgentRuntimeAdapter(
       new PiReviewerRunner({
         broker,
@@ -203,5 +210,38 @@ function consoleLogger(role: string): RuntimeLogger {
     info: (fields, message) => console.log(fmt("info", fields, message)),
     warn: (fields, message) => console.warn(fmt("warn", fields, message)),
     error: (fields, message) => console.error(fmt("error", fields, message)),
+  };
+}
+
+/** Console logging plus an optional per-run event feed keyed on fields.runId. */
+function roleLogger(role: string, sink?: RunEventSink): RuntimeLogger {
+  const base = consoleLogger(role);
+  if (!sink) return base;
+  const forward = (
+    level: string,
+    fields: Record<string, unknown>,
+    message: string,
+  ): void => {
+    const runId = fields["runId"];
+    if (typeof runId !== "string" || !runId) return;
+    try {
+      sink(runId, message, { role, level, ...fields });
+    } catch {
+      // The activity feed must never break a run.
+    }
+  };
+  return {
+    info: (fields, message) => {
+      base.info(fields, message);
+      forward("info", fields, message);
+    },
+    warn: (fields, message) => {
+      base.warn(fields, message);
+      forward("warn", fields, message);
+    },
+    error: (fields, message) => {
+      base.error(fields, message);
+      forward("error", fields, message);
+    },
   };
 }

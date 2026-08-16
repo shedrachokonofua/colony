@@ -60,7 +60,15 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   const orphans = store.expireOrphanedRuns();
   await revokeTokensForRuns(store, provider, orphans);
 
-  const agents = options.agents ?? (await createAgentWiring(config));
+  const agents =
+    options.agents ??
+    (await createAgentWiring(config, (runId, event, detail) => {
+      try {
+        store.appendRunEvent(runId, event, detail);
+      } catch {
+        // The activity feed must never break a run.
+      }
+    }));
   if (config.reviewMode === "required" && !agents.reviewer) {
     throw new Error(
       "review.mode is 'required' but no reviewer agent is configured",

@@ -24,6 +24,7 @@ type Env = { Variables: { actor: string } };
 const createScopeBody = z
   .object({
     goal: z.string().min(1),
+    title: z.string().min(1).max(120).optional(),
     project: z
       .object({
         id: z.string().min(1).optional(),
@@ -155,6 +156,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }
     const scope = ctx.store.createScope({
       goal: parsed.data.goal,
+      title: parsed.data.title,
       provider_project_id: project.id,
       provider_project_path: project.path,
       default_branch: project.default_branch || "main",
@@ -316,6 +318,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     });
     ctx.requestTick();
     return c.json(ctx.store.getTask(task.id));
+  });
+
+  app.get("/runs/:id/events", (c) => {
+    const run = ctx.store.getRun(c.req.param("id"));
+    if (!run) return notFound(c, "run");
+    return c.json(ctx.store.listRunEvents(run.id));
   });
 
   app.get("/audit", (c) => {

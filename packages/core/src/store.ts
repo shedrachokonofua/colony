@@ -20,6 +20,7 @@ import {
 export interface Scope {
   readonly id: ScopeId;
   readonly goal: string;
+  readonly title: string | null;
   readonly status: ScopeStatus;
   readonly provider_project_id: string;
   readonly provider_project_path: string;
@@ -75,6 +76,14 @@ export interface AuditRow {
   readonly detail_json: string;
 }
 
+export interface RunEvent {
+  readonly id: number;
+  readonly run_id: string;
+  readonly at: string;
+  readonly event: string;
+  readonly detail_json: string;
+}
+
 export interface TaskTransitionPatch {
   readonly branch?: string | null;
   readonly mr_iid?: number | null;
@@ -91,6 +100,7 @@ export interface AuditFilter {
 
 export interface CreateScopeInput {
   readonly goal: string;
+  readonly title?: string;
   readonly provider_project_id: string;
   readonly provider_project_path: string;
   readonly default_branch?: string;
@@ -113,9 +123,10 @@ export class Store {
     this.db = new Database(dbPath);
     this.db.exec(SCHEMA_SQL);
     this.ensureColumn("runs", "token_id", "TEXT");
+    this.ensureColumn("scopes", "title", "TEXT");
   }
 
-  /** Idempotent ADD COLUMN for DBs created before token_id existed. */
+  /** Idempotent ADD COLUMN for DBs created before a column existed. */
   private ensureColumn(table: string, name: string, type: string): void {
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as {
       name: string;
@@ -136,12 +147,13 @@ export class Store {
     const id = `col-${randomBytes(4).toString("hex")}` as ScopeId;
     this.db
       .prepare(
-        `INSERT INTO scopes (id, goal, status, provider_project_id, provider_project_path, default_branch)
-         VALUES (@id, @goal, 'draft', @provider_project_id, @provider_project_path, @default_branch)`,
+        `INSERT INTO scopes (id, goal, title, status, provider_project_id, provider_project_path, default_branch)
+         VALUES (@id, @goal, @title, 'draft', @provider_project_id, @provider_project_path, @default_branch)`,
       )
       .run({
         id,
         goal: input.goal,
+        title: input.title ?? null,
         provider_project_id: input.provider_project_id,
         provider_project_path: input.provider_project_path,
         default_branch: input.default_branch ?? "main",
@@ -582,6 +594,29 @@ export class Store {
          ORDER BY started_at DESC LIMIT 1`,
       )
       .get({ scopeId, kind, taskId: taskId ?? null }) as Run | undefined;
+  }
+
+  /** Append-only activity feed for a run (tool calls, limits, failures). */
+  appendRunEvent(
+    runId: string,
+    event: string,
+    detail?: Record<string, unknown>,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO run_events (run_id, event, detail_json) VALUES (?, ?, ?)`,
+      )
+      .run(runId, event, JSON.stringify(detail ?? {}));
+  }
+
+  listRunEvents(runId: string, limit = 200): RunEvent[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM run_events WHERE run_id = ? ORDER BY id DESC LIMIT ?
+         ) ORDER BY id`,
+      )
+      .all(runId, limit) as RunEvent[];
   }
 
   // ---------------------------------------------------------------------

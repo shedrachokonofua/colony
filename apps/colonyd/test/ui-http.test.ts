@@ -126,4 +126,60 @@ describe("operator console", () => {
     expect(body.runs).toHaveLength(1);
     expect(body.runs[0]?.kind).toBe("architect");
   });
+
+  it("persists an optional scope title", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const titled = store.createScope({
+      goal: "add /version",
+      title: "Version endpoint",
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    expect(titled.title).toBe("Version endpoint");
+    const untitled = store.createScope({
+      goal: "retire hostname",
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    expect(untitled.title).toBeNull();
+  });
+
+  it("serves the agent event feed for a run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const scope = store.createScope({
+      goal: "add /version",
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    const run = store.startRun({
+      scope_id: scope.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    store.appendRunEvent(run.id, "pi_tool_call", {
+      tool: "bash",
+      isError: false,
+    });
+    const res = await app.request(`/runs/${run.id}/events`, {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()) as {
+      event: string;
+      detail_json: string;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toBe("pi_tool_call");
+    expect(JSON.parse(rows[0]!.detail_json).tool).toBe("bash");
+
+    const missing = await app.request("/runs/nope/events", {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(missing.status).toBe(404);
+  });
 });
