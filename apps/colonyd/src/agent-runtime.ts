@@ -1,4 +1,4 @@
-import type { Api, Model } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   FakeAgentRuntimeAdapter,
   PiAgentRuntimeAdapter,
@@ -69,6 +69,7 @@ export async function createAgentWiring(
       new PiReviewerRunner({
         broker,
         model: modelFromConfig(reviewerConfig),
+        fallbackModels: fallbackModelsFromConfig(reviewerConfig),
         maxTurns: reviewerConfig.ceilings.maxTurns,
         maxUsd: reviewerConfig.ceilings.maxUsdPerRun,
         runTimeoutMs: reviewerConfig.ceilings.timeoutMs,
@@ -88,6 +89,7 @@ export async function createAgentWiring(
       new PiArchitectRunner({
         broker,
         model: modelFromConfig(architectConfig),
+        fallbackModels: fallbackModelsFromConfig(architectConfig),
         maxTurns: architectConfig.ceilings.maxTurns,
         maxUsd: architectConfig.ceilings.maxUsdPerRun,
         runTimeoutMs: architectConfig.ceilings.timeoutMs,
@@ -103,6 +105,7 @@ export async function createAgentWiring(
       new PiCodingAgentRunner({
         broker,
         model: modelFromConfig(developerConfig),
+        fallbackModels: fallbackModelsFromConfig(developerConfig),
         maxTurns: developerConfig.ceilings.maxTurns,
         maxUsd: developerConfig.ceilings.maxUsdPerRun,
         runTimeoutMs: developerConfig.ceilings.timeoutMs,
@@ -116,6 +119,14 @@ export async function createAgentWiring(
     ),
     reviewer,
   };
+}
+
+function fallbackModelsFromConfig(
+  config: ResolvedAgentConfig,
+): readonly Model<Api>[] {
+  return config.fallbackModels.map((model) =>
+    modelFromConfig({ ...config, model, fallbackModels: [] }),
+  );
 }
 
 function createConfigCredentialBroker(

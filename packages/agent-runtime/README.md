@@ -5,8 +5,8 @@ the default for tests and CI.
 
 `AGENT_RUNTIME=pi` makes the worker build role-specific Pi adapters:
 
-- developer: `PiCodingAgentRunner` via `@mariozechner/pi-coding-agent`
-- reviewer: `PiMonoRunner` via `@mariozechner/pi-agent-core`
+- developer: `PiCodingAgentRunner` via `@earendil-works/pi-coding-agent`
+- reviewer: `PiMonoRunner` via `@earendil-works/pi-agent-core`
 
 Concrete Pi runner imports stay behind dynamic imports in the worker runtime
 factory, so fake-mode boot and tests do not load the Pi SDK package tree or

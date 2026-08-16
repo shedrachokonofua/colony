@@ -50,6 +50,32 @@ providers:
         context_window: 1048576
         max_tokens: 131072
         cost: { input: 0, output: 0 }
+      - id: router/deepseek-v4-pro
+        name: deepseek-v4-pro
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 384000
+        cost: { input: 0, output: 0 }
+      - id: router/deepseek-v4-flash
+        name: deepseek-v4-flash
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 384000
+        cost: { input: 0, output: 0 }
+      - id: qwen-cloud/qwen3.8-max
+        name: qwen3.8-max
+        reasoning: true
+        context_window: 1000000
+        max_tokens: 131072
+        cost: { input: 0, output: 0 }
+      - id: aether/qwen3.8-27b
+        name: qwen3.8-27b
+        reasoning: true
+        context_window: 262144
+        # Operational generation cap; the deployed llama-server shares this
+        # model's 262144-token context between prompt and completion.
+        max_tokens: 32768
+        cost: { input: 0, output: 0 }
       - id: ollama-cloud/kimi-k2.6
         name: kimi-k2.6
         context_window: 128000
@@ -101,6 +127,9 @@ agents:
   reviewer:
     provider: openai_compatible
     model: kimi-k3
+    # Tried in order within the same Pi session and colonyd attempt.
+    fallback_models:
+      [deepseek-v4-pro, deepseek-v4-flash, qwen3.8-max, qwen3.8-27b, glm-5.2]
     timeout_ms: 1800000
     max_turns: 200
     max_usd_per_run: 30

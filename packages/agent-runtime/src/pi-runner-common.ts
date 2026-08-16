@@ -3,18 +3,18 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Agent, AgentTool, StreamFn } from "@mariozechner/pi-agent-core";
-import type { Api, Model } from "@mariozechner/pi-ai";
-import { Type, streamSimple } from "@mariozechner/pi-ai";
+import type { Agent, AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import type {
   ResourceLoader,
   ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
   convertToLlm,
   createExtensionRuntime,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
   type ArchitectDecompositionV2,
   type ImplementerCompletionV2,
@@ -38,6 +38,7 @@ export interface PiRunnerBaseOptions {
   readonly broker?: CredentialBroker;
   readonly logger?: PiRunnerLogger;
   readonly model?: Model<Api> | PiModelResolver;
+  readonly fallbackModels?: readonly Model<Api>[];
   readonly thinkingLevel?:
     | "off"
     | "minimal"
@@ -368,7 +369,9 @@ export function noOpResourceLoader(systemPrompt: string): ResourceLoader {
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => systemPrompt,
+    getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
+    getAppendSystemPromptSources: () => [],
     extendResources: () => {},
     reload: async () => {},
   };
@@ -455,24 +458,9 @@ export async function waitForIdleOrCapturedEnvelope(
   await Promise.race([agent.waitForIdle(), capturedEnvelope]);
 }
 
-export function forceSubmitToolStream(
-  toolName: string,
-  baseStream: StreamFn = streamSimple,
-): StreamFn {
-  return (model, context, options) => {
-    if (model.api !== "openai-completions") {
-      return baseStream(model, context, options);
-    }
-    return baseStream(model, context, {
-      ...options,
-      toolChoice: { type: "function", function: { name: toolName } },
-    } as typeof options);
-  };
-}
-
 export interface FinalizeEnvelopeOptions {
   readonly model: Model<Api>;
-  readonly apiKey: string | undefined;
+  readonly stream: StreamFn;
   readonly systemPrompt: string;
   readonly messages: ReadonlyArray<unknown>;
   readonly finalUserMessage: string;
@@ -538,13 +526,6 @@ async function nextWithTimeout<T>(
 export async function finalizeEnvelopeWithStructuredOutput(
   options: FinalizeEnvelopeOptions,
 ): Promise<unknown> {
-  if (!options.apiKey) {
-    options.logger?.warn?.(
-      { runId: options.runId },
-      "finalize_envelope_no_api_key",
-    );
-    return undefined;
-  }
   const llmHistory = convertToLlm(
     options.messages as unknown as Parameters<typeof convertToLlm>[0],
   );
@@ -554,13 +535,14 @@ export async function finalizeEnvelopeWithStructuredOutput(
       name: toolName,
       label: toolName,
       description: `Submit the final ${options.schemaName} envelope. Required.`,
-      parameters: options.typeboxSchema as Parameters<
-        typeof streamSimple
-      >[1]["tools"] extends ReadonlyArray<infer T>
-        ? T extends { parameters: infer P }
-          ? P
-          : never
-        : never,
+      parameters:
+        options.typeboxSchema as Parameters<StreamFn>[1]["tools"] extends ReadonlyArray<
+          infer T
+        >
+          ? T extends { parameters: infer P }
+            ? P
+            : never
+          : never,
     },
   ];
   const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
@@ -576,21 +558,21 @@ export async function finalizeEnvelopeWithStructuredOutput(
       {
         role: "user" as const,
         content: [{ type: "text" as const, text: userMessage }],
+        timestamp: Date.now(),
       },
     ];
-    const streamOptions = {
-      apiKey: options.apiKey,
-      ...(options.model.api === "openai-completions"
+    const streamOptions = (
+      options.model.api === "openai-completions"
         ? { toolChoice: { type: "function", function: { name: toolName } } }
-        : {}),
-    } as Parameters<typeof streamSimple>[2];
-    const events = streamSimple(
+        : {}
+    ) as Parameters<StreamFn>[2];
+    const events = await options.stream(
       options.model,
       {
         systemPrompt: options.systemPrompt,
         messages,
         tools,
-      } as Parameters<typeof streamSimple>[1],
+      },
       streamOptions,
     );
 

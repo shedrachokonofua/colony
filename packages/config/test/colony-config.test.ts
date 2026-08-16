@@ -235,6 +235,51 @@ agents:
     ).toThrow(/UNRESOLVED_AGENT_PROVIDER|unknown provider/);
   });
 
+  it("resolves ordered same-provider fallback models", () => {
+    const path = tempConfig(`
+agent_runtime: pi
+providers:
+  gateway:
+    api: openai-completions
+    base_url: https://llm.example/v1
+    auth: { kind: api_key, value: GATEWAY_KEY }
+    models:
+      - { id: kimi/k3, name: kimi }
+      - { id: router/deepseek-v4-pro, name: deepseek }
+      - { id: router/glm-5.2, name: glm }
+agents:
+  reviewer:
+    provider: gateway
+    model: kimi
+    fallback_models: [deepseek, glm]
+`);
+    const reviewer = loadColonyConfig({
+      path,
+      env: { GATEWAY_KEY: "x" },
+    }).forAgent("reviewer");
+
+    expect(reviewer.model.id).toBe("kimi/k3");
+    expect(reviewer.fallbackModels.map((model) => model.id)).toEqual([
+      "router/deepseek-v4-pro",
+      "router/glm-5.2",
+    ]);
+  });
+
+  it("rejects an unknown fallback model at boot", () => {
+    const path = tempConfig(
+      VALID_YAML.replace(
+        "    model: sonnet-4",
+        "    model: sonnet-4\n    fallback_models: [missing]",
+      ),
+    );
+    expect(() =>
+      loadColonyConfig({
+        path,
+        env: { ANTHROPIC_API_KEY: "x" },
+      }),
+    ).toThrow(/unknown model missing/);
+  });
+
   it("tolerates missing cross-refs in fake mode (lazy)", () => {
     const path = tempConfig(`
 agent_runtime: fake

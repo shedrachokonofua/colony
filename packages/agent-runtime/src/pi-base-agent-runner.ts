@@ -1,12 +1,12 @@
 import {
-  AuthStorage,
-  ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   createAgentSession,
   type AgentSession,
   type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { z } from "zod";
 import type { AgentRuntimePacket, AgentRuntimeRole } from "./adapter.js";
 import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
@@ -104,11 +104,13 @@ export class PiBaseAgentRunner implements PiRunner {
     const runId = request.runId;
     const sandboxId = createSandboxId(this.profile.sandboxPrefix);
     const broker = runnerBroker(this.options);
-    const model = await resolvePiModel(request, this.options.model);
+    let model = await resolvePiModel(request, this.options.model);
+    const models = [model, ...(this.options.fallbackModels ?? [])];
     const workTools = this.options.tools ?? this.profile.defaultTools;
     let failureReason: string | undefined;
     let timeoutTriggered = false;
     let repositoryInspected = false;
+    let cancellationTriggered = false;
 
     let cwd: string;
     try {
@@ -137,25 +139,54 @@ export class PiBaseAgentRunner implements PiRunner {
       resolveCapturedEnvelope?.();
     });
 
-    const authStorage = AuthStorage.inMemory();
-    const initialApiKey = await broker.resolve({
-      provider: model.provider,
-      capability: `agent.llm.${model.provider}.invoke`,
-      bindingName: PI_RUNTIME_BINDING_NAME,
-      environment: request.environment,
-    });
-    if (initialApiKey) {
-      authStorage.setRuntimeApiKey(model.provider, initialApiKey);
-    }
-    authStorage.setFallbackResolver((provider) => {
-      const value = broker.resolve({
-        provider,
-        capability: `agent.llm.${provider}.invoke`,
+    const credentials = new InMemoryCredentialStore();
+    const providerApiKeys = new Map<string, string>();
+    for (const candidate of models) {
+      if (providerApiKeys.has(candidate.provider)) continue;
+      const apiKey = await broker.resolve({
+        provider: candidate.provider,
+        capability: `agent.llm.${candidate.provider}.invoke`,
         bindingName: PI_RUNTIME_BINDING_NAME,
         environment: request.environment,
       });
-      return typeof value === "string" ? value : undefined;
+      if (!apiKey) continue;
+      providerApiKeys.set(candidate.provider, apiKey);
+      await credentials.modify(candidate.provider, async () => ({
+        type: "api_key",
+        key: apiKey,
+      }));
+    }
+    const modelRuntime = await ModelRuntime.create({
+      credentials,
+      modelsPath: null,
+      refreshOnCreate: false,
     });
+    for (const [provider, apiKey] of providerApiKeys) {
+      const providerModels = models.filter(
+        (candidate) => candidate.provider === provider,
+      );
+      const first = providerModels[0]!;
+      modelRuntime.registerProvider(provider, {
+        apiKey,
+        api: first.api,
+        baseUrl: first.baseUrl,
+        models: providerModels.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+          api: candidate.api,
+          baseUrl: candidate.baseUrl,
+          reasoning: candidate.reasoning,
+          thinkingLevelMap: candidate.thinkingLevelMap,
+          input: candidate.input,
+          cost: candidate.cost,
+          contextWindow: candidate.contextWindow,
+          maxTokens: candidate.maxTokens,
+          samplingParams: candidate.samplingParams,
+          headers: candidate.headers,
+          compat: candidate.compat,
+        })),
+      });
+    }
 
     const customTools: ToolDefinition[] = [submitTool];
     const toolNames = [...workTools, submitTool.name];
@@ -170,6 +201,7 @@ export class PiBaseAgentRunner implements PiRunner {
     );
     this.activeRuns.set(runId, {
       abort: async () => {
+        cancellationTriggered = true;
         await session?.abort();
       },
     });
@@ -180,8 +212,8 @@ export class PiBaseAgentRunner implements PiRunner {
         model,
         thinkingLevel:
           this.options.thinkingLevel ?? this.profile.defaultThinkingLevel,
-        authStorage,
-        modelRegistry: ModelRegistry.inMemory(authStorage),
+        modelRuntime,
+        scopedModels: models.map((candidate) => ({ model: candidate })),
         settingsManager: SettingsManager.inMemory({
           compaction: { enabled: false },
           retry: { enabled: true, maxRetries: 1 },
@@ -262,21 +294,64 @@ export class PiBaseAgentRunner implements PiRunner {
 
       try {
         if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {
-          const promptPromise = session
-            .prompt(buildPacketPrompt(request.packet), {
-              expandPromptTemplates: false,
-              source: "extension",
-            })
-            .catch((err) => {
-              if (capturedEnvelope !== undefined) return;
-              throw err;
-            });
-          await Promise.race([promptPromise, capturedEnvelopePromise]);
-          if (capturedEnvelope === undefined) {
-            await waitForIdleOrCapturedEnvelope(
-              session.agent,
-              capturedEnvelopePromise,
-            );
+          for (let index = 0; index < models.length; index += 1) {
+            const candidate = models[index]!;
+            if (index > 0) {
+              await session.setModel(candidate);
+              model = candidate;
+            }
+            const prompt =
+              index === 0
+                ? buildPacketPrompt(request.packet)
+                : "The previous model failed. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
+            try {
+              const promptPromise = session
+                .prompt(prompt, {
+                  expandPromptTemplates: false,
+                  source: "extension",
+                })
+                .catch((err) => {
+                  if (capturedEnvelope !== undefined) return;
+                  throw err;
+                });
+              await Promise.race([promptPromise, capturedEnvelopePromise]);
+              if (capturedEnvelope === undefined) {
+                await waitForIdleOrCapturedEnvelope(
+                  session.agent,
+                  capturedEnvelopePromise,
+                );
+              }
+              const lastMessage = session.agent.state.messages.at(-1);
+              if (
+                capturedEnvelope === undefined &&
+                lastMessage?.role === "assistant" &&
+                lastMessage.stopReason === "error"
+              ) {
+                throw new Error(
+                  lastMessage.errorMessage ??
+                    `model ${candidate.provider}/${candidate.id} failed`,
+                );
+              }
+              break;
+            } catch (err) {
+              const next = models[index + 1];
+              if (
+                !next ||
+                failureReason !== undefined ||
+                cancellationTriggered
+              ) {
+                throw err;
+              }
+              this.options.logger?.warn?.(
+                {
+                  runId,
+                  failedModel: candidate.id,
+                  fallbackModel: next.id,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+                "pi_model_fallback",
+              );
+            }
           }
         }
       } finally {
@@ -292,12 +367,8 @@ export class PiBaseAgentRunner implements PiRunner {
       } else if (capturedEnvelope === undefined) {
         const rawEnvelope = await finalizeEnvelopeWithStructuredOutput({
           model,
-          apiKey: await broker.resolve({
-            provider: model.provider,
-            capability: `agent.llm.${model.provider}.invoke`,
-            bindingName: PI_RUNTIME_BINDING_NAME,
-            environment: request.environment,
-          }),
+          stream: (finalizerModel, context, options) =>
+            modelRuntime.streamSimple(finalizerModel, context, options),
           systemPrompt: this.profile.systemPrompt(),
           messages: session.agent.state.messages,
           finalUserMessage: this.profile.finalizerPrompt(request.packet),

@@ -27,7 +27,7 @@ import { z } from "zod";
  */
 
 // ---------------------------------------------------------------------------
-// Provider api kinds — verbatim from Pi (`@mariozechner/pi-ai` README).
+// Provider api kinds — verbatim from Pi (`@earendil-works/pi-ai` README).
 // ---------------------------------------------------------------------------
 
 export const PI_API_KINDS = [
@@ -114,6 +114,8 @@ const agentSchema = z
   .object({
     provider: z.string().min(1),
     model: z.string().min(1),
+    /** Ordered same-provider models tried when the primary run fails. */
+    fallback_models: z.array(z.string().min(1)).default([]),
     thinking_level: z
       .enum(["off", "minimal", "low", "medium", "high", "xhigh"])
       .optional(),
@@ -199,25 +201,28 @@ export type ResolvedAuth =
       readonly providerKey: string;
     };
 
+export interface ResolvedModelConfig {
+  readonly id: string;
+  readonly name: string;
+  readonly reasoning?: boolean;
+  readonly contextWindow?: number;
+  readonly maxTokens?: number;
+  readonly cost?: {
+    readonly input: number;
+    readonly output: number;
+    readonly cacheRead?: number;
+    readonly cacheWrite?: number;
+  };
+}
+
 export interface ResolvedAgentConfig {
   readonly role: AgentRole;
   readonly providerKey: string;
   readonly api: PiApiKind;
   readonly baseUrl?: string;
   readonly headers?: Readonly<Record<string, string>>;
-  readonly model: {
-    readonly id: string;
-    readonly name: string;
-    readonly reasoning?: boolean;
-    readonly contextWindow?: number;
-    readonly maxTokens?: number;
-    readonly cost?: {
-      readonly input: number;
-      readonly output: number;
-      readonly cacheRead?: number;
-      readonly cacheWrite?: number;
-    };
-  };
+  readonly model: ResolvedModelConfig;
+  readonly fallbackModels: readonly ResolvedModelConfig[];
   readonly auth: ResolvedAuth;
   readonly thinkingLevel?:
     | "off"
@@ -327,12 +332,15 @@ export function loadColonyConfig(
           { role, provider: agentEntry.provider },
         );
       }
-      const model = findModel(provider.models, agentEntry.model);
-      if (!model) {
+      for (const modelRef of [
+        agentEntry.model,
+        ...agentEntry.fallback_models,
+      ]) {
+        if (findModel(provider.models, modelRef)) continue;
         throw new ColonyConfigError(
           "UNRESOLVED_AGENT_MODEL",
-          `agent ${role} references unknown model ${agentEntry.model} on provider ${agentEntry.provider}`,
-          { role, provider: agentEntry.provider, model: agentEntry.model },
+          `agent ${role} references unknown model ${modelRef} on provider ${agentEntry.provider}`,
+          { role, provider: agentEntry.provider, model: modelRef },
         );
       }
     }
@@ -372,6 +380,17 @@ export function loadColonyConfig(
           { role, model: agentEntry.model },
         );
       }
+      const fallbackModels = agentEntry.fallback_models.map((modelRef) => {
+        const fallback = findModel(provider.models, modelRef);
+        if (!fallback) {
+          throw new ColonyConfigError(
+            "UNRESOLVED_AGENT_MODEL",
+            `agent ${role} references unknown fallback model ${modelRef}`,
+            { role, model: modelRef },
+          );
+        }
+        return toResolvedModel(fallback);
+      });
       const auth = resolveAuth(
         agentEntry.auth ?? provider.auth,
         agentEntry.provider,
@@ -385,21 +404,8 @@ export function loadColonyConfig(
         api: provider.api,
         baseUrl: provider.base_url,
         headers: provider.headers,
-        model: {
-          id: model.id,
-          name: model.name ?? model.id,
-          reasoning: model.reasoning,
-          contextWindow: model.context_window,
-          maxTokens: model.max_tokens,
-          cost: model.cost
-            ? {
-                input: model.cost.input,
-                output: model.cost.output,
-                cacheRead: model.cost.cache_read,
-                cacheWrite: model.cost.cache_write,
-              }
-            : undefined,
-        },
+        model: toResolvedModel(model),
+        fallbackModels,
         auth,
         thinkingLevel: agentEntry.thinking_level,
         ceilings: {
@@ -473,6 +479,26 @@ function findModel(
   ref: string,
 ): z.infer<typeof modelSchema> | undefined {
   return models.find((m) => (m.name ?? m.id) === ref || m.id === ref);
+}
+
+function toResolvedModel(
+  model: z.infer<typeof modelSchema>,
+): ResolvedModelConfig {
+  return {
+    id: model.id,
+    name: model.name ?? model.id,
+    reasoning: model.reasoning,
+    contextWindow: model.context_window,
+    maxTokens: model.max_tokens,
+    cost: model.cost
+      ? {
+          input: model.cost.input,
+          output: model.cost.output,
+          cacheRead: model.cost.cache_read,
+          cacheWrite: model.cost.cache_write,
+        }
+      : undefined,
+  };
 }
 
 const ENV_VAR_RE = /^[A-Z_][A-Z0-9_]*$/;
