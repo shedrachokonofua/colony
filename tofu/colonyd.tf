@@ -19,20 +19,21 @@ locals {
         models:
           - id: router/mimo-v2.5-pro
             name: mimo-v2.5-pro
-            context_window: 262144
-            max_tokens: 32768
+            reasoning: true
+            context_window: 1000000
+            max_tokens: 131072
             cost: { input: 0, output: 0 }
           - id: router/glm-5.2
             name: glm-5.2
             reasoning: true
-            context_window: 200000
+            context_window: 1000000
             max_tokens: 131072
             cost: { input: 0, output: 0 }
           - id: kimi/k3
             name: kimi-k3
             reasoning: true
-            context_window: 262144
-            max_tokens: 32768
+            context_window: 1048576
+            max_tokens: 131072
             cost: { input: 0, output: 0 }
 
     agents:
