@@ -217,6 +217,7 @@ describe("operator console", () => {
     const [task] = store.materializePlan(
       manual.id,
       {
+        kind: "architect_decomposition",
         summary: "one task",
         tasks: [{ title: "t", spec: "s", depends_on: [] }],
       },
