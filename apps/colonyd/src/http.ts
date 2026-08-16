@@ -1,10 +1,22 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { extname, join, normalize, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { DomainStateError } from "@colony/domain";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import type { ColonydContext } from "./context.js";
 import { abortRuns } from "./runs/registry.js";
+
+const UI_DIR = fileURLToPath(new URL("../ui/", import.meta.url));
+const UI_MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".woff2": "font/woff2",
+};
 
 type Env = { Variables: { actor: string } };
 
@@ -49,6 +61,22 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const fresh = ctx.store.recordObservation("webhook", dedupKey, body);
     if (fresh) ctx.requestTick();
     return c.json(fresh ? { accepted: true } : { duplicate: true });
+  });
+
+  app.get("/ui/config", (c) =>
+    c.json({
+      service: "colonyd",
+      gitlab_base_url: ctx.env.gitlabBaseUrl,
+      review_mode: ctx.config.reviewMode,
+      hitl_mode: ctx.config.hitlMode,
+    }),
+  );
+
+  app.get("/", (c) => uiResponse("index.html") ?? c.notFound());
+  app.get("/ui/*", (c) => {
+    const rel = c.req.path.replace(/^\/ui\/?/, "");
+    if (!rel || rel === "config") return c.notFound();
+    return uiResponse(rel) ?? c.notFound();
   });
 
   // Actor middleware for every remaining route.
@@ -103,6 +131,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       scope,
       tasks: ctx.store.listTasks(scope.id),
       deps: ctx.store.scopeDeps(scope.id),
+      runs: ctx.store.runsForScope(scope.id),
     });
   });
 
@@ -291,6 +320,29 @@ function notFound(c: Context<Env>, kind: string) {
 function conflict(c: Context<Env>, err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   return c.json({ error: { code: "CONFLICT", message } }, 409);
+}
+
+function uiResponse(relPath: string): Response | null {
+  const rel = decodeURIComponent(relPath).replace(/^\/+/, "");
+  if (!rel || rel.includes("\0") || rel.split(/[\\/]/).includes("..")) {
+    return null;
+  }
+  const full = normalize(join(UI_DIR, rel));
+  const root = normalize(join(UI_DIR, "."));
+  if (full !== root && !full.startsWith(root + sep)) return null;
+  if (!existsSync(full) || !statSync(full).isFile()) return null;
+  const mime = UI_MIME[extname(full)] ?? "application/octet-stream";
+  const cache =
+    extname(full) === ".woff2"
+      ? "public, max-age=31536000, immutable"
+      : "no-cache";
+  return new Response(readFileSync(full), {
+    headers: {
+      "content-type": mime,
+      "cache-control": cache,
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 function safeEqual(a: string, b: string): boolean {
