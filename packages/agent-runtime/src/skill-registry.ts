@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import type { SandboxSkillMount } from "./run-extensions.js";
+import type { SandboxSkillMount } from "@colony/sandbox";
 
 export interface SkillRegistryEntry {
   readonly name: string;
