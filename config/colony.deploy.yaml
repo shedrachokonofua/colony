@@ -66,7 +66,8 @@ providers:
 agents:
   developer:
     provider: openai_compatible
-    model: mimo-v2.5-pro
+    model: deepseek-v4-flash
+    fallback_models: [mimo-v2.5-pro, qwen3.8-27b]
     timeout_ms: 1800000
     max_turns: 250
     max_usd_per_run: 50

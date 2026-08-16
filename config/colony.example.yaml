@@ -116,7 +116,9 @@ agents:
   # reviewer on Kimi K3 — all via the LiteLLM gateway (openai_compatible).
   developer:
     provider: openai_compatible
-    model: mimo-v2.5-pro
+    model: deepseek-v4-flash
+    # Coding fallback order within the same Pi session and colonyd attempt.
+    fallback_models: [mimo-v2.5-pro, qwen3.8-27b]
     # For subscription-backed Codex instead:
     # provider: openai_codex
     # model: gpt-5.5
