@@ -17,6 +17,8 @@
     detail: null,
     audit: [],
     selectedTaskId: null,
+    goalOpen: false,
+    planOpen: false,
     error: "",
     confirm: null,
     poll: 0,
@@ -371,12 +373,12 @@
       const depth = level.get(id) || 0;
       (columns[depth] ||= []).push(id);
     }
-    const colW = 248;
-    const rowH = 108;
-    const padX = 28;
-    const padY = 22;
-    const w = 216;
-    const h = 82;
+    const colW = 264;
+    const rowH = 96;
+    const padX = 16;
+    const padY = 16;
+    const w = 224;
+    const h = 76;
     const pos = new Map();
     columns.forEach((column, x) => {
       column.forEach((id, y) => {
@@ -452,55 +454,50 @@
         if (!from || !to) return "";
         const x1 = from.x + from.w;
         const y1 = from.y + from.h / 2;
-        const x2 = to.x;
+        const x2 = to.x - 3;
         const y2 = to.y + to.h / 2;
-        const c = Math.max(36, (x2 - x1) * 0.45);
-        return `<path class="edge" d="M${x1},${y1} C${x1 + c},${y1} ${x2 - c},${y2} ${x2},${y2}" />`;
+        const c = Math.max(30, (x2 - x1) * 0.45);
+        return `<path class="edge" marker-end="url(#arrow)" d="M${x1},${y1} C${x1 + c},${y1} ${x2 - c},${y2} ${x2},${y2}" />`;
       })
       .join("");
     const nodeMarkup = nodes
       .map((node) => {
         const box = pos.get(node.id);
         const live = liveRunFor(detail, node.id);
-        const gate = latestGate(detail, node.id);
         const selected = state.selectedTaskId === node.id;
+        const tail = node.id.slice(
+          node.id.lastIndexOf(node.proposed ? ":" : ".") + 1,
+        );
         const classes = [
-          "node-box",
-          node.proposed ? "is-proposed" : "",
-          node.state === "blocked" ? "is-blocked" : "",
-          node.state === "merged" ? "is-merged" : "",
+          "g-node",
+          "node",
+          selected ? "is-selected" : "",
+          live ? "is-live" : "",
         ]
           .filter(Boolean)
           .join(" ");
-        const boxClasses = `${classes}${live ? " is-live" : ""}`;
-        const smear = live
-          ? `<rect class="node-smear is-live" x="${box.x - 8}" y="${box.y - 7}" width="${box.w + 16}" height="${box.h + 14}" />`
-          : "";
-        const stamp =
-          gate?.status === "running"
-            ? `<g transform="translate(${box.x + box.w - 14}, ${box.y + 16}) rotate(-14)">
-                <circle class="stamp-ring" r="17" />
-                <text class="stamp-word" text-anchor="middle" y="4">GATE</text>
-               </g>`
-            : "";
-        return `<g class="g-node node ${selected ? "is-selected" : ""}" data-task="${attr(node.id)}">
-          ${smear}
-          <rect class="${boxClasses}" x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" />
+        return `<g class="${classes}" data-state="${attr(node.state)}" data-task="${attr(node.id)}">
+          <rect class="node-box${node.proposed ? " is-proposed" : ""}" x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" />
+          <rect class="node-bar" x="${box.x + 5}" y="${box.y + 5}" width="3" height="${box.h - 10}" />
           <foreignObject x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}">
             <div class="node-html" xmlns="http://www.w3.org/1999/xhtml">
-              <span class="nid">${esc(node.id)}</span>
               <span class="ntitle">${esc(node.title)}</span>
               <span class="nstate">${esc(node.state)}${
                 live ? ` · ${esc(KIND_LABEL[live.kind] || live.kind)}` : ""
-              }</span>
+              }<span class="nid">#${esc(tail)}</span></span>
             </div>
           </foreignObject>
-          ${stamp}
           <rect class="node-hit" tabindex="0" role="button" aria-label="${attr(node.title)}" x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" data-task="${attr(node.id)}" />
         </g>`;
       })
       .join("");
-    return `<svg class="dag" viewBox="0 0 ${width} ${height}" role="img" aria-label="Task dependency drawing">${edgeMarkup}${nodeMarkup}</svg>`;
+    return `<svg class="dag" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Task dependency graph">
+      <defs>
+        <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path class="edge-head" d="M0,0 L8,4 L0,8 z" />
+        </marker>
+      </defs>
+      ${edgeMarkup}${nodeMarkup}</svg>`;
   }
 
   function selectedTask(detail) {
@@ -559,20 +556,8 @@
     </div>`;
   }
 
-  function actionButtons(scope, task) {
+  function taskActionButtons(task) {
     const buttons = [];
-    if (scope?.status === "planning" && scope.plan_json) {
-      buttons.push(
-        `<button class="btn btn-solid" data-act="approve">Approve plan</button>`,
-      );
-    }
-    if (scope && !["done", "abandoned"].includes(scope.status)) {
-      const abandon =
-        state.confirm === "abandon"
-          ? `<button class="btn btn-rev" data-act="abandon-yes">Confirm abandon</button>`
-          : `<button class="btn btn-rev" data-act="abandon">Abandon scope</button>`;
-      buttons.push(abandon);
-    }
     if (task?.state === "blocked") {
       buttons.push(
         `<button class="btn btn-solid" data-act="unblock">Unblock</button>`,
@@ -585,13 +570,19 @@
       const cancel =
         state.confirm === "cancel"
           ? `<button class="btn btn-rev" data-act="cancel-yes">Confirm cancel</button>`
-          : `<button class="btn btn-rev" data-act="cancel">Cancel task</button>`;
+          : `<button class="btn btn-quiet" data-act="cancel">Cancel task</button>`;
       buttons.push(cancel);
     }
-    if (!buttons.length) {
-      return `<p class="note">Nothing waiting on you.</p>`;
-    }
-    return buttons.join("");
+    return buttons.length
+      ? `<div class="task-actions">${buttons.join("")}</div>`
+      : "";
+  }
+
+  function abandonButton(scope) {
+    if (!scope || ["done", "abandoned"].includes(scope.status)) return "";
+    return state.confirm === "abandon"
+      ? `<button class="btn btn-rev" data-act="abandon-yes">Confirm abandon</button>`
+      : `<button class="btn btn-quiet" data-act="abandon">Abandon scope</button>`;
   }
 
   function renderTopbar() {
@@ -640,24 +631,29 @@
           <h1 class="board-title">Scopes</h1>
           <div class="rack">${cards}</div>
         </section>
-        <aside class="card composer-panel">
-          <h2>Open a scope</h2>
-          <p class="composer-hint">
-            Colony plans the work, opens merge requests, and merges what
-            passes.
-          </p>
-          <form class="composer" data-form="open">
-            <label class="field">
-              <span>Goal</span>
-              <textarea name="goal" required placeholder="What should the factory build?"></textarea>
-            </label>
-            <label class="field">
-              <span>GitLab project path</span>
-              <input name="path" required placeholder="so/my-project" autocomplete="off" />
-            </label>
-            <button class="btn btn-solid" type="submit">Open scope</button>
-          </form>
-        </aside>
+        <div class="board-side">
+          <aside class="card">
+            <p class="card-head">Open a scope</p>
+            <div class="card-body">
+              <form class="composer" data-form="open">
+                <p class="composer-hint">
+                  Colony plans the work, opens merge requests, and merges what
+                  passes.
+                </p>
+                <label class="field">
+                  <span>Goal</span>
+                  <textarea name="goal" required placeholder="What should the factory build?"></textarea>
+                </label>
+                <label class="field">
+                  <span>GitLab project path</span>
+                  <input name="path" required placeholder="so/my-project" autocomplete="off" />
+                </label>
+                <button class="btn btn-solid" type="submit">Open scope</button>
+              </form>
+            </div>
+          </aside>
+          ${renderActivity()}
+        </div>
       </div>`;
   }
 
@@ -672,10 +668,19 @@
       state.selectedTaskId = task.id;
     const wait = waitingOnYou(scope, detail.tasks);
     const pathUrl = gitlabProjectUrl(scope.provider_project_path);
+    const longGoal = scope.goal.length > 180;
+    const taskCount = detail.tasks.length;
     return `
       <header class="sheet-head">
-        <div>
-          <h1 class="goal">${esc(scope.goal)}</h1>
+        <div class="sheet-head-main">
+          <h1 class="goal${longGoal && !state.goalOpen ? " is-clamped" : ""}">${esc(scope.goal)}</h1>
+          ${
+            longGoal
+              ? `<button class="goal-toggle" data-act="toggle-goal">${
+                  state.goalOpen ? "Show less" : "Show full goal"
+                }</button>`
+              : ""
+          }
           <p class="sheet-sub">
             <span class="mono">${esc(scope.id)}</span>
             ${
@@ -683,20 +688,51 @@
                 ? `<a href="${attr(pathUrl)}">${esc(scope.provider_project_path)}</a>`
                 : `<span>${esc(scope.provider_project_path)}</span>`
             }
+            <span>updated ${esc(rel(scope.updated_at))}</span>
           </p>
         </div>
-        <span class="chip chip-lg" data-kind="${attr(scope.status)}">${esc(scope.status)}</span>
+        <div class="sheet-head-side">
+          <span class="chip" data-kind="${attr(scope.status)}">${esc(scope.status)}</span>
+          ${abandonButton(scope)}
+        </div>
       </header>
       ${state.error ? `<div class="banner banner-error" role="alert">${esc(state.error)}</div>` : ""}
       ${wait ? `<div class="banner banner-wait">${esc(wait)}</div>` : ""}
       <div class="sheet-grid">
-        <section class="card dag-card" id="draw">${renderDag(detail)}</section>
+        <section class="card dag-card" id="draw">
+          <p class="card-head">Tasks${taskCount ? ` <span>${taskCount}</span>` : ""}</p>
+          <div class="card-body">${renderDag(detail)}</div>
+        </section>
         ${renderInspector(scope, task)}
       </div>`;
   }
 
-  function renderInspector(scope, task) {
+  function renderPlanCard(scope) {
     const plan = parsePlan(scope.plan_json);
+    if (!plan) return "";
+    const summary = plan.summary || "Ready for approval.";
+    const approvable = scope.status === "planning";
+    return `<aside class="card">
+      <p class="card-head">Plan</p>
+      <div class="card-body">
+        <p class="plan-summary${state.planOpen ? " is-open" : ""}">${esc(summary)}</p>
+        ${
+          summary.length > 360
+            ? `<button class="goal-toggle" data-act="toggle-plan">${
+                state.planOpen ? "Show less" : "Show more"
+              }</button>`
+            : ""
+        }
+        ${
+          approvable
+            ? `<div class="plan-actions"><button class="btn btn-solid" data-act="approve">Approve plan</button></div>`
+            : ""
+        }
+      </div>
+    </aside>`;
+  }
+
+  function renderInspector(scope, task) {
     const sha = [...(state.detail?.runs || [])]
       .reverse()
       .find((run) => run.task_id === task?.id && run.head_sha)?.head_sha;
@@ -704,21 +740,16 @@
       ? mrUrl(scope.provider_project_path, task.mr_iid)
       : "";
     const commit = sha ? commitUrl(scope.provider_project_path, sha) : "";
-    return `<aside class="card inspector">
-      ${
-        plan
-          ? `<dl class="cell"><dt>Plan</dt><dd>${esc(plan.summary || "Ready for approval.")}</dd></dl>`
-          : ""
-      }
-      <div class="actions">${actionButtons(scope, task)}</div>
-      <dl class="cell">
-        <dt>Task</dt>
-        <dd>${
+    return `<div class="inspector">
+      ${renderPlanCard(scope)}
+      <aside class="card">
+        <p class="card-head">Task${task ? `<span class="mono">#${esc(task.id.slice(task.id.lastIndexOf(".") + 1))}</span>` : ""}</p>
+        <div class="card-body">${
           task
-            ? `<strong>${esc(task.title)}</strong>
-               <div class="mono">${esc(task.id)} · ${esc(task.state)}${
+            ? `<p class="task-title">${esc(task.title)}</p>
+               <p class="task-meta">${esc(task.id)} · ${esc(task.state)}${
                  task.attempt ? ` · attempt ${esc(task.attempt)}` : ""
-               }</div>
+               }</p>
                ${
                  task.blocked_reason
                    ? `<p class="wait-inline">${esc(task.blocked_reason)}</p>`
@@ -729,38 +760,41 @@
                  ${commit ? `<a href="${attr(commit)}">${esc(shortSha(sha))}</a>` : ""}
                  ${task.branch ? `<span class="mono">${esc(task.branch)}</span>` : ""}
                </div>
-               <pre class="spec">${esc(task.spec)}</pre>`
-            : "Select a task on the graph."
-        }</dd>
-      </dl>
-      <div class="runs">
-        <p class="runs-title">Runs</p>
-        ${renderRuns(state.detail, task)}
-      </div>
-    </aside>`;
+               <pre class="spec">${esc(task.spec)}</pre>
+               ${taskActionButtons(task)}`
+            : `<p class="note">Select a task on the graph.</p>`
+        }</div>
+      </aside>
+      <aside class="card">
+        <p class="card-head">Runs</p>
+        <div class="card-body runs">${renderRuns(state.detail, task)}</div>
+      </aside>
+      ${renderActivity()}
+    </div>`;
   }
 
-  function renderLedger() {
+  function renderActivity() {
     const rows = state.audit
-      .slice(0, 8)
+      .slice(0, 10)
       .map(
         (row) => `<li>
           <span class="when">${esc(rel(row.at))}</span>
-          <span class="what">${esc(row.action)}</span>
-          <span class="who">${esc(row.actor)}</span>
+          <span><span class="what">${esc(row.action)}</span><span class="who">${esc(row.actor)}</span></span>
         </li>`,
       )
       .join("");
-    return `<footer class="ledger">
-      <span class="ledger-label">Ledger</span>
-      <ul>${rows || `<li>No ledger entries yet.</li>`}</ul>
-    </footer>`;
+    return `<aside class="card">
+      <p class="card-head">Activity</p>
+      <div class="card-body">
+        <ul class="activity">${rows || `<li><span class="note">Nothing yet.</span></li>`}</ul>
+      </div>
+    </aside>`;
   }
 
   function render() {
     app.className = "app";
     const view = routeScopeId() ? renderSheet() : renderBoard();
-    app.innerHTML = `${renderTopbar()}<main class="view">${view}</main>${renderLedger()}`;
+    app.innerHTML = `${renderTopbar()}<main class="view">${view}</main>`;
   }
 
   async function refresh() {
@@ -820,6 +854,8 @@
       error: state.error,
       selected: state.selectedTaskId,
       confirm: state.confirm,
+      goalOpen: state.goalOpen,
+      planOpen: state.planOpen,
       actor: state.actor,
     });
     if (next === snapshot) return;
@@ -875,6 +911,14 @@
       render();
     }
     if (action === "cancel-yes" && task) mutate(`/tasks/${task.id}/cancel`);
+    if (action === "toggle-goal") {
+      state.goalOpen = !state.goalOpen;
+      render();
+    }
+    if (action === "toggle-plan") {
+      state.planOpen = !state.planOpen;
+      render();
+    }
   });
 
   app.addEventListener("keydown", (event) => {
@@ -929,6 +973,8 @@
   window.addEventListener("hashchange", () => {
     state.selectedTaskId = null;
     state.confirm = null;
+    state.goalOpen = false;
+    state.planOpen = false;
     void refresh();
   });
 
