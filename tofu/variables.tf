@@ -91,3 +91,9 @@ variable "oidc_required_role" {
   type        = string
   default     = "admin"
 }
+
+variable "manage_oidc_client" {
+  description = "Manage the Crossplane Keycloak Client CR. Requires admin RBAC; CI must leave this false."
+  type        = bool
+  default     = false
+}
