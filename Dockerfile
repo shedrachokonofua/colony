@@ -10,6 +10,7 @@ COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY apps/colonyd/package.json ./apps/colonyd/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/config/package.json ./packages/config/
+COPY packages/console/package.json ./packages/console/
 COPY packages/core/package.json ./packages/core/
 COPY packages/domain/package.json ./packages/domain/
 COPY packages/observability/package.json ./packages/observability/
