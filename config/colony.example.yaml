@@ -129,7 +129,7 @@ agents:
     model: kimi-k3
     # Tried in order within the same Pi session and colonyd attempt.
     fallback_models:
-      [deepseek-v4-pro, deepseek-v4-flash, qwen3.8-max, qwen3.8-27b, glm-5.2]
+      [qwen3.8-max, glm-5.2, deepseek-v4-pro, deepseek-v4-flash, qwen3.8-27b]
     timeout_ms: 1800000
     max_turns: 200
     max_usd_per_run: 30

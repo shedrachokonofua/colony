@@ -74,11 +74,11 @@ agents:
     provider: openai_compatible
     model: kimi-k3
     fallback_models:
+      - qwen3.8-max
+      - glm-5.2
       - deepseek-v4-pro
       - deepseek-v4-flash
-      - qwen3.8-max
       - qwen3.8-27b
-      - glm-5.2
     timeout_ms: 1800000
     max_turns: 200
     max_usd_per_run: 30
