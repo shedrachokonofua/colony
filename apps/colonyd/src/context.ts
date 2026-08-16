@@ -3,6 +3,7 @@ import type { Store } from "@colony/core";
 import type { ProviderAdapter } from "@colony/provider";
 import type { AgentWiring } from "./agent-runtime.js";
 import type { Logger } from "./logging.js";
+import type { TokenVerifier } from "./oidc.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
 
 export interface ColonydContext {
@@ -12,6 +13,8 @@ export interface ColonydContext {
   readonly agents: AgentWiring;
   readonly logger: Logger;
   readonly gateExecutor?: GateExecutor;
+  /** Test seam: overrides the verifier built from env.oidcIssuer. */
+  readonly oidcVerifier?: TokenVerifier;
   readonly env: {
     readonly gitlabBaseUrl: string;
     readonly gitlabToken: string;
@@ -19,6 +22,9 @@ export interface ColonydContext {
     readonly singleToken: boolean;
     readonly maxConcurrent: number;
     readonly maxAttempts: number;
+    readonly oidcIssuer: string;
+    readonly oidcClientId: string;
+    readonly oidcRequiredRole: string;
   };
   /** Request an immediate tick (single-flight guarded by main). */
   requestTick(): void;

@@ -12,6 +12,7 @@
 
   const state = {
     config: { gitlab_base_url: "", review_mode: "off", hitl_mode: "yolo" },
+    oidc: null,
     actor: localStorage.getItem(ACTOR_KEY) || "human:op-1",
     scopes: [],
     detail: null,
@@ -19,12 +20,136 @@
     selectedTaskId: null,
     goalOpen: false,
     planOpen: false,
+    auth: loadAuth(),
     error: "",
     confirm: null,
     poll: 0,
   };
 
   const app = document.getElementById("app");
+  const AUTH_KEY = "colony.auth";
+
+  function loadAuth() {
+    try {
+      const raw = sessionStorage.getItem("colony.auth");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveAuth(auth) {
+    state.auth = auth;
+    if (auth) sessionStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+    else sessionStorage.removeItem(AUTH_KEY);
+  }
+
+  function b64url(bytes) {
+    return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replaceAll("=", "");
+  }
+
+  async function beginLogin() {
+    const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+    const challenge = b64url(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+    );
+    const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    sessionStorage.setItem(
+      "colony.pkce",
+      JSON.stringify({ verifier, nonce, hash: location.hash }),
+    );
+    const params = new URLSearchParams({
+      client_id: state.oidc.client_id,
+      redirect_uri: `${location.origin}/`,
+      response_type: "code",
+      scope: "openid profile email",
+      state: nonce,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+    });
+    location.assign(
+      `${state.oidc.issuer}/protocol/openid-connect/auth?${params}`,
+    );
+  }
+
+  function decodeJwt(token) {
+    try {
+      return JSON.parse(
+        atob(token.split(".")[1].replaceAll("-", "+").replaceAll("_", "/")),
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  async function tokenGrant(body) {
+    const res = await fetch(
+      `${state.oidc.issuer}/protocol/openid-connect/token`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: state.oidc.client_id,
+          ...body,
+        }),
+      },
+    );
+    if (!res.ok) throw new Error(`sign-in failed (${res.status})`);
+    const data = await res.json();
+    const claims = decodeJwt(data.access_token);
+    saveAuth({
+      token: data.access_token,
+      refresh: data.refresh_token,
+      exp: (claims.exp || 0) * 1000,
+      username: claims.preferred_username || claims.email || "operator",
+    });
+  }
+
+  async function completeLogin() {
+    const query = new URLSearchParams(location.search);
+    const code = query.get("code");
+    if (!code) return;
+    const stash = JSON.parse(sessionStorage.getItem("colony.pkce") || "null");
+    sessionStorage.removeItem("colony.pkce");
+    history.replaceState(null, "", `/${stash?.hash || ""}`);
+    if (!stash || stash.nonce !== query.get("state")) return;
+    await tokenGrant({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: `${location.origin}/`,
+      code_verifier: stash.verifier,
+    });
+  }
+
+  async function ensureFreshToken() {
+    if (!state.auth) return;
+    if (Date.now() < state.auth.exp - 60_000) return;
+    try {
+      await tokenGrant({
+        grant_type: "refresh_token",
+        refresh_token: state.auth.refresh,
+      });
+    } catch {
+      saveAuth(null);
+    }
+  }
+
+  function signOut() {
+    const issuer = state.oidc?.issuer;
+    saveAuth(null);
+    if (issuer) {
+      const params = new URLSearchParams({
+        client_id: state.oidc.client_id,
+        post_logout_redirect_uri: `${location.origin}/`,
+      });
+      location.assign(`${issuer}/protocol/openid-connect/logout?${params}`);
+    } else {
+      render();
+    }
+  }
 
   function esc(value) {
     return String(value ?? "")
@@ -115,7 +240,9 @@
   async function api(path, options = {}) {
     if (DEMO) throw new Error("demo");
     const headers = {
-      "X-Actor-Id": state.actor,
+      ...(state.oidc && state.auth
+        ? { Authorization: `Bearer ${state.auth.token}` }
+        : { "X-Actor-Id": state.actor }),
       ...(options.body ? { "content-type": "application/json" } : {}),
       ...options.headers,
     };
@@ -128,6 +255,12 @@
       } catch {
         data = text;
       }
+    }
+    if (res.status === 401 && state.oidc && state.auth) {
+      saveAuth(null);
+      snapshot = "";
+      render();
+      throw new Error("Signed out — session expired.");
     }
     if (!res.ok) {
       const message =
@@ -593,19 +726,40 @@
 
   function renderTopbar() {
     const id = routeScopeId();
+    const account = state.oidc
+      ? state.auth
+        ? `<div class="sign account">
+            <span class="whoami mono">${esc(state.auth.username)}</span>
+            <button class="btn btn-quiet" data-act="signout">Sign out</button>
+          </div>`
+        : `<div class="sign"></div>`
+      : `<form class="sign" data-form="sign">
+          <label>
+            <span>Operator</span>
+            <input name="actor" value="${attr(state.actor)}" spellcheck="false" />
+          </label>
+        </form>`;
     return `<header class="topbar">
       <a class="brand" href="#/">COLONY</a>
       <nav class="crumbs" aria-label="Breadcrumb">
         <a href="#/">Board</a>
         ${id ? `<span class="crumb-sep">/</span><span class="crumb mono">${esc(id)}</span>` : ""}
       </nav>
-      <form class="sign" data-form="sign">
-        <label>
-          <span>Operator</span>
-          <input name="actor" value="${attr(state.actor)}" spellcheck="false" />
-        </label>
-      </form>
+      ${account}
     </header>`;
+  }
+
+  function renderSignin() {
+    return `<div class="signin">
+      <div class="card signin-card">
+        <p class="signin-brand">COLONY</p>
+        <p class="note">
+          Sign in with your aether account to operate the factory.
+        </p>
+        ${state.error ? `<div class="banner banner-error" role="alert">${esc(state.error)}</div>` : ""}
+        <button class="btn btn-solid" data-act="signin">Sign in</button>
+      </div>
+    </div>`;
   }
 
   function renderBoard() {
@@ -704,12 +858,24 @@
       </header>
       ${state.error ? `<div class="banner banner-error" role="alert">${esc(state.error)}</div>` : ""}
       ${wait ? `<div class="banner banner-wait">${esc(wait)}</div>` : ""}
-      <div class="sheet-grid">
-        <section class="card dag-card" id="draw">
-          <p class="card-head">Tasks${taskCount ? ` <span>${taskCount}</span>` : ""}</p>
-          <div class="card-body">${renderDag(detail)}</div>
-        </section>
-        ${renderInspector(scope, task)}
+      <section class="card dag-card" id="draw">
+        <p class="card-head">Tasks${taskCount ? ` <span>${taskCount}</span>` : ""}</p>
+        <div class="card-body">${renderDag(detail)}</div>
+      </section>
+      <div class="sheet-cols">
+        <div class="sheet-col">
+          ${renderPlanCard(scope)}
+          ${renderTaskCard(scope, task)}
+        </div>
+        <div class="sheet-col">
+          <aside class="card">
+            <p class="card-head">Runs</p>
+            <div class="card-body runs">${renderRuns(state.detail, task)}</div>
+          </aside>
+        </div>
+        <div class="sheet-col">
+          ${renderActivity()}
+        </div>
       </div>`;
   }
 
@@ -738,7 +904,7 @@
     </aside>`;
   }
 
-  function renderInspector(scope, task) {
+  function renderTaskCard(scope, task) {
     const sha = [...(state.detail?.runs || [])]
       .reverse()
       .find((run) => run.task_id === task?.id && run.head_sha)?.head_sha;
@@ -746,42 +912,33 @@
       ? mrUrl(scope.provider_project_path, task.mr_iid)
       : "";
     const commit = sha ? commitUrl(scope.provider_project_path, sha) : "";
-    return `<div class="inspector">
-      ${renderPlanCard(scope)}
-      <aside class="card">
-        <p class="card-head">Task${task ? `<span class="mono">#${esc(task.id.slice(task.id.lastIndexOf(".") + 1))}</span>` : ""}</p>
-        <div class="card-body">${
-          task
-            ? `<p class="task-title">${esc(task.title)}</p>
-               <p class="task-meta">${esc(task.id)} · ${esc(task.state)}${
-                 task.attempt ? ` · attempt ${esc(task.attempt)}` : ""
-               }${
-                 task.next_retry_at &&
-                 Date.parse(task.next_retry_at) > Date.now()
-                   ? ` · next attempt in ${esc(Math.max(1, Math.round((Date.parse(task.next_retry_at) - Date.now()) / 60000)))}m`
-                   : ""
-               }</p>
-               ${
-                 task.blocked_reason
-                   ? `<p class="wait-inline">${esc(task.blocked_reason)}</p>`
-                   : ""
-               }
-               <div class="links">
-                 ${mr ? `<a href="${attr(mr)}">Merge request !${esc(task.mr_iid)}</a>` : ""}
-                 ${commit ? `<a href="${attr(commit)}">${esc(shortSha(sha))}</a>` : ""}
-                 ${task.branch ? `<span class="mono">${esc(task.branch)}</span>` : ""}
-               </div>
-               <pre class="spec">${esc(task.spec)}</pre>
-               ${taskActionButtons(task)}`
-            : `<p class="note">Select a task on the graph.</p>`
-        }</div>
-      </aside>
-      <aside class="card">
-        <p class="card-head">Runs</p>
-        <div class="card-body runs">${renderRuns(state.detail, task)}</div>
-      </aside>
-      ${renderActivity()}
-    </div>`;
+    return `<aside class="card">
+      <p class="card-head">Task${task ? `<span class="mono">#${esc(task.id.slice(task.id.lastIndexOf(".") + 1))}</span>` : ""}</p>
+      <div class="card-body">${
+        task
+          ? `<p class="task-title">${esc(task.title)}</p>
+             <p class="task-meta">${esc(task.id)} · ${esc(task.state)}${
+               task.attempt ? ` · attempt ${esc(task.attempt)}` : ""
+             }${
+               task.next_retry_at && Date.parse(task.next_retry_at) > Date.now()
+                 ? ` · next attempt in ${esc(Math.max(1, Math.round((Date.parse(task.next_retry_at) - Date.now()) / 60000)))}m`
+                 : ""
+             }</p>
+             ${
+               task.blocked_reason
+                 ? `<p class="wait-inline">${esc(task.blocked_reason)}</p>`
+                 : ""
+             }
+             <div class="links">
+               ${mr ? `<a href="${attr(mr)}">Merge request !${esc(task.mr_iid)}</a>` : ""}
+               ${commit ? `<a href="${attr(commit)}">${esc(shortSha(sha))}</a>` : ""}
+               ${task.branch ? `<span class="mono">${esc(task.branch)}</span>` : ""}
+             </div>
+             <pre class="spec">${esc(task.spec)}</pre>
+             ${taskActionButtons(task)}`
+          : `<p class="note">Select a task on the graph.</p>`
+      }</div>
+    </aside>`;
   }
 
   function renderActivity() {
@@ -804,7 +961,12 @@
 
   function render() {
     app.className = "app";
-    const view = routeScopeId() ? renderSheet() : renderBoard();
+    const view =
+      state.oidc && !state.auth
+        ? renderSignin()
+        : routeScopeId()
+          ? renderSheet()
+          : renderBoard();
     app.innerHTML = `${renderTopbar()}<main class="view">${view}</main>`;
   }
 
@@ -825,6 +987,19 @@
         return;
       }
       state.config = await api("/ui/config");
+      state.oidc = state.config.oidc || null;
+      if (state.oidc) {
+        if (new URLSearchParams(location.search).has("code")) {
+          await completeLogin();
+        }
+        await ensureFreshToken();
+        if (!state.auth) {
+          state.error = "";
+          snapshot = "";
+          render();
+          return;
+        }
+      }
       state.scopes = await api("/scopes");
       const id = routeScopeId();
       if (id) {
@@ -868,6 +1043,7 @@
       goalOpen: state.goalOpen,
       planOpen: state.planOpen,
       actor: state.actor,
+      signedIn: state.auth?.username || "",
     });
     if (next === snapshot) return;
     snapshot = next;
@@ -922,6 +1098,8 @@
       render();
     }
     if (action === "cancel-yes" && task) mutate(`/tasks/${task.id}/cancel`);
+    if (action === "signin") void beginLogin();
+    if (action === "signout") signOut();
     if (action === "toggle-goal") {
       state.goalOpen = !state.goalOpen;
       render();

@@ -67,3 +67,27 @@ variable "replicas" {
     error_message = "colonyd cannot run more than one replica; SQLite and merge-gate workspaces are process-local."
   }
 }
+
+variable "oidc_issuer" {
+  description = "Keycloak realm issuer URL the console and colonyd authenticate against."
+  type        = string
+  default     = "https://auth.shdr.ch/realms/aether"
+}
+
+variable "oidc_realm" {
+  description = "Keycloak realm id holding the colony client."
+  type        = string
+  default     = "aether"
+}
+
+variable "oidc_client_id" {
+  description = "Public PKCE client id for the operator console."
+  type        = string
+  default     = "colony"
+}
+
+variable "oidc_required_role" {
+  description = "Realm role required on bearer tokens. Empty accepts any realm user."
+  type        = string
+  default     = "admin"
+}

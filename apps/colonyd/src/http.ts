@@ -7,6 +7,7 @@ import { z } from "zod";
 import { DomainStateError } from "@colony/domain";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import type { ColonydContext } from "./context.js";
+import { createOidcVerifier } from "./oidc.js";
 import { abortRuns } from "./runs/registry.js";
 
 const UI_DIR = fileURLToPath(new URL("../ui/", import.meta.url));
@@ -69,6 +70,9 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       gitlab_base_url: ctx.env.gitlabBaseUrl,
       review_mode: ctx.config.reviewMode,
       hitl_mode: ctx.config.hitlMode,
+      oidc: ctx.env.oidcIssuer
+        ? { issuer: ctx.env.oidcIssuer, client_id: ctx.env.oidcClientId }
+        : null,
     }),
   );
 
@@ -79,8 +83,49 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return uiResponse(rel) ?? c.notFound();
   });
 
-  // Actor middleware for every remaining route.
+  // Actor middleware for every remaining route. With OIDC configured the
+  // actor is the verified Keycloak identity; otherwise (local dev, fake
+  // provider) the caller self-declares via X-Actor-Id.
+  const verifier =
+    ctx.oidcVerifier ??
+    (ctx.env.oidcIssuer
+      ? createOidcVerifier({
+          issuer: ctx.env.oidcIssuer,
+          clientId: ctx.env.oidcClientId,
+          requiredRole: ctx.env.oidcRequiredRole || undefined,
+        })
+      : undefined);
   app.use(async (c, next) => {
+    if (verifier) {
+      const auth = c.req.header("Authorization") ?? "";
+      if (!auth.startsWith("Bearer ")) {
+        return c.json(
+          {
+            error: {
+              code: "UNAUTHORIZED",
+              message: "Bearer token required",
+            },
+          },
+          401,
+        );
+      }
+      try {
+        const identity = await verifier.verify(auth.slice(7));
+        c.set("actor", `human:${identity.username}`);
+      } catch (err) {
+        return c.json(
+          {
+            error: {
+              code: "UNAUTHORIZED",
+              message: err instanceof Error ? err.message : "invalid token",
+            },
+          },
+          401,
+        );
+      }
+      await next();
+      return;
+    }
     const id = c.req.header("X-Actor-Id");
     if (!id || !id.trim()) {
       return c.json(

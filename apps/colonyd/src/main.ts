@@ -106,6 +106,9 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       singleToken: environment.COLONYD_SINGLE_TOKEN,
       maxConcurrent: environment.COLONYD_MAX_CONCURRENT,
       maxAttempts: environment.COLONYD_MAX_ATTEMPTS,
+      oidcIssuer: environment.COLONY_OIDC_ISSUER,
+      oidcClientId: environment.COLONY_OIDC_CLIENT_ID,
+      oidcRequiredRole: environment.COLONY_OIDC_REQUIRED_ROLE,
     },
     requestTick: () => {
       void runTick();

@@ -212,6 +212,21 @@ resource "kubernetes_deployment_v1" "colonyd" {
           }
 
           env {
+            name  = "COLONY_OIDC_ISSUER"
+            value = var.oidc_issuer
+          }
+
+          env {
+            name  = "COLONY_OIDC_CLIENT_ID"
+            value = var.oidc_client_id
+          }
+
+          env {
+            name  = "COLONY_OIDC_REQUIRED_ROLE"
+            value = var.oidc_required_role
+          }
+
+          env {
             name  = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
             value = "http://otel-daemonset-opentelemetry-collector.observability.svc.cluster.local:4318/v1/metrics"
           }

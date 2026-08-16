@@ -31,6 +31,9 @@ function fakeCtx(store: Store): ColonydContext {
       singleToken: true,
       maxConcurrent: 1,
       maxAttempts: 3,
+      oidcIssuer: "",
+      oidcClientId: "colony",
+      oidcRequiredRole: "",
     },
     requestTick() {},
   };
@@ -77,6 +80,7 @@ describe("operator console", () => {
       gitlab_base_url: "https://gitlab.home.shdr.ch",
       review_mode: "required",
       hitl_mode: "yolo",
+      oidc: null,
     });
   });
 

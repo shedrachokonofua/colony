@@ -41,6 +41,12 @@ const envSchema = z.object({
   COLONYD_MAX_ATTEMPTS: z.coerce.number().int().default(3),
   /** Single-token mode: use GITLAB_TOKEN directly in packet credentials. */
   COLONYD_SINGLE_TOKEN: boolFromEnv.default(false),
+
+  // OIDC (Keycloak). When COLONY_OIDC_ISSUER is set, every operator API
+  // call must carry a Bearer token from that realm; X-Actor-Id is ignored.
+  COLONY_OIDC_ISSUER: z.string().default(""),
+  COLONY_OIDC_CLIENT_ID: z.string().default("colony"),
+  COLONY_OIDC_REQUIRED_ROLE: z.string().default(""),
 });
 
 export type Env = z.infer<typeof envSchema>;

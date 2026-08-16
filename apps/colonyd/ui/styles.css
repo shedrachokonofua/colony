@@ -570,18 +570,57 @@ body {
   flex: none;
 }
 
-.sheet-grid {
+.sheet-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1.25rem;
   align-items: start;
+  margin-top: 1.25rem;
 }
 
-.inspector {
+.sheet-col {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
   min-width: 0;
+}
+
+/* ---------- Sign in ---------- */
+
+.signin {
+  display: flex;
+  justify-content: center;
+  padding-top: 14vh;
+}
+
+.signin-card {
+  width: 100%;
+  max-width: 21rem;
+  padding: 1.6rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  text-align: center;
+}
+
+.signin-brand {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.6rem;
+  letter-spacing: 0.08em;
+  color: var(--navy);
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.whoami {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 /* ---------- DAG ---------- */
@@ -913,7 +952,7 @@ body {
 
 @media (max-width: 900px) {
   .board,
-  .sheet-grid {
+  .sheet-cols {
     grid-template-columns: 1fr;
   }
 
