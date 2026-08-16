@@ -563,8 +563,14 @@
         `<button class="btn btn-solid" data-act="unblock">Unblock</button>`,
       );
     }
-    if (task?.state === "queued") {
-      buttons.push(`<button class="btn" data-act="retry">Retry now</button>`);
+    const waiting =
+      task?.state === "queued" &&
+      task.next_retry_at &&
+      Date.parse(task.next_retry_at) > Date.now();
+    if (waiting) {
+      buttons.push(
+        `<button class="btn" data-act="retry">Run now — skip backoff</button>`,
+      );
     }
     if (task && !["merged", "canceled"].includes(task.state)) {
       const cancel =
@@ -749,6 +755,11 @@
             ? `<p class="task-title">${esc(task.title)}</p>
                <p class="task-meta">${esc(task.id)} · ${esc(task.state)}${
                  task.attempt ? ` · attempt ${esc(task.attempt)}` : ""
+               }${
+                 task.next_retry_at &&
+                 Date.parse(task.next_retry_at) > Date.now()
+                   ? ` · next attempt in ${esc(Math.max(1, Math.round((Date.parse(task.next_retry_at) - Date.now()) / 60000)))}m`
+                   : ""
                }</p>
                ${
                  task.blocked_reason
