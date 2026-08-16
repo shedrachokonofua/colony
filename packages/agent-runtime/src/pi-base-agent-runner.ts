@@ -45,7 +45,7 @@ import {
 
 export type PiWorkspaceMode = "repo-required" | "scratch";
 
-/** Binding name reported to the credential broker for V2 runs. */
+/** Binding name reported to the credential broker for colonyd runs. */
 export const PI_RUNTIME_BINDING_NAME = "colonyd";
 
 export interface PiRoleProfile {

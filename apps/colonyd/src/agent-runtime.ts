@@ -21,7 +21,7 @@ export interface AgentWiring {
  * `pi`   -> PiAgentRuntimeAdapter with PiArchitectRunner / PiCodingAgentRunner,
  *           model/thinking/limits from colony config, credential broker that
  *           resolves provider auth (env var / !cmd / literal already resolved
- *           by loadColonyConfig; oauth is unsupported in V2).
+ *           by loadColonyConfig; oauth is unsupported).
  */
 export async function createAgentWiring(
   config: ColonyConfig,
@@ -46,7 +46,7 @@ export async function createAgentWiring(
   for (const agent of agentsToCheck) {
     if (agent.auth.kind === "oauth") {
       throw new Error(
-        `agent ${agent.role} uses oauth auth; oauth is unsupported in colony v2 — use an api_key provider`,
+        `agent ${agent.role} uses oauth auth; oauth is unsupported — use an api_key provider`,
       );
     }
   }
@@ -132,7 +132,7 @@ function createConfigCredentialBroker(
       if (!agent) return undefined;
       if (agent.auth.kind === "oauth") {
         throw new Error(
-          `agent ${agent.role} provider ${agent.providerKey} resolved oauth auth; oauth is unsupported in colony v2`,
+          `agent ${agent.role} provider ${agent.providerKey} resolved oauth auth; oauth is unsupported`,
         );
       }
       return agent.auth.apiKey;

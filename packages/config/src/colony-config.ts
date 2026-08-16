@@ -21,8 +21,7 @@ import { z } from "zod";
  *              | literal). Literal is rejected unless `allow_literal_keys`
  *              is set, which is itself only safe when the file is
  *              SOPS-encrypted.
- *   - oauth:   Tokens live in Postgres (provider_oauth_connections).
- *              Resolution happens at run time via a connection_loader the
+ *   - oauth:   Resolution happens at run time via a connection_loader the
  *              caller injects (see resolveAgentConfig below). The YAML
  *              carries no token material.
  */

@@ -2,8 +2,6 @@
 
 Colony is an AI software factory. A human opens a bounded **scope**, colonyd decomposes it into a dependency graph of tasks with an architect agent, implementer agents build each task on a branch, and a deterministic prospective-merge gate decides whether the work merges. Everything is reconciled from two sources of truth: one SQLite file and the Git provider.
 
-V1 (Temporal per-scope supervisor, Postgres, five services) is preserved on the `v1-archive` branch / `v1-final` tag.
-
 ## Architecture
 
 One process, `apps/colonyd`:
@@ -18,7 +16,7 @@ One process, `apps/colonyd`:
   6. scope closure
 - In-process agent runs (architect / implementer / merge gate) via `packages/agent-runtime` (Pi)
 
-State machine, SQLite persistence, and backoff live in `packages/core`; envelopes in `packages/schemas` (`ArchitectDecompositionV2`, `ImplementerCompletionV2`). Envelopes are evidence, never authority: colonyd verifies branch/SHA facts with the provider before any transition.
+State machine, SQLite persistence, and backoff live in `packages/core`; run envelopes in `packages/schemas`. Envelopes are evidence, never authority: colonyd verifies branch/SHA facts with the provider before any transition.
 
 The merge gate clones the target branch fresh, prospectively merges the task head, scans for secrets/artifacts, runs `colony.gate.yaml` commands, rechecks the MR head, and merges with the gated SHA. Gates serialize per scope.
 
@@ -29,11 +27,12 @@ TypeScript **npm workspaces** monorepo (Node **24+**).
 - `apps/colonyd` — the single service (HTTP + reconciler + agent runs)
 - `packages/core` — SQLite store, state machine, retry backoff
 - `packages/domain` — branded ids + domain errors + roles
-- `packages/schemas` — V2 envelope schemas
+- `packages/schemas` — run envelope schemas
 - `packages/config` — env contract + colony.yaml loader
 - `packages/provider`, `packages/provider-gitlab` — provider contract + GitLab adapter (also a fake adapter for tests)
 - `packages/agent-runtime` — Pi runner adapters, envelopes, workspace provisioning
 - `packages/observability` — OTel metrics
+- `tofu/` — colonyd Deployment + PVC + HTTPRoute into Aether `colony`
 
 ## Development
 
@@ -43,6 +42,8 @@ cp .env.example .env   # set GITLAB_TOKEN, COLONY_OPENAI_COMPATIBLE_API_KEY
 npm install
 npm run dev            # colonyd in watch mode (port 4400)
 ```
+
+Operator sheet: [http://localhost:4400](http://localhost:4400). Sign it with `human:op-1` (sent as `X-Actor-Id`).
 
 Open a scope:
 
@@ -67,5 +68,9 @@ Real-GitLab acceptance:
 ```bash
 GITLAB_BASE_URL=https://gitlab.home.shdr.ch GITLAB_TOKEN=*** \
 COLONY_CONFIG_PATH=config/colony.yaml AGENT_RUNTIME=pi \
-npx tsx scripts/v2-acceptance.ts
+npx tsx scripts/acceptance.ts
 ```
+
+## Cluster
+
+CI builds `registry.gitlab.home.shdr.ch/so/colony/colonyd:$SHA` and plans Tofu into `colony`. Apply on `main` is manual. Live URL: https://colony.home.shdr.ch (operator sheet at `/`, health at `/health`).

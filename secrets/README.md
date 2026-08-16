@@ -49,8 +49,7 @@ login script so the bao client token is in the environment:
 ```bash
 nix develop --command ./scripts/bao-login.sh --exec \
   sops exec-env secrets/dev.yaml \
-  'COLONY_TEST_DATABASE_URL=postgres://colony:colony@localhost:5432/colony_test \
-   npm test --workspace @colony/provider-gitlab'
+  'npm test --workspace @colony/provider-gitlab'
 ```
 
 The plaintext never touches disk.

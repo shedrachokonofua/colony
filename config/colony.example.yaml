@@ -1,7 +1,7 @@
 # Colony agent runtime configuration. Single file, YAML.
 #
 # Default search path: `config/colony.yaml`. Override via the
-# `COLONY_CONFIG_PATH` env var (set by the worker bootstrap).
+# `COLONY_CONFIG_PATH` env var.
 #
 # Routing here is non-secret. If you put literal `api_key: "sk-..."` values
 # in the file, set `allow_literal_keys: true` AND encrypt the file with
@@ -9,8 +9,7 @@
 # Kubernetes Secret supply the value.
 #
 # OAuth providers (Codex, Claude Pro) keep no token material here — tokens
-# live in the `provider_oauth_connections` Postgres table and are managed
-# from the Colony Web UI (admin → providers).
+# are resolved at run time by a connection loader the caller injects.
 
 agent_runtime: pi
 allow_literal_keys: false

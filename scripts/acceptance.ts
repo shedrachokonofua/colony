@@ -1,13 +1,13 @@
 #!/usr/bin/env -S tsx
 /**
- * Colony V2 real-GitLab acceptance.
+ * Colony real-GitLab acceptance.
  *
  * Usage (from repo root):
  *   GITLAB_BASE_URL=https://gitlab.home.shdr.ch GITLAB_TOKEN=<admin PAT> \
  *   COLONY_CONFIG_PATH=config/colony.yaml AGENT_RUNTIME=pi \
- *   npx tsx scripts/v2-acceptance.ts
+ *   npx tsx scripts/acceptance.ts
  *
- * Creates throwaway `colony-v2-accept-*` projects, boots colonyd in-process
+ * Creates throwaway `colony-accept-*` projects, boots colonyd in-process
  * (scenario 2 as a subprocess), runs the scenarios sequentially, prints
  * PASS/FAIL per scenario, and exits nonzero on any FAIL. Cleanup (scenario 7)
  * always runs and deletes the throwaway projects.
@@ -433,7 +433,7 @@ function defaultBranchTree(
 
 async function scenarioHappyPath(port: number): Promise<void> {
   const name = "1.happy-path";
-  const project = await createAcceptProject(`colony-v2-accept-1-${RUN_SUFFIX}`);
+  const project = await createAcceptProject(`colony-accept-1-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
   await seedFiles(project, "main", files);
@@ -552,7 +552,7 @@ async function waitForColonydDown(port: number): Promise<void> {
 
 async function scenarioRestart(port: number): Promise<void> {
   const name = "2.restart-mid-run";
-  const project = await createAcceptProject(`colony-v2-accept-2-${RUN_SUFFIX}`);
+  const project = await createAcceptProject(`colony-accept-2-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
   await seedFiles(project, "main", files);
@@ -652,7 +652,7 @@ async function scenarioLeaseExpiry(
   baseConfigPath: string,
 ): Promise<void> {
   const name = "3.lease-expiry";
-  const project = await createAcceptProject(`colony-v2-accept-3-${RUN_SUFFIX}`);
+  const project = await createAcceptProject(`colony-accept-3-${RUN_SUFFIX}`);
   await seedFiles(project, "main", baseNodeApp());
 
   // Copied config with an unreachable model endpoint so every run fails.
@@ -724,7 +724,7 @@ const MIGRATION_CHECKER = [
 
 async function scenarioMigrationConflict(port: number): Promise<void> {
   const name = "4.migration-conflict";
-  const project = await createAcceptProject(`colony-v2-accept-4-${RUN_SUFFIX}`);
+  const project = await createAcceptProject(`colony-accept-4-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["migrations/001_init.sql"] =
     "CREATE TABLE users (id INTEGER PRIMARY KEY);\n";
@@ -780,7 +780,7 @@ async function scenarioMigrationConflict(port: number): Promise<void> {
 
 async function scenarioCredentialLeak(port: number): Promise<void> {
   const name = "5.credential-leak";
-  const project = await createAcceptProject(`colony-v2-accept-5-${RUN_SUFFIX}`);
+  const project = await createAcceptProject(`colony-accept-5-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
   await seedFiles(project, "main", files);
@@ -959,7 +959,7 @@ async function scenarioCleanup(): Promise<void> {
 
 async function scenarioReviewLoop(port: number): Promise<void> {
   const name = "8.review-loop";
-  const project = await createAcceptProject(`colony-v2-accept-8-${RUN_SUFFIX}`);
+  const project = await createAcceptProject(`colony-accept-8-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
   await seedFiles(project, "main", files);
@@ -1096,7 +1096,7 @@ async function litellmReachable(): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  console.log(`colony v2 acceptance (run ${RUN_SUFFIX})`);
+  console.log(`colony acceptance (run ${RUN_SUFFIX})`);
   const selected = (process.env["COLONY_ACCEPT_SCENARIOS"] ?? "")
     .split(",")
     .map((entry) => entry.trim())

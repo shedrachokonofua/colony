@@ -63,7 +63,7 @@ export interface SandboxNamespaceRefs {
 }
 
 export const DEFAULT_SANDBOX_REFS: SandboxNamespaceRefs = {
-  controlPlaneNamespace: "colony-dev",
+  controlPlaneNamespace: "colony",
   toolGatewayServiceName: "colony-tool-gateway",
   toolGatewayPort: 4200,
   taskGraphApiServiceName: "colony-api",

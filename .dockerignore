@@ -18,3 +18,15 @@ coverage
 .nix-result
 .idea
 .vscode
+.claude
+.dev-logs
+logs
+data
+tofu
+secrets
+*.md
+.terraform
+**/.terraform
+*.tfstate
+*.tfstate.*
+config/colony.yaml

@@ -1,15 +1,29 @@
-# Colony V2 CI pipeline.
+# Colony CI pipeline.
 #
-# Two stages only: validate (lint + typecheck) and unit tests. No images,
-# no deployments — V2 runs as a single local process.
+# Deploys colonyd to the Aether host cluster. Aether's `aether-k8s` GitLab
+# Agent already authorizes the `so` group, so Colony CI can kubectl/Tofu
+# against the cluster with no Aether change. Image builds run on Aether's
+# `gitlab-runner-k8s` (tagged `buildah`).
 
 stages:
   - validate
   - unit
+  - build
+  - plan
+  - apply
 
 variables:
   NIX_CONFIG: "experimental-features = nix-command flakes"
   NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm-cache"
+  STORAGE_DRIVER: "vfs"
+  BUILDAH_FORMAT: "docker"
+  TF_ROOT: tofu
+  TOFU_VERSION: "1.11"
+  TF_HTTP_USERNAME: gitlab-ci-token
+  TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+  VAULT_ADDR: https://bao.home.shdr.ch
+  GITLAB_KAS_PROXY: "https://gitlab.home.shdr.ch/-/kubernetes-agent/k8s-proxy/"
+  AETHER_AGENT_ID: "1"
 
 workflow:
   rules:
@@ -32,6 +46,48 @@ default:
     - nix --version
     - nix develop --command npm ci --prefer-offline --no-audit --no-fund
 
+# GitLab does not concatenate before_script arrays across multiple extends.
+# Tofu jobs need both kubeconfig and Bao auth in one parent.
+.aether-tofu-auth:
+  id_tokens:
+    BAO_JWT:
+      aud: https://bao.home.shdr.ch
+  before_script:
+    - apk add --no-cache -q curl jq kubectl
+    - |
+      mkdir -p "$CI_PROJECT_DIR/.kube"
+      export KUBECONFIG="$CI_PROJECT_DIR/.kube/config"
+      export KUBE_CONFIG_PATH="$KUBECONFIG"
+      export TF_VAR_kubeconfig_path="$KUBECONFIG"
+      kubectl config set-cluster aether \
+        --server="${GITLAB_KAS_PROXY}" \
+        --insecure-skip-tls-verify=true
+      kubectl config set-credentials agent \
+        --token="ci:${AETHER_AGENT_ID}:${CI_JOB_TOKEN}"
+      kubectl config set-context aether \
+        --cluster=aether --user=agent
+      kubectl config use-context aether
+    - |
+      BAO_RESP=$(curl -s --fail-with-body --request POST \
+        --data "{\"jwt\":\"$BAO_JWT\",\"role\":\"colony-ci\"}" \
+        "$VAULT_ADDR/v1/auth/jwt-gitlab-colony/login") || {
+          echo "ERROR: OpenBao JWT login failed:"
+          echo "$BAO_RESP" | jq . 2>/dev/null || echo "$BAO_RESP"
+          exit 1
+        }
+      export VAULT_TOKEN=$(echo "$BAO_RESP" | jq -r '.auth.client_token')
+      [ -n "$VAULT_TOKEN" ] && [ "$VAULT_TOKEN" != "null" ] || { echo "empty token"; exit 1; }
+
+.image-build:
+  stage: build
+  image: quay.io/buildah/stable:latest
+  tags:
+    - buildah
+  cache: []
+  before_script:
+    - buildah --version
+    - echo "$CI_REGISTRY_PASSWORD" | buildah login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
 validate:
   stage: validate
   extends: .with-deps
@@ -43,3 +99,88 @@ unit-tests:
   extends: .with-deps
   script:
     - nix develop --command npm run test:unit
+
+tofu-validate:
+  stage: validate
+  needs: []
+  image:
+    name: ghcr.io/opentofu/opentofu:1.11
+    entrypoint: [""]
+  cache: []
+  script:
+    - cd ${TF_ROOT}
+    - tofu init -backend=false
+    - tofu validate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      exists:
+        - tofu/main.tf
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      exists:
+        - tofu/main.tf
+
+build:colonyd:
+  extends: .image-build
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/colonyd"
+    - buildah bud --layers=true -f Dockerfile -t "$IMAGE:$CI_COMMIT_SHA" .
+    - buildah push "$IMAGE:$CI_COMMIT_SHA"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        buildah tag "$IMAGE:$CI_COMMIT_SHA" "$IMAGE:latest"
+        buildah push "$IMAGE:latest"
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+plan:
+  stage: plan
+  image:
+    name: ghcr.io/opentofu/opentofu:1.11
+    entrypoint: [""]
+  cache: []
+  extends: .aether-tofu-auth
+  script:
+    - cd ${TF_ROOT}
+    - tofu init
+    - tofu plan -lock=false -var "image_registry=$CI_REGISTRY_IMAGE" -var "image_tag=$CI_COMMIT_SHA" -var "enforce_pinned_images=true" -out=plan.cache
+    - tofu show -json plan.cache > plan.json
+    - tofu show -no-color plan.cache > plan.txt
+  artifacts:
+    paths:
+      - ${TF_ROOT}/plan.cache
+      - ${TF_ROOT}/plan.json
+      - ${TF_ROOT}/plan.txt
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+  needs:
+    - job: build:colonyd
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      exists:
+        - tofu/main.tf
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      exists:
+        - tofu/main.tf
+
+apply:
+  stage: apply
+  image:
+    name: ghcr.io/opentofu/opentofu:1.11
+    entrypoint: [""]
+  cache: []
+  extends: .aether-tofu-auth
+  script:
+    - cd ${TF_ROOT}
+    - tofu init
+    - tofu apply -auto-approve plan.cache
+  dependencies:
+    - plan
+  needs:
+    - job: plan
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      exists:
+        - tofu/main.tf
+      when: manual
