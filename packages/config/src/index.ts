@@ -83,4 +83,5 @@ export {
   type PiApiKind,
   type ResolvedAgentConfig,
   type ResolvedAuth,
+  type SandboxEngine,
 } from "./colony-config.js";

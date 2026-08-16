@@ -376,4 +376,19 @@ ${VALID_YAML}`),
       }),
     ).toThrow(/validation failed/);
   });
+
+  it("rejects an unknown sandboxEngineOverride", () => {
+    try {
+      loadColonyConfig({
+        path: tempConfig(VALID_YAML),
+        sandboxEngineOverride: "kubernetes" as never,
+      });
+      throw new Error("expected override validation to fail");
+    } catch (e) {
+      const err = e as ColonyConfigError;
+      expect(err).toBeInstanceOf(ColonyConfigError);
+      expect(err.code).toBe("VALIDATION");
+      expect(err.message).toMatch(/sandbox engine override/);
+    }
+  });
 });
