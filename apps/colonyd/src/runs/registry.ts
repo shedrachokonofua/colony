@@ -31,6 +31,25 @@ export async function abortRun(runId: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Abort a run and wait for its execution path to finish recording the
+ * canceled result. Recovery callers can then requeue the task without the
+ * old run racing the new state.
+ */
+export async function abortRunAndWait(runId: string): Promise<boolean> {
+  const entry = tracked.get(runId);
+  if (!entry) return false;
+  await entry.abort();
+  await Promise.allSettled([entry.promise]);
+  return true;
+}
+
+export async function abortRunsAndWait(
+  runIds: readonly string[],
+): Promise<boolean[]> {
+  return Promise.all(runIds.map((id) => abortRunAndWait(id)));
+}
+
 export async function abortRuns(runIds: readonly string[]): Promise<void> {
   await Promise.all(runIds.map((id) => abortRun(id)));
 }

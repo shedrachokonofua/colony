@@ -40,6 +40,7 @@ describe("state machine", () => {
       ["running", "canceled"],
       ["mr_open", "canceled"],
       ["blocked", "canceled"],
+      ["canceled", "queued"],
     ];
     for (const [from, to] of legal) {
       expect(() =>
@@ -59,7 +60,6 @@ describe("state machine", () => {
       ["merged", "queued"],
       ["merged", "blocked"],
       ["merged", "canceled"],
-      ["canceled", "queued"],
       ["blocked", "running"],
       ["blocked", "merged"],
       ["blocked", "blocked"],
@@ -84,6 +84,7 @@ describe("state machine", () => {
       ["planning", "abandoned"],
       ["active", "abandoned"],
       ["blocked", "abandoned"],
+      ["done", "active"],
     ];
     for (const [from, to] of legal) {
       expect(() =>
@@ -98,7 +99,6 @@ describe("state machine", () => {
       ["draft", "done"],
       ["planning", "done"],
       ["active", "planning"],
-      ["done", "active"],
       ["abandoned", "active"],
       ["done", "abandoned"],
       ["done", "done"],

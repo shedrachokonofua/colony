@@ -37,12 +37,13 @@ export const TERMINAL_SCOPE_STATUSES: ReadonlySet<ScopeStatus> = new Set([
  *
  *   queued   -> running    dispatch; deps all merged, next_retry_at<=now, scope active
  *   running  -> mr_open    implement run succeeded: branch pushed, MR opened by colonyd
- *   running  -> queued     run failed/lease expired; attempt < max
+ *   running  -> queued     run failed/lease expired, or operator stops a run for retry
  *   running  -> blocked    attempts exhausted, or envelope status='blocked'
  *   mr_open  -> merged     gate passed AND GitLab reports merged at gated SHA
  *   mr_open  -> queued     gate failed -> requeue with evidence; attempt++
  *   mr_open  -> blocked    3 consecutive gate failures on same head SHA, or merge refused 3x
  *   blocked  -> queued     operator unblock; resets attempt=0, next_retry_at=NULL
+ *   canceled -> queued     operator restores a permanently canceled task
  *   any nonterminal -> canceled (operator)
  */
 const TASK_TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
@@ -51,7 +52,7 @@ const TASK_TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
   mr_open: ["merged", "queued", "blocked", "canceled"],
   merged: [],
   blocked: ["queued", "canceled"],
-  canceled: [],
+  canceled: ["queued"],
 };
 
 /**
@@ -63,6 +64,7 @@ const TASK_TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
  *   active   -> done       all tasks merged|canceled, >=1 merged
  *   active   -> blocked    unfinished tasks exist, none runnable, none running
  *   blocked  -> planning|active (operator retry/unblock)
+ *   done     -> active     operator restores a canceled task
  *   any nonterminal -> abandoned (operator)
  */
 const SCOPE_TRANSITIONS: Readonly<Record<ScopeStatus, readonly ScopeStatus[]>> =
@@ -71,7 +73,7 @@ const SCOPE_TRANSITIONS: Readonly<Record<ScopeStatus, readonly ScopeStatus[]>> =
     planning: ["active", "blocked", "abandoned"],
     active: ["done", "blocked", "abandoned"],
     blocked: ["planning", "active", "abandoned"],
-    done: [],
+    done: ["active"],
     abandoned: [],
   };
 

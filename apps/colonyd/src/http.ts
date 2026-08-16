@@ -8,7 +8,7 @@ import { DomainStateError } from "@colony/domain";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
-import { abortRuns } from "./runs/registry.js";
+import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
 
 const UI_DIR = fileURLToPath(new URL("../ui/", import.meta.url));
 const UI_MIME: Record<string, string> = {
@@ -258,6 +258,78 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     });
   });
 
+  app.post("/tasks/:id/stop", async (c) => {
+    const task = ctx.store.getTask(c.req.param("id"));
+    if (!task) return notFound(c, "task");
+    if (task.state !== "running") {
+      return c.json(
+        {
+          error: {
+            code: "NOT_RUNNING",
+            message: "only a running task can be stopped and retried",
+          },
+        },
+        409,
+      );
+    }
+    const runIds = ctx.store
+      .runsForTask(task.id)
+      .filter((run) => run.status === "running")
+      .map((run) => run.id);
+    if (runIds.length === 0) {
+      return c.json(
+        {
+          error: {
+            code: "NO_ACTIVE_RUN",
+            message: "task has no active run to stop",
+          },
+        },
+        409,
+      );
+    }
+    const stopped = await abortRunsAndWait(runIds);
+    if (!stopped.every(Boolean)) {
+      return c.json(
+        {
+          error: {
+            code: "RUN_NOT_LOCAL",
+            message: "active run is not owned by this colonyd process",
+          },
+        },
+        409,
+      );
+    }
+    const current = ctx.store.getTask(task.id);
+    if (!current || current.state !== "running") {
+      return conflict(
+        c,
+        new Error("task state changed while its active run was stopping"),
+      );
+    }
+    try {
+      const updated = ctx.store.transitionTask(
+        current.id,
+        current.state_version,
+        "queued",
+        c.get("actor"),
+        {
+          attempt: task.attempt,
+          next_retry_at: null,
+          blocked_reason: null,
+        },
+      );
+      ctx.store.audit(c.get("actor"), "task.stop_and_retry", {
+        scope_id: task.scope_id,
+        task_id: task.id,
+        detail: { run_ids: runIds },
+      });
+      ctx.requestTick();
+      return c.json(updated);
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
   app.post("/tasks/:id/cancel", async (c) => {
     const task = ctx.store.getTask(c.req.param("id"));
     if (!task) return notFound(c, "task");
@@ -277,6 +349,62 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       .map((r) => r.id);
     await abortRuns(runIds);
     return c.json(ctx.store.getTask(task.id));
+  });
+
+  app.post("/tasks/:id/restore", (c) => {
+    const task = ctx.store.getTask(c.req.param("id"));
+    if (!task) return notFound(c, "task");
+    if (task.state !== "canceled") {
+      return c.json(
+        {
+          error: {
+            code: "NOT_CANCELED",
+            message: "only a canceled task can be restored",
+          },
+        },
+        409,
+      );
+    }
+    const scope = ctx.store.getScope(task.scope_id);
+    if (!scope) return notFound(c, "scope");
+    if (scope.status === "abandoned") {
+      return c.json(
+        {
+          error: {
+            code: "SCOPE_ABANDONED",
+            message: "tasks in an abandoned scope cannot be restored",
+          },
+        },
+        409,
+      );
+    }
+    try {
+      const updated = ctx.store.transitionTask(
+        task.id,
+        task.state_version,
+        "queued",
+        c.get("actor"),
+        {
+          attempt: 0,
+          next_retry_at: null,
+          blocked_reason: null,
+        },
+      );
+      if (scope.status === "done" || scope.status === "blocked") {
+        ctx.store.setScopeStatus(scope.id, "active", c.get("actor"), {
+          reason: "canceled_task_restored",
+          task_id: task.id,
+        });
+      }
+      ctx.store.audit(c.get("actor"), "task.restored", {
+        scope_id: task.scope_id,
+        task_id: task.id,
+      });
+      ctx.requestTick();
+      return c.json(updated);
+    } catch (err) {
+      return conflict(c, err);
+    }
   });
 
   app.post("/tasks/:id/unblock", (c) => {

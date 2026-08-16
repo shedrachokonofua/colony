@@ -843,6 +843,30 @@ function taskActionButtons(task) {
       </button>`,
     );
   }
+  if (task?.state === "running") {
+    buttons.push(
+      state.confirm === "stop"
+        ? html`<button
+            class="btn btn-solid"
+            @click=${() => mutate(`/tasks/${task.id}/stop`)}
+          >
+            Confirm stop and retry
+          </button>`
+        : html`<button class="btn" @click=${() => setConfirm("stop")}>
+            Stop run and retry
+          </button>`,
+    );
+  }
+  if (task?.state === "canceled") {
+    buttons.push(
+      html`<button
+        class="btn btn-solid"
+        @click=${() => mutate(`/tasks/${task.id}/restore`)}
+      >
+        Restore task
+      </button>`,
+    );
+  }
   const waiting =
     task?.state === "queued" &&
     task.next_retry_at &&
@@ -864,13 +888,13 @@ function taskActionButtons(task) {
             class="btn btn-rev"
             @click=${() => mutate(`/tasks/${task.id}/cancel`)}
           >
-            Confirm cancel
+            Confirm permanent cancel
           </button>`
         : html`<button
             class="btn btn-quiet"
             @click=${() => setConfirm("cancel")}
           >
-            Cancel task
+            Cancel task permanently
           </button>`,
     );
   }
