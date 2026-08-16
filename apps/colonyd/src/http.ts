@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { extname, join, normalize, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, extname, join, normalize, sep } from "node:path";
+import { createRequire } from "node:module";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { DomainStateError } from "@colony/domain";
@@ -10,7 +10,9 @@ import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
 
-const UI_DIR = fileURLToPath(new URL("../ui/", import.meta.url));
+const UI_DIR = dirname(
+  createRequire(import.meta.url).resolve("@colony/console/package.json"),
+);
 const UI_MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",

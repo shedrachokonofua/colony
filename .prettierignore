@@ -5,5 +5,4 @@ flake.lock
 # SOPS-encrypted YAML — reformatting would invalidate the MAC.
 secrets/
 data/
-apps/colonyd/ui/vendor/
 packages/console/vendor/
