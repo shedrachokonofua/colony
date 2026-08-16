@@ -112,35 +112,34 @@ providers:
         name: sonnet-4-via-pro
 
 agents:
-  # Model split (2026-07): developer on MiMo v2.5 Pro, architect on GLM 5.2,
-  # reviewer on Kimi K3 — all via the LiteLLM gateway (openai_compatible).
+  # Developer on DeepSeek V4 Flash, architect on GLM 5.2, reviewer on Kimi K3.
+  # All route through the LiteLLM gateway.
   developer:
     provider: openai_compatible
     model: deepseek-v4-flash
     # Coding fallback order within the same Pi session and colonyd attempt.
     fallback_models: [mimo-v2.5-pro, qwen3.8-27b]
+    thinking_level: high
     # For subscription-backed Codex instead:
     # provider: openai_codex
     # model: gpt-5.5
     # thinking_level: high
     timeout_ms: 1800000
     max_turns: 250
-    max_usd_per_run: 50
   reviewer:
     provider: openai_compatible
     model: kimi-k3
     # Tried in order within the same Pi session and colonyd attempt.
     fallback_models:
       [qwen3.8-max, glm-5.2, deepseek-v4-pro, deepseek-v4-flash, qwen3.8-27b]
+    thinking_level: xhigh
     timeout_ms: 1800000
     max_turns: 200
-    max_usd_per_run: 30
   architect:
     provider: openai_compatible
     model: glm-5.2
     timeout_ms: 1800000
     max_turns: 200
-    max_usd_per_run: 50
   memory_consolidator:
     provider: openai_compatible
     model: glm-5.2

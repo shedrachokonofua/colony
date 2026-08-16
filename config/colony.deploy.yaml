@@ -68,9 +68,9 @@ agents:
     provider: openai_compatible
     model: deepseek-v4-flash
     fallback_models: [mimo-v2.5-pro, qwen3.8-27b]
+    thinking_level: high
     timeout_ms: 1800000
     max_turns: 250
-    max_usd_per_run: 50
   reviewer:
     provider: openai_compatible
     model: kimi-k3
@@ -80,15 +80,14 @@ agents:
       - deepseek-v4-pro
       - deepseek-v4-flash
       - qwen3.8-27b
+    thinking_level: xhigh
     timeout_ms: 1800000
     max_turns: 200
-    max_usd_per_run: 30
   architect:
     provider: openai_compatible
     model: glm-5.2
     timeout_ms: 1800000
     max_turns: 200
-    max_usd_per_run: 50
   memory_consolidator:
     provider: openai_compatible
     model: glm-5.2

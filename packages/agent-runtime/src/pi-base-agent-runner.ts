@@ -71,7 +71,6 @@ export interface PiRoleProfile {
     | "xhigh";
   readonly defaultLimits: {
     readonly maxTurns: number;
-    readonly maxUsd: number;
   };
   readonly workspaceMode: PiWorkspaceMode;
   readonly skipPromptWithoutWorkTools?: boolean;
@@ -237,7 +236,6 @@ export class PiBaseAgentRunner implements PiRunner {
 
       const unsubscribeGuards = installRunGuards(session.agent, runId, {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
-        maxUsd: this.options.maxUsd ?? this.profile.defaultLimits.maxUsd,
         logger: this.options.logger,
         onFailure: (reason) => {
           failureReason ??= reason;
@@ -465,7 +463,7 @@ export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
   validate: zodValidator(implementerCompletionV2Schema),
   defaultTools: DEFAULT_DEVELOPER_TOOLS,
   defaultThinkingLevel: "medium",
-  defaultLimits: { maxTurns: 60, maxUsd: 10 },
+  defaultLimits: { maxTurns: 60 },
   workspaceMode: "repo-required",
   skipPromptWithoutWorkTools: true,
 };
@@ -482,7 +480,7 @@ export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
   validate: zodValidator(architectDecompositionV2Schema),
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",
-  defaultLimits: { maxTurns: 80, maxUsd: 25 },
+  defaultLimits: { maxTurns: 80 },
   workspaceMode: "repo-required",
   requireRepositoryInspection: true,
 };
@@ -499,7 +497,7 @@ export const REVIEWER_ROLE_PROFILE: PiRoleProfile = {
   validate: zodValidator(reviewerVerdictV2Schema),
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",
-  defaultLimits: { maxTurns: 20, maxUsd: 3 },
+  defaultLimits: { maxTurns: 20 },
   workspaceMode: "repo-required",
   requireRepositoryInspection: true,
 };

@@ -38,7 +38,6 @@ agents:
     thinking_level: high
     timeout_ms: 60000
     max_turns: 5
-    max_usd_per_run: 1
   reviewer:
     provider: anthropic
     model: sonnet-4
@@ -138,7 +137,6 @@ agents:
     // explicit ceilings on the agent override defaults
     expect(dev.ceilings.timeoutMs).toBe(60_000);
     expect(dev.ceilings.maxTurns).toBe(5);
-    expect(dev.ceilings.maxUsdPerRun).toBe(1);
   });
 
   it("surfaces oauthProviderKeys for the admin UI", () => {

@@ -47,7 +47,6 @@ export interface PiRunnerBaseOptions {
     | "high"
     | "xhigh";
   readonly maxTurns?: number;
-  readonly maxUsd?: number;
   readonly runTimeoutMs?: number;
   readonly scratchDir?: string;
 }
@@ -390,7 +389,6 @@ export function installRunGuards(
   let usdSpent = 0;
   let previousMessageAt = performance.now();
   const maxTurns = options.maxTurns ?? 60;
-  const maxUsd = options.maxUsd ?? 10;
 
   return agent.subscribe((event) => {
     if (event.type === "turn_end") {
@@ -417,11 +415,7 @@ export function installRunGuards(
       previousMessageAt = messageCompletedAt;
     }
     const reason =
-      turns >= maxTurns
-        ? "max_turns_exhausted_without_envelope"
-        : usdSpent > maxUsd
-          ? "max_usd_exhausted_without_envelope"
-          : undefined;
+      turns >= maxTurns ? "max_turns_exhausted_without_envelope" : undefined;
     if (reason) {
       options.logger?.warn?.(
         {

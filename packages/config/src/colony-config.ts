@@ -123,7 +123,6 @@ const agentSchema = z
     auth: authSchema.optional(),
     timeout_ms: z.number().int().positive().optional(),
     max_turns: z.number().int().positive().optional(),
-    max_usd_per_run: z.number().nonnegative().optional(),
   })
   .strict();
 
@@ -234,7 +233,6 @@ export interface ResolvedAgentConfig {
   readonly ceilings: {
     readonly timeoutMs: number;
     readonly maxTurns: number;
-    readonly maxUsdPerRun: number;
   };
 }
 
@@ -291,15 +289,14 @@ export class ColonyConfigError extends Error {
 }
 
 export const DEFAULT_CEILINGS = {
-  developer: { timeoutMs: 900_000, maxTurns: 60, maxUsdPerRun: 10 },
-  reviewer: { timeoutMs: 600_000, maxTurns: 20, maxUsdPerRun: 3 },
-  architect: { timeoutMs: 1_800_000, maxTurns: 80, maxUsdPerRun: 25 },
+  developer: { timeoutMs: 900_000, maxTurns: 60 },
+  reviewer: { timeoutMs: 600_000, maxTurns: 20 },
+  architect: { timeoutMs: 1_800_000, maxTurns: 80 },
   memory_consolidator: {
     timeoutMs: 300_000,
     maxTurns: 10,
-    maxUsdPerRun: 1,
   },
-  integrator: { timeoutMs: 300_000, maxTurns: 10, maxUsdPerRun: 1 },
+  integrator: { timeoutMs: 300_000, maxTurns: 10 },
 } as const satisfies Record<AgentRole, ResolvedAgentConfig["ceilings"]>;
 
 export function loadColonyConfig(
@@ -411,7 +408,6 @@ export function loadColonyConfig(
         ceilings: {
           timeoutMs: agentEntry.timeout_ms ?? defaults.timeoutMs,
           maxTurns: agentEntry.max_turns ?? defaults.maxTurns,
-          maxUsdPerRun: agentEntry.max_usd_per_run ?? defaults.maxUsdPerRun,
         },
       };
     },
