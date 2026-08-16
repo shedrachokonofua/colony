@@ -1,4 +1,12 @@
-import { html, svg, render as litRender } from "/ui/vendor/lit-html.js";
+import {
+  html,
+  svg,
+  render as litRender,
+  nothing,
+  classMap,
+  repeat,
+  live,
+} from "/ui/vendor/lit-html.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
@@ -466,6 +474,93 @@ function demoWorld() {
 }
 
 // ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+
+async function mutate(path, body) {
+  state.confirm = null;
+  try {
+    await api(path, {
+      method: "POST",
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    await refresh();
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : String(err);
+    paint();
+  }
+}
+
+function openScope(id) {
+  location.hash = `#/${id}`;
+}
+
+function selectTask(taskId) {
+  state.selectedTaskId = taskId;
+  state.drawerOpen = true;
+  state.confirm = null;
+  state.runEvents = null;
+  paint();
+  void refresh();
+}
+
+function closeDrawer() {
+  state.drawerOpen = false;
+  state.runEvents = null;
+  paint();
+}
+
+function setConfirm(kind) {
+  state.confirm = kind;
+  paint();
+}
+
+function toggle(key) {
+  state[key] = !state[key];
+  paint();
+}
+
+async function submitOpenScope(event) {
+  event.preventDefault();
+  const data = new FormData(event.target);
+  const goal = String(data.get("goal") || "").trim();
+  const title = String(data.get("title") || "").trim();
+  const path = String(data.get("path") || "").trim();
+  if (!goal || !path) return;
+  try {
+    const scope = await api("/scopes", {
+      method: "POST",
+      body: JSON.stringify({
+        goal,
+        ...(title ? { title } : {}),
+        project: { path },
+      }),
+    });
+    location.hash = `#/${scope.id}`;
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : String(err);
+    paint();
+  }
+}
+
+async function submitActor(event) {
+  event.preventDefault();
+  const actor = String(new FormData(event.target).get("actor") || "").trim();
+  if (!actor) return;
+  state.actor = actor;
+  localStorage.setItem(ACTOR_KEY, actor);
+  await refresh();
+}
+
+function saveActor(event) {
+  const actor = event.target.value.trim();
+  if (actor && actor !== state.actor) {
+    state.actor = actor;
+    localStorage.setItem(ACTOR_KEY, actor);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Task graph
 // ---------------------------------------------------------------------------
 
@@ -550,6 +645,12 @@ function liveRunFor(detail, taskId) {
   );
 }
 
+function nodeKeydown(event, id) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  selectTask(id);
+}
+
 function renderDag(detail) {
   const { nodes, edges } = graphModel(detail);
   if (!nodes.length) {
@@ -563,45 +664,59 @@ function renderDag(detail) {
     </p>`;
   }
   const { pos, width, height } = layoutDag(nodes, edges);
-  const edgeMarkup = edges.map((edge) => {
-    const from = pos.get(edge.depends_on_task_id);
-    const to = pos.get(edge.task_id);
-    if (!from || !to) return svg``;
-    const x1 = from.x + from.w;
-    const y1 = from.y + from.h / 2;
-    const x2 = to.x - 3;
-    const y2 = to.y + to.h / 2;
-    const c = Math.max(30, (x2 - x1) * 0.45);
-    return svg`<path class="edge" marker-end="url(#arrow)"
-      d="M${x1},${y1} C${x1 + c},${y1} ${x2 - c},${y2} ${x2},${y2}" />`;
-  });
-  const nodeMarkup = nodes.map((node) => {
-    const box = pos.get(node.id);
-    const live = liveRunFor(detail, node.id);
-    const selected = state.selectedTaskId === node.id && state.drawerOpen;
-    const tail = node.id.slice(
-      node.id.lastIndexOf(node.proposed ? ":" : ".") + 1,
-    );
-    return svg`<g
-      class="g-node node ${selected ? "is-selected" : ""} ${live ? "is-live" : ""}"
-      data-state=${node.state} data-task=${node.id}>
-      <rect class="node-box${node.proposed ? " is-proposed" : ""}"
-        x=${box.x} y=${box.y} width=${box.w} height=${box.h} />
-      <rect class="node-bar" x=${box.x + 5} y=${box.y + 5} width="3" height=${box.h - 10} />
-      <foreignObject x=${box.x} y=${box.y} width=${box.w} height=${box.h}>
-        <div class="node-html" xmlns="http://www.w3.org/1999/xhtml">
-          <span class="ntitle">${node.title}</span>
-          <span class="nstate">${node.state}${
-            live ? ` · ${KIND_LABEL[live.kind] || live.kind}` : ""
-          }<span class="nid">#${tail}</span></span>
-        </div>
-      </foreignObject>
-      <rect class="node-hit" tabindex="0" role="button"
-        aria-label=${node.title}
-        x=${box.x} y=${box.y} width=${box.w} height=${box.h}
-        data-task=${node.id} />
-    </g>`;
-  });
+  const edgeMarkup = repeat(
+    edges,
+    (edge) => `${edge.depends_on_task_id}->${edge.task_id}`,
+    (edge) => {
+      const from = pos.get(edge.depends_on_task_id);
+      const to = pos.get(edge.task_id);
+      if (!from || !to) return svg``;
+      const x1 = from.x + from.w;
+      const y1 = from.y + from.h / 2;
+      const x2 = to.x - 3;
+      const y2 = to.y + to.h / 2;
+      const c = Math.max(30, (x2 - x1) * 0.45);
+      return svg`<path class="edge" marker-end="url(#arrow)"
+        d="M${x1},${y1} C${x1 + c},${y1} ${x2 - c},${y2} ${x2},${y2}" />`;
+    },
+  );
+  const nodeMarkup = repeat(
+    nodes,
+    (node) => node.id,
+    (node) => {
+      const box = pos.get(node.id);
+      const live = liveRunFor(detail, node.id);
+      const selected = state.selectedTaskId === node.id && state.drawerOpen;
+      const tail = node.id.slice(
+        node.id.lastIndexOf(node.proposed ? ":" : ".") + 1,
+      );
+      return svg`<g
+        class=${classMap({
+          "g-node": true,
+          node: true,
+          "is-selected": selected,
+          "is-live": Boolean(live),
+        })}
+        data-state=${node.state}>
+        <rect class=${classMap({ "node-box": true, "is-proposed": node.proposed })}
+          x=${box.x} y=${box.y} width=${box.w} height=${box.h} />
+        <rect class="node-bar" x=${box.x + 5} y=${box.y + 5} width="3" height=${box.h - 10} />
+        <foreignObject x=${box.x} y=${box.y} width=${box.w} height=${box.h}>
+          <div class="node-html" xmlns="http://www.w3.org/1999/xhtml">
+            <span class="ntitle">${node.title}</span>
+            <span class="nstate">${node.state}${
+              live ? ` · ${KIND_LABEL[live.kind] || live.kind}` : ""
+            }<span class="nid">#${tail}</span></span>
+          </div>
+        </foreignObject>
+        <rect class="node-hit" tabindex="0" role="button"
+          aria-label=${node.title}
+          x=${box.x} y=${box.y} width=${box.w} height=${box.h}
+          @click=${() => selectTask(node.id)}
+          @keydown=${(event) => nodeKeydown(event, node.id)} />
+      </g>`;
+    },
+  );
   return html`<svg
     class="dag"
     width=${width}
@@ -648,32 +763,38 @@ function renderRuns(detail, task) {
   const latestLive = [...rows]
     .reverse()
     .find((run) => run.status === "running");
-  return rows.map(
+  return repeat(
+    rows,
+    (run) => run.id,
     (run) =>
-      html`${runLine(run)}${run === latestLive ? renderRunLog(run) : ""}`,
+      html`${runLine(run)}${run === latestLive ? renderRunLog(run) : nothing}`,
   );
 }
 
 function renderRunLog(run) {
   const feed = state.runEvents;
-  if (!feed || feed.runId !== run.id) return "";
+  if (!feed || feed.runId !== run.id) return nothing;
   if (!feed.rows.length) {
     return html`<p class="note runlog-empty">No agent activity yet.</p>`;
   }
-  const lines = feed.rows.slice(-40).map((row) => {
-    let detail = "";
-    try {
-      const d = JSON.parse(row.detail_json);
-      detail = [d.tool, d.isError ? "error" : ""].filter(Boolean).join(" · ");
-    } catch {
-      detail = "";
-    }
-    return html`<li>
-      <span class="when">${rel(row.at)}</span>
-      <span class="ev">${row.event}</span>
-      ${detail ? html`<span class="evd">${detail}</span>` : ""}
-    </li>`;
-  });
+  const lines = repeat(
+    feed.rows.slice(-40),
+    (row) => row.id,
+    (row) => {
+      let detail = "";
+      try {
+        const d = JSON.parse(row.detail_json);
+        detail = [d.tool, d.isError ? "error" : ""].filter(Boolean).join(" · ");
+      } catch {
+        detail = "";
+      }
+      return html`<li>
+        <span class="when">${rel(row.at)}</span>
+        <span class="ev">${row.event}</span>
+        ${detail ? html`<span class="evd">${detail}</span>` : nothing}
+      </li>`;
+    },
+  );
   return html`<ul class="runlog">
     ${lines}
   </ul>`;
@@ -691,7 +812,7 @@ function runLine(run) {
             </li>`,
         )}
       </ul>`
-    : "";
+    : nothing;
   const verdict = evidence?.verdict ? ` · ${evidence.verdict}` : "";
   return html`<div class="run" data-status=${run.status}>
     <i></i>
@@ -714,7 +835,12 @@ function taskActionButtons(task) {
   const buttons = [];
   if (task?.state === "blocked") {
     buttons.push(
-      html`<button class="btn btn-solid" data-act="unblock">Unblock</button>`,
+      html`<button
+        class="btn btn-solid"
+        @click=${() => mutate(`/tasks/${task.id}/unblock`)}
+      >
+        Unblock
+      </button>`,
     );
   }
   const waiting =
@@ -723,7 +849,10 @@ function taskActionButtons(task) {
     Date.parse(task.next_retry_at) > Date.now();
   if (waiting) {
     buttons.push(
-      html`<button class="btn" data-act="retry">
+      html`<button
+        class="btn"
+        @click=${() => mutate(`/tasks/${task.id}/retry`)}
+      >
         Run now — skip backoff
       </button>`,
     );
@@ -731,24 +860,35 @@ function taskActionButtons(task) {
   if (task && !["merged", "canceled"].includes(task.state)) {
     buttons.push(
       state.confirm === "cancel"
-        ? html`<button class="btn btn-rev" data-act="cancel-yes">
+        ? html`<button
+            class="btn btn-rev"
+            @click=${() => mutate(`/tasks/${task.id}/cancel`)}
+          >
             Confirm cancel
           </button>`
-        : html`<button class="btn btn-quiet" data-act="cancel">
+        : html`<button
+            class="btn btn-quiet"
+            @click=${() => setConfirm("cancel")}
+          >
             Cancel task
           </button>`,
     );
   }
-  return buttons.length ? html`<div class="task-actions">${buttons}</div>` : "";
+  return buttons.length
+    ? html`<div class="task-actions">${buttons}</div>`
+    : nothing;
 }
 
 function abandonButton(scope) {
-  if (!scope || ["done", "abandoned"].includes(scope.status)) return "";
+  if (!scope || ["done", "abandoned"].includes(scope.status)) return nothing;
   return state.confirm === "abandon"
-    ? html`<button class="btn btn-rev" data-act="abandon-yes">
+    ? html`<button
+        class="btn btn-rev"
+        @click=${() => mutate(`/scopes/${scope.id}/abandon`)}
+      >
         Confirm abandon
       </button>`
-    : html`<button class="btn btn-quiet" data-act="abandon">
+    : html`<button class="btn btn-quiet" @click=${() => setConfirm("abandon")}>
         Abandon scope
       </button>`;
 }
@@ -759,13 +899,18 @@ function renderTopbar() {
     ? state.auth
       ? html`<div class="sign account">
           <span class="whoami mono">${state.auth.username}</span>
-          <button class="btn btn-quiet" data-act="signout">Sign out</button>
+          <button class="btn btn-quiet" @click=${signOut}>Sign out</button>
         </div>`
       : html`<div class="sign"></div>`
-    : html`<form class="sign" data-form="sign">
+    : html`<form class="sign" @submit=${submitActor}>
         <label>
           <span>Operator</span>
-          <input name="actor" value=${state.actor} spellcheck="false" />
+          <input
+            name="actor"
+            .value=${live(state.actor)}
+            spellcheck="false"
+            @change=${saveActor}
+          />
         </label>
       </form>`;
   return html`<header class="topbar">
@@ -775,7 +920,7 @@ function renderTopbar() {
       ${id
         ? html`<span class="crumb-sep">/</span>
             <span class="crumb mono">${id}</span>`
-        : ""}
+        : nothing}
     </nav>
     ${account}
   </header>`;
@@ -792,40 +937,44 @@ function renderSignin() {
         ? html`<div class="banner banner-error" role="alert">
             ${state.error}
           </div>`
-        : ""}
-      <button class="btn btn-solid" data-act="signin">Sign in</button>
+        : nothing}
+      <button class="btn btn-solid" @click=${() => void beginLogin()}>
+        Sign in
+      </button>
     </div>
   </div>`;
 }
 
 function renderBoard() {
-  const cards = state.scopes.length
-    ? state.scopes
-        .slice()
-        .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
-        .map(
-          (scope) =>
-            html`<button class="scope-card" data-open=${scope.id}>
-              <span class="scope-top">
-                <span class="chip" data-kind=${scope.status}
-                  >${scope.status}</span
-                >
-                <span class="scope-time">${rel(scope.updated_at)}</span>
-              </span>
-              <span class="scope-goal">${scopeTitle(scope)}</span>
-              <span class="scope-meta">
-                <span class="mono">${scope.id}</span>
-                <span>${scope.provider_project_path}</span>
-              </span>
-            </button>`,
-        )
+  const sorted = state.scopes
+    .slice()
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+  const cards = sorted.length
+    ? repeat(
+        sorted,
+        (scope) => scope.id,
+        (scope) =>
+          html`<button class="scope-card" @click=${() => openScope(scope.id)}>
+            <span class="scope-top">
+              <span class="chip" data-kind=${scope.status}
+                >${scope.status}</span
+              >
+              <span class="scope-time">${rel(scope.updated_at)}</span>
+            </span>
+            <span class="scope-goal">${scopeTitle(scope)}</span>
+            <span class="scope-meta">
+              <span class="mono">${scope.id}</span>
+              <span>${scope.provider_project_path}</span>
+            </span>
+          </button>`,
+      )
     : html`<p class="rack-empty">
         No scopes yet. Describe a goal and a GitLab project, then open a scope.
       </p>`;
   return html`
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
-      : ""}
+      : nothing}
     <div class="board" id="draw">
       <section>
         <h1 class="board-title">Scopes</h1>
@@ -835,7 +984,7 @@ function renderBoard() {
         <aside class="card">
           <p class="card-head">Open a scope</p>
           <div class="card-body">
-            <form class="composer" data-form="open">
+            <form class="composer" @submit=${submitOpenScope}>
               <p class="composer-hint">
                 Colony plans the work, opens merge requests, and merges what
                 passes.
@@ -905,11 +1054,11 @@ function renderSheet() {
     </header>
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
-      : ""}
-    ${wait ? html`<div class="banner banner-wait">${wait}</div>` : ""}
+      : nothing}
+    ${wait ? html`<div class="banner banner-wait">${wait}</div>` : nothing}
     <section class="card dag-card" id="draw">
       <p class="card-head">
-        Tasks${taskCount ? html` <span>${taskCount}</span>` : ""}
+        Tasks${taskCount ? html` <span>${taskCount}</span>` : nothing}
       </p>
       <div class="card-body">${renderDag(detail)}</div>
     </section>
@@ -918,7 +1067,7 @@ function renderSheet() {
       <div class="sheet-col">${renderPlanCard(scope, detail)}</div>
       <div class="sheet-col">${renderActivity()}</div>
     </div>
-    ${state.drawerOpen && task ? renderDrawer(scope, task) : ""}
+    ${state.drawerOpen && task ? renderDrawer(scope, task) : nothing}
   `;
 }
 
@@ -927,14 +1076,19 @@ function renderGoalCard(scope) {
   return html`<aside class="card">
     <p class="card-head">Goal</p>
     <div class="card-body">
-      <p class="plan-summary${state.goalOpen || !long ? " is-open" : ""}">
+      <p
+        class=${classMap({
+          "plan-summary": true,
+          "is-open": state.goalOpen || !long,
+        })}
+      >
         ${scope.goal}
       </p>
       ${long
-        ? html`<button class="goal-toggle" data-act="toggle-goal">
+        ? html`<button class="goal-toggle" @click=${() => toggle("goalOpen")}>
             ${state.goalOpen ? "Show less" : "Show more"}
           </button>`
-        : ""}
+        : nothing}
     </div>
   </aside>`;
 }
@@ -944,7 +1098,7 @@ function renderPlanCard(scope, detail) {
   const architectRuns = (detail?.runs || []).filter(
     (run) => run.kind === "architect",
   );
-  if (!plan && !architectRuns.length) return "";
+  if (!plan && !architectRuns.length) return nothing;
   const summary = plan
     ? plan.summary || "Ready for approval."
     : scope.status === "planning"
@@ -955,27 +1109,35 @@ function renderPlanCard(scope, detail) {
     <p class="card-head">Plan</p>
     <div class="card-body">
       ${summary
-        ? html`<p class="plan-summary${state.planOpen ? " is-open" : ""}">
+        ? html`<p
+            class=${classMap({
+              "plan-summary": true,
+              "is-open": state.planOpen,
+            })}
+          >
             ${summary}
           </p>`
-        : ""}
+        : nothing}
       ${summary.length > 360
-        ? html`<button class="goal-toggle" data-act="toggle-plan">
+        ? html`<button class="goal-toggle" @click=${() => toggle("planOpen")}>
             ${state.planOpen ? "Show less" : "Show more"}
           </button>`
-        : ""}
+        : nothing}
       ${approvable
         ? html`<div class="plan-actions">
-            <button class="btn btn-solid" data-act="approve">
+            <button
+              class="btn btn-solid"
+              @click=${() => mutate(`/scopes/${scope.id}/approve-plan`)}
+            >
               Approve plan
             </button>
           </div>`
-        : ""}
+        : nothing}
       ${architectRuns.length
         ? html`<div class="runs runs-inline">
             ${architectRuns.map(runLine)}
           </div>`
-        : ""}
+        : nothing}
     </div>
   </aside>`;
 }
@@ -996,7 +1158,7 @@ function renderDrawer(scope, task) {
       <span class="mono drawer-id">${task.id}</span>
       <button
         class="btn btn-quiet drawer-close"
-        data-act="close-drawer"
+        @click=${closeDrawer}
         aria-label="Close task detail"
       >
         ✕
@@ -1011,11 +1173,13 @@ function renderDrawer(scope, task) {
       </p>
       ${task.blocked_reason
         ? html`<p class="wait-inline">${task.blocked_reason}</p>`
-        : ""}
+        : nothing}
       <div class="links">
-        ${mr ? html`<a href=${mr}>Merge request !${task.mr_iid}</a>` : ""}
-        ${commit ? html`<a href=${commit}>${shortSha(sha)}</a>` : ""}
-        ${task.branch ? html`<span class="mono">${task.branch}</span>` : ""}
+        ${mr ? html`<a href=${mr}>Merge request !${task.mr_iid}</a>` : nothing}
+        ${commit ? html`<a href=${commit}>${shortSha(sha)}</a>` : nothing}
+        ${task.branch
+          ? html`<span class="mono">${task.branch}</span>`
+          : nothing}
       </div>
       <pre class="spec">${task.spec}</pre>
       ${taskActionButtons(task)}
@@ -1026,22 +1190,24 @@ function renderDrawer(scope, task) {
 }
 
 function renderActivity() {
-  const rows = state.audit.slice(0, 10).map(
-    (row) =>
-      html`<li>
-        <span class="when">${rel(row.at)}</span>
-        <span>
-          <span class="what">${row.action}</span>
-          <span class="who">${row.actor}</span>
-        </span>
-      </li>`,
-  );
+  const rows = state.audit.slice(0, 10);
   return html`<aside class="card">
     <p class="card-head">Activity</p>
     <div class="card-body">
       <ul class="activity">
         ${rows.length
-          ? rows
+          ? repeat(
+              rows,
+              (row) => row.id,
+              (row) =>
+                html`<li>
+                  <span class="when">${rel(row.at)}</span>
+                  <span>
+                    <span class="what">${row.action}</span>
+                    <span class="who">${row.actor}</span>
+                  </span>
+                </li>`,
+            )
           : html`<li><span class="note">Nothing yet.</span></li>`}
       </ul>
     </div>
@@ -1146,134 +1312,12 @@ async function refreshRunEvents(detail) {
   }
 }
 
-async function mutate(path, body) {
-  state.confirm = null;
-  try {
-    await api(path, {
-      method: "POST",
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    await refresh();
-  } catch (err) {
-    state.error = err instanceof Error ? err.message : String(err);
-    paint();
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Events
+// Global listeners
 // ---------------------------------------------------------------------------
 
-app.addEventListener("click", (event) => {
-  const open = event.target.closest("[data-open]");
-  if (open) {
-    location.hash = `#/${open.getAttribute("data-open")}`;
-    return;
-  }
-  const hit = event.target.closest("[data-task]");
-  if (hit && routeScopeId()) {
-    state.selectedTaskId = hit.getAttribute("data-task");
-    state.drawerOpen = true;
-    state.confirm = null;
-    state.runEvents = null;
-    paint();
-    void refresh();
-    return;
-  }
-  const act = event.target.closest("[data-act]");
-  if (!act) return;
-  const action = act.getAttribute("data-act");
-  const scope = state.detail?.scope;
-  const task = selectedTask(state.detail);
-  if (action === "approve" && scope) mutate(`/scopes/${scope.id}/approve-plan`);
-  if (action === "abandon") {
-    state.confirm = "abandon";
-    paint();
-  }
-  if (action === "abandon-yes" && scope) mutate(`/scopes/${scope.id}/abandon`);
-  if (action === "unblock" && task) mutate(`/tasks/${task.id}/unblock`);
-  if (action === "retry" && task) mutate(`/tasks/${task.id}/retry`);
-  if (action === "cancel") {
-    state.confirm = "cancel";
-    paint();
-  }
-  if (action === "cancel-yes" && task) mutate(`/tasks/${task.id}/cancel`);
-  if (action === "signin") void beginLogin();
-  if (action === "signout") signOut();
-  if (action === "close-drawer") {
-    state.drawerOpen = false;
-    state.runEvents = null;
-    paint();
-  }
-  if (action === "toggle-goal") {
-    state.goalOpen = !state.goalOpen;
-    paint();
-  }
-  if (action === "toggle-plan") {
-    state.planOpen = !state.planOpen;
-    paint();
-  }
-});
-
-app.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.drawerOpen) {
-    state.drawerOpen = false;
-    state.runEvents = null;
-    paint();
-    return;
-  }
-  if (event.key !== "Enter" && event.key !== " ") return;
-  const hit = event.target.closest("[data-task]");
-  if (!hit) return;
-  event.preventDefault();
-  state.selectedTaskId = hit.getAttribute("data-task");
-  state.drawerOpen = true;
-  paint();
-});
-
-app.addEventListener("submit", async (event) => {
-  const form = event.target.closest("form");
-  if (!form) return;
-  event.preventDefault();
-  if (form.dataset.form === "sign") {
-    const actor = String(new FormData(form).get("actor") || "").trim();
-    if (!actor) return;
-    state.actor = actor;
-    localStorage.setItem(ACTOR_KEY, actor);
-    await refresh();
-    return;
-  }
-  if (form.dataset.form === "open") {
-    const data = new FormData(form);
-    const goal = String(data.get("goal") || "").trim();
-    const title = String(data.get("title") || "").trim();
-    const path = String(data.get("path") || "").trim();
-    if (!goal || !path) return;
-    try {
-      const scope = await api("/scopes", {
-        method: "POST",
-        body: JSON.stringify({
-          goal,
-          ...(title ? { title } : {}),
-          project: { path },
-        }),
-      });
-      location.hash = `#/${scope.id}`;
-    } catch (err) {
-      state.error = err instanceof Error ? err.message : String(err);
-      paint();
-    }
-  }
-});
-
-app.addEventListener("focusout", (event) => {
-  const form = event.target.closest('form[data-form="sign"]');
-  if (!form) return;
-  const actor = String(new FormData(form).get("actor") || "").trim();
-  if (actor && actor !== state.actor) {
-    state.actor = actor;
-    localStorage.setItem(ACTOR_KEY, actor);
-  }
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.drawerOpen) closeDrawer();
 });
 
 window.addEventListener("hashchange", () => {
