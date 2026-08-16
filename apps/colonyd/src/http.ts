@@ -38,6 +38,10 @@ const createScopeBody = z
   })
   .strict();
 
+const feedbackBody = z
+  .object({ feedback: z.string().min(1).max(4000) })
+  .strict();
+
 const auditQuery = z.object({
   scope_id: z.string().optional(),
   task_id: z.string().optional(),
@@ -219,6 +223,33 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     } catch (err) {
       return conflict(c, err);
     }
+  });
+
+  // Reject the proposed plan with feedback; the architect re-plans with the
+  // feedback in its packet.
+  app.post("/scopes/:id/replan", async (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    if (scope.status !== "planning" || !scope.plan_json) {
+      return c.json(
+        {
+          error: {
+            code: "NO_PLAN_PENDING",
+            message: "scope has no plan awaiting approval",
+          },
+        },
+        409,
+      );
+    }
+    const parsed = feedbackBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const updated = ctx.store.requestReplan(scope.id, parsed.data.feedback);
+    ctx.store.audit(c.get("actor"), "plan.replan_requested", {
+      scope_id: scope.id,
+      detail: { feedback: parsed.data.feedback },
+    });
+    ctx.requestTick();
+    return c.json(updated);
   });
 
   app.post("/scopes/:id/abandon", async (c) => {
@@ -448,6 +479,45 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     });
     ctx.requestTick();
     return c.json(ctx.store.getTask(task.id));
+  });
+
+  // Operator feedback on an open MR: requeue the implementer with the
+  // feedback in its packet. The branch and MR stay; the agent continues.
+  app.post("/tasks/:id/request-changes", async (c) => {
+    const task = ctx.store.getTask(c.req.param("id"));
+    if (!task) return notFound(c, "task");
+    if (task.state !== "mr_open") {
+      return c.json(
+        {
+          error: {
+            code: "NO_OPEN_MR",
+            message: "task has no open merge request",
+          },
+        },
+        409,
+      );
+    }
+    const parsed = feedbackBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    ctx.store.setTaskFeedback(task.id, parsed.data.feedback);
+    try {
+      const updated = ctx.store.transitionTask(
+        task.id,
+        task.state_version,
+        "queued",
+        c.get("actor"),
+        { attempt: task.attempt + 1, next_retry_at: null },
+      );
+      ctx.store.audit(c.get("actor"), "task.changes_requested", {
+        scope_id: task.scope_id,
+        task_id: task.id,
+        detail: { feedback: parsed.data.feedback },
+      });
+      ctx.requestTick();
+      return c.json(updated);
+    } catch (err) {
+      return conflict(c, err);
+    }
   });
 
   // Manual-approvals scopes: record human approval to merge at the MR's

@@ -185,7 +185,7 @@ async function executeArchitect(
 }
 
 function buildArchitectBody(scope: Scope): string {
-  return [
+  const lines = [
     `Scope goal: ${scope.goal}`,
     "",
     "Inspect the repository (read-only) before decomposing.",
@@ -194,7 +194,17 @@ function buildArchitectBody(scope: Scope): string {
     "Prefer coarse vertical tasks over file-sliced tasks.",
     "Two tasks must not both introduce schema migrations unless one depends on the other.",
     "depends_on entries are indexes into the tasks array; the graph must be acyclic.",
-  ].join("\n");
+  ];
+  if (scope.plan_feedback) {
+    lines.push(
+      "",
+      "## Operator feedback on your previous plan",
+      scope.plan_feedback,
+      "",
+      "The previous decomposition was rejected. Revise it to address this feedback.",
+    );
+  }
+  return lines.join("\n");
 }
 
 function isAcyclic(deps: ReadonlyArray<readonly number[]>): boolean {

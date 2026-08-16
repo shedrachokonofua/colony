@@ -413,6 +413,12 @@ async function advanceScopePlanning(ctx: ColonydContext): Promise<void> {
         .filter((r) => r.kind === "architect")
         .at(-1);
 
+      if (lastArchitect?.status === "succeeded" && !scope.plan_json) {
+        // Replan requested: the operator rejected the plan with feedback.
+        void runArchitect(ctx, scope);
+        continue;
+      }
+
       if (lastArchitect?.status === "succeeded" && scope.plan_json) {
         let plan: ArchitectDecompositionV2;
         try {

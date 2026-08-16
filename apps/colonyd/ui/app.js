@@ -506,6 +506,15 @@ function openScope(id) {
   location.hash = `#/${id}`;
 }
 
+async function submitFeedback(event, path) {
+  event.preventDefault();
+  const feedback = String(
+    new FormData(event.target).get("feedback") || "",
+  ).trim();
+  if (!feedback) return;
+  await mutate(path, { feedback });
+}
+
 function selectTask(taskId) {
   state.selectedTaskId = taskId;
   state.drawerOpen = true;
@@ -1142,7 +1151,13 @@ function renderSheet() {
       <div class="sheet-col">${renderPlanCard(scope, detail)}</div>
       <div class="sheet-col">${renderActivity()}</div>
     </div>
-    ${state.drawerOpen && task ? renderDrawer(scope, task) : nothing}
+    ${state.drawerOpen
+      ? task
+        ? renderDrawer(scope, task)
+        : state.selectedTaskId?.startsWith("plan:")
+          ? renderPlanTaskDrawer(scope, Number(state.selectedTaskId.slice(5)))
+          : nothing
+      : nothing}
   `;
 }
 
@@ -1200,13 +1215,25 @@ function renderPlanCard(scope, detail) {
         : nothing}
       ${approvable
         ? html`<div class="plan-actions">
-            <button
-              class="btn btn-solid"
-              @click=${() => mutate(`/scopes/${scope.id}/approve-plan`)}
+              <button
+                class="btn btn-solid"
+                @click=${() => mutate(`/scopes/${scope.id}/approve-plan`)}
+              >
+                Approve plan
+              </button>
+            </div>
+            <form
+              class="feedback"
+              @submit=${(event) =>
+                submitFeedback(event, `/scopes/${scope.id}/replan`)}
             >
-              Approve plan
-            </button>
-          </div>`
+              <textarea
+                name="feedback"
+                required
+                placeholder="What should the architect change? Rejecting re-plans with this feedback."
+              ></textarea>
+              <button class="btn" type="submit">Request replan</button>
+            </form>`
         : nothing}
       ${architectRuns.length
         ? html`<div class="runs runs-inline">
@@ -1257,9 +1284,54 @@ function renderDrawer(scope, task) {
           : nothing}
       </div>
       <pre class="spec">${task.spec}</pre>
+      ${task.state === "mr_open"
+        ? html`<form
+            class="feedback"
+            @submit=${(event) =>
+              submitFeedback(event, `/tasks/${task.id}/request-changes`)}
+          >
+            <textarea
+              name="feedback"
+              required
+              placeholder="Feedback for the agent — requeues the task with your notes."
+            ></textarea>
+            <button class="btn" type="submit">Request changes</button>
+          </form>`
+        : nothing}
       ${taskActionButtons(task)}
       <p class="card-head drawer-runs-head">Runs</p>
       <div class="runs">${renderRuns(state.detail, task)}</div>
+    </div>
+  </aside>`;
+}
+
+function renderPlanTaskDrawer(scope, index) {
+  const plan = parsePlan(scope.plan_json);
+  const planTask = plan?.tasks?.[index];
+  if (!planTask) return nothing;
+  return html`<aside class="drawer" role="dialog" aria-label="Planned task">
+    <div class="drawer-head">
+      <span class="chip">proposed</span>
+      <span class="mono drawer-id">plan #${index}</span>
+      <button
+        class="btn btn-quiet drawer-close"
+        @click=${closeDrawer}
+        aria-label="Close task detail"
+      >
+        ✕
+      </button>
+    </div>
+    <div class="drawer-body">
+      <p class="task-title">${planTask.title}</p>
+      <p class="task-meta">
+        ${(planTask.depends_on || []).length
+          ? `depends on ${(planTask.depends_on || []).map((d) => `#${d}`).join(", ")}`
+          : "no dependencies"}
+      </p>
+      <pre class="spec spec-tall">${planTask.spec}</pre>
+      <p class="note">
+        This task is proposed — approve or reject the plan from the Plan card.
+      </p>
     </div>
   </aside>`;
 }

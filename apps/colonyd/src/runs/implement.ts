@@ -288,6 +288,9 @@ function buildPacketBody(ctx: ColonydContext, task: Task): string {
   if (reviewFindings) {
     sections.push("", "## Previous review findings", reviewFindings);
   }
+  if (task.human_feedback) {
+    sections.push("", "## Operator feedback", task.human_feedback);
+  }
   return sections.join("\n");
 }
 

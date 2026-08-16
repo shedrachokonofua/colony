@@ -22,6 +22,7 @@ export interface Scope {
   readonly goal: string;
   readonly title: string | null;
   readonly approvals: ScopeApprovals;
+  readonly plan_feedback: string | null;
   readonly status: ScopeStatus;
   readonly provider_project_id: string;
   readonly provider_project_path: string;
@@ -47,6 +48,7 @@ export interface Task {
   readonly created_at: string;
   readonly updated_at: string;
   readonly merge_approved_sha: string | null;
+  readonly human_feedback: string | null;
 }
 
 export interface Run {
@@ -131,6 +133,8 @@ export class Store {
     this.ensureColumn("scopes", "title", "TEXT");
     this.ensureColumn("scopes", "approvals", "TEXT NOT NULL DEFAULT 'auto'");
     this.ensureColumn("tasks", "merge_approved_sha", "TEXT");
+    this.ensureColumn("scopes", "plan_feedback", "TEXT");
+    this.ensureColumn("tasks", "human_feedback", "TEXT");
   }
 
   /** Idempotent ADD COLUMN for DBs created before a column existed. */
@@ -235,10 +239,43 @@ export class Store {
     return scope;
   }
 
+  /** Store the architect's proposed plan; consumes any pending feedback. */
   setScopePlan(id: ScopeId | string, planJson: string): void {
     this.db
-      .prepare(`UPDATE scopes SET plan_json = ?, updated_at = ? WHERE id = ?`)
+      .prepare(
+        `UPDATE scopes SET plan_json = ?, plan_feedback = NULL, updated_at = ? WHERE id = ?`,
+      )
       .run(planJson, nowIso(), id);
+  }
+
+  /**
+   * Reject the proposed plan with feedback: the plan is cleared and the
+   * next tick re-dispatches the architect with the feedback in its packet.
+   */
+  requestReplan(id: ScopeId | string, feedback: string): Scope {
+    this.db
+      .prepare(
+        `UPDATE scopes SET plan_json = NULL, plan_feedback = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(feedback, nowIso(), id);
+    const scope = this.getScope(id);
+    if (!scope) throw new Error(`scope lost after replan request: ${id}`);
+    return scope;
+  }
+
+  /**
+   * Operator feedback for the next implement attempt; also revokes any
+   * pending merge approval since the branch is about to change.
+   */
+  setTaskFeedback(taskId: TaskId | string, feedback: string): Task {
+    this.db
+      .prepare(
+        `UPDATE tasks SET human_feedback = ?, merge_approved_sha = NULL, updated_at = ? WHERE id = ?`,
+      )
+      .run(feedback, nowIso(), taskId);
+    const task = this.getTask(taskId);
+    if (!task) throw new Error(`task lost after feedback: ${taskId}`);
+    return task;
   }
 
   /**

@@ -248,4 +248,91 @@ describe("operator console", () => {
     const audit = store.listAudit({ scope_id: manual.id });
     expect(audit.some((row) => row.action === "merge.approved")).toBe(true);
   });
+
+  it("replans with operator feedback and requeues on request-changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+
+    const scope = store.createScope({
+      goal: "goal",
+      approvals: "manual",
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    store.setScopeStatus(scope.id, "planning", "svc:test");
+    store.setScopePlan(
+      scope.id,
+      JSON.stringify({
+        kind: "architect_decomposition",
+        summary: "v1",
+        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+      }),
+    );
+
+    const replan = await app.request(`/scopes/${scope.id}/replan`, {
+      method: "POST",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ feedback: "split task t into two" }),
+    });
+    expect(replan.status).toBe(200);
+    const updated = store.getScope(scope.id)!;
+    expect(updated.plan_json).toBeNull();
+    expect(updated.plan_feedback).toBe("split task t into two");
+
+    // A fresh plan consumes the feedback.
+    store.setScopePlan(
+      scope.id,
+      JSON.stringify({
+        kind: "architect_decomposition",
+        summary: "v2",
+        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+      }),
+    );
+    expect(store.getScope(scope.id)!.plan_feedback).toBeNull();
+
+    const [task] = store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "v2",
+        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+      },
+      "human:op-1",
+    );
+    let current = store.transitionTask(
+      task.id,
+      task.state_version,
+      "running",
+      "svc:test",
+    );
+    current = store.transitionTask(
+      current.id,
+      current.state_version,
+      "mr_open",
+      "svc:test",
+      { mr_iid: 9, branch: "colony/t" },
+    );
+
+    const changes = await app.request(`/tasks/${current.id}/request-changes`, {
+      method: "POST",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ feedback: "handle the empty case" }),
+    });
+    expect(changes.status).toBe(200);
+    const requeued = store.getTask(current.id)!;
+    expect(requeued.state).toBe("queued");
+    expect(requeued.human_feedback).toBe("handle the empty case");
+    expect(requeued.merge_approved_sha).toBeNull();
+    const audit = store.listAudit({ scope_id: scope.id });
+    expect(audit.some((r) => r.action === "task.changes_requested")).toBe(true);
+    expect(audit.some((r) => r.action === "plan.replan_requested")).toBe(true);
+  });
 });
