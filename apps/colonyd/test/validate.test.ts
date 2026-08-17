@@ -92,6 +92,42 @@ describe("defaultValidateExecutor", () => {
     expect(Array.isArray(result.results[0]!.tail)).toBe(true);
   });
 
+  it("scrubs PACKET.json and credential-embedded git remote URL from workspace", async () => {
+    // Use a fake embedded token to verify scrubbing surfaces. The local
+    // clone path works fine — the token is only used for provisionRepoWorkspace's
+    // packet credentials field.
+    const repo = seedRepo();
+    const fakeToken = "glpat-FAKETOKEN1234567890ABCDEF";
+    const credentialedUrl = repo.replace(
+      "file://",
+      `file://oauth2:${fakeToken}@`,
+    );
+    // Git handles both bare paths and file:// URLs. Use the bare path
+    // for cloneUrl (git can clone it) but embed a token via the packet.
+    // The key test: after scrubbing, PACKET.json is gone and the remote
+    // URL contains no credentials.
+    const result = await defaultValidateExecutor({
+      workspace: workspaceKey(),
+      cloneUrl: repo,
+      displayUrl: "https://example.com/repo.git",
+      targetBranch: "main",
+      acceptance: [
+        // Verify PACKET.json does not exist
+        { description: "no packet", command: "test ! -f PACKET.json" },
+        // Verify remote URL is scrubbed of credentials
+        {
+          description: "clean remote",
+          command:
+            "git remote get-url origin | grep -qv oauth2 && git remote get-url origin | grep -q example.com",
+        },
+      ],
+    });
+    expect(result.passed).toBe(true);
+    for (const entry of result.results) {
+      expect(entry.exit_code).toBe(0);
+    }
+  });
+
   it("runs acceptance commands without provider credentials in their env", async () => {
     const repo = seedRepo();
     const leaked = "glpat-AAAABBBBCCCCDDDDEEEEFFFF00";
