@@ -85,6 +85,31 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
   }
 }
 
+/**
+ * Failure classes that are the platform's fault, not the agent's: the
+ * colonyd process restarting mid-run, or the LLM gateway erroring. These
+ * retry with backoff but never consume the task's attempt budget — a task
+ * must only block on failures the agent could have prevented.
+ */
+const INFRA_FAILURE =
+  /^process_restart$|\b50[234]\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed/i;
+
+/** Exported for tests: classify a run error as infrastructure-caused. */
+export function isInfraError(error: string | null | undefined): boolean {
+  return typeof error === "string" && INFRA_FAILURE.test(error);
+}
+
+function lastImplementFailureWasInfra(
+  ctx: ColonydContext,
+  taskId: string,
+): boolean {
+  const last = ctx.store
+    .runsForTask(taskId)
+    .filter((r) => r.kind === "implement")
+    .at(-1);
+  return last?.status === "failed" && isInfraError(last.error);
+}
+
 function retryOrFailTask(
   ctx: ColonydContext,
   taskId: string,
@@ -92,7 +117,15 @@ function retryOrFailTask(
 ): void {
   const task = ctx.store.getTask(taskId);
   if (!task || task.state !== "running") return;
-  const attempt = task.attempt + 1;
+  const infra = lastImplementFailureWasInfra(ctx, taskId);
+  const attempt = infra ? task.attempt : task.attempt + 1;
+  if (infra) {
+    ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
+      scope_id: task.scope_id,
+      task_id: task.id,
+      detail: { reason },
+    });
+  }
   if (attempt >= ctx.env.maxAttempts) {
     ctx.store.transitionTask(
       task.id,

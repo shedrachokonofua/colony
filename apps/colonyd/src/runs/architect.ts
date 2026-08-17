@@ -194,6 +194,10 @@ function buildArchitectBody(scope: Scope): string {
     "Prefer coarse vertical tasks over file-sliced tasks.",
     "Two tasks must not both introduce schema migrations unless one depends on the other.",
     "depends_on entries are indexes into the tasks array; the graph must be acyclic.",
+    "depends_on must be EXPLICIT: if task B touches anything task A creates (files, packages, exports), B depends on A. An empty depends_on is a claim the task can run first in a fresh checkout.",
+    "Every task must land green ALONE on top of main: its own MR must pass install, typecheck, lint, and tests without any sibling task. New workspace packages must regenerate the lockfile in the same task.",
+    "Pure verify/QA tasks with no diff cannot pass a merge gate — fold verification into the task that produces the change, as required evidence.",
+    "Tasks creating shared contracts (schemas, wire protocols, exported test suites) must say so in their spec: contract changes are permanent and get the strictest review.",
   ];
   if (scope.plan_feedback) {
     lines.push(

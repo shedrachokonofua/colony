@@ -172,6 +172,16 @@ async function executeImplement(
       return;
     }
 
+    // A completion without a single executed command is not evidence of
+    // work — reject it before it can reach an MR or the gate.
+    if (envelope.commands.length === 0) {
+      ctx.store.finishRun(runId, "failed", {
+        error: "envelope has no command evidence",
+        envelope_json: JSON.stringify(envelope),
+      });
+      return;
+    }
+
     // Verify envelope facts against the provider before any transition.
     const verified = await verifyEnvelopeFacts(ctx, project, envelope, branch);
     if (!verified.ok) {

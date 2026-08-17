@@ -453,11 +453,64 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         c.get("actor"),
         { attempt: 0, next_retry_at: null },
       );
+      // Unblocking the last blocked task reactivates a scope that parked
+      // itself on "no runnable tasks".
+      const scope = ctx.store.getScope(task.scope_id);
+      if (
+        scope?.status === "blocked" &&
+        !ctx.store.listTasks(scope.id).some((t) => t.state === "blocked")
+      ) {
+        ctx.store.setScopeStatus(scope.id, "active", c.get("actor"), {
+          note: "last blocked task unblocked",
+        });
+      }
       ctx.requestTick();
       return c.json(updated);
     } catch (err) {
       return conflict(c, err);
     }
+  });
+
+  // Operator spec amendment: appended to the shared task spec so every role
+  // (implementer, reviewer) reads the same authoritative requirements. An
+  // open MR is requeued so the implementer acts on the amendment.
+  app.post("/tasks/:id/amend-spec", async (c) => {
+    const task = ctx.store.getTask(c.req.param("id"));
+    if (!task) return notFound(c, "task");
+    if (["merged", "canceled"].includes(task.state)) {
+      return c.json(
+        {
+          error: {
+            code: "TASK_FINISHED",
+            message: "cannot amend a merged or canceled task",
+          },
+        },
+        409,
+      );
+    }
+    const parsed = feedbackBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    let updated = ctx.store.amendTaskSpec(task.id, parsed.data.feedback);
+    if (updated.state === "mr_open") {
+      try {
+        updated = ctx.store.transitionTask(
+          updated.id,
+          updated.state_version,
+          "queued",
+          c.get("actor"),
+          { attempt: updated.attempt + 1, next_retry_at: null },
+        );
+      } catch (err) {
+        return conflict(c, err);
+      }
+    }
+    ctx.store.audit(c.get("actor"), "task.spec_amended", {
+      scope_id: task.scope_id,
+      task_id: task.id,
+      detail: { amendment: parsed.data.feedback },
+    });
+    ctx.requestTick();
+    return c.json(updated);
   });
 
   app.post("/tasks/:id/retry", (c) => {

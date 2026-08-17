@@ -506,7 +506,9 @@ describe("colonyd fake end-to-end loop", () => {
 
     a = handle.ctx.store.getTask(taskA.id)!;
     expect(a.state).toBe("queued");
-    expect(a.attempt).toBe(1);
+    // process_restart is an infrastructure failure: the task requeues but
+    // does NOT consume an attempt (only agent-caused failures do).
+    expect(a.attempt).toBe(0);
     // Exactly one transition out of running (state_version bumped once).
     expect(a.state_version).toBe(versionBefore + 1);
     // The expired run failed; no new implement run was minted.

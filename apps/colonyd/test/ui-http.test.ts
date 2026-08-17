@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
+import { isInfraError } from "../src/tick.js";
 
 const dirs: string[] = [];
 
@@ -352,5 +353,107 @@ describe("operator console", () => {
     const audit = store.listAudit({ scope_id: scope.id });
     expect(audit.some((r) => r.action === "task.changes_requested")).toBe(true);
     expect(audit.some((r) => r.action === "plan.replan_requested")).toBe(true);
+  });
+});
+
+describe("operator controls", () => {
+  function planningScope(store: Store, approvals: "auto" | "manual" = "auto") {
+    const scope = store.createScope({
+      goal: "goal",
+      approvals,
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    store.setScopeStatus(scope.id, "planning", "svc:test");
+    const [task] = store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "one",
+        tasks: [{ title: "t", spec: "original spec", depends_on: [] }],
+      },
+      "svc:test",
+    );
+    return { scope, task };
+  }
+
+  it("unblocking the last blocked task reactivates a parked scope", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const { scope, task } = planningScope(store);
+    let current = store.transitionTask(
+      task.id,
+      task.state_version,
+      "running",
+      "svc:test",
+    );
+    current = store.transitionTask(
+      current.id,
+      current.state_version,
+      "blocked",
+      "svc:test",
+      { blocked_reason: "retries exhausted: run_failed" },
+    );
+    store.setScopeStatus(scope.id, "blocked", "svc:test", {
+      blocked_reason: `no runnable tasks; blocked: ${task.id}`,
+    });
+
+    const res = await app.request(`/tasks/${current.id}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(res.status).toBe(200);
+    expect(store.getTask(task.id)!.state).toBe("queued");
+    expect(store.getScope(scope.id)!.status).toBe("active");
+  });
+
+  it("amend-spec appends an authoritative section and requeues open MRs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const { task } = planningScope(store);
+    let current = store.transitionTask(
+      task.id,
+      task.state_version,
+      "running",
+      "svc:test",
+    );
+    current = store.transitionTask(
+      current.id,
+      current.state_version,
+      "mr_open",
+      "svc:test",
+      { mr_iid: 11, branch: "colony/t" },
+    );
+
+    const res = await app.request(`/tasks/${current.id}/amend-spec`, {
+      method: "POST",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ feedback: "env split is authoritative" }),
+    });
+    expect(res.status).toBe(200);
+    const updated = store.getTask(task.id)!;
+    expect(updated.spec).toContain("original spec");
+    expect(updated.spec).toContain("Spec amendment (operator, authoritative)");
+    expect(updated.spec).toContain("env split is authoritative");
+    expect(updated.state).toBe("queued");
+    const audit = store.listAudit({ task_id: task.id });
+    expect(audit.some((r) => r.action === "task.spec_amended")).toBe(true);
+  });
+
+  it("classifies infrastructure errors distinctly from agent failures", () => {
+    expect(isInfraError("process_restart")).toBe(true);
+    expect(isInfraError("502 status code (no body)")).toBe(true);
+    expect(isInfraError("fetch failed")).toBe(true);
+    expect(isInfraError("ECONNRESET")).toBe(true);
+    expect(isInfraError("envelope invalid")).toBe(false);
+    expect(isInfraError("timeout_without_envelope")).toBe(false);
+    expect(isInfraError(null)).toBe(false);
   });
 });

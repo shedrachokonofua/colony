@@ -277,6 +277,23 @@ export class Store {
     if (!task) throw new Error(`task lost after feedback: ${taskId}`);
     return task;
   }
+  /**
+   * Append an operator amendment to the task spec. Amendments are part of
+   * the shared spec every role reads (implementer, reviewer), which is what
+   * keeps operator requirements from diverging between roles.
+   */
+  amendTaskSpec(taskId: TaskId | string, amendment: string): Task {
+    this.db
+      .prepare(`UPDATE tasks SET spec = spec || ?, updated_at = ? WHERE id = ?`)
+      .run(
+        `\n\n## Spec amendment (operator, authoritative)\n${amendment}`,
+        nowIso(),
+        taskId,
+      );
+    const task = this.getTask(taskId);
+    if (!task) throw new Error(`task lost after spec amendment: ${taskId}`);
+    return task;
+  }
 
   /**
    * Materialize an approved architect decomposition: create tasks + deps
@@ -295,6 +312,7 @@ export class Store {
         }),
       );
     }
+
     assertScopeTransition(scope.status, "active");
 
     const ids: TaskId[] = plan.tasks.map(

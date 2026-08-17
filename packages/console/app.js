@@ -1298,6 +1298,20 @@ function renderDrawer(scope, task) {
             <button class="btn" type="submit">Request changes</button>
           </form>`
         : nothing}
+      ${!["merged", "canceled"].includes(task.state)
+        ? html`<form
+            class="feedback"
+            @submit=${(event) =>
+              submitFeedback(event, `/tasks/${task.id}/amend-spec`)}
+          >
+            <textarea
+              name="feedback"
+              required
+              placeholder="Amend the spec — authoritative for the implementer AND the reviewer."
+            ></textarea>
+            <button class="btn" type="submit">Amend spec</button>
+          </form>`
+        : nothing}
       ${taskActionButtons(task)}
       <p class="card-head drawer-runs-head">Runs</p>
       <div class="runs">${renderRuns(state.detail, task)}</div>
