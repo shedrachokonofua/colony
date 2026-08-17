@@ -78,6 +78,10 @@ describe("state machine", () => {
       ["planning", "blocked"],
       ["active", "done"],
       ["active", "blocked"],
+      ["active", "validating"],
+      ["validating", "done"],
+      ["validating", "active"],
+      ["validating", "abandoned"],
       ["blocked", "planning"],
       ["blocked", "active"],
       ["draft", "abandoned"],
@@ -98,7 +102,11 @@ describe("state machine", () => {
       ["draft", "active"],
       ["draft", "done"],
       ["planning", "done"],
+      ["planning", "validating"],
       ["active", "planning"],
+      ["validating", "planning"],
+      ["validating", "blocked"],
+      ["draft", "validating"],
       ["abandoned", "active"],
       ["done", "abandoned"],
       ["done", "done"],
@@ -154,6 +162,16 @@ describe("Store", () => {
     expect(tasks[1]!.id).toBe(`${scopeId}.2`);
     expect(store.getScope(scopeId)!.status).toBe("active");
     expect(store.taskDeps(tasks[1]!.id)).toEqual([tasks[0]!.id]);
+  });
+
+  it("persists acceptance_json on materializePlan", () => {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const p = plan();
+    store.materializePlan(scopeId, p, "svc:colonyd");
+    expect(store.getScope(scopeId)!.acceptance_json).toBe(
+      JSON.stringify(p.acceptance),
+    );
   });
 
   it("rejects a cyclic plan", () => {
@@ -305,6 +323,19 @@ describe("Store", () => {
     expect(
       store.recordObservation("webhook", "k2", JSON.stringify({ a: 3 })),
     ).toBe(true);
+  });
+
+  it("starts and counts validate runs", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "validate",
+      lease_ttl_ms: 1000,
+    });
+    expect(run.kind).toBe("validate");
+    expect(store.getRun(run.id)!.kind).toBe("validate");
+    expect(store.activeRunCount()).toBe(1);
+    expect(store.activeRunCount("validate")).toBe(1);
   });
 
   it("counts active runs by kind", () => {
