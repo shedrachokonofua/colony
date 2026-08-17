@@ -51,12 +51,14 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
           return {
             kind: "architect_decomposition",
             summary: "Single-task decomposition.",
+            acceptance: [{ description: "fake goal holds", command: "true" }],
             tasks: [{ title: "Task A", spec: "Do A.", depends_on: [] }],
           };
         }
         return {
           kind: "architect_decomposition",
           summary: "Two-task decomposition: A then B.",
+          acceptance: [{ description: "fake goal holds", command: "true" }],
           tasks: [
             { title: "Task A", spec: "Do A.", depends_on: [] },
             { title: "Task B", spec: "Do B.", depends_on: [0] },

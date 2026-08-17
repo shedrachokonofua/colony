@@ -126,6 +126,7 @@ function plan(
   return {
     kind: "architect_decomposition",
     summary: "test plan",
+    acceptance: [{ description: "core plan goal", command: "true" }],
     tasks: [
       { title: "A", spec: "do A", depends_on: [] },
       { title: "B", spec: "do B", depends_on: [0] },
