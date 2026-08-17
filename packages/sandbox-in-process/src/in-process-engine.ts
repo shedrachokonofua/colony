@@ -101,10 +101,15 @@ class InProcessSandboxHandle implements SandboxHandle {
     onEvent: (event: ExecEvent) => void,
   ): Promise<ExecResult> {
     return new Promise((resolveResult, reject) => {
+      const cwd = this.resolveExecCwd(request);
+      // detached:true puts the shell (and everything it spawns) in its own
+      // process group so a timeout can kill the entire tree, not just the
+      // shell, via `process.kill(-child.pid, ...)`.
       const child = spawn(request.command, {
-        cwd: this.scratchDir,
+        cwd,
         env: this.buildEnv(request),
         shell: true,
+        detached: true,
       }) as ChildProcessWithoutNullStreams;
 
       let seq = 0;
@@ -113,7 +118,14 @@ class InProcessSandboxHandle implements SandboxHandle {
         request.timeoutMs !== undefined
           ? setTimeout(() => {
               timedOut = true;
-              child.kill("SIGKILL");
+              if (child.pid !== undefined) {
+                try {
+                  // Negative pid signals the whole process group.
+                  process.kill(-child.pid, "SIGKILL");
+                } catch {
+                  // Process group already gone.
+                }
+              }
             }, request.timeoutMs)
           : undefined;
 
@@ -136,6 +148,12 @@ class InProcessSandboxHandle implements SandboxHandle {
         resolveResult({ exitCode: code, timedOut });
       });
     });
+  }
+
+  /** Resolves the exec working directory, rooting relative `cwd` under the scratch dir. */
+  private resolveExecCwd(request: ExecRequest): string {
+    if (request.cwd === undefined) return this.scratchDir;
+    return this.resolveWithinScratch(request.cwd);
   }
 }
 
