@@ -6,7 +6,7 @@ import { Store } from "@colony/core";
 import { startTelemetryFromEnv } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
-import { createAgentWiring } from "./agent-runtime.js";
+import { createAgentWiring, createRunEventSink } from "./agent-runtime.js";
 import type { ColonydContext } from "./context.js";
 import { buildApp } from "./http.js";
 import { consoleLogger } from "./logging.js";
@@ -65,13 +65,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
 
   const agents =
     options.agents ??
-    (await createAgentWiring(config, (runId, event, detail) => {
-      try {
-        store.appendRunEvent(runId, event, detail);
-      } catch {
-        // The activity feed must never break a run.
-      }
-    }));
+    (await createAgentWiring(config, createRunEventSink(store)));
   if (config.reviewMode === "required" && !agents.reviewer) {
     throw new Error(
       "review.mode is 'required' but no reviewer agent is configured",

@@ -202,6 +202,36 @@ describe("operator console", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("serves a single run with its model_id at GET /runs/:id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const scope = store.createScope({
+      goal: "add /version",
+      provider_project_id: "1",
+      provider_project_path: "so/colony",
+    });
+    const run = store.startRun({
+      scope_id: scope.id,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+      model_id: "m",
+    });
+    const res = await app.request(`/runs/${run.id}`, {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; model_id: string | null };
+    expect(body.id).toBe(run.id);
+    expect(body.model_id).toBe("m");
+
+    const missing = await app.request("/runs/nope", {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(missing.status).toBe(404);
+  });
+
   it("holds merges in manual-approvals scopes until approved at head", async () => {
     const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
     dirs.push(dir);

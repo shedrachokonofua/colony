@@ -681,6 +681,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(updated);
   });
 
+  app.get("/runs/:id", (c) => {
+    const run = ctx.store.getRun(c.req.param("id"));
+    if (!run) return notFound(c, "run");
+    return c.json(run);
+  });
+
   app.get("/runs/:id/events", (c) => {
     const run = ctx.store.getRun(c.req.param("id"));
     if (!run) return notFound(c, "run");

@@ -10,6 +10,7 @@ import type {
   ResolvedAgentConfig,
   SandboxEngine as SandboxEngineName,
 } from "@colony/config";
+import type { Store } from "@colony/core";
 import type { SandboxEngine } from "@colony/sandbox";
 
 export interface AgentWiring {
@@ -24,6 +25,24 @@ export type RunEventSink = (
   event: string,
   detail: Record<string, unknown>,
 ) => void;
+
+/**
+ * Build the run-event sink that appends every agent event to `run_events`
+ * and, on a `pi_model_fallback` event, updates the run's `model_id` to the
+ * fallback model. Never throws: the activity feed must not break a run.
+ */
+export function createRunEventSink(store: Store): RunEventSink {
+  return (runId, event, detail) => {
+    try {
+      store.appendRunEvent(runId, event, detail);
+      if (event === "pi_model_fallback" && typeof detail.to === "string") {
+        store.setRunModel(runId, detail.to);
+      }
+    } catch {
+      // The activity feed must never break a run.
+    }
+  };
+}
 
 /**
  * Maps a configured sandbox engine name to a dynamic factory producing the

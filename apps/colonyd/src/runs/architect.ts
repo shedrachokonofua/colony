@@ -37,6 +37,7 @@ export async function runArchitect(
     scope_id: scope.id,
     kind: "architect",
     lease_ttl_ms: leaseTtlMs,
+    model_id: architect.model.id,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,

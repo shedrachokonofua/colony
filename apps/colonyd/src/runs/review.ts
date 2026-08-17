@@ -46,6 +46,7 @@ export async function runReview(
     kind: "review",
     lease_ttl_ms: leaseTtlMs,
     base_sha: headSha,
+    model_id: reviewerConfig.model.id,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
