@@ -13,6 +13,9 @@
       "@colony/provider": ["./packages/provider/src/index.ts"],
       "@colony/provider-gitlab": ["./packages/provider-gitlab/src/index.ts"],
       "@colony/sandbox": ["./packages/sandbox/src/index.ts"],
+      "@colony/sandbox-in-process": [
+        "./packages/sandbox-in-process/src/index.ts"
+      ],
       "@colony/schemas": ["./packages/schemas/src/index.ts"],
       "@colony/sandbox-tests": ["./packages/sandbox-tests/src/index.ts"]
     }

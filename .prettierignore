@@ -6,3 +6,4 @@ flake.lock
 secrets/
 data/
 packages/console/vendor/
+PACKET.json
