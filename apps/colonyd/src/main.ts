@@ -6,7 +6,11 @@ import { Store } from "@colony/core";
 import { startTelemetryFromEnv } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
-import { createAgentWiring, createRunEventSink } from "./agent-runtime.js";
+import {
+  createAgentWiring,
+  createEngine,
+  createRunEventSink,
+} from "./agent-runtime.js";
 import type { ColonydContext } from "./context.js";
 import { buildApp } from "./http.js";
 import { consoleLogger } from "./logging.js";
@@ -24,6 +28,8 @@ export interface BootOptions {
   readonly gateExecutor?: GateExecutor;
   /** Test seam: override the validation command runner. */
   readonly validateExecutor?: ColonydContext["validateExecutor"];
+  /** Test seam: override the sandbox engine used for scope validation. */
+  readonly validateEngine?: ColonydContext["validateEngine"];
   /** Test seam: skip the HTTP server + interval timer. */
   readonly headless?: boolean;
 }
@@ -46,6 +52,12 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     agentRuntimeOverride: environment.AGENT_RUNTIME,
     sandboxEngineOverride: environment.COLONY_SANDBOX_ENGINE,
   });
+
+  // Provisioning is cheap and idempotent (in-process by default in fake
+  // mode), so the validate engine is always created at boot.
+  const validateEngine =
+    options.validateEngine ??
+    (await createEngine(config.sandbox.engine, config));
 
   const store = new Store(environment.COLONYD_DB_PATH);
 
@@ -105,6 +117,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     logger,
     gateExecutor: options.gateExecutor,
     validateExecutor: options.validateExecutor,
+    validateEngine,
     env: {
       gitlabBaseUrl: environment.GITLAB_BASE_URL,
       gitlabToken: environment.GITLAB_TOKEN,

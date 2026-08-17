@@ -221,6 +221,7 @@ async function executeValidate(
       targetBranch: scope.default_branch,
       acceptance,
       baseSha,
+      engine: ctx.validateEngine,
     });
   } catch (err) {
     result = {
