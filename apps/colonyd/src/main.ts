@@ -42,6 +42,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   const config = loadColonyConfig({
     path: environment.COLONY_CONFIG_PATH,
     agentRuntimeOverride: environment.AGENT_RUNTIME,
+    sandboxEngineOverride: environment.COLONY_SANDBOX_ENGINE,
   });
 
   const store = new Store(environment.COLONYD_DB_PATH);

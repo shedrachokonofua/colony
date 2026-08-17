@@ -27,6 +27,7 @@ import type { AgentRunEnvironment, AgentRuntimePacket } from "./adapter.js";
 import type { CredentialBroker } from "./credential-broker.js";
 import { permissiveCredentialBroker } from "./credential-broker.js";
 import type { PiRunRequest } from "./pi-adapter.js";
+import type { SandboxEngine } from "@colony/sandbox";
 
 export interface PiRunnerLogger {
   info?(fields: Record<string, unknown>, message: string): void;
@@ -49,6 +50,7 @@ export interface PiRunnerBaseOptions {
   readonly maxTurns?: number;
   readonly runTimeoutMs?: number;
   readonly scratchDir?: string;
+  readonly engine?: SandboxEngine;
 }
 
 export type PiModelResolver = (

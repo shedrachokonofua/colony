@@ -38,6 +38,16 @@ import {
   withRunTimeout,
 } from "./pi-runner-common.js";
 import {
+  buildSandboxBaseTools,
+  type SandboxBaseTools,
+} from "./sandbox-tools.js";
+import {
+  buildSandboxLaunchProfile,
+  type SandboxEngine,
+  type SandboxHandle,
+  type SandboxRole,
+} from "@colony/sandbox";
+import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
@@ -132,6 +142,7 @@ export class PiBaseAgentRunner implements PiRunner {
       resolveCapturedEnvelope = resolve;
     });
     let session: AgentSession | undefined;
+    let handle: SandboxHandle | undefined;
 
     const submitTool = this.profile.submitTool((value) => {
       capturedEnvelope = value;
@@ -206,6 +217,14 @@ export class PiBaseAgentRunner implements PiRunner {
     });
 
     try {
+      let baseToolsOverride: SandboxBaseTools | undefined;
+      if (this.options.engine) {
+        handle = await this.options.engine.provision(
+          buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
+          cwd,
+        );
+        baseToolsOverride = buildSandboxBaseTools(handle, cwd);
+      }
       const result = await createAgentSession({
         cwd,
         model,
@@ -223,6 +242,15 @@ export class PiBaseAgentRunner implements PiRunner {
         tools: toolNames,
       });
       session = result.session;
+      if (baseToolsOverride) {
+        // The pi-coding-agent SDK's createAgentSession does not forward a
+        // base-tools override, so inject it onto the session and rebuild its
+        // runtime so every bash/file tool executes through the sandbox handle.
+        (
+          session as unknown as { _baseToolsOverride?: SandboxBaseTools }
+        )._baseToolsOverride = baseToolsOverride;
+        await session.reload();
+      }
       if (timeoutTriggered) {
         void session.abort();
       }
@@ -388,6 +416,7 @@ export class PiBaseAgentRunner implements PiRunner {
       clearTimeoutGuard();
       session?.dispose();
       this.activeRuns.delete(runId);
+      await handle?.destroy();
     }
 
     return {
@@ -418,6 +447,15 @@ function provisionProfileWorkspace(
     ...options,
     requireCredentials: true,
   });
+}
+
+/**
+ * Map a pi runner role onto a sandbox launch role. The architect is a
+ * read-only developer-style role, so it shares the reviewer sandbox profile
+ * (no branch-push capability, read-only root filesystem).
+ */
+function toSandboxRole(role: AgentRuntimeRole): SandboxRole {
+  return role === "developer" ? "developer" : "reviewer";
 }
 
 function zodValidator(

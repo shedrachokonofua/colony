@@ -19,6 +19,7 @@
     "@colony/observability": "*",
     "@colony/provider": "*",
     "@colony/provider-gitlab": "*",
+    "@colony/sandbox-in-process": "*",
     "@colony/schemas": "*",
     "@hono/node-server": "^1.14.0",
     "hono": "^4.9.0",

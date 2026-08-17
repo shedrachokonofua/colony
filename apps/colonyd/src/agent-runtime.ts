@@ -5,7 +5,12 @@ import {
   type AgentRuntimeAdapter,
   type CredentialBroker,
 } from "@colony/agent-runtime";
-import type { ColonyConfig, ResolvedAgentConfig } from "@colony/config";
+import type {
+  ColonyConfig,
+  ResolvedAgentConfig,
+  SandboxEngine as SandboxEngineName,
+} from "@colony/config";
+import type { SandboxEngine } from "@colony/sandbox";
 
 export interface AgentWiring {
   readonly runtime: "fake" | "pi";
@@ -19,6 +24,30 @@ export type RunEventSink = (
   event: string,
   detail: Record<string, unknown>,
 ) => void;
+
+/**
+ * Maps a configured sandbox engine name to a dynamic factory producing the
+ * `SandboxEngine`. Mirrors how the pi runners are imported via
+ * `await import("@colony/agent-runtime/pi-architect-runner")` so the engine
+ * choice is resolved at boot rather than statically linked.
+ */
+export const ENGINE_REGISTRY: Record<
+  SandboxEngineName,
+  () => Promise<() => SandboxEngine>
+> = {
+  "in-process": () =>
+    import("@colony/sandbox-in-process").then((m) => m.createInProcessEngine),
+};
+
+/** Resolve a configured engine name, throwing on unknown names. */
+export async function createEngine(name: string): Promise<SandboxEngine> {
+  const factory = ENGINE_REGISTRY[name as SandboxEngineName];
+  if (!factory) {
+    throw new Error(`unknown sandbox engine: ${name}`);
+  }
+  const engineFactory = await factory();
+  return engineFactory();
+}
 
 /**
  * Build the agent runtime wiring once at boot.
@@ -59,6 +88,7 @@ export async function createAgentWiring(
   }
 
   const broker = createConfigCredentialBroker(agentsToCheck);
+  const engine = await createEngine(config.sandbox.engine);
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");
   const { PiCodingAgentRunner } =
@@ -81,6 +111,7 @@ export async function createAgentWiring(
         runTimeoutMs: reviewerConfig.ceilings.timeoutMs,
         thinkingLevel: reviewerConfig.thinkingLevel,
         logger: reviewerLogger,
+        engine,
       }),
       {
         provider: reviewerConfig.providerKey,
@@ -100,6 +131,7 @@ export async function createAgentWiring(
         runTimeoutMs: architectConfig.ceilings.timeoutMs,
         thinkingLevel: architectConfig.thinkingLevel,
         logger: architectLogger,
+        engine,
       }),
       {
         provider: architectConfig.providerKey,
@@ -115,6 +147,7 @@ export async function createAgentWiring(
         runTimeoutMs: developerConfig.ceilings.timeoutMs,
         thinkingLevel: developerConfig.thinkingLevel,
         logger: developerLogger,
+        engine,
       }),
       {
         provider: developerConfig.providerKey,
