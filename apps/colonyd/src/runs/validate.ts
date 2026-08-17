@@ -385,11 +385,15 @@ export function scrubWorkspaceCredentials(
  * provider-credential pattern is removed, and GITLAB_TOKEN is never present.
  * This is a hard safety invariant for validate (credential-free runner).
  *
- * The daemon's NODE_ENV is dropped too: acceptance commands are CI-like
- * workloads against a fresh checkout, and inheriting the daemon's
- * NODE_ENV=production makes `npm ci` omit devDependencies — observed live
- * as every test-running criterion failing with "Cannot find package
- * 'vitest'". CI=true matches what the commands would see in a pipeline.
+ * Acceptance commands are CI-like workloads against a fresh checkout, so the
+ * daemon's runtime configuration must not leak into them:
+ * - NODE_ENV is dropped (production made `npm ci` omit devDependencies —
+ *   observed live as "Cannot find package 'vitest'").
+ * - The entire COLONY_* namespace is dropped (observed live: the daemon's
+ *   COLONY_OIDC_ISSUER booted the checkout's app under OIDC auth and an
+ *   acceptance test got 401 where CI gets 200).
+ * - CI=true and NO_COLOR=1 match pipeline behavior and keep evidence tails
+ *   free of ANSI escapes.
  */
 function sanitizedEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -397,11 +401,13 @@ function sanitizedEnv(): Record<string, string> {
     if (value === undefined) continue;
     if (/TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|OAUTH|API_KEY/i.test(key))
       continue;
+    if (key === "NODE_ENV" || key.startsWith("COLONY")) continue;
     env[key] = value;
   }
   delete env["GITLAB_TOKEN"];
-  delete env["NODE_ENV"];
   env["CI"] = "true";
+  env["NO_COLOR"] = "1";
+  env["FORCE_COLOR"] = "0";
   return env;
 }
 
@@ -432,9 +438,18 @@ function runAcceptanceCommand(
   return { exitCode, output: `${stdout}${stderr}` };
 }
 
+/** Strip ANSI escape sequences so evidence tails stay readable in the console. */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\u001B\[[0-9;]*[A-Za-z]/g, "");
+}
+
 function tailOutput(output: string): string[] {
+  const stripped = stripAnsi(output);
   const capped =
-    output.length > MAX_TAIL_BYTES ? output.slice(-MAX_TAIL_BYTES) : output;
+    stripped.length > MAX_TAIL_BYTES
+      ? stripped.slice(-MAX_TAIL_BYTES)
+      : stripped;
   const lines = capped.split("\n");
   return lines.slice(Math.max(0, lines.length - MAX_TAIL_LINES));
 }

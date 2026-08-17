@@ -246,14 +246,29 @@ function scopeTitle(scope) {
     : scope.goal;
 }
 
-function waitingOnYou(scope, tasks) {
+function latestValidateRun(detail) {
+  const runs = (detail?.runs || []).filter((run) => run.kind === "validate");
+  return runs
+    .slice()
+    .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+    .pop();
+}
+
+function waitingOnYou(scope, tasks, detail) {
   if (!scope) return "";
   if (scope.status === "planning" && scope.plan_json) {
     return "Plan is waiting for your approval.";
   }
   if (scope.status === "planning") return "Architect is drawing the plan.";
   if (scope.status === "validating") {
-    return "Validating the goal on the default branch — running acceptance criteria against a fresh checkout.";
+    const latest = latestValidateRun(detail);
+    if (latest?.status === "failed") {
+      return "Validation failed — fix the goal on the default branch, then run validation again.";
+    }
+    if (latest?.status === "running") {
+      return "Validating the goal on the default branch — running acceptance criteria against a fresh checkout.";
+    }
+    return "Waiting for validation to start.";
   }
   if (scope.status === "blocked") {
     return scope.blocked_reason || "Scope is blocked.";
@@ -1256,7 +1271,7 @@ function renderSheet() {
     return html`<p class="boot">Loading scope…</p>`;
   }
   const task = selectedTask(detail);
-  const wait = waitingOnYou(scope, detail.tasks);
+  const wait = waitingOnYou(scope, detail.tasks, detail);
   const pathUrl = gitlabProjectUrl(scope.provider_project_path);
   const taskCount = detail.tasks.length;
   return html`
@@ -1290,10 +1305,9 @@ function renderSheet() {
       <div class="card-body">${renderDag(detail)}</div>
     </section>
     <div class="sheet-cols">
-      <div class="sheet-col">${renderGoalCard(scope)}</div>
+      <div class="sheet-col">${renderGoalCard(scope)} ${renderActivity()}</div>
       <div class="sheet-col">${renderPlanCard(scope, detail)}</div>
       <div class="sheet-col">${renderValidationCard(scope, detail)}</div>
-      <div class="sheet-col">${renderActivity()}</div>
     </div>
     ${state.drawerOpen
       ? task
@@ -1416,12 +1430,16 @@ function renderValidationCard(scope, detail) {
   const evidence = latest ? parseEvidence(latest.evidence_json) : null;
   const results = Array.isArray(evidence?.results) ? evidence.results : [];
   const failedCount = results.filter((result) => result.exit_code !== 0).length;
+  const failed = Boolean(latest && latest.status === "failed");
+  const running = Boolean(latest && latest.status === "running");
   const summary =
     latest && evidence
       ? evidence.passed
         ? "All criteria passed"
         : `Failed: ${failedCount} criteria did not pass`
-      : null;
+      : running
+        ? "Validation is running…"
+        : null;
   return html`<aside class="card">
     <p class="card-head">Validation</p>
     <div class="card-body">
@@ -1429,12 +1447,20 @@ function renderValidationCard(scope, detail) {
         ? html`<p
             class=${classMap({
               "validation-summary": true,
-              "is-passed": evidence.passed,
-              "is-failed": !evidence.passed,
+              "is-passed": Boolean(evidence?.passed),
+              "is-failed": Boolean(evidence && !evidence.passed),
             })}
           >
             ${summary}
           </p>`
+        : nothing}
+      ${scope.status === "validating" && failed
+        ? html`<button
+            class="btn btn-solid validation-retry"
+            @click=${() => mutate(`/scopes/${scope.id}/revalidate`)}
+          >
+            Run validation again
+          </button>`
         : nothing}
       <ul class="validation-list">
         ${repeat(
