@@ -563,6 +563,15 @@ export class Store {
       .run(tokenId, runId);
   }
 
+  /** Backfill base_sha once it resolves (validate runs start before the provider round-trip). */
+  setRunBaseSha(runId: string, baseSha: string): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET base_sha = ? WHERE id = ? AND status = 'running'`,
+      )
+      .run(baseSha, runId);
+  }
+
   heartbeatRun(runId: string, lease_ttl_ms: number): void {
     const lease = new Date(Date.now() + lease_ttl_ms).toISOString();
     this.db

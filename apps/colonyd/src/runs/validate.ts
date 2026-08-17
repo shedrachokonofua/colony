@@ -117,6 +117,7 @@ export async function runValidation(
   try {
     baseSha = (await ctx.provider.commits.get(project, scope.default_branch))
       .sha;
+    ctx.store.setRunBaseSha(run.id, baseSha);
 
     ctx.store.audit(SERVICE_ACTOR, "run.start", {
       scope_id: scope.id,
@@ -275,6 +276,9 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
     // exfiltrate provider tokens. Scrub both surfaces:
     scrubWorkspaceCredentials(workspace, input.displayUrl);
   } catch (err) {
+    // Clean up a provisioned-but-unscrubbed workspace: it may still hold
+    // credential artifacts and must never survive a scrub failure.
+    if (workspace) rmSync(workspace, { recursive: true, force: true });
     return {
       results: [],
       passed: false,
@@ -322,7 +326,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
  * - Rewrite .git/config remote.origin.url to the display URL (no token).
  * - Delete .git/credentials or any credential helper cache files.
  */
-function scrubWorkspaceCredentials(
+export function scrubWorkspaceCredentials(
   workspace: string,
   displayUrl: string,
 ): void {

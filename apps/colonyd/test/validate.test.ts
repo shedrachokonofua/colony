@@ -1,9 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultValidateExecutor } from "../src/runs/validate.js";
+import {
+  defaultValidateExecutor,
+  scrubWorkspaceCredentials,
+} from "../src/runs/validate.js";
 
 const dirs: string[] = [];
 
@@ -92,31 +101,48 @@ describe("defaultValidateExecutor", () => {
     expect(Array.isArray(result.results[0]!.tail)).toBe(true);
   });
 
-  it("scrubs PACKET.json and credential-embedded git remote URL from workspace", async () => {
-    // Use a fake embedded token to verify scrubbing surfaces. The local
-    // clone path works fine — the token is only used for provisionRepoWorkspace's
-    // packet credentials field.
-    const repo = seedRepo();
-    // Joined at runtime so the merge gate's secret scanner (which flags
-    // token-shaped literals on added diff lines) never matches test fixtures.
-    const fakeToken = ["glpat", "FAKETOKEN1234567890ABCDEF"].join("-");
-    const credentialedUrl = repo.replace(
-      "file://",
-      `file://oauth2:${fakeToken}@`,
+  it("scrubs PACKET.json and the credential-embedded git remote from a workspace", () => {
+    // Direct unit test against a staged workspace: a clone whose origin
+    // embeds a token and a PACKET.json carrying the same token — exactly
+    // what provisionRepoWorkspace leaves behind for credentialed repos.
+    // The token is joined at runtime so the merge gate's secret scanner
+    // (which flags token-shaped literals on added diff lines) never
+    // matches test fixtures.
+    const token = ["glpat", "FAKETOKEN1234567890ABCDEF"].join("-");
+    const displayUrl = "https://example.com/repo.git";
+    const credentialedUrl = `https://oauth2:${token}@example.com/repo.git`;
+    const workspace = tempDir("colony-scrub-");
+    git(workspace, ["init", "--quiet"]);
+    git(workspace, ["remote", "add", "origin", credentialedUrl]);
+    writeFileSync(
+      join(workspace, "PACKET.json"),
+      JSON.stringify({
+        repo: { url: credentialedUrl, credentials: { token } },
+      }),
     );
-    // Git handles both bare paths and file:// URLs. Use the bare path
-    // for cloneUrl (git can clone it) but embed a token via the packet.
-    // The key test: after scrubbing, PACKET.json is gone and the remote
-    // URL contains no credentials.
+
+    scrubWorkspaceCredentials(workspace, displayUrl);
+
+    expect(existsSync(join(workspace, "PACKET.json"))).toBe(false);
+    expect(git(workspace, ["remote", "get-url", "origin"]).trim()).toBe(
+      displayUrl,
+    );
+    // The raw git config must contain neither the token nor its
+    // URL-encoded form — assertions exactly as strong as the invariant.
+    const rawConfig = readFileSync(join(workspace, ".git", "config"), "utf8");
+    expect(rawConfig).not.toContain(token);
+    expect(rawConfig).not.toContain(encodeURIComponent(token));
+  });
+
+  it("leaves acceptance commands no credential surfaces end to end", async () => {
+    const repo = seedRepo();
     const result = await defaultValidateExecutor({
       workspace: workspaceKey(),
       cloneUrl: repo,
       displayUrl: "https://example.com/repo.git",
       targetBranch: "main",
       acceptance: [
-        // Verify PACKET.json does not exist
         { description: "no packet", command: "test ! -f PACKET.json" },
-        // Verify remote URL is scrubbed of credentials
         {
           description: "clean remote",
           command:
