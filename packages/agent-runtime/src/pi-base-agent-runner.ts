@@ -371,8 +371,8 @@ export class PiBaseAgentRunner implements PiRunner {
               this.options.logger?.warn?.(
                 {
                   runId,
-                  failedModel: candidate.id,
-                  fallbackModel: next.id,
+                  from: candidate.id,
+                  to: next.id,
                   error: err instanceof Error ? err.message : String(err),
                 },
                 "pi_model_fallback",

@@ -29,6 +29,7 @@ afterEach(async () => {
 describe("Pi model fallback", () => {
   it("continues the same session on the next configured model after a provider failure", async () => {
     const requestedModels: string[] = [];
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
     const headSha = "a".repeat(40);
     const envelope = {
       kind: "reviewer_verdict",
@@ -138,6 +139,11 @@ describe("Pi model fallback", () => {
         broker: { resolve: () => "test-key" },
         maxTurns: 3,
         runTimeoutMs: 10_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
       },
     );
 
@@ -150,5 +156,12 @@ describe("Pi model fallback", () => {
     expect(requestedModels).toEqual(["primary", "fallback"]);
     expect(result.reason).toBeUndefined();
     expect(result.envelope).toEqual(envelope);
+
+    const fallbackWarnings = warnings.filter(
+      (warning) => warning.message === "pi_model_fallback",
+    );
+    expect(fallbackWarnings).toHaveLength(1);
+    expect(fallbackWarnings[0].fields.from).toBe("primary");
+    expect(fallbackWarnings[0].fields.to).toBe("fallback");
   });
 });
