@@ -1,0 +1,19 @@
+{
+  "name": "@colony/sandbox-in-process",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@colony/sandbox": "*"
+  },
+  "devDependencies": {
+    "@colony/sandbox-tests": "*"
+  }
+}
