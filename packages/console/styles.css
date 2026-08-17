@@ -776,6 +776,136 @@ body {
   max-height: 24rem;
 }
 
+/* ---------- Brand mark ---------- */
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.brand-mark {
+  width: 1.25rem;
+  height: 1.25rem;
+  display: block;
+}
+
+.brand-mark .cell-a {
+  fill: var(--navy);
+}
+
+.brand-mark .cell-b {
+  fill: var(--live);
+}
+
+.brand-mark .cell-c {
+  fill: color-mix(in srgb, var(--live) 45%, var(--card));
+}
+
+.signin-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.signin-brand .brand-mark {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+/* ---------- Board head, filters, create ---------- */
+
+.board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.1rem 0 0.8rem;
+}
+
+.board-head .board-title {
+  margin: 0;
+}
+
+.board-head .btn {
+  text-decoration: none;
+}
+
+.board-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.filter-chip {
+  padding: 0.3rem 0.75rem;
+  font: 600 0.8rem var(--body);
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease,
+    background 120ms ease;
+}
+
+.filter-chip:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.filter-chip.is-active {
+  background: var(--navy);
+  border-color: var(--navy);
+  color: #fff;
+}
+
+.board-search {
+  margin-left: auto;
+  min-width: 15rem;
+  padding: 0.4rem 0.7rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.board-search::placeholder {
+  color: var(--faint);
+}
+
+.create {
+  display: flex;
+  justify-content: center;
+}
+
+.create-card {
+  width: 100%;
+  max-width: 36rem;
+}
+
+.create-card textarea {
+  min-height: 14rem;
+  font-size: 0.9rem;
+}
+
+.create-actions {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.create-actions .btn {
+  text-decoration: none;
+}
+
 /* ---------- DAG ---------- */
 
 .dag-card .card-body {

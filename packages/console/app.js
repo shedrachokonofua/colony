@@ -32,6 +32,8 @@ const state = {
   scopeRunEvents: null,
   goalOpen: false,
   planOpen: false,
+  boardFilter: "all",
+  boardQuery: "",
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -191,6 +193,29 @@ function routeScopeId() {
   if (!hash || hash === "new") return null;
   return hash;
 }
+
+function routeIsNew() {
+  return location.hash.replace(/^#\/?/, "") === "new";
+}
+
+const BRAND_MARK = html`<svg
+  class="brand-mark"
+  viewBox="0 0 24 24"
+  aria-hidden="true"
+>
+  <path
+    class="cell cell-a"
+    d="M7 2.5 L11.5 5 L11.5 10 L7 12.5 L2.5 10 L2.5 5 Z"
+  />
+  <path
+    class="cell cell-b"
+    d="M17 6.5 L21.5 9 L21.5 14 L17 16.5 L12.5 14 L12.5 9 Z"
+  />
+  <path
+    class="cell cell-c"
+    d="M8.5 12.5 L13 15 L13 20 L8.5 22.5 L4 20 L4 15 Z"
+  />
+</svg>`;
 
 function parseEvidence(raw) {
   if (!raw) return null;
@@ -992,9 +1017,13 @@ function renderTopbar() {
         </label>
       </form>`;
   return html`<header class="topbar">
-    <a class="brand" href="#/">COLONY</a>
+    <a class="brand" href="#/">${BRAND_MARK}<span>COLONY</span></a>
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="#/">Board</a>
+      ${routeIsNew()
+        ? html`<span class="crumb-sep">/</span>
+            <span class="crumb">new scope</span>`
+        : nothing}
       ${id
         ? html`<span class="crumb-sep">/</span>
             <span class="crumb mono">${id}</span>`
@@ -1007,7 +1036,7 @@ function renderTopbar() {
 function renderSignin() {
   return html`<div class="signin">
     <div class="card signin-card">
-      <p class="signin-brand">COLONY</p>
+      <p class="signin-brand">${BRAND_MARK}COLONY</p>
       <p class="note">
         Sign in with your aether account to operate the factory.
       </p>
@@ -1023,13 +1052,50 @@ function renderSignin() {
   </div>`;
 }
 
+const BOARD_FILTERS = [
+  { key: "all", label: "All" },
+  { key: "needs-you", label: "Needs you" },
+  { key: "running", label: "Running" },
+  { key: "done", label: "Done" },
+  { key: "abandoned", label: "Abandoned" },
+];
+
+function scopeMatchesFilter(scope) {
+  switch (state.boardFilter) {
+    case "needs-you":
+      return (
+        (scope.status === "planning" && Boolean(scope.plan_json)) ||
+        scope.status === "blocked"
+      );
+    case "running":
+      return ["planning", "active", "validating"].includes(scope.status);
+    case "done":
+      return scope.status === "done";
+    case "abandoned":
+      return scope.status === "abandoned";
+    default:
+      return true;
+  }
+}
+
+function scopeMatchesQuery(scope) {
+  const q = state.boardQuery.trim().toLowerCase();
+  if (!q) return true;
+  return [scope.title, scope.goal, scope.id, scope.provider_project_path]
+    .filter(Boolean)
+    .some((field) => field.toLowerCase().includes(q));
+}
+
 function renderBoard() {
   const sorted = state.scopes
     .slice()
     .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
-  const cards = sorted.length
+  const visible = sorted.filter(
+    (scope) => scopeMatchesFilter(scope) && scopeMatchesQuery(scope),
+  );
+  const cards = visible.length
     ? repeat(
-        sorted,
+        visible,
         (scope) => scope.id,
         (scope) =>
           html`<button class="scope-card" @click=${() => openScope(scope.id)}>
@@ -1047,69 +1113,114 @@ function renderBoard() {
           </button>`,
       )
     : html`<p class="rack-empty">
-        No scopes yet. Describe a goal and a GitLab project, then open a scope.
+        ${state.scopes.length
+          ? "No scopes match this filter."
+          : "No scopes yet — open the first one."}
       </p>`;
   return html`
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
       : nothing}
     <div class="board" id="draw">
-      <section>
-        <h1 class="board-title">Scopes</h1>
+      <section class="board-main">
+        <div class="board-head">
+          <h1 class="board-title">Scopes</h1>
+          <a class="btn btn-solid" href="#/new">New scope</a>
+        </div>
+        <div class="board-filters">
+          ${BOARD_FILTERS.map(
+            (f) =>
+              html`<button
+                class=${classMap({
+                  "filter-chip": true,
+                  "is-active": state.boardFilter === f.key,
+                })}
+                @click=${() => {
+                  state.boardFilter = f.key;
+                  paint();
+                }}
+              >
+                ${f.label}
+              </button>`,
+          )}
+          <input
+            class="board-search"
+            type="search"
+            placeholder="Search title, goal, id, project…"
+            .value=${live(state.boardQuery)}
+            @input=${(event) => {
+              state.boardQuery = event.target.value;
+              paint();
+            }}
+          />
+        </div>
         <div class="rack">${cards}</div>
       </section>
-      <div class="board-side">
-        <aside class="card">
-          <p class="card-head">Open a scope</p>
-          <div class="card-body">
-            <form class="composer" @submit=${submitOpenScope}>
-              <p class="composer-hint">
-                Colony plans the work, opens merge requests, and merges what
-                passes.
-              </p>
-              <label class="field">
-                <span>Title <em>optional</em></span>
-                <input
-                  name="title"
-                  maxlength="120"
-                  placeholder="Short label for the board"
-                  autocomplete="off"
-                />
-              </label>
-              <label class="field">
-                <span>Goal</span>
-                <textarea
-                  name="goal"
-                  required
-                  placeholder="What should the factory build?"
-                ></textarea>
-              </label>
-              <label class="field">
-                <span>GitLab project path</span>
-                <input
-                  name="path"
-                  required
-                  placeholder="so/my-project"
-                  autocomplete="off"
-                />
-              </label>
-              <label class="field">
-                <span>Approvals</span>
-                <select name="approvals">
-                  <option value="auto">
-                    Automatic — plan and merges run unattended
-                  </option>
-                  <option value="manual">
-                    Manual — you approve the plan and every merge
-                  </option>
-                </select>
-              </label>
+      <div class="board-side">${renderActivity()}</div>
+    </div>
+  `;
+}
+
+function renderCreate() {
+  return html`
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
+    <div class="create" id="draw">
+      <aside class="card create-card">
+        <p class="card-head">Open a scope</p>
+        <div class="card-body">
+          <form class="composer" @submit=${submitOpenScope}>
+            <p class="composer-hint">
+              Colony plans the work, opens merge requests, and merges what
+              passes. Write the goal like a brief for an engineer who cannot ask
+              questions: outcomes, constraints, and what done looks like.
+            </p>
+            <label class="field">
+              <span>Title <em>optional</em></span>
+              <input
+                name="title"
+                maxlength="120"
+                placeholder="Short label for the board"
+                autocomplete="off"
+              />
+            </label>
+            <label class="field">
+              <span>Goal</span>
+              <textarea
+                name="goal"
+                required
+                rows="12"
+                placeholder="What should the factory build?"
+              ></textarea>
+            </label>
+            <label class="field">
+              <span>GitLab project path</span>
+              <input
+                name="path"
+                required
+                placeholder="so/my-project"
+                autocomplete="off"
+              />
+            </label>
+            <label class="field">
+              <span>Approvals</span>
+              <select name="approvals">
+                <option value="manual">
+                  Manual — you approve the plan and every merge
+                </option>
+                <option value="auto">
+                  Automatic — plan and merges run unattended
+                </option>
+              </select>
+            </label>
+            <div class="create-actions">
               <button class="btn btn-solid" type="submit">Open scope</button>
-            </form>
-          </div>
-        </aside>
-        ${renderActivity()}
-      </div>
+              <a class="btn btn-quiet" href="#/">Cancel</a>
+            </div>
+          </form>
+        </div>
+      </aside>
     </div>
   `;
 }
@@ -1392,9 +1503,11 @@ function paint() {
   const view =
     state.oidc && !state.auth
       ? renderSignin()
-      : routeScopeId()
-        ? renderSheet()
-        : renderBoard();
+      : routeIsNew()
+        ? renderCreate()
+        : routeScopeId()
+          ? renderSheet()
+          : renderBoard();
   litRender(
     html`${renderTopbar()}
       <main class="view">${view}</main>`,
