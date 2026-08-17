@@ -217,6 +217,25 @@ describe("createKubernetesEngine", () => {
     );
 
     const sandboxName = created.metadata.name;
+
+    // The handle exposes the pinned lifecycle fields the exec-channel task
+    // depends on: podName, name, profile, workspace, and the underlying client.
+    const k8sHandle = handle as unknown as {
+      podName: string;
+      name: string;
+      namespace: string;
+      profile: unknown;
+      workspace: string;
+      kubeconfig: unknown;
+      client: KubernetesSandboxClient;
+    };
+    expect(k8sHandle.podName).toBe("sandbox-pod");
+    expect(k8sHandle.name).toBe(sandboxName);
+    expect(k8sHandle.namespace).toBe(DEFAULT_KUBERNETES_NAMESPACE);
+    expect(k8sHandle.profile).toBe(profile);
+    expect(k8sHandle.workspace).toBe("/workspace");
+    expect(k8sHandle.client).toBe(client);
+
     await handle.destroy();
     expect(client.deleted).toContain(sandboxName);
 

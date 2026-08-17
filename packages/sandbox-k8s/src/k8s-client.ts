@@ -60,25 +60,40 @@ function isHttpError(err: unknown, code: number): boolean {
  */
 function mapSandboxStatus(body: unknown): { ready: boolean; failed?: string } {
   const status = (body as { status?: Record<string, unknown> })?.status ?? {};
-  if (typeof status.ready === "boolean") {
-    return { ready: status.ready, failed: asOptionalString(status.failed) };
-  }
-  const conditions = asConditionArray(status.conditions);
-  const readyCondition = conditions.find((c) => c.type === "Ready");
-  if (readyCondition !== undefined) {
-    if (readyCondition.status === "True") {
-      return { ready: true };
-    }
-    const reason = readyCondition.reason;
-    if (reason !== undefined) {
-      return { ready: false, failed: String(reason) };
-    }
-  }
-  return { ready: false };
-}
 
-function asOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  // An explicit status.failed field is a terminal condition regardless of how
+  // ready is reported, either as a boolean or via conditions.
+  if (typeof status.failed === "string") {
+    return { ready: false, failed: status.failed };
+  }
+
+  if (typeof status.ready === "boolean") {
+    return { ready: status.ready };
+  }
+
+  const conditions = asConditionArray(status.conditions);
+
+  // Only genuinely terminal condition types signal failure: a Failed/Error
+  // condition. Ready=False alone is a normal transient state during pod
+  // scheduling/startup, so it must be polled through the loop rather than
+  // treated as a terminal failure.
+  const failedCondition = conditions.find(
+    (c) =>
+      (c.type === "Failed" || c.type === "Error") &&
+      (c.status === "True" || c.reason !== undefined),
+  );
+  if (failedCondition !== undefined) {
+    return {
+      ready: false,
+      failed:
+        failedCondition.reason !== undefined
+          ? String(failedCondition.reason)
+          : String(failedCondition.type),
+    };
+  }
+
+  const readyCondition = conditions.find((c) => c.type === "Ready");
+  return { ready: readyCondition?.status === "True" };
 }
 
 function asConditionArray(value: unknown): {

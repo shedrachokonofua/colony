@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { KubeConfig } from "@kubernetes/client-node";
 import type {
   ExecEvent,
   ExecRequest,
@@ -50,13 +51,32 @@ function buildRbacMessage(namespace: string): string {
  * the Sandbox CR and the controller reaps the backing pod.
  */
 class K8sSandboxHandle implements SandboxHandle {
+  readonly client: KubernetesSandboxClient;
+  readonly kubeconfig: KubeConfig | undefined;
+  readonly namespace: string;
+  readonly podName: string;
+  readonly name: string;
+  readonly profile: SandboxLaunchProfile;
+  readonly workspace: string;
   private destroyed = false;
 
   constructor(
-    private readonly client: KubernetesSandboxClient,
-    private readonly namespace: string,
-    private readonly sandboxName: string,
-  ) {}
+    client: KubernetesSandboxClient,
+    kubeconfig: KubeConfig | undefined,
+    namespace: string,
+    podName: string,
+    name: string,
+    profile: SandboxLaunchProfile,
+    workspace: string,
+  ) {
+    this.client = client;
+    this.kubeconfig = kubeconfig;
+    this.namespace = namespace;
+    this.podName = podName;
+    this.name = name;
+    this.profile = profile;
+    this.workspace = workspace;
+  }
 
   async exec(
     _request: ExecRequest,
@@ -79,7 +99,7 @@ class K8sSandboxHandle implements SandboxHandle {
   async destroy(): Promise<void> {
     if (this.destroyed) return;
     this.destroyed = true;
-    await this.client.deleteSandbox(this.namespace, this.sandboxName);
+    await this.client.deleteSandbox(this.namespace, this.name);
   }
 }
 
@@ -95,7 +115,7 @@ export function createKubernetesEngine(
   return {
     async provision(
       profile: SandboxLaunchProfile,
-      _workspace: string,
+      workspace: string,
     ): Promise<SandboxHandle> {
       const namespace = options.namespace ?? DEFAULT_KUBERNETES_NAMESPACE;
       const image = options.image ?? DEFAULT_SANDBOX_IMAGE;
@@ -104,8 +124,16 @@ export function createKubernetesEngine(
 
       // Client construction (kubeconfig load, cluster wiring) is deferred to
       // here, satisfying the lazy factory contract. Tests inject their own.
-      const client =
-        options.client ?? createKubernetesClient(options.kubeconfig);
+      // The KubeConfig is threaded through to the handle so the dependent
+      // exec-channel task can build the Exec API from it without re-loading.
+      let client = options.client;
+      let kubeconfig: KubeConfig | undefined = options.kubeconfig;
+      if (client === undefined) {
+        const kc = options.kubeconfig ?? new KubeConfig();
+        if (options.kubeconfig === undefined) kc.loadFromDefault();
+        kubeconfig = kc;
+        client = createKubernetesClient(kc);
+      }
 
       // Discover the served apiVersion from the cluster — never hardcoded.
       let apiVersion: string;
@@ -179,7 +207,15 @@ export function createKubernetesEngine(
         await sleep(pollIntervalMs);
       }
 
-      return new K8sSandboxHandle(client, namespace, name);
+      return new K8sSandboxHandle(
+        client,
+        kubeconfig,
+        namespace,
+        podName,
+        name,
+        profile,
+        workspace,
+      );
     },
   };
 }
