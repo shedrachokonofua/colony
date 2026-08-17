@@ -22,6 +22,37 @@ describe("buildSandboxLaunchProfile", () => {
     expect(profile.readOnlyRootFilesystem).toBe(true);
   });
 
+  it("returns a validate profile that is credential- and daemon-config-free by construction", () => {
+    const profile = buildSandboxLaunchProfile("validate");
+    expect(profile.role).toBe("validate");
+    expect(profile.podLabels[SANDBOX_ROLE_LABEL]).toBe("validate");
+
+    expect(profile.envAllowlist).toEqual(["CI", "NO_COLOR", "FORCE_COLOR"]);
+    expect(profile.envAllowlist.some((name) => /^COLONY/.test(name))).toBe(
+      false,
+    );
+    expect(profile.envAllowlist).not.toContain("NODE_ENV");
+
+    expect(profile.capabilities).toEqual(["sandbox.exec"]);
+    expect(profile.readOnlyRootFilesystem).toBe(true);
+
+    const services = profile.egressAllowlist.flatMap((target) =>
+      target.kind === "service" ? [target] : [],
+    );
+    const toolGateway = services.find(
+      (svc) => svc.name === DEFAULT_SANDBOX_REFS.toolGatewayServiceName,
+    );
+    expect(toolGateway).toBeDefined();
+    expect(profile.egressAllowlist.some((t) => t.kind === "kube-dns")).toBe(
+      true,
+    );
+
+    const taskGraphDeny = profile.egressDenylist.find(
+      (deny) => deny.name === DEFAULT_SANDBOX_REFS.taskGraphApiServiceName,
+    );
+    expect(taskGraphDeny).toBeDefined();
+  });
+
   it("egress allowlist permits Tool Gateway and DNS", () => {
     const profile = buildSandboxLaunchProfile("developer");
 

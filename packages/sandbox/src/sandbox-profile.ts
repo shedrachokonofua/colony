@@ -5,7 +5,7 @@ import {
   assertValidRunExtensions,
 } from "./run-extensions.js";
 
-export const SANDBOX_ROLES = ["developer", "reviewer"] as const;
+export const SANDBOX_ROLES = ["developer", "reviewer", "validate"] as const;
 export type SandboxRole = (typeof SANDBOX_ROLES)[number];
 
 export const SANDBOX_ROLE_LABEL = "colony.shdr.ch/sandbox-role" as const;
@@ -82,6 +82,8 @@ const REVIEWER_CAPABILITIES: readonly SandboxCapability[] = [
   "provider.commits.read",
 ];
 
+const VALIDATE_CAPABILITIES: readonly SandboxCapability[] = ["sandbox.exec"];
+
 const DEVELOPER_RESOURCES: SandboxResourceLimits = {
   cpu: "2",
   memory: "4Gi",
@@ -93,6 +95,12 @@ const REVIEWER_RESOURCES: SandboxResourceLimits = {
   memory: "2Gi",
   ephemeralStorage: "4Gi",
 };
+
+const VALIDATE_ENV_ALLOWLIST: readonly string[] = [
+  "CI",
+  "NO_COLOR",
+  "FORCE_COLOR",
+];
 
 const COMMON_ENV_ALLOWLIST: readonly string[] = [
   "COLONY_RUN_ID",
@@ -144,6 +152,22 @@ export function buildSandboxLaunchProfile(
         "Agents must not call the Task Graph API directly. They consume packets and return envelopes via the Supervisor workflow.",
     },
   ];
+
+  if (role === "validate") {
+    return {
+      role,
+      actorRole: "reviewer",
+      runtimeClass: "gvisor",
+      podLabels,
+      egressAllowlist,
+      egressDenylist,
+      envAllowlist: VALIDATE_ENV_ALLOWLIST,
+      capabilities: VALIDATE_CAPABILITIES,
+      runExtensions,
+      resourceLimits: REVIEWER_RESOURCES,
+      readOnlyRootFilesystem: true,
+    };
+  }
 
   if (role === "developer") {
     return {
