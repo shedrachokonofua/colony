@@ -145,11 +145,25 @@ export interface KubernetesSandboxClient {
 /**
  * Minimal structural shape of the pods/exec terminal status (a `V1Status`
  * subset) so the seam stays free of `@kubernetes/client-node` types.
+ *
+ * Real kubelet sends:
+ * ```json
+ * {
+ *   "status": "Failure",
+ *   "message": "command terminated with exit code 1",
+ *   "reason": "NonZeroExitCode",
+ *   "details": { "causes": [{ "reason": "ExitCode", "message": "1" }] }
+ * }
+ * ```
  */
 export interface ExecPodStatus {
   readonly status?: string;
+  readonly message?: string;
   readonly details?: {
-    readonly causes?: readonly { readonly message?: string }[];
+    readonly causes?: readonly {
+      readonly reason?: string;
+      readonly message?: string;
+    }[];
   };
 }
 

@@ -306,7 +306,7 @@ class K8sSandboxHandle implements SandboxHandle {
           : null;
 
     const doExec = async (): Promise<void> => {
-      socket = await this.client.execPod(
+      const rawSocket = await this.client.execPod(
         this.namespace,
         this.podName,
         [...command],
@@ -317,6 +317,21 @@ class K8sSandboxHandle implements SandboxHandle {
           exitCode = parseExecExitCode(status);
         },
       );
+      // Wrap the socket so we detect when close() is called (by timeout,
+      // destroy, or any other path). If the WebSocket closes without a
+      // Status message — destroy() closing an in-flight exec socket, a
+      // dropped apiserver connection, or a protocol downgrade — the exec
+      // promise would hang forever waiting for stream ends that never come.
+      let socketCloseResolve!: () => void;
+      const socketClosePromise = new Promise<void>((r) => {
+        socketCloseResolve = r;
+      });
+      socket = {
+        close(code?: number, data?: string): void {
+          rawSocket.close(code, data);
+          socketCloseResolve();
+        },
+      };
       this.sockets.add(socket);
       if (settled) {
         // Timed out while the exec session was still connecting — abort it.
@@ -327,7 +342,12 @@ class K8sSandboxHandle implements SandboxHandle {
         }
         return;
       }
-      await Promise.all([waitForEnd(stdout), waitForEnd(stderr)]);
+      // Race stream ends against socket close so the promise settles even
+      // when the socket closes without a terminal Status message.
+      await Promise.all([
+        Promise.race([waitForEnd(stdout), socketClosePromise]),
+        Promise.race([waitForEnd(stderr), socketClosePromise]),
+      ]);
       finish(exitCode, false);
     };
     void doExec().catch(fail);
@@ -349,14 +369,27 @@ class K8sSandboxHandle implements SandboxHandle {
   }
 }
 
+/**
+ * Parses the exec exit code from a pod exec status. Real kubelet sends:
+ * - Success: `{ status: "Success" }` → exit 0
+ * - Failure: `{ status: "Failure", message: "command terminated with exit code N",
+ *     reason: "NonZeroExitCode", details: { causes: [{ reason: "ExitCode", message: "N" }] } }`
+ *   The cause with `reason === "ExitCode"` carries the bare number in `message`.
+ * - Fallback: parse top-level `status.message` via `/exit code (\d+)/`.
+ */
 function parseExecExitCode(status: ExecPodStatus): number | null {
   if (status?.status === "Success") return 0;
-  const cause = (status?.details?.causes ?? []).find((c) =>
-    /exit code/i.test(c.message ?? ""),
-  );
-  const match =
-    cause !== undefined ? /exit code: (\d+)/.exec(cause.message ?? "") : null;
-  return match !== null ? Number(match[1]) : null;
+  // Real kubelet wire shape: cause with reason "ExitCode", message = bare number.
+  for (const cause of status?.details?.causes ?? []) {
+    if (cause.reason === "ExitCode" && cause.message !== undefined) {
+      const code = Number(cause.message);
+      if (Number.isFinite(code)) return code;
+    }
+  }
+  // Fallback: top-level status.message "command terminated with exit code N".
+  const topMatch = /exit code (\d+)/.exec(status?.message ?? "");
+  if (topMatch !== null) return Number(topMatch[1]);
+  return null;
 }
 
 function quotePosix(value: string): string {

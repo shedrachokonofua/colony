@@ -282,9 +282,13 @@ function createFakeClient(
         } else if (scenario.exit !== undefined) {
           stdout.end();
           stderr.end();
+          // Script the real kubelet wire shape (not a fictitious one).
           statusCallback({
             status: "Failure",
-            details: { causes: [{ message: `exit code: ${scenario.exit}` }] },
+            message: `command terminated with exit code ${scenario.exit}`,
+            details: {
+              causes: [{ reason: "ExitCode", message: String(scenario.exit) }],
+            },
           });
         }
       }
@@ -699,6 +703,69 @@ describe("K8sSandboxHandle exec channel", () => {
       await handle.destroy();
     } finally {
       await rm(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses non-zero exit codes from the real kubelet wire shape", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "k8s-exitcode-"));
+    try {
+      const { handle } = await provisionWith(workspace, {
+        fallback: {
+          stdoutChunks: [],
+          stderrChunks: [],
+          exit: 42,
+        },
+      });
+
+      const events: import("@colony/sandbox").ExecEvent[] = [];
+      const result = await handle.exec({ command: "exit 42" }, (event) =>
+        events.push(event),
+      );
+
+      // The fake client scripts exit:42 which now uses the real kubelet shape:
+      // { status: "Failure", message: "command terminated with exit code 42",
+      //   reason: "NonZeroExitCode",
+      //   details: { causes: [{ reason: "ExitCode", message: "42" }] } }
+      // parseExecExitCode must extract 42 from cause.reason === "ExitCode".
+      expect(result.exitCode).toBe(42);
+      expect(result.timedOut).toBe(false);
+      const finalEvent = events[events.length - 1]!;
+      expect(finalEvent.kind).toBe("exit");
+      expect(finalEvent.kind === "exit" && finalEvent.exitCode).toBe(42);
+
+      await handle.destroy();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("settles exec when destroy() closes the socket (no Status message)", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "k8s-sockclose-"));
+    try {
+      const { handle } = await provisionWith(workspace, {
+        fallback: { hang: true },
+      });
+
+      let settled = false;
+      const execPromise = handle
+        .exec({ command: "sleep 9999" }, () => {})
+        .then((r) => {
+          settled = true;
+          return r;
+        });
+
+      // Give the exec a moment to connect.
+      await new Promise((r) => setTimeout(r, 20));
+
+      // destroy() closes all in-flight sockets. The exec must settle
+      // rather than hanging forever.
+      await handle.destroy();
+      const result = await execPromise;
+      expect(settled).toBe(true);
+      // No Status was received so exitCode is null.
+      expect(result.exitCode).toBeNull();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
     }
   });
 });
