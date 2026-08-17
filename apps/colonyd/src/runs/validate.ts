@@ -134,6 +134,7 @@ export async function runValidation(
     // would crash on an unhandledRejection.
     const error = err instanceof Error ? err.message : String(err);
     ctx.store.finishRun(run.id, "failed", {
+      head_sha: baseSha !== "unknown" ? baseSha : undefined,
       error,
       evidence_json: JSON.stringify({
         head_sha: baseSha,
@@ -204,17 +205,31 @@ async function executeValidate(
   });
 
   if (result.passed) {
-    ctx.store.finishRun(runId, "succeeded", { evidence_json: evidenceJson });
+    ctx.store.finishRun(runId, "succeeded", {
+      head_sha: baseSha,
+      evidence_json: evidenceJson,
+    });
     ctx.store.audit(SERVICE_ACTOR, "scope.validated", {
       scope_id: scope.id,
       run_id: runId,
       detail: { head_sha: baseSha, results: result.results },
     });
-    ctx.store.setScopeStatus(scope.id, "done", SERVICE_ACTOR);
+    // Re-fetch the scope to avoid acting on a stale snapshot: the
+    // operator may have restored/abandoned the scope while the
+    // validation run was in flight. Only transition validating->done;
+    // if the scope moved to a different status in the meantime, leave
+    // it alone (the operator's action takes precedence).
+    const currentScope = ctx.store.getScope(scope.id);
+    if (currentScope && currentScope.status === "validating") {
+      ctx.store.setScopeStatus(scope.id, "done", SERVICE_ACTOR);
+    }
     return;
   }
 
-  ctx.store.finishRun(runId, "failed", { evidence_json: evidenceJson });
+  ctx.store.finishRun(runId, "failed", {
+    head_sha: baseSha,
+    evidence_json: evidenceJson,
+  });
   const failing = result.results.find((r) => r.exit_code !== 0);
   ctx.store.audit(SERVICE_ACTOR, "scope.validation_failed", {
     scope_id: scope.id,
@@ -374,7 +389,10 @@ function runAcceptanceCommand(
     timeout: timeoutMs,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: MAX_TAIL_BYTES * 8,
+    // Use a generous maxBuffer (10 MB) so that large command output
+    // does not cause ENOBUFS. The tail is capped downstream by
+    // tailOutput; here we just need to avoid killing the child.
+    maxBuffer: 10 * 1024 * 1024,
   });
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
