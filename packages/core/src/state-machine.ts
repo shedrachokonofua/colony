@@ -15,6 +15,7 @@ export const SCOPE_STATUSES = [
   "draft",
   "planning",
   "active",
+  "validating",
   "blocked",
   "done",
   "abandoned",
@@ -63,6 +64,10 @@ const TASK_TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
  *   planning -> blocked    architect run failed after retries
  *   active   -> done       all tasks merged|canceled, >=1 merged
  *   active   -> blocked    unfinished tasks exist, none runnable, none running
+ *   active   -> validating all tasks terminal with >=1 merged
+ *   validating -> done     validation pass
+ *   validating -> active   repair tasks materialize / canceled task restored
+ *   validating -> abandoned (operator)
  *   blocked  -> planning|active (operator retry/unblock)
  *   done     -> active     operator restores a canceled task
  *   any nonterminal -> abandoned (operator)
@@ -71,7 +76,8 @@ const SCOPE_TRANSITIONS: Readonly<Record<ScopeStatus, readonly ScopeStatus[]>> =
   {
     draft: ["planning", "abandoned"],
     planning: ["active", "blocked", "abandoned"],
-    active: ["done", "blocked", "abandoned"],
+    active: ["done", "blocked", "abandoned", "validating"],
+    validating: ["done", "active", "abandoned"],
     blocked: ["planning", "active", "abandoned"],
     done: ["active"],
     abandoned: [],

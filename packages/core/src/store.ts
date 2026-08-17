@@ -29,6 +29,7 @@ export interface Scope {
   readonly default_branch: string;
   readonly plan_json: string | null;
   readonly blocked_reason: string | null;
+  readonly acceptance_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -55,7 +56,12 @@ export interface Run {
   readonly id: string;
   readonly scope_id: ScopeId;
   readonly task_id: TaskId | null;
-  readonly kind: "architect" | "implement" | "merge_gate" | "review";
+  readonly kind:
+    | "architect"
+    | "implement"
+    | "merge_gate"
+    | "review"
+    | "validate";
   readonly status: "running" | "succeeded" | "failed" | "canceled";
   readonly lease_expires_at: string;
   readonly base_sha: string | null;
@@ -135,6 +141,7 @@ export class Store {
     this.ensureColumn("tasks", "merge_approved_sha", "TEXT");
     this.ensureColumn("scopes", "plan_feedback", "TEXT");
     this.ensureColumn("tasks", "human_feedback", "TEXT");
+    this.ensureColumn("scopes", "acceptance_json", "TEXT");
   }
 
   /** Idempotent ADD COLUMN for DBs created before a column existed. */
@@ -342,12 +349,15 @@ export class Store {
       }
       this.db
         .prepare(
-          `UPDATE scopes SET status = 'active', updated_at = ? WHERE id = ?`,
+          `UPDATE scopes SET status = 'active', acceptance_json = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(nowIso(), scope.id);
+        .run(JSON.stringify(plan.acceptance), nowIso(), scope.id);
       this.audit(actor, "scope.plan_materialized", {
         scope_id: scope.id,
-        detail: { task_count: plan.tasks.length },
+        detail: {
+          task_count: plan.tasks.length,
+          acceptance_count: plan.acceptance.length,
+        },
       });
     });
     apply();

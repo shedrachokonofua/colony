@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS scopes (
   id TEXT PRIMARY KEY,                       -- col-<8 hex>
   goal TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft'
-    CHECK (status IN ('draft','planning','active','blocked','done','abandoned')),
+    CHECK (status IN ('draft','planning','active','validating','blocked','done','abandoned')),
   provider_project_id TEXT NOT NULL,         -- GitLab numeric project id as string
   provider_project_path TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,                       -- uuid
   scope_id TEXT NOT NULL REFERENCES scopes(id),
   task_id TEXT REFERENCES tasks(id),         -- NULL for architect / scope-level runs
-  kind TEXT NOT NULL CHECK (kind IN ('architect','implement','merge_gate','review')),
+  kind TEXT NOT NULL CHECK (kind IN ('architect','implement','merge_gate','review','validate')),
   status TEXT NOT NULL DEFAULT 'running'
     CHECK (status IN ('running','succeeded','failed','canceled')),
   lease_expires_at TEXT NOT NULL,
