@@ -70,6 +70,7 @@ export interface Run {
   readonly envelope_json: string | null;
   readonly evidence_json: string | null;
   readonly token_id: string | null;
+  readonly model_id: string | null;
   readonly error: string | null;
   readonly started_at: string;
   readonly finished_at: string | null;
@@ -136,6 +137,7 @@ export class Store {
     this.db = new Database(dbPath);
     this.db.exec(SCHEMA_SQL);
     this.ensureColumn("runs", "token_id", "TEXT");
+    this.ensureColumn("runs", "model_id", "TEXT");
     this.ensureColumn("scopes", "title", "TEXT");
     this.ensureColumn("scopes", "approvals", "TEXT NOT NULL DEFAULT 'auto'");
     this.ensureColumn("tasks", "merge_approved_sha", "TEXT");
@@ -526,13 +528,14 @@ export class Store {
     lease_ttl_ms: number;
     base_sha?: string;
     workspace_path?: string;
+    model_id?: string;
   }): Run {
     const id = crypto.randomUUID();
     const lease = new Date(Date.now() + input.lease_ttl_ms).toISOString();
     this.db
       .prepare(
-        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path)
-         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path)`,
+        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id)
+         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id)`,
       )
       .run({
         id,
@@ -542,6 +545,7 @@ export class Store {
         lease,
         base_sha: input.base_sha ?? null,
         workspace_path: input.workspace_path ?? null,
+        model_id: input.model_id ?? null,
       });
     const run = this.getRun(id);
     if (!run) throw new Error(`run insert lost: ${id}`);
@@ -570,6 +574,13 @@ export class Store {
         `UPDATE runs SET base_sha = ? WHERE id = ? AND status = 'running'`,
       )
       .run(baseSha, runId);
+  }
+
+  /** Record the model a run is doing work with (mid-run fallback may switch it). */
+  setRunModel(runId: string, modelId: string): void {
+    this.db
+      .prepare(`UPDATE runs SET model_id = ? WHERE id = ?`)
+      .run(modelId, runId);
   }
 
   heartbeatRun(runId: string, lease_ttl_ms: number): void {

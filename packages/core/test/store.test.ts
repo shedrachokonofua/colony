@@ -338,6 +338,46 @@ describe("Store", () => {
     expect(store.activeRunCount("validate")).toBe(1);
   });
 
+  it("persists model_id at run creation and defaults to null when omitted", () => {
+    const scopeId = seededScope();
+    const withModel = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 1000,
+      model_id: "m1",
+    });
+    expect(store.getRun(withModel.id)!.model_id).toBe("m1");
+
+    const withoutModel = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 1000,
+    });
+    expect(store.getRun(withoutModel.id)!.model_id).toBeNull();
+  });
+
+  it("setRunModel updates model_id, including on a finished run", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 1000,
+      model_id: "m1",
+    });
+    store.setRunModel(run.id, "m2");
+    expect(store.getRun(run.id)!.model_id).toBe("m2");
+
+    const finished = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 1000,
+    });
+    store.finishRun(finished.id, "succeeded", {});
+    expect(store.getRun(finished.id)!.status).toBe("succeeded");
+    store.setRunModel(finished.id, "m2");
+    expect(store.getRun(finished.id)!.model_id).toBe("m2");
+  });
+
   it("counts active runs by kind", () => {
     const scopeId = seededScope();
     store.startRun({
