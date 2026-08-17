@@ -397,8 +397,8 @@ describe("Store", () => {
   });
 });
 
-describe("scope status CHECK migration", () => {
-  it("rebuilds a pre-validating scopes table so the new status is accepted", () => {
+describe("legacy CHECK constraint migrations", () => {
+  it("rebuilds pre-validating scopes and runs tables so new enum values are accepted", () => {
     const legacyDir = mkdtempSync(join(tmpdir(), "colony-legacy-"));
     const dbPath = join(legacyDir, "legacy.db");
     try {
@@ -427,10 +427,23 @@ describe("scope status CHECK migration", () => {
           state TEXT NOT NULL DEFAULT 'queued',
           state_version INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE runs (
+          id TEXT PRIMARY KEY,
+          scope_id TEXT NOT NULL REFERENCES scopes(id),
+          task_id TEXT,
+          kind TEXT NOT NULL CHECK (kind IN ('architect','implement','merge_gate','review')),
+          status TEXT NOT NULL DEFAULT 'running'
+            CHECK (status IN ('running','succeeded','failed','canceled')),
+          lease_expires_at TEXT NOT NULL,
+          base_sha TEXT,
+          started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
         INSERT INTO scopes (id, goal, status, provider_project_id, provider_project_path)
           VALUES ('col-legacy1', 'g', 'active', '1', 'so/x');
         INSERT INTO tasks (id, scope_id, title, spec, state)
           VALUES ('col-legacy1.1', 'col-legacy1', 't', 's', 'merged');
+        INSERT INTO runs (id, scope_id, kind, lease_expires_at)
+          VALUES ('run-legacy1', 'col-legacy1', 'implement', '2026-01-01T00:00:00Z');
       `);
       legacy.close();
 
@@ -443,6 +456,14 @@ describe("scope status CHECK migration", () => {
         // ...and the rebuilt table accepts the new status.
         migrated.setScopeStatus("col-legacy1", "validating", "svc:test");
         expect(migrated.getScope("col-legacy1")?.status).toBe("validating");
+        // The runs table accepts the new kind and kept legacy rows.
+        expect(migrated.getRun("run-legacy1")?.kind).toBe("implement");
+        const vrun = migrated.startRun({
+          scope_id: "col-legacy1",
+          kind: "validate",
+          lease_ttl_ms: 1000,
+        });
+        expect(migrated.getRun(vrun.id)?.kind).toBe("validate");
         // Idempotent: reopening does not rebuild again or lose data.
         migrated.close();
         const reopened = new Store(dbPath);

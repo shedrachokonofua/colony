@@ -144,7 +144,8 @@ export class Store {
     this.ensureColumn("scopes", "plan_feedback", "TEXT");
     this.ensureColumn("tasks", "human_feedback", "TEXT");
     this.ensureColumn("scopes", "acceptance_json", "TEXT");
-    this.ensureScopeStatusCheck();
+    this.ensureCheckContains("scopes", "validating");
+    this.ensureCheckContains("runs", "validate");
   }
 
   /** Idempotent ADD COLUMN for DBs created before a column existed. */
@@ -157,29 +158,27 @@ export class Store {
   }
 
   /**
-   * Rebuild `scopes` when its CHECK constraint predates the `validating`
-   * status. `CREATE TABLE IF NOT EXISTS` never updates an existing table, so
-   * DBs created before the constraint changed reject the new status forever
-   * (observed live: every scope-closure tick failed with "CHECK constraint
-   * failed"). SQLite cannot alter a CHECK in place; this is the documented
-   * create-copy-drop-rename dance, FK-safe because the final rename restores
-   * the name that dependent tables reference.
+   * Rebuild `table` when its CHECK constraints predate `needle` (a quoted
+   * enum value). `CREATE TABLE IF NOT EXISTS` never updates an existing
+   * table, so DBs created before a constraint changed reject new enum values
+   * forever (observed live twice: scopes.status missing 'validating', then
+   * runs.kind missing 'validate'). SQLite cannot alter a CHECK in place;
+   * this is the documented create-copy-drop-rename dance, FK-safe because
+   * the final rename restores the name dependent tables reference.
    */
-  private ensureScopeStatusCheck(): void {
+  private ensureCheckContains(table: string, needle: string): void {
     const row = this.db
-      .prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='scopes'`,
-      )
-      .get() as { sql: string } | undefined;
-    if (!row || row.sql.includes("'validating'")) return;
+      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name = ?`)
+      .get(table) as { sql: string } | undefined;
+    if (!row || row.sql.includes(`'${needle}'`)) return;
 
     const ddlMatch = SCHEMA_SQL.match(
-      /CREATE TABLE IF NOT EXISTS scopes \([\s\S]*?\n\);/,
+      new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`),
     );
-    if (!ddlMatch) throw new Error("scopes DDL not found in schema.sql");
+    if (!ddlMatch) throw new Error(`${table} DDL not found in schema.sql`);
     const newDdl = ddlMatch[0].replace(
-      "CREATE TABLE IF NOT EXISTS scopes (",
-      "CREATE TABLE scopes_new (",
+      `CREATE TABLE IF NOT EXISTS ${table} (`,
+      `CREATE TABLE ${table}_new (`,
     );
 
     this.db.pragma("foreign_keys = OFF");
@@ -187,14 +186,16 @@ export class Store {
       this.db.transaction(() => {
         this.db.exec(newDdl);
         // Carry over columns added by ensureColumn that the base DDL lacks.
-        const oldCols = this.db.prepare(`PRAGMA table_info(scopes)`).all() as {
+        const oldCols = this.db
+          .prepare(`PRAGMA table_info(${table})`)
+          .all() as {
           name: string;
           type: string;
           dflt_value: string | null;
         }[];
         const newCols = new Set(
           (
-            this.db.prepare(`PRAGMA table_info(scopes_new)`).all() as {
+            this.db.prepare(`PRAGMA table_info(${table}_new)`).all() as {
               name: string;
             }[]
           ).map((c) => c.name),
@@ -204,20 +205,20 @@ export class Store {
           const dflt =
             col.dflt_value === null ? "" : ` DEFAULT ${col.dflt_value}`;
           this.db.exec(
-            `ALTER TABLE scopes_new ADD COLUMN ${col.name} ${col.type || "TEXT"}${dflt}`,
+            `ALTER TABLE ${table}_new ADD COLUMN ${col.name} ${col.type || "TEXT"}${dflt}`,
           );
         }
         const colList = oldCols.map((c) => c.name).join(", ");
         this.db.exec(
-          `INSERT INTO scopes_new (${colList}) SELECT ${colList} FROM scopes`,
+          `INSERT INTO ${table}_new (${colList}) SELECT ${colList} FROM ${table}`,
         );
-        this.db.exec(`DROP TABLE scopes`);
-        this.db.exec(`ALTER TABLE scopes_new RENAME TO scopes`);
+        this.db.exec(`DROP TABLE ${table}`);
+        this.db.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
       })();
       const violations = this.db.pragma("foreign_key_check") as unknown[];
       if (violations.length > 0) {
         throw new Error(
-          `scopes rebuild broke foreign keys: ${JSON.stringify(violations[0])}`,
+          `${table} rebuild broke foreign keys: ${JSON.stringify(violations[0])}`,
         );
       }
     } finally {

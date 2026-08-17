@@ -72,6 +72,27 @@ export async function runValidation(
   ctx: ColonydContext,
   scope: Scope,
 ): Promise<void> {
+  // Every dispatch site uses bare `void runValidation(...)`; a synchronous
+  // throw anywhere in this function (observed live: startRun rejecting the
+  // 'validate' kind on a pre-migration CHECK constraint) becomes an
+  // unhandledRejection and kills the process. Nothing here may escape.
+  try {
+    await dispatchValidation(ctx, scope);
+  } catch (err) {
+    ctx.store.audit(SERVICE_ACTOR, "scope.validation_failed", {
+      scope_id: scope.id,
+      detail: {
+        error: err instanceof Error ? err.message : String(err),
+        stage: "dispatch",
+      },
+    });
+  }
+}
+
+async function dispatchValidation(
+  ctx: ColonydContext,
+  scope: Scope,
+): Promise<void> {
   // Materialized scopes always carry acceptance criteria; if one is missing
   // record a failed run so the guard prevents re-dispatch every tick.
   if (scope.acceptance_json === null) {
@@ -130,9 +151,7 @@ export async function runValidation(
     trackRun(run.id, execution, () => Promise.resolve());
     await execution;
   } catch (err) {
-    // Provider or dispatch failure: finish the run failed and audit. Never
-    // reject — the caller uses bare `void runValidation(...)` and Node
-    // would crash on an unhandledRejection.
+    // Provider or dispatch failure: finish the run failed and audit.
     const error = err instanceof Error ? err.message : String(err);
     ctx.store.finishRun(run.id, "failed", {
       head_sha: baseSha !== "unknown" ? baseSha : undefined,
