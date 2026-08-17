@@ -163,7 +163,7 @@ export function buildSandboxLaunchProfile(
       egressDenylist,
       envAllowlist: VALIDATE_ENV_ALLOWLIST,
       capabilities: VALIDATE_CAPABILITIES,
-      runExtensions,
+      runExtensions: EMPTY_SANDBOX_RUN_EXTENSIONS,
       resourceLimits: REVIEWER_RESOURCES,
       readOnlyRootFilesystem: true,
     };

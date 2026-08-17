@@ -36,6 +36,12 @@ describe("buildSandboxLaunchProfile", () => {
     expect(profile.capabilities).toEqual(["sandbox.exec"]);
     expect(profile.readOnlyRootFilesystem).toBe(true);
 
+    expect(profile.resourceLimits).toEqual({
+      cpu: "1",
+      memory: "2Gi",
+      ephemeralStorage: "4Gi",
+    });
+
     const services = profile.egressAllowlist.flatMap((target) =>
       target.kind === "service" ? [target] : [],
     );
