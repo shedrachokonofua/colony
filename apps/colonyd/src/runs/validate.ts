@@ -1,10 +1,17 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   provisionRepoWorkspace,
   type AgentRuntimePacket,
 } from "@colony/agent-runtime";
+import {
+  buildSandboxLaunchProfile,
+  type ExecEvent,
+  type SandboxEngine,
+  type SandboxHandle,
+} from "@colony/sandbox";
+import { inProcessEngine } from "@colony/sandbox-in-process";
 import type { Scope } from "@colony/core";
 import type { ProviderProjectRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
@@ -34,6 +41,12 @@ export interface ValidateExecutionInput {
    * by runValidation; optional so unit tests may omit it for local clones.
    */
   readonly baseSha?: string;
+  /**
+   * Sandbox engine used to provision the validate handle. Optional: defaults
+   * to the in-process engine so the executor is directly callable from unit
+   * tests without boot wiring.
+   */
+  readonly engine?: SandboxEngine;
 }
 
 export interface ValidateResultEntry {
@@ -272,6 +285,7 @@ async function executeValidate(
 // ---------------------------------------------------------------------------
 
 export const defaultValidateExecutor: ValidateExecutor = async (input) => {
+  const engine = input.engine ?? inProcessEngine;
   let workspace = "";
   try {
     // Provision a fresh clone of the default branch at HEAD. Passing no
@@ -292,7 +306,9 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
     // provisionRepoWorkspace writes PACKET.json containing credentials and
     // the clone's .git/config remote.origin.url carries the embedded token.
     // Acceptance commands run with cwd=workspace and MUST NOT be able to
-    // exfiltrate provider tokens. Scrub both surfaces:
+    // exfiltrate provider tokens. Scrub both surfaces BEFORE the workspace
+    // reaches the sandbox handle (k8s transfers the workspace tar inside
+    // engine.provision, so a pre-provision leak would ship the token):
     scrubWorkspaceCredentials(workspace, input.displayUrl);
   } catch (err) {
     // Clean up a provisioned-but-unscrubbed workspace: it may still hold
@@ -307,13 +323,35 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
     };
   }
 
+  let handle: SandboxHandle | undefined;
+  try {
+    // Provision the sandbox handle from the engine seam. The validate launch
+    // profile's envAllowlist is what keeps the daemon's environment out of
+    // acceptance commands (credential cleanliness by construction).
+    handle = await engine.provision(
+      buildSandboxLaunchProfile("validate"),
+      workspace,
+    );
+  } catch (err) {
+    // Provision or transfer failure: record evidence, never reject.
+    await handle?.destroy().catch(() => {});
+    rmSync(workspace, { recursive: true, force: true });
+    return {
+      results: [],
+      passed: false,
+      error: `workspace_provision_failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+
   try {
     const timeoutMs = input.perCommandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     const results: ValidateResultEntry[] = [];
     let passed = true;
     for (const [index, acceptance] of input.acceptance.entries()) {
-      const { exitCode, output } = runAcceptanceCommand(
-        workspace,
+      const { exitCode, output } = await runAcceptanceViaHandle(
+        handle,
         acceptance.command,
         timeoutMs,
       );
@@ -334,6 +372,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       error: err instanceof Error ? err.message : String(err),
     };
   } finally {
+    await handle?.destroy().catch(() => {});
     rmSync(workspace, { recursive: true, force: true });
   }
 };
@@ -381,60 +420,36 @@ export function scrubWorkspaceCredentials(
 }
 
 /**
- * Environment sanitized for acceptance commands: every key matching a
- * provider-credential pattern is removed, and GITLAB_TOKEN is never present.
- * This is a hard safety invariant for validate (credential-free runner).
+ * Run one acceptance command through a provisioned SandboxHandle.
  *
- * Acceptance commands are CI-like workloads against a fresh checkout, so the
- * daemon's runtime configuration must not leak into them:
- * - NODE_ENV is dropped (production made `npm ci` omit devDependencies —
- *   observed live as "Cannot find package 'vitest'").
- * - The entire COLONY_* namespace is dropped (observed live: the daemon's
- *   COLONY_OIDC_ISSUER booted the checkout's app under OIDC auth and an
- *   acceptance test got 401 where CI gets 200).
- * - CI=true and NO_COLOR=1 match pipeline behavior and keep evidence tails
- *   free of ANSI escapes.
+ * Env cleanliness is by construction: the validate launch profile's
+ * envAllowlist governs what reaches the child (the engine's buildEnv drops
+ * every daemon env var not on the allowlist), so no regex scrubbing is
+ * needed. The request overrides CI/NO_COLOR/FORCE_COLOR, all of which are
+ * on the validate allowlist, to match pipeline behavior and keep evidence
+ * tails free of ANSI escapes.
  */
-function sanitizedEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    if (/TOKEN|SECRET|PASSWORD|CREDENTIAL|PRIVATE_KEY|OAUTH|API_KEY/i.test(key))
-      continue;
-    if (key === "NODE_ENV" || key.startsWith("COLONY")) continue;
-    env[key] = value;
-  }
-  delete env["GITLAB_TOKEN"];
-  env["CI"] = "true";
-  env["NO_COLOR"] = "1";
-  env["FORCE_COLOR"] = "0";
-  return env;
-}
-
-function runAcceptanceCommand(
-  cwd: string,
+async function runAcceptanceViaHandle(
+  handle: SandboxHandle,
   command: string,
   timeoutMs: number,
-): { exitCode: number; output: string } {
-  // Use spawnSync to capture BOTH stdout and stderr (combined). The spec
-  // requires combined output for evidence tails — execFileSync only returns
-  // stdout on success, losing stderr.
-  const result = spawnSync(command, [], {
-    cwd,
-    shell: true,
-    env: sanitizedEnv(),
-    timeout: timeoutMs,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    // Use a generous maxBuffer (10 MB) so that large command output
-    // does not cause ENOBUFS. The tail is capped downstream by
-    // tailOutput; here we just need to avoid killing the child.
-    maxBuffer: 10 * 1024 * 1024,
-  });
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
-  const exitCode =
-    typeof result.status === "number" ? result.status : result.error ? 1 : 1;
+): Promise<{ exitCode: number; output: string }> {
+  let stdout = "";
+  let stderr = "";
+  const onEvent = (event: ExecEvent): void => {
+    if (event.kind === "stdout") stdout += event.data;
+    else if (event.kind === "stderr") stderr += event.data;
+  };
+  const result = await handle.exec(
+    {
+      command,
+      timeoutMs,
+      env: { CI: "true", NO_COLOR: "1", FORCE_COLOR: "0" },
+    },
+    onEvent,
+  );
+  // null exitCode means the process never exited (timeout / kill).
+  const exitCode = result.exitCode ?? 1;
   return { exitCode, output: `${stdout}${stderr}` };
 }
 

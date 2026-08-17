@@ -9,6 +9,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type {
+  ExecEvent,
+  ExecRequest,
+  SandboxEngine,
+  SandboxHandle,
+  SandboxLaunchProfile,
+} from "@colony/sandbox";
+import { createInProcessEngine } from "@colony/sandbox-in-process";
 import {
   defaultValidateExecutor,
   scrubWorkspaceCredentials,
@@ -69,6 +77,7 @@ describe("defaultValidateExecutor", () => {
   it("passes when the acceptance command's prerequisite is present", async () => {
     const repo = seedRepo();
     const result = await defaultValidateExecutor({
+      engine: createInProcessEngine(),
       workspace: workspaceKey(),
       cloneUrl: repo,
       displayUrl: repo,
@@ -89,6 +98,7 @@ describe("defaultValidateExecutor", () => {
   it("reports nonzero exit for a failing acceptance command with a tail", async () => {
     const repo = seedRepo();
     const result = await defaultValidateExecutor({
+      engine: createInProcessEngine(),
       workspace: workspaceKey(),
       cloneUrl: repo,
       displayUrl: repo,
@@ -137,6 +147,7 @@ describe("defaultValidateExecutor", () => {
   it("leaves acceptance commands no credential surfaces end to end", async () => {
     const repo = seedRepo();
     const result = await defaultValidateExecutor({
+      engine: createInProcessEngine(),
       workspace: workspaceKey(),
       cloneUrl: repo,
       displayUrl: "https://example.com/repo.git",
@@ -165,6 +176,7 @@ describe("defaultValidateExecutor", () => {
     process.env["COLONYD_SECRET_PREVIEW"] = "shh-shared-secret";
     try {
       const result = await defaultValidateExecutor({
+        engine: createInProcessEngine(),
         workspace: workspaceKey(),
         cloneUrl: repo,
         displayUrl: repo,
@@ -192,6 +204,7 @@ describe("defaultValidateExecutor", () => {
     process.env["NODE_ENV"] = "production";
     try {
       const result = await defaultValidateExecutor({
+        engine: createInProcessEngine(),
         workspace: workspaceKey(),
         cloneUrl: repo,
         displayUrl: repo,
@@ -209,5 +222,53 @@ describe("defaultValidateExecutor", () => {
       if (previous === undefined) delete process.env["NODE_ENV"];
       else process.env["NODE_ENV"] = previous;
     }
+  });
+
+  it("executes acceptance commands through a SandboxHandle (engine seam observable)", async () => {
+    const repo = seedRepo();
+    const innerEngine = createInProcessEngine();
+    const provisionCalls: {
+      profile: SandboxLaunchProfile;
+      workspace: string;
+    }[] = [];
+    const execRequests: ExecRequest[] = [];
+    let destroyed = false;
+
+    const recordingEngine: SandboxEngine = {
+      async provision(profile, workspace) {
+        expect(profile.role).toBe("validate");
+        provisionCalls.push({ profile, workspace });
+        const inner = await innerEngine.provision(profile, workspace);
+        return {
+          exec(request, onEvent) {
+            execRequests.push(request);
+            return inner.exec(request, onEvent);
+          },
+          readFile: (path) => inner.readFile(path),
+          writeFile: (path, content) => inner.writeFile(path, content),
+          async destroy() {
+            destroyed = true;
+            await inner.destroy();
+          },
+        } satisfies SandboxHandle;
+      },
+    };
+
+    const result = await defaultValidateExecutor({
+      engine: recordingEngine,
+      workspace: workspaceKey(),
+      cloneUrl: repo,
+      displayUrl: repo,
+      targetBranch: "main",
+      acceptance: [{ description: "seam", command: "test -f marker" }],
+    });
+
+    expect(result.passed).toBe(true);
+    expect(provisionCalls).toHaveLength(1);
+    expect(provisionCalls[0]!.profile.role).toBe("validate");
+    expect(execRequests).toHaveLength(1);
+    expect(execRequests[0]!.command).toBe("test -f marker");
+    expect(execRequests[0]!.env?.["CI"]).toBe("true");
+    expect(destroyed).toBe(true);
   });
 });
