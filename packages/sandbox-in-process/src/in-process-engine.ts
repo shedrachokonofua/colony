@@ -53,7 +53,18 @@ class InProcessSandboxHandle implements SandboxHandle {
     await rm(this.scratchDir, { recursive: true, force: true });
   }
 
-  /** Builds the child env, keeping only allowlisted keys from process.env plus allowlisted request overrides. */
+  /**
+   * Builds the child env from allowlisted keys plus substrate variables.
+   *
+   * Rule: `envAllowlist` governs data/credential env vars only. The execution
+   * substrate must always be functional, so PATH is provided unconditionally
+   * from `process.env.PATH` and HOME/TMPDIR are set to the handle's scratch
+   * directory — these are substrate, not data, and must not be allowlisted.
+   *
+   * Only allowlisted keys from process.env and allowlisted request overrides
+   * are propagated as data — any process.env key absent from the allowlist is
+   * invisible to the child.
+   */
   private buildEnv(request: ExecRequest): NodeJS.ProcessEnv {
     const env: Record<string, string> = {};
     for (const name of this.envAllowlist) {
@@ -64,6 +75,9 @@ class InProcessSandboxHandle implements SandboxHandle {
     for (const [name, value] of Object.entries(overrides)) {
       if (this.envAllowlist.includes(name)) env[name] = value;
     }
+    if (process.env.PATH !== undefined) env.PATH = process.env.PATH;
+    env.HOME = this.scratchDir;
+    env.TMPDIR = this.scratchDir;
     return env;
   }
 
