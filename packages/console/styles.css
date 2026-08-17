@@ -296,6 +296,12 @@ body {
   color: var(--ok);
 }
 
+.chip[data-kind="validating"] {
+  background: var(--wash);
+  border-color: color-mix(in srgb, var(--navy) 30%, transparent);
+  color: var(--navy);
+}
+
 .chip[data-kind="blocked"],
 .chip[data-kind="failed"] {
   background: var(--danger-soft);
@@ -1184,6 +1190,68 @@ body {
   padding-left: 1rem;
   font-size: 0.79rem;
   color: var(--muted);
+}
+
+/* ---------- Validation card ---------- */
+
+.validation-summary {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.validation-summary.is-passed {
+  color: var(--ok);
+}
+
+.validation-summary.is-failed {
+  color: var(--danger);
+}
+
+.validation-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.validation-item {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.validation-marker {
+  flex: none;
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--faint);
+}
+
+.validation-item.is-passed .validation-marker {
+  color: var(--ok);
+}
+
+.validation-item.is-failed .validation-marker {
+  color: var(--danger);
+}
+
+.validation-desc {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.validation-cmd {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+}
+
+.validation-item .runlog {
+  margin: 0.3rem 0 0;
 }
 
 /* ---------- Activity ---------- */

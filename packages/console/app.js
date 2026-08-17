@@ -17,6 +17,7 @@ const KIND_LABEL = {
   implement: "build",
   review: "review",
   merge_gate: "gate",
+  validate: "validate",
 };
 
 const state = {
@@ -251,6 +252,9 @@ function waitingOnYou(scope, tasks) {
     return "Plan is waiting for your approval.";
   }
   if (scope.status === "planning") return "Architect is drawing the plan.";
+  if (scope.status === "validating") {
+    return "Validating the goal on the default branch — running acceptance criteria against a fresh checkout.";
+  }
   if (scope.status === "blocked") {
     return scope.blocked_reason || "Scope is blocked.";
   }
@@ -1268,6 +1272,7 @@ function renderSheet() {
     <div class="sheet-cols">
       <div class="sheet-col">${renderGoalCard(scope)}</div>
       <div class="sheet-col">${renderPlanCard(scope, detail)}</div>
+      <div class="sheet-col">${renderValidationCard(scope, detail)}</div>
       <div class="sheet-col">${renderActivity()}</div>
     </div>
     ${state.drawerOpen
@@ -1364,6 +1369,89 @@ function renderPlanCard(scope, detail) {
             )}
           </div>`
         : nothing}
+    </div>
+  </aside>`;
+}
+
+function renderValidationCard(scope, detail) {
+  let acceptance = null;
+  if (scope.acceptance_json) {
+    try {
+      const parsed = JSON.parse(scope.acceptance_json);
+      if (Array.isArray(parsed)) acceptance = parsed;
+    } catch {
+      acceptance = null;
+    }
+  }
+  const validateRuns = (detail?.runs || []).filter(
+    (run) => run.kind === "validate",
+  );
+  if ((!acceptance || !acceptance.length) && !validateRuns.length) {
+    return nothing;
+  }
+  const latest = validateRuns
+    .slice()
+    .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+    .pop();
+  const evidence = latest ? parseEvidence(latest.evidence_json) : null;
+  const results = Array.isArray(evidence?.results) ? evidence.results : [];
+  const failedCount = results.filter((result) => result.exit_code !== 0).length;
+  const summary =
+    latest && evidence
+      ? evidence.passed
+        ? "All criteria passed"
+        : `Failed: ${failedCount} criteria did not pass`
+      : null;
+  return html`<aside class="card">
+    <p class="card-head">Validation</p>
+    <div class="card-body">
+      ${summary
+        ? html`<p
+            class=${classMap({
+              "validation-summary": true,
+              "is-passed": evidence.passed,
+              "is-failed": !evidence.passed,
+            })}
+          >
+            ${summary}
+          </p>`
+        : nothing}
+      <ul class="validation-list">
+        ${repeat(
+          acceptance || [],
+          (item, i) => i,
+          (item, i) => {
+            const result = results.find((r) => r.index === i);
+            const pending = !result;
+            const failed = result && result.exit_code !== 0;
+            return html`<li
+              class=${classMap({
+                "validation-item": true,
+                "is-pending": pending,
+                "is-passed": !pending && !failed,
+                "is-failed": Boolean(failed),
+              })}
+            >
+              <span class="validation-marker">
+                ${pending ? "…" : failed ? "✕" : "✓"}
+              </span>
+              <div class="validation-detail">
+                <p class="validation-desc">
+                  ${item?.description || `Criterion ${i + 1}`}
+                </p>
+                ${item?.command
+                  ? html`<code class="mono validation-cmd"
+                      >${item.command}</code
+                    >`
+                  : nothing}
+                ${failed && result.tail?.length
+                  ? html`<pre class="runlog">${result.tail.join("\n")}</pre>`
+                  : nothing}
+              </div>
+            </li>`;
+          },
+        )}
+      </ul>
     </div>
   </aside>`;
 }
