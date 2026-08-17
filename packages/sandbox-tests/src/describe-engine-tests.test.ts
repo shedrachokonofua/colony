@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   ExecEvent,
   ExecRequest,
@@ -13,16 +16,18 @@ import {
 } from "./describe-engine-tests.js";
 
 /**
- * Minimal in-memory engine. It honors the launch profile's `envAllowlist`
- * (only those vars from `process.env` become visible to `exec`) and blocks
- * workspace-escape paths (`../`).
+ * Minimal workspace-backed engine. It honors the launch profile's
+ * `envAllowlist` (only those vars from `process.env` become visible to
+ * `exec`), blocks workspace-escape paths (`../`, escaping `cwd`), and reads
+ * and writes real files under the provisioned workspace so the suite's
+ * visibility checks are exercised against genuine filesystem state.
  */
 class CorrectFakeHandle implements SandboxHandle {
   private destroyed = false;
 
   constructor(
     private readonly env: Readonly<Record<string, string>>,
-    private readonly files: Map<string, string>,
+    private readonly workspaceDir: string,
   ) {}
 
   async exec(
@@ -30,6 +35,9 @@ class CorrectFakeHandle implements SandboxHandle {
     onEvent: (event: ExecEvent) => void,
   ): Promise<ExecResult> {
     if (this.destroyed) throw new Error("exec after destroy");
+    if (request.cwd !== undefined && request.cwd.startsWith("..")) {
+      throw new Error("cwd escapes workspace");
+    }
     return this.runCommand(request.command, onEvent);
   }
 
@@ -55,10 +63,14 @@ class CorrectFakeHandle implements SandboxHandle {
         onEvent({ kind: "exit", seq: 1, exitCode: 1 });
         return { exitCode: 1 };
       }
-      const content = this.files.get(path);
-      if (content !== undefined) {
-        onEvent({ kind: "stdout", seq: 1, data: content });
+      let content: string;
+      try {
+        content = readFileSync(join(this.workspaceDir, path), "utf8");
+      } catch {
+        onEvent({ kind: "exit", seq: 1, exitCode: 1 });
+        return { exitCode: 1 };
       }
+      onEvent({ kind: "stdout", seq: 1, data: content });
       onEvent({ kind: "exit", seq: 2, exitCode: 0 });
       return { exitCode: 0 };
     }
@@ -85,9 +97,7 @@ class CorrectFakeHandle implements SandboxHandle {
     if (path.startsWith("../")) {
       throw new Error("path escapes workspace");
     }
-    const content = this.files.get(path);
-    if (content === undefined) throw new Error(`no such file: ${path}`);
-    return Buffer.from(content);
+    return readFile(join(this.workspaceDir, path));
   }
 
   async writeFile(path: string, content: string): Promise<void> {
@@ -95,7 +105,7 @@ class CorrectFakeHandle implements SandboxHandle {
     if (path.startsWith("../")) {
       throw new Error("path escapes workspace");
     }
-    this.files.set(path, content);
+    await writeFile(join(this.workspaceDir, path), content, "utf8");
   }
 
   async destroy(): Promise<void> {
@@ -106,14 +116,14 @@ class CorrectFakeHandle implements SandboxHandle {
 class CorrectFakeEngine implements SandboxEngine {
   async provision(
     profile: SandboxLaunchProfile,
-    _workspace: string,
+    workspace: string,
   ): Promise<SandboxHandle> {
     const env: Record<string, string> = {};
     for (const name of profile.envAllowlist) {
       const value = process.env[name];
       if (value !== undefined) env[name] = value;
     }
-    return new CorrectFakeHandle(env, new Map());
+    return new CorrectFakeHandle(env, workspace);
   }
 }
 
@@ -125,13 +135,13 @@ class CorrectFakeEngine implements SandboxEngine {
 class LeakingFakeEngine implements SandboxEngine {
   async provision(
     _profile: SandboxLaunchProfile,
-    _workspace: string,
+    workspace: string,
   ): Promise<SandboxHandle> {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined) env[name] = value;
     }
-    return new CorrectFakeHandle(env, new Map());
+    return new CorrectFakeHandle(env, workspace);
   }
 }
 

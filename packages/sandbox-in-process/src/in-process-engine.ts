@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type {
   ExecEvent,
@@ -13,16 +13,24 @@ import type {
 
 /**
  * In-process sandbox engine: today's execution mode formalized behind the
- * `SandboxEngine` contract. Each provisioned handle owns a unique scratch
- * directory under the workspace; `exec` runs commands with `node:child_process`
- * confined to that directory, with the process environment restricted to the
- * launch profile's `envAllowlist`.
+ * `SandboxEngine` contract. Each handle is rooted at the run's *workspace*
+ * (the prepared repo clone) — exec cwd, readFile, and writeFile all resolve
+ * workspace-relative paths there. A separate per-handle scratch directory
+ * under the OS tmpdir backs HOME/TMPDIR so temp junk never lands inside the
+ * repo; only that scratch dir is removed on destroy. The workspace belongs
+ * to the runner, which provisions and cleans it.
+ *
+ * The scratch dir MUST live outside the workspace: anything inside the clone
+ * shows up as untracked noise that agents legitimately clean up (`git clean`,
+ * `rm -rf`), and deleting the exec cwd out from under the handle breaks every
+ * subsequent spawn with ENOENT.
  */
 
 class InProcessSandboxHandle implements SandboxHandle {
   private destroyed = false;
 
   constructor(
+    private readonly workspaceDir: string,
     private readonly scratchDir: string,
     private readonly envAllowlist: readonly string[],
   ) {}
@@ -39,12 +47,12 @@ class InProcessSandboxHandle implements SandboxHandle {
 
   async readFile(path: string): Promise<Buffer> {
     if (this.destroyed) throw new Error("readFile after destroy");
-    return readFile(this.resolveWithinScratch(path));
+    return readFile(this.resolveWithinWorkspace(path));
   }
 
   async writeFile(path: string, content: string): Promise<void> {
     if (this.destroyed) throw new Error("writeFile after destroy");
-    await writeFile(this.resolveWithinScratch(path), content, "utf8");
+    await writeFile(this.resolveWithinWorkspace(path), content, "utf8");
   }
 
   async destroy(): Promise<void> {
@@ -81,17 +89,17 @@ class InProcessSandboxHandle implements SandboxHandle {
     return env;
   }
 
-  /** Resolves a relative path under the scratch dir, rejecting escapes. */
-  private resolveWithinScratch(path: string): string {
+  /** Resolves a relative path under the workspace, rejecting escapes. */
+  private resolveWithinWorkspace(path: string): string {
     if (path.startsWith("/") || isAbsoluteWindowsPath(path)) {
       throw new Error("absolute paths are not allowed in the sandbox");
     }
-    const resolved = resolve(this.scratchDir, path);
+    const resolved = resolve(this.workspaceDir, path);
     if (
-      resolved !== this.scratchDir &&
-      !resolved.startsWith(`${this.scratchDir}${sep}`)
+      resolved !== this.workspaceDir &&
+      !resolved.startsWith(`${this.workspaceDir}${sep}`)
     ) {
-      throw new Error("path escapes the sandbox scratch directory");
+      throw new Error("path escapes the sandbox workspace");
     }
     return resolved;
   }
@@ -100,60 +108,64 @@ class InProcessSandboxHandle implements SandboxHandle {
     request: ExecRequest,
     onEvent: (event: ExecEvent) => void,
   ): Promise<ExecResult> {
-    return new Promise((resolveResult, reject) => {
-      const cwd = this.resolveExecCwd(request);
-      // detached:true puts the shell (and everything it spawns) in its own
-      // process group so a timeout can kill the entire tree, not just the
-      // shell, via `process.kill(-child.pid, ...)`.
-      const child = spawn(request.command, {
-        cwd,
-        env: this.buildEnv(request),
-        shell: true,
-        detached: true,
-      }) as ChildProcessWithoutNullStreams;
+    const {
+      promise,
+      resolve: resolveResult,
+      reject,
+    } = Promise.withResolvers<ExecResult>();
+    const cwd = this.resolveExecCwd(request);
+    // detached:true puts the shell (and everything it spawns) in its own
+    // process group so a timeout can kill the entire tree, not just the
+    // shell, via `process.kill(-child.pid, ...)`.
+    const child = spawn(request.command, {
+      cwd,
+      env: this.buildEnv(request),
+      shell: true,
+      detached: true,
+    }) as ChildProcessWithoutNullStreams;
 
-      let seq = 0;
-      let timedOut = false;
-      const timer =
-        request.timeoutMs !== undefined
-          ? setTimeout(() => {
-              timedOut = true;
-              if (child.pid !== undefined) {
-                try {
-                  // Negative pid signals the whole process group.
-                  process.kill(-child.pid, "SIGKILL");
-                } catch {
-                  // Process group already gone.
-                }
+    let seq = 0;
+    let timedOut = false;
+    const timer =
+      request.timeoutMs !== undefined
+        ? setTimeout(() => {
+            timedOut = true;
+            if (child.pid !== undefined) {
+              try {
+                // Negative pid signals the whole process group.
+                process.kill(-child.pid, "SIGKILL");
+              } catch {
+                // Process group already gone.
               }
-            }, request.timeoutMs)
-          : undefined;
+            }
+          }, request.timeoutMs)
+        : undefined;
 
-      child.stdout.on("data", (chunk: string | Buffer) => {
-        seq += 1;
-        onEvent({ kind: "stdout", seq, data: String(chunk) });
-      });
-      child.stderr.on("data", (chunk: string | Buffer) => {
-        seq += 1;
-        onEvent({ kind: "stderr", seq, data: String(chunk) });
-      });
-      child.on("error", (err) => {
-        if (timer !== undefined) clearTimeout(timer);
-        reject(err);
-      });
-      child.on("close", (code) => {
-        if (timer !== undefined) clearTimeout(timer);
-        seq += 1;
-        onEvent({ kind: "exit", seq, exitCode: code });
-        resolveResult({ exitCode: code, timedOut });
-      });
+    child.stdout.on("data", (chunk: string | Buffer) => {
+      seq += 1;
+      onEvent({ kind: "stdout", seq, data: String(chunk) });
     });
+    child.stderr.on("data", (chunk: string | Buffer) => {
+      seq += 1;
+      onEvent({ kind: "stderr", seq, data: String(chunk) });
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      seq += 1;
+      onEvent({ kind: "exit", seq, exitCode: code });
+      resolveResult({ exitCode: code, timedOut });
+    });
+    return promise;
   }
 
-  /** Resolves the exec working directory, rooting relative `cwd` under the scratch dir. */
+  /** Resolves the exec working directory, rooting relative `cwd` in the workspace. */
   private resolveExecCwd(request: ExecRequest): string {
-    if (request.cwd === undefined) return this.scratchDir;
-    return this.resolveWithinScratch(request.cwd);
+    if (request.cwd === undefined) return this.workspaceDir;
+    return this.resolveWithinWorkspace(request.cwd);
   }
 }
 
@@ -168,10 +180,12 @@ export function createInProcessEngine(): SandboxEngine {
       profile: SandboxLaunchProfile,
       workspace: string,
     ): Promise<SandboxHandle> {
-      const handleId = randomUUID();
-      const scratchDir = join(workspace, `.colony-sandbox-${handleId}`);
-      await mkdir(scratchDir, { recursive: true });
-      return new InProcessSandboxHandle(scratchDir, profile.envAllowlist);
+      const scratchDir = await mkdtemp(join(tmpdir(), "colony-sandbox-"));
+      return new InProcessSandboxHandle(
+        workspace,
+        scratchDir,
+        profile.envAllowlist,
+      );
     },
   };
 }

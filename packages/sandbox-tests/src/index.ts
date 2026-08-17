@@ -1,6 +1,7 @@
 export {
   describeEngineTests,
   runSandboxEngineChecks,
+  type EngineTestOptions,
   type MakeEngine,
 } from "./describe-engine-tests.js";
 export {

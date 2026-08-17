@@ -101,16 +101,37 @@ async function checkExecRoundTrip(makeEngine: MakeEngine): Promise<void> {
   });
 }
 
-async function checkWorkingDirContainment(
-  makeEngine: MakeEngine,
-): Promise<void> {
+/**
+ * Engine capability switches for the conformance suite.
+ *
+ * `enforcesExecIsolation`: whether the engine confines what a *shell command*
+ * can reach on the filesystem (e.g. a pod-isolated engine). The in-process
+ * engine rejects escaping paths at the handle API (readFile/writeFile/cwd)
+ * but cannot stop a spawned shell from reading `../` — it is a compatibility
+ * engine, not a security boundary. Defaults to true (strict).
+ */
+export interface EngineTestOptions {
+  readonly enforcesExecIsolation?: boolean;
+}
+
+async function checkApiContainment(makeEngine: MakeEngine): Promise<void> {
   await withProvisionedHandle(makeEngine, async ({ handle, canaryName }) => {
     const escapedPath = `../${canaryName}`;
 
-    // `readFile` must reject paths escaping the workspace.
+    // `readFile`/`writeFile` must reject paths escaping the workspace.
     await expect(handle.readFile(escapedPath)).rejects.toThrow();
+    await expect(handle.writeFile(escapedPath, "x")).rejects.toThrow();
 
-    // `exec` must not surface the canary content to the caller.
+    // An exec `cwd` escaping the workspace must be rejected.
+    await expect(
+      handle.exec({ command: "true", cwd: ".." }, () => undefined),
+    ).rejects.toThrow();
+  });
+}
+
+async function checkExecContainment(makeEngine: MakeEngine): Promise<void> {
+  await withProvisionedHandle(makeEngine, async ({ handle, canaryName }) => {
+    // `exec` must not surface content outside the workspace to the caller.
     let surfaced = "";
     let exitCode: number | null | undefined;
     await handle.exec({ command: `cat ../${canaryName}` }, (event) => {
@@ -122,6 +143,31 @@ async function checkWorkingDirContainment(
 
     expect(surfaced).not.toContain(CANARY_CONTENT);
     expect(exitCode).not.toBe(0);
+  });
+}
+
+/**
+ * The workspace's existing contents must be visible through the handle:
+ * exec runs *in* the workspace and readFile resolves against it. This is
+ * the regression check for rooting a handle in an empty scratch dir while
+ * the run's repo clone sits untouched next to it.
+ */
+async function checkWorkspaceVisibility(makeEngine: MakeEngine): Promise<void> {
+  await withProvisionedHandle(makeEngine, async ({ handle, workspace }) => {
+    const seeded = `seed-${randomUUID()}.txt`;
+    const content = `workspace-visible-${randomUUID()}`;
+    await writeFile(join(workspace, seeded), content);
+
+    expect(String(await handle.readFile(seeded))).toBe(content);
+
+    let surfaced = "";
+    let exitCode: number | null | undefined;
+    await handle.exec({ command: `cat ${seeded}` }, (event) => {
+      if (event.kind === "stdout") surfaced += event.data;
+      if (event.kind === "exit") exitCode = event.exitCode;
+    });
+    expect(exitCode).toBe(0);
+    expect(surfaced).toContain(content);
   });
 }
 
@@ -190,9 +236,14 @@ function restoreEnv(name: string, previous: string | undefined): void {
  */
 export async function runSandboxEngineChecks(
   makeEngine: MakeEngine,
+  options: EngineTestOptions = {},
 ): Promise<void> {
   await checkExecRoundTrip(makeEngine);
-  await checkWorkingDirContainment(makeEngine);
+  await checkWorkspaceVisibility(makeEngine);
+  await checkApiContainment(makeEngine);
+  if (options.enforcesExecIsolation !== false) {
+    await checkExecContainment(makeEngine);
+  }
   await checkEnvFiltering(makeEngine);
   await checkDestroyIdempotent(makeEngine);
   await checkExecAfterDestroy(makeEngine);
@@ -207,12 +258,19 @@ export async function runSandboxEngineChecks(
 export function describeEngineTests(
   name: string,
   makeEngine: MakeEngine,
+  options: EngineTestOptions = {},
 ): void {
   describe(`sandbox engine conformance (${name})`, () => {
     it("exec round-trip surfaces ordered stdout/stderr with strictly increasing seq and exitCode 0", () =>
       checkExecRoundTrip(makeEngine));
-    it("rejects paths escaping the working directory", () =>
-      checkWorkingDirContainment(makeEngine));
+    it("workspace contents are visible to exec and readFile", () =>
+      checkWorkspaceVisibility(makeEngine));
+    it("rejects handle API paths escaping the workspace", () =>
+      checkApiContainment(makeEngine));
+    if (options.enforcesExecIsolation !== false) {
+      it("exec cannot surface content outside the workspace", () =>
+        checkExecContainment(makeEngine));
+    }
     it("filters env vars not in the launch profile envAllowlist", () =>
       checkEnvFiltering(makeEngine));
     it("destroy() is idempotent", () => checkDestroyIdempotent(makeEngine));
