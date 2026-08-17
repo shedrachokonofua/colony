@@ -16,6 +16,7 @@
       "@colony/sandbox-in-process": [
         "./packages/sandbox-in-process/src/index.ts"
       ],
+      "@colony/sandbox-k8s": ["./packages/sandbox-k8s/src/index.ts"],
       "@colony/schemas": ["./packages/schemas/src/index.ts"],
       "@colony/sandbox-tests": ["./packages/sandbox-tests/src/index.ts"]
     }
