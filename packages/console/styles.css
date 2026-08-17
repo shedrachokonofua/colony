@@ -1223,6 +1223,13 @@ body {
   align-items: baseline;
 }
 
+/* Flex children default min-width:auto, so an unwrapped <pre> or long
+   command would blow the column (and the whole grid) wide. */
+.validation-detail {
+  min-width: 0;
+  flex: 1;
+}
+
 .validation-marker {
   flex: none;
   font-weight: 700;
@@ -1248,10 +1255,22 @@ body {
   display: block;
   margin-top: 0.15rem;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .validation-item .runlog {
   margin: 0.3rem 0 0;
+  max-width: 100%;
+}
+
+/* The tail renders in a <pre class="runlog">: wrap long lines instead of
+   forcing horizontal page scroll. */
+pre.runlog {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--muted);
 }
 
 /* ---------- Activity ---------- */

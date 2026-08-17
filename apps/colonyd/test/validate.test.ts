@@ -185,4 +185,29 @@ describe("defaultValidateExecutor", () => {
       delete process.env["COLONYD_SECRET_PREVIEW"];
     }
   });
+
+  it("does not leak the daemon's NODE_ENV into acceptance commands", async () => {
+    const repo = seedRepo();
+    const previous = process.env["NODE_ENV"];
+    process.env["NODE_ENV"] = "production";
+    try {
+      const result = await defaultValidateExecutor({
+        workspace: workspaceKey(),
+        cloneUrl: repo,
+        displayUrl: repo,
+        targetBranch: "main",
+        // NODE_ENV=production would make `npm ci` omit devDependencies in a
+        // fresh checkout, breaking every test-running criterion. CI is set
+        // so commands behave as they would in a pipeline.
+        acceptance: [
+          { description: "no NODE_ENV", command: 'test -z "$NODE_ENV"' },
+          { description: "CI set", command: 'test "$CI" = true' },
+        ],
+      });
+      expect(result.passed).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env["NODE_ENV"];
+      else process.env["NODE_ENV"] = previous;
+    }
+  });
 });

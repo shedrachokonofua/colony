@@ -384,6 +384,12 @@ export function scrubWorkspaceCredentials(
  * Environment sanitized for acceptance commands: every key matching a
  * provider-credential pattern is removed, and GITLAB_TOKEN is never present.
  * This is a hard safety invariant for validate (credential-free runner).
+ *
+ * The daemon's NODE_ENV is dropped too: acceptance commands are CI-like
+ * workloads against a fresh checkout, and inheriting the daemon's
+ * NODE_ENV=production makes `npm ci` omit devDependencies — observed live
+ * as every test-running criterion failing with "Cannot find package
+ * 'vitest'". CI=true matches what the commands would see in a pipeline.
  */
 function sanitizedEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -394,6 +400,8 @@ function sanitizedEnv(): Record<string, string> {
     env[key] = value;
   }
   delete env["GITLAB_TOKEN"];
+  delete env["NODE_ENV"];
+  env["CI"] = "true";
   return env;
 }
 
