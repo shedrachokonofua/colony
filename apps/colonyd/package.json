@@ -20,6 +20,7 @@
     "@colony/provider": "*",
     "@colony/provider-gitlab": "*",
     "@colony/sandbox-in-process": "*",
+    "@colony/sandbox-k8s": "*",
     "@colony/schemas": "*",
     "@hono/node-server": "^1.14.0",
     "hono": "^4.9.0",

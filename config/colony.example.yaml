@@ -23,6 +23,14 @@ hitl:
 review:
   mode: off
 
+# sandbox:
+#   engine: in-process   # default; agents run in-process
+#   # engine: kubernetes  # isolated kata sandboxes via the agent-sandbox controller
+#   # kubernetes:
+#   #   namespace: colony-sandboxes
+#   #   image: registry.gitlab.home.shdr.ch/so/colony/sandbox:latest
+#   #   api_version_override: v1beta1   # optional; otherwise discovered from the cluster
+
 providers:
   # ── OpenAI-compatible gateway/provider ───────────────────────────────
   openai_compatible:

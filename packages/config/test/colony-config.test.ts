@@ -371,7 +371,7 @@ ${VALID_YAML}`),
   it("rejects an unknown sandbox engine", () => {
     expect(() =>
       loadColonyConfig({
-        path: tempConfig(`sandbox: { engine: "kubernetes" }
+        path: tempConfig(`sandbox: { engine: "nomad" }
 ${VALID_YAML}`),
       }),
     ).toThrow(/validation failed/);
@@ -381,7 +381,7 @@ ${VALID_YAML}`),
     try {
       loadColonyConfig({
         path: tempConfig(VALID_YAML),
-        sandboxEngineOverride: "kubernetes" as never,
+        sandboxEngineOverride: "nomad" as never,
       });
       throw new Error("expected override validation to fail");
     } catch (e) {
@@ -390,5 +390,50 @@ ${VALID_YAML}`),
       expect(err.code).toBe("VALIDATION");
       expect(err.message).toMatch(/sandbox engine override/);
     }
+  });
+
+  it("accepts the kubernetes sandbox engine", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(`sandbox: { engine: "kubernetes" }
+${VALID_YAML}`),
+    });
+    expect(cfg.sandbox.engine).toBe("kubernetes");
+  });
+
+  it("round-trips the kubernetes sandbox config block", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(`sandbox:
+  engine: kubernetes
+  kubernetes:
+    namespace: custom-ns
+    image: img:tag
+    api_version_override: v1beta1
+${VALID_YAML}`),
+    });
+    expect(cfg.sandbox.engine).toBe("kubernetes");
+    expect(cfg.sandbox.kubernetes.namespace).toBe("custom-ns");
+    expect(cfg.sandbox.kubernetes.image).toBe("img:tag");
+    expect(cfg.sandbox.kubernetes.api_version_override).toBe("v1beta1");
+  });
+
+  it("defaults sandbox.kubernetes when the block is absent", () => {
+    const cfg = loadColonyConfig({ path: tempConfig(VALID_YAML) });
+    expect(cfg.sandbox.engine).toBe("in-process");
+    expect(cfg.sandbox.kubernetes.namespace).toBe("colony-sandboxes");
+    expect(cfg.sandbox.kubernetes.image).toBe(
+      "registry.gitlab.home.shdr.ch/so/colony/sandbox:latest",
+    );
+    expect(cfg.sandbox.kubernetes.api_version_override).toBeUndefined();
+  });
+
+  it("rejects an unknown key inside sandbox.kubernetes", () => {
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(`sandbox:
+  engine: kubernetes
+  kubernetes: { foo: bar }
+${VALID_YAML}`),
+      }),
+    ).toThrow(/validation failed/);
   });
 });

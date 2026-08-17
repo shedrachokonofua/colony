@@ -32,6 +32,7 @@ TypeScript **npm workspaces** monorepo (Node **24+**).
 - `packages/provider`, `packages/provider-gitlab` — provider contract + GitLab adapter (also a fake adapter for tests)
 - `packages/agent-runtime` — Pi runner adapters, envelopes, workspace provisioning
 - `packages/observability` — OTel metrics
+- `packages/sandbox-k8s` — Kubernetes sandbox engine over the agent-sandbox controller
 - `tofu/` — colonyd Deployment + PVC + HTTPRoute into Aether `colony`
 
 ## Development

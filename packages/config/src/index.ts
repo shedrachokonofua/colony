@@ -25,7 +25,7 @@ const envSchema = z.object({
   AGENT_RUNTIME: z.enum(["fake", "pi"]).optional(),
 
   // Sandbox
-  COLONY_SANDBOX_ENGINE: z.enum(["in-process"]).optional(),
+  COLONY_SANDBOX_ENGINE: z.enum(["in-process", "kubernetes"]).optional(),
   COLONY_CONFIG_PATH: optionalNonEmptyString,
 
   // GitLab (home-lab provider)
@@ -71,6 +71,7 @@ export {
   AGENT_ROLES,
   ColonyConfigError,
   DEFAULT_CEILINGS,
+  DEFAULT_KUBERNETES_SANDBOX,
   PI_API_KINDS,
   colonyConfigFileSchema,
   loadColonyConfig,
@@ -78,6 +79,7 @@ export {
   type ColonyConfig,
   type ColonyConfigFile,
   type HitlMode,
+  type KubernetesSandboxConfig,
   type ReviewMode,
   type LoadColonyConfigOptions,
   type PiApiKind,
