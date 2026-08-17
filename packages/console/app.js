@@ -900,8 +900,7 @@ function runLine(run) {
         ${KIND_LABEL[run.kind] || run.kind} ${run.status}${verdict}
       </p>
       <p class="meta">
-        ${run.model_id ? `${run.model_id} · ` : ""}
-        ${shortSha(run.head_sha)} ·
+        ${run.model_id ? `${run.model_id} · ` : ""} ${shortSha(run.head_sha)} ·
         ${rel(run.finished_at || run.started_at)}${run.error
           ? ` · ${run.error}`
           : ""}
