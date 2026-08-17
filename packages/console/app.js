@@ -406,6 +406,7 @@ function demoWorld() {
       task_id: null,
       kind: "architect",
       status: "succeeded",
+      model_id: "deepseek-v4-flash",
       head_sha: null,
       error: null,
       evidence_json: null,
@@ -443,6 +444,7 @@ function demoWorld() {
       task_id: "col-a1b2c3d4.1",
       kind: "implement",
       status: "succeeded",
+      model_id: "deepseek-v4-flash",
       head_sha: DEMO_SHA_B,
       error: null,
       started_at: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
@@ -463,6 +465,18 @@ function demoWorld() {
       at: new Date(Date.now() - 6 * 1000).toISOString(),
       event: "pi_tool_call",
       detail_json: JSON.stringify({ tool: "read", isError: false }),
+    },
+    {
+      id: 3,
+      run_id: "run-gate-1",
+      at: new Date(Date.now() - 3 * 1000).toISOString(),
+      event: "pi_model_fallback",
+      detail_json: JSON.stringify({
+        role: "developer",
+        level: "warn",
+        from: "deepseek-v4-flash",
+        to: "mimo-v2.5-pro",
+      }),
     },
   ];
   return {
@@ -843,7 +857,13 @@ function renderFeedLog(feed, run) {
       let detail = "";
       try {
         const d = JSON.parse(row.detail_json);
-        detail = [d.tool, d.isError ? "error" : ""].filter(Boolean).join(" · ");
+        if (row.event === "pi_model_fallback" && d.from && d.to) {
+          detail = `${d.from} → ${d.to}`;
+        } else {
+          detail = [d.tool, d.isError ? "error" : ""]
+            .filter(Boolean)
+            .join(" · ");
+        }
       } catch {
         detail = "";
       }
@@ -880,7 +900,7 @@ function runLine(run) {
         ${KIND_LABEL[run.kind] || run.kind} ${run.status}${verdict}
       </p>
       <p class="meta">
-        ${shortSha(run.head_sha)} ·
+        ${run.model_id ? `${run.model_id} · ` : ""} ${shortSha(run.head_sha)} ·
         ${rel(run.finished_at || run.started_at)}${run.error
           ? ` · ${run.error}`
           : ""}
