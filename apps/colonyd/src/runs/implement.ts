@@ -41,6 +41,7 @@ export async function runImplement(
     task_id: task.id,
     kind: "implement",
     lease_ttl_ms: leaseTtlMs,
+    model_id: developer.model.id,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
