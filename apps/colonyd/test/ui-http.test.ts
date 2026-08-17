@@ -238,6 +238,7 @@ describe("operator console", () => {
       {
         kind: "architect_decomposition",
         summary: "one task",
+        acceptance: [{ description: "ui plan goal", command: "true" }],
         tasks: [{ title: "t", spec: "s", depends_on: [] }],
       },
       "human:op-1",
@@ -286,6 +287,7 @@ describe("operator console", () => {
       JSON.stringify({
         kind: "architect_decomposition",
         summary: "v1",
+        acceptance: [{ description: "ui plan goal", command: "true" }],
         tasks: [{ title: "t", spec: "s", depends_on: [] }],
       }),
     );
@@ -309,6 +311,7 @@ describe("operator console", () => {
       JSON.stringify({
         kind: "architect_decomposition",
         summary: "v2",
+        acceptance: [{ description: "ui plan goal", command: "true" }],
         tasks: [{ title: "t", spec: "s", depends_on: [] }],
       }),
     );
@@ -319,6 +322,7 @@ describe("operator console", () => {
       {
         kind: "architect_decomposition",
         summary: "v2",
+        acceptance: [{ description: "ui plan goal", command: "true" }],
         tasks: [{ title: "t", spec: "s", depends_on: [] }],
       },
       "human:op-1",
@@ -370,6 +374,7 @@ describe("operator controls", () => {
       {
         kind: "architect_decomposition",
         summary: "one",
+        acceptance: [{ description: "ui plan goal", command: "true" }],
         tasks: [{ title: "t", spec: "original spec", depends_on: [] }],
       },
       "svc:test",

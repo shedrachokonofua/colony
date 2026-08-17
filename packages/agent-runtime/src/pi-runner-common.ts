@@ -724,6 +724,12 @@ export function buildArchitectSystemPrompt(): string {
     "# Task spec format",
     "Each spec is outcome-oriented markdown containing: the goal, the user-observable behavior, the invariants that must hold, and the required evidence — the exact commands/tests whose success proves completion. Reference real paths and symbols you saw during exploration.",
     "",
+    "# Acceptance criteria",
+    "Emit an `acceptance` array of at least one entry proving the SCOPE goal (not per-task evidence). Each entry is { description, command }:",
+    "- objective and cheap to run (seconds, not minutes);",
+    "- each tied to an observable outcome of the scope goal — not evidence that a single task landed;",
+    "- the command must run from a fresh checkout of the default branch at HEAD (a fresh `git clone` + `npm ci` where that makes sense), and exit non-zero if the goal does not hold.",
+    "",
     "# Completion contract",
     "Do not write code, files, or anything outside the envelope. If operator feedback on a rejected plan is present in the packet, address every point of it. Finish by calling submit_architect_decomposition exactly once — your run does not exist until that call; never finish with plain text.",
   ].join("\n");
@@ -792,6 +798,7 @@ export function buildArchitectFinalizerPrompt(
     "Rules:",
     '- kind is exactly "architect_decomposition".',
     "- summary is a one-paragraph decomposition summary.",
+    "- acceptance is a non-empty array of { description, command } proving the scope goal.",
     "- tasks has 1-20 entries; each has title, spec (markdown: goal, user-observable behavior, invariants, required evidence), and depends_on (array of indexes into the tasks array; [] when independent).",
     "- Prefer coarse vertical tasks; the dependency graph must be acyclic.",
     "- Do not add wrapper keys such as envelope, arguments, or data. The tool arguments are the envelope object.",
@@ -824,6 +831,16 @@ export const architectDecompositionEnvelopeTypeBox = Type.Object(
   {
     kind: Type.Literal("architect_decomposition"),
     summary: Type.String({ minLength: 1 }),
+    acceptance: Type.Array(
+      Type.Object(
+        {
+          description: Type.String({ minLength: 1 }),
+          command: Type.String({ minLength: 1 }),
+        },
+        { additionalProperties: false },
+      ),
+      { minItems: 1 },
+    ),
     tasks: Type.Array(
       Type.Object(
         {

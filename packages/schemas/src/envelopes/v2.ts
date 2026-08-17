@@ -4,6 +4,16 @@ export const ArchitectDecompositionV2 = z
   .object({
     kind: z.literal("architect_decomposition"),
     summary: z.string().min(1),
+    acceptance: z
+      .array(
+        z
+          .object({
+            description: z.string().min(1),
+            command: z.string().min(1),
+          })
+          .strict(),
+      )
+      .min(1),
     tasks: z
       .array(
         z.object({

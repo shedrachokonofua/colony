@@ -204,6 +204,7 @@ function defaultEnvelope(
     return architectDecompositionV2Schema.parse({
       kind: "architect_decomposition",
       summary: "Fake architect run proposed a single-task decomposition.",
+      acceptance: [{ description: "Fake scope goal is met.", command: "true" }],
       tasks: [
         {
           title: "Initial scope task",

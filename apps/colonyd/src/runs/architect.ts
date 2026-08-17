@@ -190,6 +190,7 @@ function buildArchitectBody(scope: Scope): string {
     "",
     "Inspect the repository (read-only) before decomposing.",
     "Emit architect_decomposition with at most 20 outcome-oriented tasks.",
+    "Emit an acceptance array of at least one { description, command } entry proving the SCOPE goal (not per-task evidence). Each command must be objective, cheap to run, tied to an observable outcome of the scope goal, runnable from a fresh checkout of the default branch at HEAD, and exit non-zero if the goal does not hold.",
     "Each task spec must contain: goal, user-observable behavior, invariants, required evidence.",
     "Prefer coarse vertical tasks over file-sliced tasks.",
     "Two tasks must not both introduce schema migrations unless one depends on the other.",
