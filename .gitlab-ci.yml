@@ -70,3 +70,27 @@ build:colonyd:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# The kubernetes engine's execution image. Keel force-polls :latest, so a green
+# main branch redeploys the default `registry.gitlab.home.shdr.ch/so/colony/sandbox:latest`.
+build:sandbox:
+  stage: build
+  image: quay.io/buildah/stable:latest
+  tags:
+    - buildah
+  cache: []
+  before_script:
+    - buildah --version
+    - echo "$CI_REGISTRY_PASSWORD" | buildah login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - IMAGE="$CI_REGISTRY_IMAGE/sandbox"
+    - buildah bud --layers=true -f docker/sandbox/Dockerfile -t "$IMAGE:$CI_COMMIT_SHA" docker/sandbox
+    - buildah push "$IMAGE:$CI_COMMIT_SHA"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        buildah tag "$IMAGE:$CI_COMMIT_SHA" "$IMAGE:latest"
+        buildah push "$IMAGE:latest"
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
