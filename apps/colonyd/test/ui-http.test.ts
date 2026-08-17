@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
@@ -69,6 +70,23 @@ describe("operator console", () => {
     const font = await app.request("/ui/fonts/big-shoulders-800.woff2");
     expect(font.status).toBe(200);
     expect(font.headers.get("content-type")).toMatch(/font\/woff2/);
+  });
+
+  it("serves the console package files exactly", async () => {
+    const pkgDir = dirname(
+      createRequire(import.meta.url).resolve("@colony/console/package.json"),
+    );
+    const app = appWithStore();
+
+    const js = await app.request("/ui/app.js");
+    expect(js.status).toBe(200);
+    expect(await js.text()).toBe(readFileSync(join(pkgDir, "app.js"), "utf8"));
+
+    const root = await app.request("/");
+    expect(root.status).toBe(200);
+    expect(await root.text()).toBe(
+      readFileSync(join(pkgDir, "index.html"), "utf8"),
+    );
   });
 
   it("exposes public console config without secrets", async () => {
