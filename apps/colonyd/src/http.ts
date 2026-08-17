@@ -9,6 +9,7 @@ import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@col
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
+import { runValidation } from "./runs/validate.js";
 
 const UI_DIR = dirname(
   createRequire(import.meta.url).resolve("@colony/console/package.json"),
@@ -290,6 +291,37 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(ctx.store.getScope(scope.id));
   });
 
+  app.post("/scopes/:id/revalidate", (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    if (scope.status !== "validating") {
+      return c.json(
+        {
+          error: {
+            code: "NOT_VALIDATING",
+            message: "scope is not awaiting validation",
+          },
+        },
+        409,
+      );
+    }
+    const actor = c.get("actor");
+    ctx.store.audit(actor, "scope.revalidate_requested", {
+      scope_id: scope.id,
+      detail: { actor },
+    });
+    // Operator's path to retry validation: only dispatch when no validate run
+    // is currently active so two validations never race in one scope.
+    const runningValidate = ctx.store
+      .activeRuns("validate")
+      .some((r) => r.scope_id === scope.id);
+    if (!runningValidate) {
+      void runValidation(ctx, ctx.store.getScope(scope.id)!);
+    }
+    ctx.requestTick();
+    return c.json(ctx.store.getScope(scope.id));
+  });
+
   app.get("/tasks/:id", (c) => {
     const task = ctx.store.getTask(c.req.param("id"));
     if (!task) return notFound(c, "task");
@@ -432,7 +464,11 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
           blocked_reason: null,
         },
       );
-      if (scope.status === "done" || scope.status === "blocked") {
+      if (
+        scope.status === "done" ||
+        scope.status === "blocked" ||
+        scope.status === "validating"
+      ) {
         ctx.store.setScopeStatus(scope.id, "active", c.get("actor"), {
           reason: "canceled_task_restored",
           task_id: task.id,

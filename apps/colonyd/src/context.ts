@@ -5,6 +5,7 @@ import type { AgentWiring } from "./agent-runtime.js";
 import type { Logger } from "./logging.js";
 import type { TokenVerifier } from "./oidc.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
+import type { ValidateExecutor } from "./runs/validate.js";
 
 export interface ColonydContext {
   readonly store: Store;
@@ -13,6 +14,8 @@ export interface ColonydContext {
   readonly agents: AgentWiring;
   readonly logger: Logger;
   readonly gateExecutor?: GateExecutor;
+  /** Test seam: overrides the credential-free validation command runner. */
+  readonly validateExecutor?: ValidateExecutor;
   /** Test seam: overrides the verifier built from env.oidcIssuer. */
   readonly oidcVerifier?: TokenVerifier;
   readonly env: {

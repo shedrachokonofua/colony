@@ -9,6 +9,7 @@ import { runImplement } from "./runs/implement.js";
 import { runMergeGate } from "./runs/merge-gate.js";
 import { reconcileRejectedReview, runReview } from "./runs/review.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
+import { runValidation } from "./runs/validate.js";
 
 /**
  * One reconciliation pass. Each phase is fail-isolated: a phase error is
@@ -23,6 +24,7 @@ export async function tick(ctx: ColonydContext): Promise<void> {
   await phase(ctx, "scope_planning", () => advanceScopePlanning(ctx));
   await phase(ctx, "dispatch_implementers", () => dispatchImplementers(ctx));
   await phase(ctx, "scope_closure", () => closeScopes(ctx));
+  await phase(ctx, "validate_scopes", () => validateScopes(ctx));
 }
 
 async function phase(
@@ -67,6 +69,9 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
     } else if (run.kind === "review") {
       // Task stays mr_open; the next tick re-dispatches a review at the
       // current head SHA. Review is evidence, not a task-state owner.
+    } else if (run.kind === "validate") {
+      // Credential-free: no token to revoke. The scope stays `validating`
+      // and the operator revalidates via POST /scopes/:id/revalidate.
     }
   }
 
@@ -523,7 +528,9 @@ async function closeScopes(ctx: ColonydContext): Promise<void> {
     if (terminal) {
       const mergedCount = tasks.filter((t) => t.state === "merged").length;
       if (mergedCount >= 1) {
-        ctx.store.setScopeStatus(scope.id, "done", SERVICE_ACTOR);
+        ctx.store.setScopeStatus(scope.id, "validating", SERVICE_ACTOR, {
+          acceptance_count: acceptanceCriteriaCount(scope),
+        });
       } else {
         ctx.store.setScopeStatus(scope.id, "blocked", SERVICE_ACTOR, {
           blocked_reason: "all tasks canceled without merges",
@@ -549,6 +556,40 @@ async function closeScopes(ctx: ColonydContext): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 7 — validation: run acceptance commands on validating scopes.
+// ---------------------------------------------------------------------------
+
+async function validateScopes(ctx: ColonydContext): Promise<void> {
+  for (const scope of ctx.store.listScopes()) {
+    if (scope.status !== "validating") continue;
+    // Re-fetch fresh before dispatch (scope may have moved since list).
+    const fresh = ctx.store.getScope(scope.id);
+    if (!fresh || fresh.status !== "validating") continue;
+    // The first validate run is dispatched once; after a failure the scope
+    // parks and the operator re-triggers via the revalidate endpoint.
+    const hasValidateRun = ctx.store
+      .runsForScope(scope.id)
+      .some((r) => r.kind === "validate");
+    if (hasValidateRun) continue;
+    const running = ctx.store
+      .activeRuns("validate")
+      .some((r) => r.scope_id === scope.id);
+    if (running) continue;
+    void runValidation(ctx, fresh);
+  }
+}
+
+function acceptanceCriteriaCount(scope: Scope): number {
+  if (!scope.acceptance_json) return 0;
+  try {
+    const parsed = JSON.parse(scope.acceptance_json);
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export const TICK_PHASES = [
   "expire_leases",
   "poll_provider",
@@ -556,4 +597,5 @@ export const TICK_PHASES = [
   "scope_planning",
   "dispatch_implementers",
   "scope_closure",
+  "validate_scopes",
 ] as const;
