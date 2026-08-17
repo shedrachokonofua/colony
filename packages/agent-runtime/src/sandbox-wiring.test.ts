@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
   ExecEvent,
@@ -9,11 +10,14 @@ import type {
   SandboxEngine,
   SandboxHandle,
 } from "@colony/sandbox";
+import { buildSandboxLaunchProfile } from "@colony/sandbox";
+import { createInProcessEngine } from "@colony/sandbox-in-process";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,
 } from "./pi-base-agent-runner.js";
+import { buildSandboxBaseTools } from "./sandbox-tools.js";
 
 const servers: Server[] = [];
 const scratchDirs: string[] = [];
@@ -231,4 +235,77 @@ describe("sandbox tool wiring", () => {
     expect(result.reason).toBeUndefined();
     expect(result.envelope).toEqual(envelope);
   });
+
+  it("round-trips bash/file tools through a real in-process engine handle", async () => {
+    const workspace = mkdtempSync(
+      join(tmpdir(), "colony-sandbox-integration-"),
+    );
+    scratchDirs.push(workspace);
+    const engine = createInProcessEngine();
+    const handle = await engine.provision(
+      buildSandboxLaunchProfile("developer"),
+      workspace,
+    );
+    const tools = buildSandboxBaseTools(handle, workspace);
+    try {
+      // write → handle.writeFile (mkdir via handle.exec)
+      await (tools.write as AgentTool).execute("w1", {
+        path: "src/notes.txt",
+        content: "hello sandbox\nsecond line\n",
+      });
+      // read → handle.readFile + handle.exec('test -r …') on the same path
+      const read = await (tools.read as AgentTool).execute("r1", {
+        path: "src/notes.txt",
+      });
+      expect(toolText(read)).toContain("hello sandbox");
+      expect(toolText(read)).toContain("second line");
+
+      // bash → handle.exec with a workspace-relative cwd
+      const bash = await (tools.bash as AgentTool).execute("b1", {
+        command: "cat src/notes.txt",
+      });
+      expect(toolText(bash)).toContain("hello sandbox");
+
+      // ls → handle.exec('test -e/'test -d/'ls -1 …')
+      const ls = await (tools.ls as AgentTool).execute("l1", {
+        path: "src",
+      });
+      expect(toolText(ls)).toContain("notes.txt");
+
+      // edit → handle.readFile + handle.writeFile + handle.exec('test -w …')
+      const edit = await (tools.edit as AgentTool).execute("e1", {
+        path: "src/notes.txt",
+        edits: [{ oldText: "hello sandbox", newText: "edited sandbox" }],
+      });
+      const afterEdit = await (tools.read as AgentTool).execute("r2", {
+        path: "src/notes.txt",
+      });
+      expect(toolText(afterEdit)).toContain("edited sandbox");
+      expect(edit.details ?? undefined).toBeDefined();
+
+      // find → handle.exec('find … -type f')
+      const find = await (tools.find as AgentTool).execute("f1", {
+        pattern: "**/*.txt",
+      });
+      expect(toolText(find)).toContain("notes.txt");
+
+      // Absolute paths (the tool resolves them) never reach the handle; the
+      // in-process engine rejects them, so the translation is what matters.
+      expect(handle).toBeDefined();
+    } finally {
+      await handle.destroy();
+    }
+  });
 });
+
+export function toolText(result: {
+  content: readonly { type: string; text?: string }[];
+}): string {
+  return result.content
+    .map((content) =>
+      content.type === "text" && typeof content.text === "string"
+        ? content.text
+        : "",
+    )
+    .join("\n");
+}

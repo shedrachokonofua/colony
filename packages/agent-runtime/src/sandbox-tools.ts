@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
   createBashTool,
@@ -25,6 +26,14 @@ import type { SandboxHandle } from "@colony/sandbox";
  * execution actually run through the sandbox (env filtering included) while
  * leaving pi-model-fallback's default local tools untouched when no engine is
  * configured.
+ *
+ * The sandbox handle contract (packages/sandbox/src/exec-protocol.ts) requires
+ * workspace-relative paths — absolute paths are rejected by the in-process
+ * engine. pi-coding-agent hands every operation an absolute path resolved from
+ * the tool's `cwd` (the run workspace), so each operation translates its
+ * argument back to a workspace-relative path before calling into the handle.
+ * Paths outside the workspace relativize to `../...` and are rejected by the
+ * engine, which is exactly the sandbox boundary we want.
  */
 
 /**
@@ -39,6 +48,15 @@ interface ExecCapture {
   readonly exitCode: number | null;
 }
 
+/**
+ * Relativize an absolute path against the run workspace so the handle resolves
+ * it inside its own scratch root. `"."` represents the workspace root.
+ */
+function toWorkspaceRelative(base: string, absolutePath: string): string {
+  const rel = path.relative(base, absolutePath);
+  return rel === "" ? "." : rel;
+}
+
 /** Run a command through the handle and capture stdout/stderr as one buffer. */
 async function execCapture(
   handle: SandboxHandle,
@@ -47,65 +65,117 @@ async function execCapture(
     readonly cwd?: string;
     readonly env?: NodeJS.ProcessEnv;
     readonly timeoutMs?: number;
+    readonly signal?: AbortSignal;
   } = {},
 ): Promise<ExecCapture> {
-  const env: Record<string, string> = {};
-  if (options.env) {
-    for (const [name, value] of Object.entries(options.env)) {
-      if (value !== undefined) env[name] = String(value);
+  const chunks: Buffer[] = [];
+  const output = await runWithSignal(
+    handle,
+    {
+      command,
+      cwd: options.cwd,
+      env: toEnvRecord(options.env),
+      timeoutMs: options.timeoutMs,
+    },
+    options.signal,
+    (data) => chunks.push(Buffer.from(data)),
+  );
+  return { output: Buffer.concat(chunks), exitCode: output.exitCode };
+}
+
+function toEnvRecord(
+  env: NodeJS.ProcessEnv | undefined,
+): Record<string, string> {
+  const record: Record<string, string> = {};
+  if (env) {
+    for (const [name, value] of Object.entries(env)) {
+      if (value !== undefined) record[name] = String(value);
     }
   }
-  const chunks: Buffer[] = [];
-  const result = await handle.exec(
-    { command, cwd: options.cwd, env, timeoutMs: options.timeoutMs },
-    (event) => {
+  return record;
+}
+
+/**
+ * Execute a command through the handle, watching the caller's AbortSignal so a
+ * mid-exec abort (run timeout, cancellation) surfaces promptly as a thrown
+ * error instead of blocking the tool turn until the engine-side timeoutMs.
+ */
+function runWithSignal(
+  handle: SandboxHandle,
+  request: {
+    command: string;
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+  },
+  signal: AbortSignal | undefined,
+  onData: (data: string) => void,
+): Promise<{ exitCode: number | null }> {
+  if (signal?.aborted) {
+    return Promise.reject(new Error("aborted"));
+  }
+  const exec = () =>
+    handle.exec(request, (event) => {
       if (event.kind === "stdout" || event.kind === "stderr") {
-        chunks.push(Buffer.from(event.data));
+        onData(event.data);
       }
-    },
-  );
-  return { output: Buffer.concat(chunks), exitCode: result.exitCode };
+    });
+  if (!signal) return exec();
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    exec().then(
+      (result) => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      },
+    );
+  });
 }
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function bashOperations(handle: SandboxHandle): BashOperations {
+function bashOperations(handle: SandboxHandle, base: string): BashOperations {
   return {
     exec: async (command, cwd, { onData, signal, timeout, env }) => {
-      if (signal?.aborted) throw new Error("aborted");
-      const envRecord: Record<string, string> = {};
-      if (env) {
-        for (const [name, value] of Object.entries(env)) {
-          if (value !== undefined) envRecord[name] = String(value);
-        }
-      }
-      const result = await handle.exec(
+      const result = await runWithSignal(
+        handle,
         {
           command,
-          cwd,
-          env: envRecord,
+          cwd: toWorkspaceRelative(base, cwd),
+          env: toEnvRecord(env),
           timeoutMs: timeout !== undefined ? timeout * 1000 : undefined,
         },
-        (event) => {
-          if (event.kind === "stdout" || event.kind === "stderr") {
-            onData(Buffer.from(event.data));
-          }
-        },
+        signal,
+        (data) => onData(Buffer.from(data)),
       );
       return { exitCode: result.exitCode };
     },
   };
 }
 
-function readOperations(handle: SandboxHandle): ReadOperations {
+function readOperations(handle: SandboxHandle, base: string): ReadOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
-    readFile: (absolutePath) => handle.readFile(absolutePath),
+    readFile: (absolutePath) => handle.readFile(rel(absolutePath)),
     access: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        `test -r ${shellQuote(absolutePath)}`,
+        `test -r ${shellQuote(rel(absolutePath))}`,
       );
       if (exitCode !== 0) {
         throw new Error(`not readable: ${absolutePath}`);
@@ -114,14 +184,15 @@ function readOperations(handle: SandboxHandle): ReadOperations {
   };
 }
 
-function writeOperations(handle: SandboxHandle): WriteOperations {
+function writeOperations(handle: SandboxHandle, base: string): WriteOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     writeFile: (absolutePath, content) =>
-      handle.writeFile(absolutePath, content),
+      handle.writeFile(rel(absolutePath), content),
     mkdir: async (dir) => {
       const { exitCode } = await execCapture(
         handle,
-        `mkdir -p ${shellQuote(dir)}`,
+        `mkdir -p ${shellQuote(rel(dir))}`,
       );
       if (exitCode !== 0) {
         throw new Error(`cannot create directory: ${dir}`);
@@ -130,15 +201,16 @@ function writeOperations(handle: SandboxHandle): WriteOperations {
   };
 }
 
-function editOperations(handle: SandboxHandle): EditOperations {
+function editOperations(handle: SandboxHandle, base: string): EditOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
-    readFile: (absolutePath) => handle.readFile(absolutePath),
+    readFile: (absolutePath) => handle.readFile(rel(absolutePath)),
     writeFile: (absolutePath, content) =>
-      handle.writeFile(absolutePath, content),
+      handle.writeFile(rel(absolutePath), content),
     access: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        `test -w ${shellQuote(absolutePath)}`,
+        `test -w ${shellQuote(rel(absolutePath))}`,
       );
       if (exitCode !== 0) {
         throw new Error(`not writable: ${absolutePath}`);
@@ -147,19 +219,21 @@ function editOperations(handle: SandboxHandle): EditOperations {
   };
 }
 
-function findOperations(handle: SandboxHandle): FindOperations {
+function findOperations(handle: SandboxHandle, base: string): FindOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     exists: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        `test -e ${shellQuote(absolutePath)}`,
+        `test -e ${shellQuote(rel(absolutePath))}`,
       );
       return exitCode === 0;
     },
     glob: async (pattern, searchPath, { limit }) => {
+      const relSearch = rel(searchPath);
       const { output, exitCode } = await execCapture(
         handle,
-        `find ${shellQuote(searchPath)} -type f`,
+        `find ${shellQuote(relSearch)} -type f`,
       );
       if (exitCode !== 0) return [];
       const matcher = globToRegExp(pattern);
@@ -168,7 +242,7 @@ function findOperations(handle: SandboxHandle): FindOperations {
         const trimmed = line.trim();
         if (!trimmed) continue;
         const relative = trimmed
-          .slice(searchPath.length)
+          .slice(relSearch.length === 1 ? 1 : relSearch.length)
           .replace(/^[/\\]+/, "");
         if (!matcher.test(relative)) continue;
         matched.push(trimmed);
@@ -179,45 +253,44 @@ function findOperations(handle: SandboxHandle): FindOperations {
   };
 }
 
-function grepOperations(handle: SandboxHandle): GrepOperations {
+function grepOperations(handle: SandboxHandle, base: string): GrepOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     isDirectory: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        `test -d ${shellQuote(absolutePath)}`,
+        `test -d ${shellQuote(rel(absolutePath))}`,
       );
       return exitCode === 0;
     },
     readFile: async (absolutePath) => {
-      const { output } = await execCapture(
-        handle,
-        `cat ${shellQuote(absolutePath)}`,
-      );
-      return output.toString("utf8");
+      const buffer = await handle.readFile(rel(absolutePath));
+      return buffer.toString("utf8");
     },
   };
 }
 
-function lsOperations(handle: SandboxHandle): LsOperations {
+function lsOperations(handle: SandboxHandle, base: string): LsOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     exists: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        `test -e ${shellQuote(absolutePath)}`,
+        `test -e ${shellQuote(rel(absolutePath))}`,
       );
       return exitCode === 0;
     },
     stat: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        `test -d ${shellQuote(absolutePath)}`,
+        `test -d ${shellQuote(rel(absolutePath))}`,
       );
       return { isDirectory: () => exitCode === 0 };
     },
     readdir: async (absolutePath) => {
       const { output, exitCode } = await execCapture(
         handle,
-        `ls -1 ${shellQuote(absolutePath)}`,
+        `ls -1 ${shellQuote(rel(absolutePath))}`,
       );
       if (exitCode !== 0) {
         throw new Error(`cannot read directory: ${absolutePath}`);
@@ -270,21 +343,21 @@ function globToRegExp(glob: string): RegExp {
 
 /**
  * Build the `baseToolsOverride` map for `createAgentSession`. Every tool is
- * created with pi-coding-agent's standard `cwd` (the agent's workspace) and
- * the sandbox-delegating operations above, so parameter schemas and rendering
- * are preserved exactly while execution routes through `handle`.
+ * created with pi-coding-agent's standard `cwd` (the run workspace) and the
+ * sandbox-delegating operations above, so parameter schemas and rendering are
+ * preserved exactly while execution routes through `handle`.
  */
 export function buildSandboxBaseTools(
   handle: SandboxHandle,
   cwd: string,
 ): SandboxBaseTools {
   return {
-    bash: createBashTool(cwd, { operations: bashOperations(handle) }),
-    read: createReadTool(cwd, { operations: readOperations(handle) }),
-    write: createWriteTool(cwd, { operations: writeOperations(handle) }),
-    edit: createEditTool(cwd, { operations: editOperations(handle) }),
-    find: createFindTool(cwd, { operations: findOperations(handle) }),
-    grep: createGrepTool(cwd, { operations: grepOperations(handle) }),
-    ls: createLsTool(cwd, { operations: lsOperations(handle) }),
+    bash: createBashTool(cwd, { operations: bashOperations(handle, cwd) }),
+    read: createReadTool(cwd, { operations: readOperations(handle, cwd) }),
+    write: createWriteTool(cwd, { operations: writeOperations(handle, cwd) }),
+    edit: createEditTool(cwd, { operations: editOperations(handle, cwd) }),
+    find: createFindTool(cwd, { operations: findOperations(handle, cwd) }),
+    grep: createGrepTool(cwd, { operations: grepOperations(handle, cwd) }),
+    ls: createLsTool(cwd, { operations: lsOperations(handle, cwd) }),
   };
 }
