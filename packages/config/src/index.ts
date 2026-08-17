@@ -25,7 +25,7 @@ const envSchema = z.object({
   AGENT_RUNTIME: z.enum(["fake", "pi"]).optional(),
 
   // Sandbox
-  COLONY_SANDBOX_ENGINE: z.string().optional(),
+  COLONY_SANDBOX_ENGINE: z.enum(["in-process"]).optional(),
   COLONY_CONFIG_PATH: optionalNonEmptyString,
 
   // GitLab (home-lab provider)
