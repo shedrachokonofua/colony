@@ -21,5 +21,6 @@ export {
   architectDecompositionEnvelopeTypeBox,
   implementerCompletionEnvelopeTypeBox,
   reviewerVerdictEnvelopeTypeBox,
+  provisionRepoWorkspace,
 } from "./pi-runner-common.js";
 export type { PiRunnerLogger } from "./pi-runner-common.js";

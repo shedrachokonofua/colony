@@ -12,7 +12,9 @@ import type { AuditRow } from "@colony/core";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
 import { awaitPendingRuns } from "../src/runs/registry.js";
+import { buildApp } from "../src/http.js";
 import type { GateFailure } from "../src/runs/merge-gate.js";
+import type { ValidateExecutor } from "../src/runs/validate.js";
 
 const ACTOR = "human:op-1";
 const SHA_A = "a".repeat(40);
@@ -38,6 +40,7 @@ const script = {
   reviewerAlwaysReject: false,
   distinctShas: false,
   singleTask: false,
+  validateFail: false,
 };
 
 function fakeAgents(): FakeAgentRuntimeAdapter {
@@ -155,6 +158,37 @@ function syncMrHead(adapter: FakeProviderAdapter): void {
   };
 }
 
+function fakeValidateExecutor(): ValidateExecutor {
+  return async () => {
+    if (script.validateFail) {
+      return {
+        passed: false,
+        results: [
+          {
+            index: 0,
+            description: "fake",
+            command: "false",
+            exit_code: 1,
+            tail: ["boom"],
+          },
+        ],
+      };
+    }
+    return {
+      passed: true,
+      results: [
+        {
+          index: 0,
+          description: "fake",
+          command: "true",
+          exit_code: 0,
+          tail: [],
+        },
+      ],
+    };
+  };
+}
+
 async function bootHeadless(
   dbPath: string,
   options: { reviewRequired?: boolean } = {},
@@ -180,6 +214,7 @@ async function bootHeadless(
       ...(options.reviewRequired ? { reviewer: fakeAgents() } : {}),
     },
     gateExecutor: gateExecutor(),
+    validateExecutor: fakeValidateExecutor(),
     headless: true,
   });
 }
@@ -276,6 +311,7 @@ beforeEach(async () => {
   script.reviewerAlwaysReject = false;
   script.distinctShas = false;
   script.singleTask = false;
+  script.validateFail = false;
   provider = new FakeProviderAdapter();
   const project = await provider.projects.create({
     name: "fake-e2e",
@@ -320,6 +356,22 @@ describe("colonyd fake end-to-end loop", () => {
 
     const scope = handle.ctx.store.getScope(scopeId)!;
     expect(scope.status).toBe("done");
+
+    // Validate run succeeded: scope passed through validating -> done.
+    const validateRuns = handle.ctx.store
+      .runsForScope(scopeId)
+      .filter((r) => r.kind === "validate");
+    expect(validateRuns.length).toBeGreaterThanOrEqual(1);
+    const passedRun = validateRuns.find((r) => r.status === "succeeded");
+    expect(passedRun).toBeTruthy();
+    const passedEvidence = JSON.parse(passedRun!.evidence_json!) as {
+      passed: boolean;
+    };
+    expect(passedEvidence.passed).toBe(true);
+    const validatedAudit = handle.ctx.store
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .filter((row) => row.action === "scope.validated");
+    expect(validatedAudit.length).toBeGreaterThanOrEqual(1);
 
     const tasks = handle.ctx.store.listTasks(scopeId);
     expect(tasks).toHaveLength(2);
@@ -601,5 +653,68 @@ describe("colonyd fake end-to-end loop", () => {
     expect(a.blocked_reason).toBe("review rejected 3 consecutive times");
     const scope = handle.ctx.store.getScope(scopeId)!;
     expect(scope.status).toBe("blocked");
+  }, 30_000);
+
+  it("validation failure parks the scope then revalidate rescues it", async () => {
+    script.validateFail = true;
+    const scopeId = await createScope("validation failure");
+
+    // Drive until the scope reaches `validating` (all tasks merged/terminal)
+    // and the validation run has executed (and failed).
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      const scope = handle.ctx.store.getScope(scopeId);
+      if (!scope) continue;
+      const validateRuns = handle.ctx.store
+        .runsForScope(scopeId)
+        .filter((r) => r.kind === "validate");
+      if (validateRuns.length > 0) break;
+    }
+
+    const scope = handle.ctx.store.getScope(scopeId)!;
+    // The scope stays `validating` on failure — no auto-retry.
+    expect(scope.status).toBe("validating");
+
+    // A failed validate run exists.
+    const failedRun = handle.ctx.store
+      .runsForScope(scopeId)
+      .find((r) => r.kind === "validate" && r.status === "failed");
+    expect(failedRun).toBeTruthy();
+    const failedEvidence = JSON.parse(failedRun!.evidence_json!) as {
+      passed: boolean;
+    };
+    expect(failedEvidence.passed).toBe(false);
+
+    // Audit records the failure.
+    const failedAudit = handle.ctx.store
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .filter((row) => row.action === "scope.validation_failed");
+    expect(failedAudit.length).toBeGreaterThanOrEqual(1);
+
+    // Flip the fake to pass, then revalidate via the HTTP endpoint.
+    script.validateFail = false;
+    const app = buildApp(handle.ctx);
+    const res = await app.request(`/scopes/${scopeId}/revalidate`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string };
+    expect(body.status).toBe("validating");
+    const revalidateAudit = handle.ctx.store
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .filter((row) => row.action === "scope.revalidate_requested");
+    expect(revalidateAudit.length).toBeGreaterThanOrEqual(1);
+
+    // Settle the re-triggered validation run.
+    await settle();
+
+    // Second validate run succeeded; scope is now `done`.
+    const scopeAfter = handle.ctx.store.getScope(scopeId)!;
+    expect(scopeAfter.status).toBe("done");
+    const succeededRuns = handle.ctx.store
+      .runsForScope(scopeId)
+      .filter((r) => r.kind === "validate" && r.status === "succeeded");
+    expect(succeededRuns.length).toBeGreaterThanOrEqual(1);
   }, 30_000);
 });

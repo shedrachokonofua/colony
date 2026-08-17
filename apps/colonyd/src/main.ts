@@ -22,6 +22,8 @@ export interface BootOptions {
   readonly agents?: ColonydContext["agents"];
   /** Test seam: override the merge-gate executor. */
   readonly gateExecutor?: GateExecutor;
+  /** Test seam: override the validation command runner. */
+  readonly validateExecutor?: ColonydContext["validateExecutor"];
   /** Test seam: skip the HTTP server + interval timer. */
   readonly headless?: boolean;
 }
@@ -108,6 +110,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     agents,
     logger,
     gateExecutor: options.gateExecutor,
+    validateExecutor: options.validateExecutor,
     env: {
       gitlabBaseUrl: environment.GITLAB_BASE_URL,
       gitlabToken: environment.GITLAB_TOKEN,
