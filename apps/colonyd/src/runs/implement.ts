@@ -292,7 +292,24 @@ function buildPacketBody(ctx: ColonydContext, task: Task): string {
   ];
   const gateFailure = latestGateFailure(ctx, task);
   if (gateFailure) {
-    sections.push("", "## Previous gate failure", gateFailure);
+    sections.push(
+      "",
+      "## Previous gate failure — LANDING MODE",
+      gateFailure,
+      "",
+      "The task's implementation was already written and reviewed. Your job",
+      "now is to LAND it, not to re-derive or redesign it:",
+      "- Rebase the existing branch onto the latest target branch and resolve",
+      "  merge conflicts minimally, preserving the reviewed change.",
+      "- Fix failing tests/lint/typecheck with the smallest change that makes",
+      "  the suite green — if a test broke because main moved underneath you,",
+      "  reconcile with main's behavior rather than reverting main's changes.",
+      "- Keep the final diff against the target branch as close as possible",
+      "  to the previously reviewed diff. Review re-runs at your new head;",
+      "  gratuitous changes cost another full cycle.",
+      "- Run the full gate-relevant checks (install, typecheck, lint, tests)",
+      "  before submitting and include them as command evidence.",
+    );
   }
   const reviewFindings = latestReviewFindings(ctx, task);
   if (reviewFindings) {
