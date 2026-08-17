@@ -19,6 +19,7 @@
     "@colony/observability": "*",
     "@colony/provider": "*",
     "@colony/provider-gitlab": "*",
+    "@colony/sandbox": "*",
     "@colony/sandbox-in-process": "*",
     "@colony/sandbox-k8s": "*",
     "@colony/schemas": "*",
