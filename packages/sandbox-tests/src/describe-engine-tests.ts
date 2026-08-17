@@ -39,12 +39,16 @@ interface ProvisionedContext {
 async function withProvisionedHandle<T>(
   makeEngine: MakeEngine,
   run: (ctx: ProvisionedContext) => Promise<T>,
+  seed?: Readonly<Record<string, string>>,
 ): Promise<T> {
   const parentDir = await mkdtemp(join(tmpdir(), "colony-sandbox-tests-"));
   const workspace = join(parentDir, "workspace");
   await mkdir(workspace, { recursive: true });
   const canaryName = `canary-${randomUUID()}.txt`;
   await writeFile(join(parentDir, canaryName), CANARY_CONTENT);
+  for (const [name, content] of Object.entries(seed ?? {})) {
+    await writeFile(join(workspace, name), content);
+  }
 
   const engine = await makeEngine();
   const handle = await engine.provision(PROFILE, workspace);
@@ -109,9 +113,16 @@ async function checkExecRoundTrip(makeEngine: MakeEngine): Promise<void> {
  * engine rejects escaping paths at the handle API (readFile/writeFile/cwd)
  * but cannot stop a spawned shell from reading `../` — it is a compatibility
  * engine, not a security boundary. Defaults to true (strict).
+ *
+ * `seesPostProvisionLocalWrites`: whether files written to the LOCAL workspace
+ * after `provision()` returns are visible through the handle. Engines that
+ * transfer the workspace snapshot inside `provision()` (e.g. the k8s engine
+ * streams tar into the pod before returning the handle) cannot see local
+ * writes that happen after the handle is handed back. Defaults to true.
  */
 export interface EngineTestOptions {
   readonly enforcesExecIsolation?: boolean;
+  readonly seesPostProvisionLocalWrites?: boolean;
 }
 
 async function checkApiContainment(makeEngine: MakeEngine): Promise<void> {
@@ -147,28 +158,34 @@ async function checkExecContainment(makeEngine: MakeEngine): Promise<void> {
 }
 
 /**
- * The workspace's existing contents must be visible through the handle:
- * exec runs *in* the workspace and readFile resolves against it. This is
- * the regression check for rooting a handle in an empty scratch dir while
- * the run's repo clone sits untouched next to it.
+ * Contents present in the workspace at provision time must be visible
+ * through the handle: exec runs *in* the workspace and readFile resolves
+ * against it. Seeding happens BEFORE provision because transfer-based
+ * engines (e.g. kubernetes) snapshot the workspace into the sandbox at
+ * provision — that matches the real runner, which prepares the repo clone
+ * first and provisions the handle afterwards. This is the regression check
+ * for rooting a handle in an empty scratch dir while the run's repo clone
+ * sits untouched next to it.
  */
 async function checkWorkspaceVisibility(makeEngine: MakeEngine): Promise<void> {
-  await withProvisionedHandle(makeEngine, async ({ handle, workspace }) => {
-    const seeded = `seed-${randomUUID()}.txt`;
-    const content = `workspace-visible-${randomUUID()}`;
-    await writeFile(join(workspace, seeded), content);
+  const seeded = `seed-${randomUUID()}.txt`;
+  const content = `workspace-visible-${randomUUID()}`;
+  await withProvisionedHandle(
+    makeEngine,
+    async ({ handle }) => {
+      expect(String(await handle.readFile(seeded))).toBe(content);
 
-    expect(String(await handle.readFile(seeded))).toBe(content);
-
-    let surfaced = "";
-    let exitCode: number | null | undefined;
-    await handle.exec({ command: `cat ${seeded}` }, (event) => {
-      if (event.kind === "stdout") surfaced += event.data;
-      if (event.kind === "exit") exitCode = event.exitCode;
-    });
-    expect(exitCode).toBe(0);
-    expect(surfaced).toContain(content);
-  });
+      let surfaced = "";
+      let exitCode: number | null | undefined;
+      await handle.exec({ command: `cat ${seeded}` }, (event) => {
+        if (event.kind === "stdout") surfaced += event.data;
+        if (event.kind === "exit") exitCode = event.exitCode;
+      });
+      expect(exitCode).toBe(0);
+      expect(surfaced).toContain(content);
+    },
+    { [seeded]: content },
+  );
 }
 
 async function checkEnvFiltering(makeEngine: MakeEngine): Promise<void> {
@@ -239,7 +256,9 @@ export async function runSandboxEngineChecks(
   options: EngineTestOptions = {},
 ): Promise<void> {
   await checkExecRoundTrip(makeEngine);
-  await checkWorkspaceVisibility(makeEngine);
+  if (options.seesPostProvisionLocalWrites !== false) {
+    await checkWorkspaceVisibility(makeEngine);
+  }
   await checkApiContainment(makeEngine);
   if (options.enforcesExecIsolation !== false) {
     await checkExecContainment(makeEngine);
@@ -263,8 +282,10 @@ export function describeEngineTests(
   describe(`sandbox engine conformance (${name})`, () => {
     it("exec round-trip surfaces ordered stdout/stderr with strictly increasing seq and exitCode 0", () =>
       checkExecRoundTrip(makeEngine));
-    it("workspace contents are visible to exec and readFile", () =>
-      checkWorkspaceVisibility(makeEngine));
+    if (options.seesPostProvisionLocalWrites !== false) {
+      it("workspace contents are visible to exec and readFile", () =>
+        checkWorkspaceVisibility(makeEngine));
+    }
     it("rejects handle API paths escaping the workspace", () =>
       checkApiContainment(makeEngine));
     if (options.enforcesExecIsolation !== false) {

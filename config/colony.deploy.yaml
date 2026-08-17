@@ -42,8 +42,17 @@ providers:
         context_window: 1048576
         max_tokens: 384000
         cost: { input: 0, output: 0 }
-      - id: router/deepseek-v4-flash
+      # Ollama-Cloud-only alias: the router/deepseek-v4-flash group shuffles
+      # in a cline-pass leg whose Vercel upstream fails streaming requests.
+      # Pin the healthy leg; keep the router alias as an explicit fallback.
+      - id: ollama-cloud/deepseek-v4-flash
         name: deepseek-v4-flash
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 384000
+        cost: { input: 0, output: 0 }
+      - id: router/deepseek-v4-flash
+        name: deepseek-v4-flash-router
         reasoning: true
         context_window: 1048576
         max_tokens: 384000
@@ -67,7 +76,7 @@ agents:
   developer:
     provider: openai_compatible
     model: deepseek-v4-flash
-    fallback_models: [mimo-v2.5-pro, qwen3.8-27b]
+    fallback_models: [deepseek-v4-flash-router, mimo-v2.5-pro, qwen3.8-27b]
     thinking_level: high
     timeout_ms: 1800000
     max_turns: 250

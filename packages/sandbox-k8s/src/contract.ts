@@ -1,4 +1,5 @@
 import type { SandboxLaunchProfile } from "@colony/sandbox";
+import type { Readable, Writable } from "node:stream";
 
 /**
  * Types, constants, pure builders and the client seam for the Kubernetes
@@ -33,6 +34,10 @@ export interface SandboxContainerSecurityContext {
   readonly runAsUser: number;
   readonly runAsNonRoot: boolean;
   readonly allowPrivilegeEscalation: boolean;
+  /** PodSecurity 'restricted' policies demand dropping all capabilities. */
+  readonly capabilities: { readonly drop: readonly ["ALL"] };
+  /** PodSecurity 'restricted' policies demand a seccomp profile. */
+  readonly seccompProfile: { readonly type: "RuntimeDefault" };
 }
 
 export interface SandboxCustomResourceContainer {
@@ -119,6 +124,55 @@ export interface KubernetesSandboxClient {
   ): Promise<
     readonly { name: string; phase: string; containerReady: boolean }[]
   >;
+  /**
+   * Runs a command inside the sandbox container over the pods/exec WebSocket.
+   * stdout/stderr of the pod process are streamed into the given writables;
+   * `stdin` (when provided) is piped into the pod process's stdin. The
+   * `statusCallback` receives the exec session's terminal status (exit code).
+   * Returns the underlying WebSocket so a caller can close it (e.g. on timeout).
+   */
+  execPod(
+    namespace: string,
+    podName: string,
+    command: readonly string[],
+    stdout: Writable,
+    stderr: Writable,
+    stdin: Readable | null,
+    statusCallback: (status: ExecPodStatus) => void,
+  ): Promise<ExecPodConnection>;
+}
+
+/**
+ * Minimal structural shape of the pods/exec terminal status (a `V1Status`
+ * subset) so the seam stays free of `@kubernetes/client-node` types.
+ *
+ * Real kubelet sends:
+ * ```json
+ * {
+ *   "status": "Failure",
+ *   "message": "command terminated with exit code 1",
+ *   "reason": "NonZeroExitCode",
+ *   "details": { "causes": [{ "reason": "ExitCode", "message": "1" }] }
+ * }
+ * ```
+ */
+export interface ExecPodStatus {
+  readonly status?: string;
+  readonly message?: string;
+  readonly details?: {
+    readonly causes?: readonly {
+      readonly reason?: string;
+      readonly message?: string;
+    }[];
+  };
+}
+
+/**
+ * Minimal structural shape of the WebSocket returned by pods/exec so the seam
+ * stays free of `@kubernetes/client-node` / `ws` types.
+ */
+export interface ExecPodConnection {
+  close(code?: number, data?: string): void;
 }
 
 export interface KubernetesSandboxEngineOptions {
@@ -169,6 +223,11 @@ export function buildSandboxCustomResource({
       runAsUser: 1000,
       runAsNonRoot: true,
       allowPrivilegeEscalation: false,
+      // The colony-sandboxes namespace enforces PodSecurity 'restricted:latest';
+      // the controller propagates these to the backing pod so its creation is
+      // not rejected for missing capability drops or a seccomp profile.
+      capabilities: { drop: ["ALL"] },
+      seccompProfile: { type: "RuntimeDefault" },
     },
     resources: {
       limits: {
