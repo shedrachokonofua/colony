@@ -29,6 +29,7 @@ const state = {
   selectedTaskId: null,
   drawerOpen: false,
   runEvents: null,
+  scopeRunEvents: null,
   goalOpen: false,
   planOpen: false,
   auth: loadAuth(),
@@ -794,7 +795,14 @@ function renderRuns(detail, task) {
 }
 
 function renderRunLog(run) {
-  const feed = state.runEvents;
+  return renderFeedLog(state.runEvents, run);
+}
+
+function renderScopeRunLog(run) {
+  return renderFeedLog(state.scopeRunEvents, run);
+}
+
+function renderFeedLog(feed, run) {
   if (!feed || feed.runId !== run.id) return nothing;
   if (!feed.rows.length) {
     return html`<p class="note runlog-empty">No agent activity yet.</p>`;
@@ -1237,7 +1245,12 @@ function renderPlanCard(scope, detail) {
         : nothing}
       ${architectRuns.length
         ? html`<div class="runs runs-inline">
-            ${architectRuns.map(runLine)}
+            ${architectRuns.map(
+              (run) =>
+                html`${runLine(run)}${run.status === "running"
+                  ? renderScopeRunLog(run)
+                  : nothing}`,
+            )}
           </div>`
         : nothing}
     </div>
@@ -1452,24 +1465,44 @@ async function refresh() {
 
 /** Live agent feed for the drawer's most recent running run, if any. */
 async function refreshRunEvents(detail) {
-  if (!state.drawerOpen || !state.selectedTaskId) {
-    state.runEvents = null;
-    return;
+  const targets = [];
+  if (state.drawerOpen && state.selectedTaskId) {
+    const live = [...(detail.runs || [])]
+      .reverse()
+      .find(
+        (run) =>
+          run.task_id === state.selectedTaskId && run.status === "running",
+      );
+    if (live) targets.push(live);
   }
-  const live = [...(detail.runs || [])]
-    .reverse()
-    .find(
-      (run) => run.task_id === state.selectedTaskId && run.status === "running",
-    );
-  if (!live) {
+  // Scope-level architect runs stream into the Plan card so planning is
+  // never a black box.
+  const architect = (detail.runs || []).find(
+    (run) => run.kind === "architect" && run.status === "running",
+  );
+  if (architect) targets.push(architect);
+  if (!targets.length) {
     state.runEvents = null;
+    state.scopeRunEvents = null;
     return;
   }
   try {
-    const rows = await api(`/runs/${encodeURIComponent(live.id)}/events`);
-    state.runEvents = { runId: live.id, rows };
+    const feeds = await Promise.all(
+      targets.map(async (run) => ({
+        runId: run.id,
+        rows: await api(`/runs/${encodeURIComponent(run.id)}/events`),
+      })),
+    );
+    const drawerTarget = targets.find((run) => run !== architect);
+    state.runEvents = drawerTarget
+      ? (feeds.find((f) => f.runId === drawerTarget.id) ?? null)
+      : null;
+    state.scopeRunEvents = architect
+      ? (feeds.find((f) => f.runId === architect.id) ?? null)
+      : null;
   } catch {
     state.runEvents = null;
+    state.scopeRunEvents = null;
   }
 }
 
