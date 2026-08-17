@@ -17,6 +17,7 @@ COPY packages/observability/package.json ./packages/observability/
 COPY packages/provider/package.json ./packages/provider/
 COPY packages/provider-gitlab/package.json ./packages/provider-gitlab/
 COPY packages/schemas/package.json ./packages/schemas/
+COPY packages/sandbox-k8s/package.json ./packages/sandbox-k8s/
 # tsx lives in the root workspace; keep it in the image so `npm start` works.
 RUN npm ci --include=dev --no-audit --no-fund
 

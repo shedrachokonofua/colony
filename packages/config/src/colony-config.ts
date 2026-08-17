@@ -145,9 +145,23 @@ const hitlSchema = z
 
 export type HitlMode = "gated" | "yolo";
 
-const sandboxEngineSchema = z.enum(["in-process"]);
+const sandboxEngineSchema = z.enum(["in-process", "kubernetes"]);
 
 export type SandboxEngine = z.infer<typeof sandboxEngineSchema>;
+
+const sandboxKubernetesSchema = z
+  .object({
+    namespace: z.string().min(1).default("colony-sandboxes"),
+    image: z
+      .string()
+      .min(1)
+      .default("registry.gitlab.home.shdr.ch/so/colony/sandbox:latest"),
+    api_version_override: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type KubernetesSandboxConfig = z.infer<typeof sandboxKubernetesSchema>;
+export const DEFAULT_KUBERNETES_SANDBOX = sandboxKubernetesSchema.parse({});
 
 const reviewSchema = z
   .object({
@@ -162,7 +176,10 @@ export const colonyConfigFileSchema = z
   .object({
     agent_runtime: z.enum(["fake", "pi"]).default("fake"),
     sandbox: z
-      .object({ engine: sandboxEngineSchema.default("in-process") })
+      .object({
+        engine: sandboxEngineSchema.default("in-process"),
+        kubernetes: sandboxKubernetesSchema.optional(),
+      })
       .strict()
       .default({ engine: "in-process" }),
     /**
@@ -246,7 +263,10 @@ export interface ResolvedAgentConfig {
 
 export interface ColonyConfig {
   readonly agentRuntime: "fake" | "pi";
-  readonly sandbox: { readonly engine: SandboxEngine };
+  readonly sandbox: {
+    readonly engine: SandboxEngine;
+    readonly kubernetes: KubernetesSandboxConfig;
+  };
   readonly hitlMode: HitlMode;
   readonly reviewMode: ReviewMode;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
@@ -364,7 +384,10 @@ export function loadColonyConfig(
 
   return {
     agentRuntime,
-    sandbox: { engine: sandboxEngine },
+    sandbox: {
+      engine: sandboxEngine,
+      kubernetes: file.sandbox.kubernetes ?? DEFAULT_KUBERNETES_SANDBOX,
+    },
     hitlMode: file.hitl.mode,
     reviewMode: file.review.mode,
     oauthProviderKeys,

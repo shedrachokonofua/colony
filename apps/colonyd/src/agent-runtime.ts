@@ -33,19 +33,31 @@ export type RunEventSink = (
  */
 export const ENGINE_REGISTRY: Record<
   SandboxEngineName,
-  () => Promise<() => SandboxEngine>
+  (config: ColonyConfig) => Promise<() => SandboxEngine>
 > = {
   "in-process": () =>
     import("@colony/sandbox-in-process").then((m) => m.createInProcessEngine),
+  kubernetes: (config) =>
+    import("@colony/sandbox-k8s").then(
+      (m) => () =>
+        m.createKubernetesEngine({
+          namespace: config.sandbox.kubernetes.namespace,
+          image: config.sandbox.kubernetes.image,
+          apiVersionOverride: config.sandbox.kubernetes.api_version_override,
+        }),
+    ),
 };
 
 /** Resolve a configured engine name, throwing on unknown names. */
-export async function createEngine(name: string): Promise<SandboxEngine> {
+export async function createEngine(
+  name: string,
+  config: ColonyConfig,
+): Promise<SandboxEngine> {
   const factory = ENGINE_REGISTRY[name as SandboxEngineName];
   if (!factory) {
     throw new Error(`unknown sandbox engine: ${name}`);
   }
-  const engineFactory = await factory();
+  const engineFactory = await factory(config);
   return engineFactory();
 }
 
@@ -88,7 +100,7 @@ export async function createAgentWiring(
   }
 
   const broker = createConfigCredentialBroker(agentsToCheck);
-  const engine = await createEngine(config.sandbox.engine);
+  const engine = await createEngine(config.sandbox.engine, config);
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");
   const { PiCodingAgentRunner } =
