@@ -2,10 +2,12 @@ import {
   ApisApi,
   CoreV1Api,
   CustomObjectsApi,
+  Exec,
   KubeConfig,
   type V1APIGroupList,
 } from "@kubernetes/client-node";
 import {
+  SANDBOX_CONTAINER_NAME,
   SANDBOX_GROUP,
   SANDBOX_PLURAL,
   type KubernetesSandboxClient,
@@ -194,6 +196,30 @@ export function createKubernetesClient(
           containerReady: ready,
         };
       });
+    },
+
+    async execPod(
+      namespace: string,
+      podName: string,
+      command: readonly string[],
+      stdout: import("node:stream").Writable,
+      stderr: import("node:stream").Writable,
+      stdin: import("node:stream").Readable | null,
+      statusCallback: (status: import("./contract.js").ExecPodStatus) => void,
+    ) {
+      // The returned WebSocket from Exec.exec is the pod exec session; the
+      // engine closes it to abort a timed-out or destroyed run.
+      return new Exec(kc).exec(
+        namespace,
+        podName,
+        SANDBOX_CONTAINER_NAME,
+        [...command],
+        stdout,
+        stderr,
+        stdin,
+        false /* tty */,
+        statusCallback,
+      );
     },
   };
 }
