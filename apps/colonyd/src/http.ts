@@ -119,7 +119,14 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       }
       try {
         const identity = await verifier.verify(auth.slice(7));
-        c.set("actor", `human:${identity.username}`);
+        // Keycloak service accounts get preferred_username
+        // "service-account-<client_id>"; ledger them as svc:, not human:.
+        c.set(
+          "actor",
+          identity.username.startsWith("service-account-")
+            ? `svc:${identity.username.slice("service-account-".length)}`
+            : `human:${identity.username}`,
+        );
       } catch (err) {
         return c.json(
           {
