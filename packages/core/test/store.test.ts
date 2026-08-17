@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
 import { DomainStateError } from "@colony/domain";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
@@ -393,5 +394,65 @@ describe("Store", () => {
     expect(store.activeRunCount()).toBe(2);
     expect(store.activeRunCount("implement")).toBe(1);
     expect(store.activeRunCount("merge_gate")).toBe(1);
+  });
+});
+
+describe("scope status CHECK migration", () => {
+  it("rebuilds a pre-validating scopes table so the new status is accepted", () => {
+    const legacyDir = mkdtempSync(join(tmpdir(), "colony-legacy-"));
+    const dbPath = join(legacyDir, "legacy.db");
+    try {
+      // Recreate the shape of a database from before 'validating' existed:
+      // same tables, but the scopes CHECK lacks the new status.
+      const legacy = new Database(dbPath);
+      legacy.exec(`
+        CREATE TABLE scopes (
+          id TEXT PRIMARY KEY,
+          goal TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft'
+            CHECK (status IN ('draft','planning','active','blocked','done','abandoned')),
+          provider_project_id TEXT NOT NULL,
+          provider_project_path TEXT NOT NULL,
+          default_branch TEXT NOT NULL DEFAULT 'main',
+          plan_json TEXT,
+          blocked_reason TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          scope_id TEXT NOT NULL REFERENCES scopes(id),
+          title TEXT NOT NULL,
+          spec TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'queued',
+          state_version INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO scopes (id, goal, status, provider_project_id, provider_project_path)
+          VALUES ('col-legacy1', 'g', 'active', '1', 'so/x');
+        INSERT INTO tasks (id, scope_id, title, spec, state)
+          VALUES ('col-legacy1.1', 'col-legacy1', 't', 's', 'merged');
+      `);
+      legacy.close();
+
+      const migrated = new Store(dbPath);
+      try {
+        // The migration preserved rows and the FK relationship...
+        const scope = migrated.getScope("col-legacy1");
+        expect(scope?.status).toBe("active");
+        expect(migrated.getTask("col-legacy1.1")?.scope_id).toBe("col-legacy1");
+        // ...and the rebuilt table accepts the new status.
+        migrated.setScopeStatus("col-legacy1", "validating", "svc:test");
+        expect(migrated.getScope("col-legacy1")?.status).toBe("validating");
+        // Idempotent: reopening does not rebuild again or lose data.
+        migrated.close();
+        const reopened = new Store(dbPath);
+        expect(reopened.getScope("col-legacy1")?.status).toBe("validating");
+        reopened.close();
+      } finally {
+        // handled above
+      }
+    } finally {
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
   });
 });
