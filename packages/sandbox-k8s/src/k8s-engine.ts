@@ -152,30 +152,58 @@ class K8sSandboxHandle implements SandboxHandle {
    * Streams the local run workspace into the pod via `tar` over an exec stdin.
    * Throws a clear `workspace_transfer_failed` error naming the failing side on
    * either a non-zero local tar exit or a non-successful pod tar exec.
+   *
+   * Failure edges are handled:
+   * - On local spawn error (ENOENT etc.), local.stdout is destroyed so the
+   *   pod-side stdin pump sees EOF and does not block forever.
+   * - On pod-side failure, the local tar child is killed so it does not leak
+   *   and block on its pipe buffer.
    */
   async transferWorkspace(workspace: string): Promise<void> {
     // No shell: tar's stdout is piped verbatim into the pod's tar stdin.
     const local = spawn("tar", ["-cf", "-", "-C", workspace, "."], {
       stdio: ["ignore", "pipe", "pipe"],
     });
+    let spawnFailed = false;
+    local.once("error", () => {
+      spawnFailed = true;
+      // Destroy the stdout stream so the pod-side stdin pump sees EOF
+      // rather than blocking forever waiting for data that will never come.
+      local.stdout?.destroy();
+    });
     const localExitPromise = new Promise<number | null>((resolveExit) => {
-      local.once("error", () => resolveExit(null));
       local.once("close", (code) => resolveExit(code));
     });
 
-    const podPromise = this.runPod(
-      ["tar", "-xf", "-", "-C", POD_WORKSPACE_DIR],
-      local.stdout,
-      undefined,
-    );
+    let podResult: {
+      exitCode: number | null;
+      timedOut: boolean;
+      stdout: string;
+    };
+    try {
+      podResult = await this.runPod(
+        ["tar", "-xf", "-", "-C", POD_WORKSPACE_DIR],
+        local.stdout,
+        undefined,
+      );
+    } catch (err) {
+      // Pod-side exec failed (e.g. rejected, connection error). Kill the
+      // local tar child so it does not block on its pipe buffer and leak.
+      try {
+        local.kill();
+      } catch {
+        // Already exited.
+      }
+      throw new Error(
+        `workspace_transfer_failed: pod-side exec failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
-    const [localExit, podResult] = await Promise.all([
-      localExitPromise,
-      podPromise,
-    ]);
+    const localExit = await localExitPromise;
 
-    if (localExit !== 0 || podResult.exitCode !== 0) {
-      const failingSide = localExit !== 0 ? "local tar" : "pod tar";
+    if (localExit !== 0 || podResult.exitCode !== 0 || spawnFailed) {
+      const failingSide =
+        localExit !== 0 || spawnFailed ? "local tar" : "pod tar";
       const code = localExit !== 0 ? localExit : podResult.exitCode;
       throw new Error(
         `workspace_transfer_failed: ${failingSide} exited with code ${String(code)} while transferring the run workspace into the sandbox pod`,

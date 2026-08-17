@@ -109,9 +109,16 @@ async function checkExecRoundTrip(makeEngine: MakeEngine): Promise<void> {
  * engine rejects escaping paths at the handle API (readFile/writeFile/cwd)
  * but cannot stop a spawned shell from reading `../` — it is a compatibility
  * engine, not a security boundary. Defaults to true (strict).
+ *
+ * `seesPostProvisionLocalWrites`: whether files written to the LOCAL workspace
+ * after `provision()` returns are visible through the handle. Engines that
+ * transfer the workspace snapshot inside `provision()` (e.g. the k8s engine
+ * streams tar into the pod before returning the handle) cannot see local
+ * writes that happen after the handle is handed back. Defaults to true.
  */
 export interface EngineTestOptions {
   readonly enforcesExecIsolation?: boolean;
+  readonly seesPostProvisionLocalWrites?: boolean;
 }
 
 async function checkApiContainment(makeEngine: MakeEngine): Promise<void> {
@@ -239,7 +246,9 @@ export async function runSandboxEngineChecks(
   options: EngineTestOptions = {},
 ): Promise<void> {
   await checkExecRoundTrip(makeEngine);
-  await checkWorkspaceVisibility(makeEngine);
+  if (options.seesPostProvisionLocalWrites !== false) {
+    await checkWorkspaceVisibility(makeEngine);
+  }
   await checkApiContainment(makeEngine);
   if (options.enforcesExecIsolation !== false) {
     await checkExecContainment(makeEngine);
@@ -263,8 +272,10 @@ export function describeEngineTests(
   describe(`sandbox engine conformance (${name})`, () => {
     it("exec round-trip surfaces ordered stdout/stderr with strictly increasing seq and exitCode 0", () =>
       checkExecRoundTrip(makeEngine));
-    it("workspace contents are visible to exec and readFile", () =>
-      checkWorkspaceVisibility(makeEngine));
+    if (options.seesPostProvisionLocalWrites !== false) {
+      it("workspace contents are visible to exec and readFile", () =>
+        checkWorkspaceVisibility(makeEngine));
+    }
     it("rejects handle API paths escaping the workspace", () =>
       checkApiContainment(makeEngine));
     if (options.enforcesExecIsolation !== false) {

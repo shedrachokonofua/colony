@@ -14,12 +14,21 @@ const PER_TEST_TIMEOUT_MS = 180_000;
 (enabled ? describe : describe.skip)(
   "kubernetes engine conformance (gated)",
   () => {
-    describeEngineTests("kubernetes", () =>
-      createKubernetesEngine({
-        namespace: process.env.COLONY_K8S_SANDBOX_NAMESPACE,
-        image: process.env.COLONY_K8S_SANDBOX_IMAGE,
-        apiVersionOverride: process.env.COLONY_K8S_SANDBOX_API_VERSION,
-      }),
+    describeEngineTests(
+      "kubernetes",
+      () =>
+        createKubernetesEngine({
+          namespace: process.env.COLONY_K8S_SANDBOX_NAMESPACE,
+          image: process.env.COLONY_K8S_SANDBOX_IMAGE,
+          apiVersionOverride: process.env.COLONY_K8S_SANDBOX_API_VERSION,
+        }),
+      {
+        // The k8s engine streams the workspace into the pod inside provision(),
+        // so files written to the local workspace after the handle is returned
+        // are not visible in the pod. The in-process engine does not have this
+        // constraint because it reads from the host filesystem directly.
+        seesPostProvisionLocalWrites: false,
+      },
     );
   },
   PER_TEST_TIMEOUT_MS,
