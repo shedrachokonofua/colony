@@ -56,15 +56,17 @@ async function withProvisionedHandle<T>(
   }
 }
 
-function collectStreamEvents(
+function collectStreamData(
   events: readonly ExecEvent[],
-): Array<{ kind: "stdout" | "stderr"; data: string }> {
+  kind: "stdout" | "stderr",
+): string {
   return events
     .filter(
       (event): event is Extract<ExecEvent, { kind: "stdout" | "stderr" }> =>
-        event.kind === "stdout" || event.kind === "stderr",
+        event.kind === kind,
     )
-    .map((event) => ({ kind: event.kind, data: event.data }));
+    .map((event) => event.data)
+    .join("");
 }
 
 async function checkExecRoundTrip(makeEngine: MakeEngine): Promise<void> {
@@ -82,15 +84,20 @@ async function checkExecRoundTrip(makeEngine: MakeEngine): Promise<void> {
       expect(events[i].seq).toBeGreaterThan(events[i - 1].seq);
     }
 
-    // stdout/stderr labels and payloads arrive in the emitted order.
-    const stream = collectStreamEvents(events);
-    expect(stream.map((event) => event.kind)).toEqual([
-      "stdout",
-      "stderr",
-      "stdout",
-      "stderr",
-    ]);
-    expect(stream.map((event) => event.data)).toEqual(["a1", "b1", "a2", "b2"]);
+    // Per-stream order is preserved: stdout/stderr are separate pipes, so we
+    // assert concatenated data per stream rather than cross-stream
+    // interleaving (which the OS and remote transports do not guarantee).
+    expect(collectStreamData(events, "stdout")).toBe("a1a2");
+    expect(collectStreamData(events, "stderr")).toBe("b1b2");
+
+    // The final surfaced event is the exit notification, and its exit code
+    // matches the ExecResult returned by exec().
+    const finalEvent = events[events.length - 1];
+    expect(finalEvent.kind).toBe("exit");
+    expect(finalEvent.kind === "exit" && finalEvent.exitCode).toBe(0);
+    expect(finalEvent.kind === "exit" && finalEvent.exitCode).toBe(
+      result.exitCode,
+    );
   });
 }
 
