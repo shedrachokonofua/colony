@@ -39,12 +39,16 @@ interface ProvisionedContext {
 async function withProvisionedHandle<T>(
   makeEngine: MakeEngine,
   run: (ctx: ProvisionedContext) => Promise<T>,
+  seed?: Readonly<Record<string, string>>,
 ): Promise<T> {
   const parentDir = await mkdtemp(join(tmpdir(), "colony-sandbox-tests-"));
   const workspace = join(parentDir, "workspace");
   await mkdir(workspace, { recursive: true });
   const canaryName = `canary-${randomUUID()}.txt`;
   await writeFile(join(parentDir, canaryName), CANARY_CONTENT);
+  for (const [name, content] of Object.entries(seed ?? {})) {
+    await writeFile(join(workspace, name), content);
+  }
 
   const engine = await makeEngine();
   const handle = await engine.provision(PROFILE, workspace);
@@ -147,28 +151,34 @@ async function checkExecContainment(makeEngine: MakeEngine): Promise<void> {
 }
 
 /**
- * The workspace's existing contents must be visible through the handle:
- * exec runs *in* the workspace and readFile resolves against it. This is
- * the regression check for rooting a handle in an empty scratch dir while
- * the run's repo clone sits untouched next to it.
+ * Contents present in the workspace at provision time must be visible
+ * through the handle: exec runs *in* the workspace and readFile resolves
+ * against it. Seeding happens BEFORE provision because transfer-based
+ * engines (e.g. kubernetes) snapshot the workspace into the sandbox at
+ * provision — that matches the real runner, which prepares the repo clone
+ * first and provisions the handle afterwards. This is the regression check
+ * for rooting a handle in an empty scratch dir while the run's repo clone
+ * sits untouched next to it.
  */
 async function checkWorkspaceVisibility(makeEngine: MakeEngine): Promise<void> {
-  await withProvisionedHandle(makeEngine, async ({ handle, workspace }) => {
-    const seeded = `seed-${randomUUID()}.txt`;
-    const content = `workspace-visible-${randomUUID()}`;
-    await writeFile(join(workspace, seeded), content);
+  const seeded = `seed-${randomUUID()}.txt`;
+  const content = `workspace-visible-${randomUUID()}`;
+  await withProvisionedHandle(
+    makeEngine,
+    async ({ handle }) => {
+      expect(String(await handle.readFile(seeded))).toBe(content);
 
-    expect(String(await handle.readFile(seeded))).toBe(content);
-
-    let surfaced = "";
-    let exitCode: number | null | undefined;
-    await handle.exec({ command: `cat ${seeded}` }, (event) => {
-      if (event.kind === "stdout") surfaced += event.data;
-      if (event.kind === "exit") exitCode = event.exitCode;
-    });
-    expect(exitCode).toBe(0);
-    expect(surfaced).toContain(content);
-  });
+      let surfaced = "";
+      let exitCode: number | null | undefined;
+      await handle.exec({ command: `cat ${seeded}` }, (event) => {
+        if (event.kind === "stdout") surfaced += event.data;
+        if (event.kind === "exit") exitCode = event.exitCode;
+      });
+      expect(exitCode).toBe(0);
+      expect(surfaced).toContain(content);
+    },
+    { [seeded]: content },
+  );
 }
 
 async function checkEnvFiltering(makeEngine: MakeEngine): Promise<void> {
