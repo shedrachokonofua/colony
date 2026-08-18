@@ -700,7 +700,7 @@ export function buildImplementerSystemPrompt(): string {
     "- colonyd opens the merge request from your pushed branch — do NOT open MRs or call provider APIs yourself.",
     "- Never commit PACKET.json, credentials, tokens, or .env files (add PACKET.json to .git/info/exclude if tools stage it). Never include secrets in the envelope.",
     "- Before submitting, check `git log -1` and `git diff origin/<base>...HEAD`: the envelope's head_sha MUST be the SHA you actually pushed and branch MUST be the work branch.",
-    "- Finish by calling submit_implementer_completion exactly once (status complete, or blocked with blocked_reason). Your run does not exist until that call — never finish with plain text.",
+    "- Finish by calling submit_implementer_completion (status complete, or blocked with blocked_reason). Your run does not exist until a submission is accepted — if the tool rejects one, correct the reported problem and submit again; never finish with plain text.",
   ].join("\n");
 }
 
@@ -881,7 +881,7 @@ export function createImplementerSubmitTool(
     name: "submit_implementer_completion",
     label: "Submit implementer completion",
     description:
-      "Final action. Submit exactly one schema-valid implementer_completion envelope with the branch and head SHA you actually pushed.",
+      "Submit a schema-valid implementer_completion envelope with the branch and head SHA you actually pushed. A rejected submission keeps the session open so you can correct and retry it.",
     parameters: implementerCompletionEnvelopeTypeBox,
     executionMode: "sequential",
     prepareArguments: makeZodPrepare(implementerCompletionV2Schema) as (
