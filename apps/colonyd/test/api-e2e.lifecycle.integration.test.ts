@@ -47,9 +47,13 @@ describe("api e2e lifecycle", () => {
       "PROJECT_NOT_FOUND",
     );
 
-    // happy
+    // happy — manual approvals so the plan stays in planning until approve-plan
     const created = await http(env.port, "POST", "/scopes", {
-      body: { goal: "e2e lifecycle goal", project: { path: "so/console-e2e" } },
+      body: {
+        goal: "e2e lifecycle goal",
+        project: { path: "so/console-e2e" },
+        approvals: "manual",
+      },
     });
     expect(created.status).toBe(201);
     const body = created.body as {
@@ -73,8 +77,13 @@ describe("api e2e lifecycle", () => {
           scope: { status: string; plan_json: string | null };
           runs: { kind: string }[];
         };
+        // Poll durable facts: plan_json present and an architect run exists.
+        // Accept planning|active so the probe is not a transient window when
+        // hitl yolo auto-materializes between samples.
+        const statusOk =
+          data.scope.status === "planning" || data.scope.status === "active";
         return (
-          data.scope.status === "planning" &&
+          statusOk &&
           !!data.scope.plan_json &&
           data.runs.some((r) => r.kind === "architect")
         );
@@ -86,46 +95,19 @@ describe("api e2e lifecycle", () => {
   }, 90_000);
 
   it("POST /scopes/:id/approve-plan → 200 with tasks, second → 409", async () => {
-    // poll until materializable if needed but plan should be ready
+    // manual approvals guarantees the plan is pending until we approve
     const first = await http(
       env.port,
       "POST",
       `/scopes/${scopeId}/approve-plan`,
     );
-    // If yolo auto-materialized, approve will be 409; handle both paths
-    if (first.status === 409) {
-      // fetch deps to validate wiring still
-      const fetched = await http(env.port, "GET", `/scopes/${scopeId}`);
-      expect(fetched.status).toBe(200);
-      const data = fetched.body as {
-        deps: { task_id: string; depends_on_task_id: string }[];
-        tasks: { id: string; state: string }[];
-      };
-      expect(data.tasks.length).toBeGreaterThanOrEqual(2);
-      // task B depends on A
-      const taskA = data.tasks[0]!.id;
-      const taskB = data.tasks[1]!.id;
-      const bDeps = data.deps
-        .filter((d) => d.task_id === taskB)
-        .map((d) => d.depends_on_task_id);
-      expect(bDeps).toContain(taskA);
-      // second approve should also be 409
-      const second = await http(
-        env.port,
-        "POST",
-        `/scopes/${scopeId}/approve-plan`,
-      );
-      expect(second.status).toBe(409);
-      expect((second.body as { error?: { code?: string } })?.error?.code).toBe(
-        "NO_PLAN_PENDING",
-      );
-      return;
-    }
     expect(first.status).toBe(200);
     const tasks = (first.body as { tasks: { id: string; state: string }[] })
       .tasks;
     expect(tasks.length).toBeGreaterThanOrEqual(2);
+    for (const t of tasks) expect(t.state).toBe("queued");
     const depsRes = await http(env.port, "GET", `/scopes/${scopeId}`);
+    expect(depsRes.status).toBe(200);
     const deps = (
       depsRes.body as {
         deps: { task_id: string; depends_on_task_id: string }[];
@@ -133,10 +115,10 @@ describe("api e2e lifecycle", () => {
     ).deps;
     const taskA = tasks[0]!.id;
     const taskB = tasks[1]!.id;
-    const bDeps2 = deps
+    const bDeps = deps
       .filter((d) => d.task_id === taskB)
       .map((d) => d.depends_on_task_id);
-    expect(bDeps2).toContain(taskA);
+    expect(bDeps).toContain(taskA);
 
     const second = await http(
       env.port,
@@ -153,6 +135,26 @@ describe("api e2e lifecycle", () => {
     const ok = await waitFor(
       "done",
       async () => {
+        // Manual approvals scopes require explicit merge approval at each MR head.
+        // Auto-approve any mr_open task so manual scopes can also reach done.
+        try {
+          const snap = await http(env.port, "GET", `/scopes/${scopeId}`);
+          if (snap.status === 200) {
+            const s = snap.body as {
+              scope: { approvals: string };
+              tasks: { id: string; state: string }[];
+            };
+            if (s.scope.approvals === "manual") {
+              for (const t of s.tasks) {
+                if (t.state === "mr_open") {
+                  await http(env.port, "POST", `/tasks/${t.id}/approve-merge`);
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore transient
+        }
         const res = await http(env.port, "GET", `/scopes/${scopeId}`);
         if (res.status !== 200) return false;
         const data = res.body as { scope: { status: string } };
@@ -207,20 +209,20 @@ describe("api e2e lifecycle", () => {
   }, 90_000);
 
   it("Validation retry: parks in validating then revalidate → done", async () => {
-    // Create a fresh scope to test validation retry
+    // Create a fresh manual scope so approve-plan is deterministic
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "validation retry goal",
         project: { path: "so/console-e2e" },
+        approvals: "manual",
       },
     });
     expect(created.status).toBe(201);
     const newScopeId = (created.body as { id: string }).id;
 
-    // Mark this scope to fail first validate
+    // Mark this scope to fail first validate (global next-validate fails once)
     env.boundary.script.validateFailFirstFor.add(newScopeId);
 
-    // If yolo, need to allow planning → active automatically; otherwise approve
     await waitFor(
       "new planning",
       async () => {
@@ -228,7 +230,9 @@ describe("api e2e lifecycle", () => {
         const d = r.body as {
           scope: { status: string; plan_json: string | null };
         };
-        return d.scope.status === "planning" && !!d.scope.plan_json;
+        const statusOk =
+          d.scope.status === "planning" || d.scope.status === "active";
+        return statusOk && !!d.scope.plan_json;
       },
       30_000,
       250,
@@ -238,16 +242,32 @@ describe("api e2e lifecycle", () => {
       "POST",
       `/scopes/${newScopeId}/approve-plan`,
     );
-    if (approve.status === 200) {
-      // ok
-    } else {
-      // might have auto-materialized if yolo; ignore 409
-      expect([200, 409]).toContain(approve.status);
-    }
+    expect(approve.status).toBe(200);
+    for (const t of (approve.body as { tasks: { state: string }[] }).tasks)
+      expect(t.state).toBe("queued");
 
     const validating = await waitFor(
       "validating",
       async () => {
+        // Drive manual merges so the scope can reach validating.
+        try {
+          const snap = await http(env.port, "GET", `/scopes/${newScopeId}`);
+          if (snap.status === 200) {
+            const s = snap.body as {
+              scope: { approvals: string };
+              tasks: { id: string; state: string }[];
+            };
+            if (s.scope.approvals === "manual") {
+              for (const t of s.tasks) {
+                if (t.state === "mr_open") {
+                  await http(env.port, "POST", `/tasks/${t.id}/approve-merge`);
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
         const r = await http(env.port, "GET", `/scopes/${newScopeId}`);
         const d = r.body as {
           scope: { status: string };

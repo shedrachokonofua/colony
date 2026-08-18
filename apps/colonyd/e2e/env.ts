@@ -27,11 +27,6 @@ export function freePort(): Promise<number> {
   });
 }
 
-export async function freePortSync(): Promise<number> {
-  // helper for non-async callers; mirrors the above but synchronous fallback uses async
-  return freePort();
-}
-
 export function writeColonyYaml(path: string): void {
   writeFileSync(
     path,
@@ -60,31 +55,6 @@ export function writeColonyYaml(path: string): void {
     ].join("\n"),
     "utf8",
   );
-}
-
-export function prepareEnv(
-  opts: {
-    webhookSecret?: string;
-  } = {},
-): PreparedEnv {
-  const dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
-  const configPath = join(dir, "colony.yaml");
-  writeColonyYaml(configPath);
-  const dbPath = join(dir, "colonyd.db");
-  // Use a borrowed ephemeral port via sync reservation? We'll let bootFake allocate asynchronously.
-  // For prepareEnv synchronous usage we generate a placeholder that bootFake will overwrite.
-  const port = 0;
-  const cleanup = (): void => {
-    rmSync(dir, { recursive: true, force: true });
-  };
-  return {
-    dir,
-    dbPath,
-    configPath,
-    port,
-    webhookSecret: opts.webhookSecret ?? "",
-    cleanup,
-  };
 }
 
 export async function prepareEnvWithPort(

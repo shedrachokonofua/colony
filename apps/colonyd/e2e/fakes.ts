@@ -259,13 +259,13 @@ export function createScriptedBoundary(): ScriptedBoundary {
         ],
       };
     }
+    // Contract: when validateFailFirstFor is non-empty, the NEXT validate run
+    // fails once; subsequent runs succeed. The set's entries (e.g. scope ids)
+    // are treated as an opaque flag because ValidateExecutor input carries no
+    // scope id — per-scope discrimination is not possible without adding scope
+    // context to ValidateExecutionInput.
     if (script.validateFailFirstFor.size > 0) {
-      // For deterministic retry, fail the first validate invocation after the set was populated,
-      // succeed thereafter. If the set tracks a specific scope, we model per-scope first failure.
-      // Since executor lacks scope context, use a global counter keyed by a synthetic key.
-      // We treat each first invocation per stored scope id as failure.
-      // Simplify: if any entry exists and we haven't yet failed once, fail.
-      const key = [...script.validateFailFirstFor][0] ?? "__first__";
+      const key = "__next_fail__";
       const count = script._validateCalls.get(key) ?? 0;
       script._validateCalls.set(key, count + 1);
       if (count === 0) {
@@ -351,13 +351,7 @@ export function patchScript(
     script.validateFailFirstFor = new Set(
       patch.validateFailFirstFor as string[],
     );
-    // reset per-key counters when set changes
+    // reset global counter when set changes so next validate fails once
     script._validateCalls.clear();
-  }
-  // generic fallback for any other boolean/string knobs
-  for (const [k, v] of Object.entries(patch)) {
-    if (k in script && !(k in patchScript)) {
-      // already handled
-    }
   }
 }
