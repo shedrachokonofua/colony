@@ -24,6 +24,9 @@ export interface ScriptKnobs {
   // internal counters for validation retry per scope
   _validateCalls: Map<string, number>;
   projectId?: string;
+  distinctShas?: boolean;
+  implementerCalls?: Map<string, number>;
+  singleTask?: boolean;
 }
 
 /**
@@ -117,6 +120,14 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
     provider: FakeProviderAdapter,
   ): unknown {
     if (environment.role === "architect") {
+      if (script.singleTask) {
+        return {
+          kind: "architect_decomposition",
+          summary: "Single-task decomposition.",
+          acceptance: [{ description: "fake goal holds", command: "true" }],
+          tasks: [{ title: "Task A", spec: "Do A.", depends_on: [] }],
+        };
+      }
       const body =
         typeof packet.body === "string" ? (packet.body as string) : "";
       const isReplan = body.includes(
@@ -184,7 +195,19 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
       throw new Error("simulated implementer failure");
     }
     const projectId = script.projectId ?? "fake-project-1";
-    const headSha = taskId.endsWith(".1") ? SHA_A : SHA_B;
+    if (!script.implementerCalls)
+      script.implementerCalls = new Map<string, number>();
+    const calls = (script.implementerCalls.get(taskId) ?? 0) + 1;
+    script.implementerCalls.set(taskId, calls);
+    const headSha = script.distinctShas
+      ? (
+          (taskId.endsWith(".1") ? "a" : "b") +
+          String(calls).padStart(2, "0") +
+          "0".repeat(37)
+        ).slice(0, 40)
+      : taskId.endsWith(".1")
+        ? SHA_A
+        : SHA_B;
     const branch = `colony/${taskId}`;
     // mirror loop test: create branch so envelope verification passes
     void provider.branches.create({ id: projectId }, branch, headSha);
@@ -258,6 +281,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
     script.validateFailFirstFor,
   );
 
+  script.implementerCalls = new Map<string, number>();
   const adapter = new ScriptedAgentRuntimeAdapter(script, provider);
   // Make *Stall reactive: assigning false unblocks the waiting deferred.
   // This lets tests toggle stall via direct property assignment.
@@ -281,6 +305,18 @@ export function createScriptedBoundary(): ScriptedBoundary {
     set(v: boolean) {
       _architectStall = v;
       if (!v) adapter.unstallArchitect();
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  // Make distinctShas/reactive for review loop
+  let _distinctShas = script.distinctShas ?? false;
+  Object.defineProperty(script, "distinctShas", {
+    get() {
+      return _distinctShas;
+    },
+    set(v: boolean) {
+      _distinctShas = v;
     },
     enumerable: true,
     configurable: true,
