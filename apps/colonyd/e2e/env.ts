@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createServer } from "node:net";
 
 export interface PreparedEnv {
@@ -64,12 +64,26 @@ export async function prepareEnvWithPort(
     port?: number;
   } = {},
 ): Promise<PreparedEnv> {
-  const dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
+  const rawDbPath = opts.dbPath?.trim();
+  const isExternalDb = Boolean(rawDbPath);
+  let dir: string;
+  if (isExternalDb) {
+    // When an external DB path is supplied (restart e2e), place the temp
+    // config dir under the same parent so a SIGKILLed fake-colonyd that
+    // never runs prepared.cleanup() does not leak /tmp/colonyd-e2e-* —
+    // the test's restartDir cleanup reclaims it.
+    const parent = dirname(rawDbPath!);
+    try {
+      dir = mkdtempSync(join(parent, "colonyd-e2e-"));
+    } catch {
+      dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
+    }
+  } else {
+    dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
+  }
   const configPath = join(dir, "colony.yaml");
   writeColonyYaml(configPath);
-  const rawDbPath = opts.dbPath?.trim();
   const dbPath = rawDbPath ? rawDbPath : join(dir, "colonyd.db");
-  const isExternalDb = Boolean(rawDbPath);
   let port: number;
   if (opts.port !== undefined) {
     const n = opts.port;

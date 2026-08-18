@@ -481,25 +481,20 @@ describe("api e2e restart recovery (subprocess SIGKILL)", () => {
       } catch {
         // ignore
       }
-      // health must refuse (best-effort if no port was allocated yet)
-      try {
-        const down = await waitFor(
-          "health down after SIGTERM",
-          async () => {
-            try {
-              const r = await fetch(`http://127.0.0.1:${port}/health`);
-              return !r.ok;
-            } catch {
-              return true;
-            }
-          },
-          10_000,
-          200,
-        );
-        expect(down).toBe(true);
-      } catch {
-        // don't hide the original test failure behind health probe
-      }
+      const down = await waitFor(
+        "health down after SIGTERM",
+        async () => {
+          try {
+            const r = await fetch(`http://127.0.0.1:${port}/health`);
+            return !r.ok;
+          } catch {
+            return true;
+          }
+        },
+        10_000,
+        200,
+      );
+      expect(down).toBe(true);
       // DB removable — only assert if DB was created; otherwise just clean up
       if (dbExistedAtCleanup || existsSync(dbPath)) {
         rmSync(dbPath, { force: true });
