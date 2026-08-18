@@ -13,6 +13,7 @@ import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
+  DEFAULT_PI_RUN_TIMEOUT_MS,
   architectDecompositionEnvelopeTypeBox,
   buildArchitectFinalizerPrompt,
   buildArchitectSystemPrompt,
@@ -28,6 +29,7 @@ import {
   finalizeEnvelopeWithStructuredOutput,
   implementerCompletionEnvelopeTypeBox,
   installRunGuards,
+  packetRepo,
   noOpResourceLoader,
   provisionRepoWorkspace,
   provisionScratchDir,
@@ -37,6 +39,7 @@ import {
   waitForIdleOrCapturedEnvelope,
   withRunTimeout,
 } from "./pi-runner-common.js";
+import { RunSteering, packetObjective } from "./run-steering.js";
 import {
   buildSandboxBaseTools,
   type SandboxBaseTools,
@@ -241,6 +244,10 @@ export class PiBaseAgentRunner implements PiRunner {
         toolNames: [...workTools, submitTool.name, "web_search", "web_fetch"],
       };
     })();
+    const steering = new RunSteering({
+      runTimeoutMs: this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS,
+      branch: packetRepo(request.packet)?.branch,
+    });
     const clearTimeoutGuard = withRunTimeout(
       runId,
       this.options.runTimeoutMs,
@@ -277,7 +284,9 @@ export class PiBaseAgentRunner implements PiRunner {
           compaction: { enabled: false },
           retry: { enabled: true, maxRetries: 1 },
         }),
-        resourceLoader: noOpResourceLoader(this.profile.systemPrompt()),
+        resourceLoader: noOpResourceLoader(
+          `${this.profile.systemPrompt()}\n\n${steering.budgetBlock()}`,
+        ),
         sessionManager: SessionManager.inMemory(cwd),
         customTools,
         tools: toolNames,
@@ -346,6 +355,7 @@ export class PiBaseAgentRunner implements PiRunner {
         ) {
           repositoryInspected = true;
         }
+        steering.observeToolCall(context.toolCall.name, context.args);
         this.options.logger?.info?.(
           {
             runId,
@@ -356,7 +366,18 @@ export class PiBaseAgentRunner implements PiRunner {
           },
           "pi_tool_call",
         );
-        return base;
+        const nudge = steering.takeDriftNudge();
+        if (!nudge) return base;
+        // Fold the reminder in ahead of the tool's own output, the way the omp
+        // harness delivers non-interrupting rule reminders.
+        this.options.logger?.warn?.({ runId, sandboxId }, "pi_drift_nudge");
+        return {
+          ...base,
+          content: [
+            { type: "text" as const, text: nudge },
+            ...(base?.content ?? context.result.content),
+          ],
+        };
       };
 
       try {
@@ -424,6 +445,54 @@ export class PiBaseAgentRunner implements PiRunner {
                 "pi_model_fallback",
               );
             }
+          }
+        }
+        // A model that stops without submitting gets re-steered instead of
+        // finalized on the spot: restate the objective, the clock, and whether
+        // anything is pushed. The omp harness does the same on incomplete work,
+        // and Colony's run data showed models idling out with the task unfinished.
+        while (
+          (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) &&
+          capturedEnvelope === undefined &&
+          !timeoutTriggered &&
+          !cancellationTriggered &&
+          failureReason === undefined
+        ) {
+          const steer = steering.takeContinuationSteer(
+            packetObjective(request.packet),
+          );
+          if (!steer) break;
+          this.options.logger?.warn?.(
+            { runId, sandboxId },
+            "pi_run_continuation",
+          );
+          try {
+            const steerPromise = session
+              .prompt(steer, {
+                expandPromptTemplates: false,
+                source: "extension",
+              })
+              .catch((err) => {
+                if (capturedEnvelope !== undefined) return;
+                throw err;
+              });
+            await Promise.race([steerPromise, capturedEnvelopePromise]);
+            if (capturedEnvelope === undefined) {
+              await waitForIdleOrCapturedEnvelope(
+                session.agent,
+                capturedEnvelopePromise,
+              );
+            }
+          } catch (err) {
+            if (cancellationTriggered) throw err;
+            this.options.logger?.warn?.(
+              {
+                runId,
+                error: err instanceof Error ? err.message : String(err),
+              },
+              "pi_run_continuation_failed",
+            );
+            break;
           }
         }
       } finally {
