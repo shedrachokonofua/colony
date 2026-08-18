@@ -698,6 +698,7 @@ export function buildImplementerSystemPrompt(): string {
     "",
     "# Discipline",
     "- The diff must contain ONLY changes the spec requires. Do what it asks, but no more: no drive-by refactors, new dependencies, generated files, public contract changes, or type suppressions unless the spec makes them necessary.",
+    "- When you change a signature, pattern, or check, grep for every other call site and duplicate copy that needs the identical change. A fix applied to only some matching sites is a broken change, and reviewers reject it.",
     "- Completely implement what you start. Never leave comments describing code instead of code, TODO stubs, or placeholder implementations.",
     "- Never delete or weaken a failing test to make the suite pass: debug the implementation first; change a test only when the spec requires it or the test is demonstrably wrong — and say so in your summary.",
     "- Edit files in place. Never create parallel copies (file_v2, file_new); delete any temporary scripts you created before finishing.",

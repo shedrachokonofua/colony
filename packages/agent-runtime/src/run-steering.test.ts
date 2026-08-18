@@ -28,6 +28,16 @@ describe("RunSteering drift nudge", () => {
     run.observeToolCall("grep");
     const nudge = run.takeDriftNudge();
     expect(nudge).toContain("<system-reminder>");
+    expect(nudge).toContain("write the plan you will execute");
+    expect(nudge).toContain("do not end your turn on the plan");
+  });
+
+  it("escalates the second reminder to a pushed checkpoint", () => {
+    const { run } = steering({});
+    drift(run, 12);
+    run.takeDriftNudge();
+    drift(run, 12);
+    const nudge = run.takeDriftNudge();
     expect(nudge).toContain("git push origin colony/col-1.2");
     expect(nudge).toContain("Nothing is on the work branch yet");
   });
@@ -42,7 +52,8 @@ describe("RunSteering drift nudge", () => {
 
   it("counts a git push in a bash command as progress and reports it", () => {
     const { run } = steering({});
-    drift(run, 6);
+    drift(run, 12);
+    run.takeDriftNudge();
     run.observeToolCall("bash", { command: "git push origin colony/col-1.2" });
     drift(run, 12);
     expect(run.takeDriftNudge()).toContain(

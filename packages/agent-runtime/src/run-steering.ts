@@ -86,8 +86,9 @@ export class RunSteering {
 
   /**
    * Reminder to fold into the next tool result when the run has spent many
-   * calls without changing or pushing anything. Consumes one of the run's
-   * nudges.
+   * calls without changing or pushing anything. Escalates: the first asks for
+   * the concrete plan the exploration should have produced (omp's prewalk-plan
+   * demand), the second insists on a pushed checkpoint.
    */
   takeDriftNudge(): string | null {
     if (this.#nudges >= MAX_NUDGES) return null;
@@ -95,12 +96,20 @@ export class RunSteering {
     const calls = this.#callsSinceProgress;
     this.#callsSinceProgress = 0;
     this.#nudges += 1;
+    if (this.#nudges === 1) {
+      return [
+        "<system-reminder>",
+        `${calls} tool calls without a file change. You know enough now; stop exploring and write the plan you will execute: the remaining steps in order, with the exact files, symbols, commands, and checks each one needs.`,
+        "Then start executing it in this same turn — do not end your turn on the plan.",
+        "</system-reminder>",
+      ].join("\n");
+    }
     const landed = this.#pushed
       ? "Your pushed commit is the only work that survives this run"
       : "Nothing is on the work branch yet, and a run that is killed keeps only what you pushed";
     return [
       "<system-reminder>",
-      `${calls} tool calls since your last file change or push. ${landed}.`,
+      `${calls} more tool calls without a file change or push. ${landed}.`,
       `Make the smallest complete change the spec requires, commit it, and \`git push origin ${this.#branch}\` before any further exploration or full-suite run. Then continue.`,
       "</system-reminder>",
     ].join("\n");

@@ -39,7 +39,12 @@ providers:
         name: muse-spark
         reasoning: true
         context_window: 1048576
-        max_tokens: 131072
+        # Operational cap, not the model's limit. Turn telemetry from a walled
+        # 30-minute run: median turn 404 output tokens, but outliers reached
+        # 30k tokens / 203 seconds, and 27 of the 30 minutes went to model
+        # generation. Bounding a single response keeps the run acting instead
+        # of monologuing.
+        max_tokens: 16384
         cost: { input: 0, output: 0 }
       - id: router/glm-5.2
         name: glm-5.2
@@ -103,7 +108,7 @@ agents:
     model: muse-spark
     fallback_models:
       [deepseek-v4-flash, deepseek-v4-flash-router, mimo-v2.5-pro, qwen3.8-27b]
-    thinking_level: high
+    thinking_level: medium
     timeout_ms: 3600000
     max_turns: 250
   reviewer:
