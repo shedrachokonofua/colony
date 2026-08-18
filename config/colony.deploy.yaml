@@ -4,6 +4,12 @@
 agent_runtime: pi
 allow_literal_keys: false
 
+sandbox:
+  engine: kubernetes
+  kubernetes:
+    namespace: colony-sandboxes
+    image: registry.gitlab.home.shdr.ch/so/colony/sandbox:latest
+
 hitl:
   mode: yolo
 
