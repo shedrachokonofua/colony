@@ -356,6 +356,7 @@ async function api(path, options = {}) {
 
 const DEMO_SHA_A = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const DEMO_SHA_B = "b9c0d1e2f30415263748a9b0c1d2e3f401234567";
+const DEMO_GATE_STARTED = new Date(Date.now() - 12 * 1000).toISOString();
 
 function demoWorld() {
   const scope = {
@@ -458,7 +459,7 @@ function demoWorld() {
       head_sha: DEMO_SHA_B,
       error: null,
       evidence_json: null,
-      started_at: new Date(Date.now() - 12 * 1000).toISOString(),
+      started_at: DEMO_GATE_STARTED,
       finished_at: null,
     },
     {

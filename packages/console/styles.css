@@ -1051,6 +1051,7 @@ body {
 /* ---------- Duration ---------- */
 
 .dur {
+  display: inline-block;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   min-width: 7ch;
@@ -1331,10 +1332,6 @@ pre.runlog {
 }
 
 @media (max-width: 900px) {
-  .dur {
-    min-width: 0;
-  }
-
   .board,
   .sheet-cols {
     grid-template-columns: 1fr;
