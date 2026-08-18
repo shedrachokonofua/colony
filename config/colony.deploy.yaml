@@ -24,8 +24,20 @@ providers:
         context_window: 1000000
         max_tokens: 131072
         cost: { input: 0, output: 0 }
+      - id: commandcode/muse-spark-1.2-contributor
+        name: muse-spark
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 131072
+        cost: { input: 0, output: 0 }
       - id: router/glm-5.2
         name: glm-5.2
+        reasoning: true
+        context_window: 1000000
+        max_tokens: 131072
+        cost: { input: 0, output: 0 }
+      - id: router/glm-5.3
+        name: glm-5.3
         reasoning: true
         context_window: 1000000
         max_tokens: 131072
@@ -75,8 +87,9 @@ providers:
 agents:
   developer:
     provider: openai_compatible
-    model: deepseek-v4-flash
-    fallback_models: [deepseek-v4-flash-router, mimo-v2.5-pro, qwen3.8-27b]
+    model: muse-spark
+    fallback_models:
+      [deepseek-v4-flash, deepseek-v4-flash-router, mimo-v2.5-pro, qwen3.8-27b]
     thinking_level: high
     timeout_ms: 1800000
     max_turns: 250
@@ -84,20 +97,21 @@ agents:
     provider: openai_compatible
     model: kimi-k3
     fallback_models:
+      - glm-5.3
       - qwen3.8-max
       - glm-5.2
       - deepseek-v4-pro
-      - deepseek-v4-flash
       - qwen3.8-27b
     thinking_level: xhigh
     timeout_ms: 1800000
     max_turns: 200
   architect:
     provider: openai_compatible
-    model: glm-5.2
+    model: glm-5.3
+    fallback_models: [kimi-k3, glm-5.2, deepseek-v4-pro]
     timeout_ms: 1800000
     max_turns: 200
   memory_consolidator:
     provider: openai_compatible
-    model: glm-5.2
+    model: muse-spark
     thinking_level: low
