@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { PassThrough, Readable } from "node:stream";
-import { KubeConfig } from "@kubernetes/client-node";
+import type { KubeConfig } from "@kubernetes/client-node";
 import type {
   ExecEvent,
   ExecRequest,
@@ -27,7 +27,7 @@ import {
   type KubernetesSandboxEngineOptions,
   type SandboxCustomResource,
 } from "./contract.js";
-import { createKubernetesClient } from "./k8s-client.js";
+import { createKubernetesClient, loadKubernetesConfig } from "./k8s-client.js";
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -439,8 +439,8 @@ function waitForEnd(stream: Readable): Promise<void> {
 /**
  * Lazy Kubernetes sandbox engine. Constructing it touches nothing: kubeconfig
  * loading and all cluster I/O happen only inside `provision()`. Pass a
- * `kubeconfig` or rely on `loadFromDefault()` at provision time via the real
- * client adapter, or inject a faked `client` for tests.
+ * `kubeconfig` or rely on automatic in-cluster/default config selection at
+ * provision time, or inject a faked `client` for tests.
  */
 export function createKubernetesEngine(
   options: KubernetesSandboxEngineOptions = {},
@@ -462,8 +462,7 @@ export function createKubernetesEngine(
       let client = options.client;
       let kubeconfig: KubeConfig | undefined = options.kubeconfig;
       if (client === undefined) {
-        const kc = options.kubeconfig ?? new KubeConfig();
-        if (options.kubeconfig === undefined) kc.loadFromDefault();
+        const kc = options.kubeconfig ?? loadKubernetesConfig();
         kubeconfig = kc;
         client = createKubernetesClient(kc);
       }

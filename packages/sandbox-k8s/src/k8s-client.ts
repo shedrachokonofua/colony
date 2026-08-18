@@ -106,16 +106,35 @@ function asConditionArray(value: unknown): {
   if (!Array.isArray(value)) return [];
   return value as { type?: string; status?: string; reason?: string }[];
 }
+type KubernetesEnvironment = Readonly<
+  Partial<Record<"KUBERNETES_SERVICE_HOST" | "KUBERNETES_SERVICE_PORT", string>>
+>;
+
+/**
+ * Prefer the mounted service-account configuration inside Kubernetes.
+ * `loadFromDefault()` otherwise falls back to http://localhost:8080 when a pod
+ * has no user kubeconfig, which turns every cluster request into a local call.
+ */
+export function loadKubernetesConfig(
+  kubeconfig = new KubeConfig(),
+  environment: KubernetesEnvironment = process.env,
+): KubeConfig {
+  if (
+    environment.KUBERNETES_SERVICE_HOST &&
+    environment.KUBERNETES_SERVICE_PORT
+  ) {
+    kubeconfig.loadFromCluster();
+  } else {
+    kubeconfig.loadFromDefault();
+  }
+  return kubeconfig;
+}
 
 /** Builds a client over `@kubernetes/client-node` for the given KubeConfig. */
 export function createKubernetesClient(
   kubeconfig?: KubeConfig,
 ): KubernetesSandboxClient {
-  const kc = kubeconfig ?? new KubeConfig();
-  if (kubeconfig === undefined) {
-    // Loaded lazily here — inside provision() — never at factory time.
-    kc.loadFromDefault();
-  }
+  const kc = kubeconfig ?? loadKubernetesConfig();
   const apis = kc.makeApiClient(ApisApi);
   const custom = kc.makeApiClient(CustomObjectsApi);
   const core = kc.makeApiClient(CoreV1Api);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { KubeConfig } from "@kubernetes/client-node";
 import {
   SANDBOX_PART_OF_LABEL,
   SANDBOX_ROLE_LABEL,
@@ -21,6 +22,43 @@ import {
   type SandboxCustomResource,
 } from "./contract.js";
 import { createKubernetesEngine } from "./k8s-engine.js";
+import { loadKubernetesConfig } from "./k8s-client.js";
+
+describe("loadKubernetesConfig", () => {
+  function fakeKubeConfig(): {
+    kubeconfig: KubeConfig;
+    loads: string[];
+  } {
+    const loads: string[] = [];
+    return {
+      kubeconfig: {
+        loadFromCluster: () => loads.push("cluster"),
+        loadFromDefault: () => loads.push("default"),
+      } as unknown as KubeConfig,
+      loads,
+    };
+  }
+
+  it("uses the mounted service account inside a Kubernetes pod", () => {
+    const { kubeconfig, loads } = fakeKubeConfig();
+    expect(
+      loadKubernetesConfig(kubeconfig, {
+        KUBERNETES_SERVICE_HOST: "10.96.0.1",
+        KUBERNETES_SERVICE_PORT: "443",
+      }),
+    ).toBe(kubeconfig);
+    expect(loads).toEqual(["cluster"]);
+  });
+
+  it("uses the user kubeconfig outside Kubernetes", () => {
+    const { kubeconfig, loads } = fakeKubeConfig();
+    loadKubernetesConfig(kubeconfig, {
+      KUBERNETES_SERVICE_HOST: undefined,
+      KUBERNETES_SERVICE_PORT: undefined,
+    });
+    expect(loads).toEqual(["default"]);
+  });
+});
 
 describe("buildSandboxCustomResource (developer profile)", () => {
   const profile = buildSandboxLaunchProfile("developer");
