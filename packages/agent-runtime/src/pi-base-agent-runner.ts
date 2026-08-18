@@ -401,12 +401,17 @@ export class PiBaseAgentRunner implements PiRunner {
               }
               break;
             } catch (err) {
+              // The run-timeout guard aborts the session, which rejects the
+              // in-flight prompt with the SDK's opaque "This operation was
+              // aborted". Rethrowing loses the classified reason and skips
+              // envelope finalization, so a run that did the work but ran out
+              // of budget reports nothing. Stop the model loop instead and let
+              // finalization salvage a submission. Operator cancellation still
+              // ends the run immediately.
+              if (cancellationTriggered) throw err;
+              if (timeoutTriggered) break;
               const next = models[index + 1];
-              if (
-                !next ||
-                failureReason !== undefined ||
-                cancellationTriggered
-              ) {
+              if (!next || failureReason !== undefined) {
                 throw err;
               }
               this.options.logger?.warn?.(
