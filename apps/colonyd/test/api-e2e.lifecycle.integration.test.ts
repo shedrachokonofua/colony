@@ -77,13 +77,8 @@ describe("api e2e lifecycle", () => {
           scope: { status: string; plan_json: string | null };
           runs: { kind: string }[];
         };
-        // Poll durable facts: plan_json present and an architect run exists.
-        // Accept planning|active so the probe is not a transient window when
-        // hitl yolo auto-materializes between samples.
-        const statusOk =
-          data.scope.status === "planning" || data.scope.status === "active";
         return (
-          statusOk &&
+          data.scope.status === "planning" &&
           !!data.scope.plan_json &&
           data.runs.some((r) => r.kind === "architect")
         );
@@ -131,31 +126,20 @@ describe("api e2e lifecycle", () => {
     );
   }, 90_000);
 
-  it("Happy path to done with audit chain and merged MRs", async () => {
+  it("Happy path to done (auto approvals default) with audit chain and merged MRs", async () => {
+    const created = await http(env.port, "POST", "/scopes", {
+      body: {
+        goal: "happy path auto approvals",
+        project: { path: "so/console-e2e" },
+      },
+    });
+    expect(created.status).toBe(201);
+    const autoScopeId = (created.body as { id: string }).id;
+
     const ok = await waitFor(
       "done",
       async () => {
-        // Manual approvals scopes require explicit merge approval at each MR head.
-        // Auto-approve any mr_open task so manual scopes can also reach done.
-        try {
-          const snap = await http(env.port, "GET", `/scopes/${scopeId}`);
-          if (snap.status === 200) {
-            const s = snap.body as {
-              scope: { approvals: string };
-              tasks: { id: string; state: string }[];
-            };
-            if (s.scope.approvals === "manual") {
-              for (const t of s.tasks) {
-                if (t.state === "mr_open") {
-                  await http(env.port, "POST", `/tasks/${t.id}/approve-merge`);
-                }
-              }
-            }
-          }
-        } catch {
-          // ignore transient
-        }
-        const res = await http(env.port, "GET", `/scopes/${scopeId}`);
+        const res = await http(env.port, "GET", `/scopes/${autoScopeId}`);
         if (res.status !== 200) return false;
         const data = res.body as { scope: { status: string } };
         return data.scope.status === "done";
@@ -164,7 +148,7 @@ describe("api e2e lifecycle", () => {
       250,
     );
     expect(ok).toBe(true);
-    const res = await http(env.port, "GET", `/scopes/${scopeId}`);
+    const res = await http(env.port, "GET", `/scopes/${autoScopeId}`);
     expect(res.status).toBe(200);
     const data = res.body as {
       scope: { status: string };
@@ -189,7 +173,6 @@ describe("api e2e lifecycle", () => {
         .filter((r) => r.action === "task.transition")
         .map((r) => JSON.parse(r.detail_json) as { from: string; to: string })
         .reverse();
-      // We reverse because default order is DESC; restore ascending by id implicitly by reverse
       const chain = hops.map((h) => `${h.from}->${h.to}`);
       expect(chain).toEqual([
         "queued->running",
@@ -230,9 +213,7 @@ describe("api e2e lifecycle", () => {
         const d = r.body as {
           scope: { status: string; plan_json: string | null };
         };
-        const statusOk =
-          d.scope.status === "planning" || d.scope.status === "active";
-        return statusOk && !!d.scope.plan_json;
+        return d.scope.status === "planning" && !!d.scope.plan_json;
       },
       30_000,
       250,

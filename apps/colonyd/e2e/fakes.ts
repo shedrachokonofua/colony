@@ -209,7 +209,7 @@ export interface ScriptedBoundary {
 
 function wrapValidateSet(script: ScriptKnobs, base: Set<string>): Set<string> {
   return new Proxy(base, {
-    get(target, prop, receiver) {
+    get(target, prop) {
       if (prop === "add") {
         return (value: string) => {
           const had = target.has(value);
@@ -229,7 +229,7 @@ function wrapValidateSet(script: ScriptKnobs, base: Set<string>): Set<string> {
           return target.clear();
         };
       }
-      const v = Reflect.get(target, prop, receiver);
+      const v = Reflect.get(target, prop);
       if (typeof v === "function")
         return (v as (...args: unknown[]) => unknown).bind(target);
       return v;
