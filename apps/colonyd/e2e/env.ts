@@ -27,34 +27,46 @@ export function freePort(): Promise<number> {
   });
 }
 
-export function writeColonyYaml(path: string): void {
-  writeFileSync(
-    path,
-    [
-      "agent_runtime: fake",
-      "allow_literal_keys: true",
-      "hitl:",
-      "  mode: yolo",
-      "providers:",
-      "  fake_llm:",
-      "    api: openai-completions",
-      "    base_url: http://localhost:9/v1",
-      "    auth:",
-      "      kind: api_key",
-      "      value: fake-key",
-      "    models:",
-      "      - id: fake-model",
-      "        name: fake-model",
-      "agents:",
-      "  architect:",
-      "    provider: fake_llm",
-      "    model: fake-model",
-      "  developer:",
-      "    provider: fake_llm",
-      "    model: fake-model",
-    ].join("\n"),
-    "utf8",
+export function writeColonyYaml(
+  path: string,
+  opts: { reviewMode?: "off" | "required" } = {},
+): void {
+  const lines = [
+    "agent_runtime: fake",
+    "allow_literal_keys: true",
+    "hitl:",
+    "  mode: yolo",
+  ];
+  if (opts.reviewMode === "required") {
+    lines.push("review:", "  mode: required");
+  }
+  lines.push(
+    "providers:",
+    "  fake_llm:",
+    "    api: openai-completions",
+    "    base_url: http://localhost:9/v1",
+    "    auth:",
+    "      kind: api_key",
+    "      value: fake-key",
+    "    models:",
+    "      - id: fake-model",
+    "        name: fake-model",
+    "agents:",
+    "  architect:",
+    "    provider: fake_llm",
+    "    model: fake-model",
+    "  developer:",
+    "    provider: fake_llm",
+    "    model: fake-model",
   );
+  if (opts.reviewMode === "required") {
+    lines.push(
+      "  reviewer:",
+      "    provider: fake_llm",
+      "    model: fake-model",
+    );
+  }
+  writeFileSync(path, lines.join("\n"), "utf8");
 }
 
 export async function prepareEnvWithPort(
@@ -62,6 +74,7 @@ export async function prepareEnvWithPort(
     webhookSecret?: string;
     dbPath?: string;
     port?: number;
+    reviewMode?: "off" | "required";
   } = {},
 ): Promise<PreparedEnv> {
   const rawDbPath = opts.dbPath?.trim();
@@ -82,7 +95,7 @@ export async function prepareEnvWithPort(
     dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
   }
   const configPath = join(dir, "colony.yaml");
-  writeColonyYaml(configPath);
+  writeColonyYaml(configPath, { reviewMode: opts.reviewMode });
   const dbPath = rawDbPath ? rawDbPath : join(dir, "colonyd.db");
   let port: number;
   if (opts.port !== undefined) {

@@ -19,10 +19,12 @@ export async function bootFake(
     oidcClientId?: string;
     oidcRequiredRole?: string;
     tickMs?: number | string;
+    reviewMode?: "off" | "required";
   } = {},
 ): Promise<BootFakeHandle> {
   const prepared = await prepareEnvWithPort({
     webhookSecret: opts.webhookSecret ?? "",
+    reviewMode: opts.reviewMode,
   });
 
   const envVars = buildEnvVars({
