@@ -841,6 +841,14 @@ function renderDag(detail) {
     ${edgeMarkup}${nodeMarkup}
   </svg>`;
 }
+function taskSelectionExists(detail, taskId) {
+  if (taskId.startsWith("plan:")) {
+    const index = Number(taskId.slice(5));
+    const plan = parsePlan(detail.scope.plan_json);
+    return Number.isInteger(index) && Boolean(plan?.tasks?.[index]);
+  }
+  return detail.tasks.some((task) => task.id === taskId);
+}
 
 // ---------------------------------------------------------------------------
 // Cards
@@ -1742,7 +1750,7 @@ async function refresh() {
       state.audit = audit;
       if (
         state.selectedTaskId &&
-        !detail.tasks.some((task) => task.id === state.selectedTaskId)
+        !taskSelectionExists(detail, state.selectedTaskId)
       ) {
         state.selectedTaskId = null;
         state.drawerOpen = false;
