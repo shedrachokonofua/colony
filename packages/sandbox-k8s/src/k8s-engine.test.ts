@@ -221,6 +221,8 @@ interface ExecScenario {
   stderrChunks?: string[];
   /** If set, emit the terminal status (0 => Success, n => Failure exit code). */
   exit?: number;
+  /** If true, emit terminal status without ending stdout/stderr. */
+  leaveStreamsOpen?: boolean;
   /** If true, never emit a status or end the streams (exec hangs). */
   hang?: boolean;
   /** If true, close the remote WebSocket without ending either stream. */
@@ -320,12 +322,16 @@ function createFakeClient(
           stderr.write(Buffer.from(chunk, "utf8"));
         }
         if (scenario.exit === 0) {
-          stdout.end();
-          stderr.end();
+          if (scenario.leaveStreamsOpen !== true) {
+            stdout.end();
+            stderr.end();
+          }
           statusCallback({ status: "Success" });
         } else if (scenario.exit !== undefined) {
-          stdout.end();
-          stderr.end();
+          if (scenario.leaveStreamsOpen !== true) {
+            stdout.end();
+            stderr.end();
+          }
           // Script the real kubelet wire shape (not a fictitious one).
           statusCallback({
             status: "Failure",
@@ -782,6 +788,22 @@ describe("K8sSandboxHandle exec channel", () => {
       expect(finalEvent.kind).toBe("exit");
       expect(finalEvent.kind === "exit" && finalEvent.exitCode).toBe(42);
 
+      await handle.destroy();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("settles exec on terminal status when streams and socket stay open", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "k8s-status-only-"));
+    try {
+      const { handle } = await provisionWith(workspace, {
+        fallback: { exit: 0, leaveStreamsOpen: true },
+      });
+
+      const result = await handle.exec({ command: "true" }, () => {});
+
+      expect(result).toMatchObject({ exitCode: 0, timedOut: false });
       await handle.destroy();
     } finally {
       await rm(workspace, { recursive: true, force: true });

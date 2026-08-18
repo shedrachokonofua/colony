@@ -302,6 +302,10 @@ class K8sSandboxHandle implements SandboxHandle {
     let exitCode: number | null = null;
     let socket: ExecPodConnection | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let resolveStatus!: (code: number | null) => void;
+    const statusReceived = new Promise<number | null>((resolve) => {
+      resolveStatus = resolve;
+    });
 
     const cleanup = (): void => {
       if (timer !== undefined) clearTimeout(timer);
@@ -343,6 +347,11 @@ class K8sSandboxHandle implements SandboxHandle {
         stdinReadable,
         (status) => {
           exitCode = parseExecExitCode(status);
+          // Kubelet's Status frame is the authoritative terminal signal.
+          // client-node can leave both streams and the WebSocket open after
+          // delivering it, so waiting for either can strand the run lease.
+          // One event-loop turn lets already-queued stdout/stdin chunks flush.
+          setImmediate(() => resolveStatus(exitCode));
         },
       );
       // The remote WebSocket close is a completion signal independent of
@@ -351,7 +360,7 @@ class K8sSandboxHandle implements SandboxHandle {
       socket = rawSocket;
       this.sockets.add(socket);
       if (settled) {
-        // Timed out while the exec session was still connecting — abort it.
+        // A timeout arrived while execPod was connecting.
         try {
           socket.close();
         } catch {
@@ -359,13 +368,17 @@ class K8sSandboxHandle implements SandboxHandle {
         }
         return;
       }
-      // Race stream ends against remote or local socket closure so every
-      // terminal pods/exec path settles.
-      await Promise.all([
-        Promise.race([waitForEnd(stdout), rawSocket.closed]),
-        Promise.race([waitForEnd(stderr), rawSocket.closed]),
+      // Race stream/socket completion against the terminal Status. Waiting
+      // until execPod returns lets it finish attaching stdin before a
+      // synchronously delivered Status can resolve the public exec promise.
+      const terminalCode = await Promise.race([
+        Promise.all([
+          Promise.race([waitForEnd(stdout), rawSocket.closed]),
+          Promise.race([waitForEnd(stderr), rawSocket.closed]),
+        ]).then(() => exitCode),
+        statusReceived,
       ]);
-      finish(exitCode, false);
+      finish(terminalCode, false);
     };
     void doExec().catch(fail);
 
