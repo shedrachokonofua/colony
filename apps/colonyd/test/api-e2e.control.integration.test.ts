@@ -339,8 +339,12 @@ describe("api e2e control — 2. task transitions", () => {
       ),
     ).toBe(true);
 
-    // --- NO_ACTIVE_RUN: force a queued task to running without an active run ---
-    type Store = {
+    // --- NO_ACTIVE_RUN: use isolated scope with stall disabled so tick does not
+    //     reconcile the synthetic running state before /stop. Earlier /stop called
+    //     requestTick(); under stall the tick re-dispatches queued tasks and can
+    //     make the subsequent transitionTask fail or race.
+    const store = (env.handle as unknown as { ctx: { store: unknown } }).ctx
+      .store as {
       listTasks: (
         scopeId: string,
       ) => { id: string; state: string; state_version: number }[];
@@ -355,33 +359,90 @@ describe("api e2e control — 2. task transitions", () => {
         prepare: (sql: string) => { run: (...args: unknown[]) => unknown };
       };
     };
-    const store = (env.handle as unknown as { ctx: { store: unknown } }).ctx
-      .store as Store;
-    const tasksAfterStop = store.listTasks(stopScopeId);
-    const queuedForNoRun = tasksAfterStop.find((t) => t.state === "queued");
-    expect(queuedForNoRun).toBeDefined();
-    store.transitionTask(
-      queuedForNoRun!.id,
-      queuedForNoRun!.state_version,
-      "running",
-      "human:e2e",
+    // Isolate NO_ACTIVE_RUN from tick races: .2 depends on .1 so dispatch
+    // never picks it while .1 is pending, making it quiescent. Still, the
+    // reconciler (expireLeases) requeues a synthetic running task on its
+    // next 250ms tick before /stop arrives. Retry once if we lose that race.
+    (
+      env.boundary.script as unknown as { implementerStall?: boolean }
+    ).implementerStall = false;
+    await waitFor(
+      "no running before synthetic",
+      async () => {
+        const snap = await http(env.port, "GET", `/scopes/${stopScopeId}`);
+        if (snap.status !== 200) return false;
+        const d = snap.body as { tasks: { state: string }[] };
+        return d.tasks.every((t) => t.state !== "running");
+      },
+      15_000,
+      250,
     );
-    const noRunRes = await http(
-      env.port,
-      "POST",
-      `/tasks/${queuedForNoRun!.id}/stop`,
-    );
-    expect(noRunRes.status).toBe(409);
-    expect((noRunRes.body as { error?: { code?: string } })?.error?.code).toBe(
+    const pickQueuedDependent = async () => {
+      const snap = await http(env.port, "GET", `/scopes/${stopScopeId}`);
+      const tasks = (snap.body as { tasks: { id: string; state: string }[] })
+        .tasks;
+      return tasks.find((t) => t.state === "queued" && t.id.endsWith(".2"));
+    };
+    let noRunTaskId: string | undefined;
+    let noRunRes: { status: number; body: unknown } | undefined;
+    for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
+      const candidate = await pickQueuedDependent();
+      expect(candidate).toBeDefined();
+      noRunTaskId = candidate!.id;
+      const curVer = store
+        .listTasks(stopScopeId)
+        .find((t) => t.id === noRunTaskId)!.state_version;
+      try {
+        store.transitionTask(noRunTaskId, curVer, "running", "human:e2e");
+      } catch {
+        continue;
+      }
+      noRunRes = await http(env.port, "POST", `/tasks/${noRunTaskId}/stop`);
+      if (
+        noRunRes.status === 409 &&
+        (noRunRes.body as { error?: { code?: string } })?.error?.code ===
+          "NO_ACTIVE_RUN"
+      ) {
+        break;
+      }
+      // Lost to reconciler (NOT_RUNNING) or dispatch race — restore and retry
+      const curAfterMiss = store
+        .listTasks(stopScopeId)
+        .find((t) => t.id === noRunTaskId);
+      if (curAfterMiss?.state === "running") {
+        store.transitionTask(
+          curAfterMiss.id,
+          curAfterMiss.state_version,
+          "queued",
+          "human:e2e",
+          { attempt: 0, next_retry_at: null },
+        );
+      }
+      await waitFor("cooldown", async () => true, 100, 100);
+    }
+    expect(noRunRes).toBeDefined();
+    expect(noRunRes!.status).toBe(409);
+    expect((noRunRes!.body as { error?: { code?: string } })?.error?.code).toBe(
       "NO_ACTIVE_RUN",
     );
-    const cur = store
+    const curAfter = store
       .listTasks(stopScopeId)
-      .find((t) => t.id === queuedForNoRun!.id)!;
-    store.transitionTask(cur.id, cur.state_version, "queued", "human:e2e", {
-      attempt: 0,
-      next_retry_at: null,
-    });
+      .find((t) => t.id === noRunTaskId)!;
+    if (curAfter.state === "running") {
+      store.transitionTask(
+        curAfter.id,
+        curAfter.state_version,
+        "queued",
+        "human:e2e",
+        {
+          attempt: 0,
+          next_retry_at: null,
+        },
+      );
+    }
+    (
+      env.boundary.script as unknown as { implementerStall?: boolean }
+    ).implementerStall = true;
 
     // --- NOT_RUNNING: stop a queued task ---
     const snapForNotRunning = await http(
@@ -646,9 +707,10 @@ describe("api e2e control — 2. task transitions", () => {
       "POST",
       `/tasks/${canceledInAbandoned!.id}/cancel`,
     );
-    // cancel on already canceled may be 409 CONFLICT or 200; if not 200 expect 409
-    if (cancelAbandoned.status !== 200)
-      expect(cancelAbandoned.status).toBe(409);
+    expect(cancelAbandoned.status).toBe(409);
+    expect(
+      (cancelAbandoned.body as { error?: { code?: string } })?.error?.code,
+    ).toBe("SCOPE_ABANDONED");
 
     // --- 2c amend-spec and request-changes (manual to keep mr_open stable) ---
     const amScope = await http(env.port, "POST", "/scopes", {
@@ -1061,28 +1123,22 @@ describe("api e2e control — 4. merge gate fail-then-pass", () => {
       true;
     await http(env.port, "POST", `/scopes/${scopeId}/approve-plan`);
 
+    // Stall implementer so the gate-failure requeue stays observed as queued
+    (
+      env.boundary.script as unknown as { implementerStall?: boolean }
+    ).implementerStall = true;
+
     const failed = await waitFor(
-      "gate failed",
+      "gate failed requeued",
       async () => {
-        try {
-          const snap = await http(env.port, "GET", `/tasks/${targetTask}`);
-          if (snap.status === 200) {
-            const d = snap.body as {
-              task: { state: string; next_retry_at: string | null };
-            };
-            if (d.task.state === "queued" && d.task.next_retry_at) {
-              const due = Date.parse(d.task.next_retry_at);
-              if (due > Date.now())
-                await http(env.port, "POST", `/tasks/${targetTask}/retry`);
-            }
-          }
-        } catch {
-          // ignore
-        }
         const r = await http(env.port, "GET", `/tasks/${targetTask}`);
         if (r.status !== 200) return false;
         const data = r.body as {
-          task: { state: string };
+          task: {
+            state: string;
+            attempt: number;
+            next_retry_at: string | null;
+          };
           runs: {
             kind: string;
             status: string;
@@ -1101,20 +1157,36 @@ describe("api e2e control — 4. merge gate fail-then-pass", () => {
             return false;
           }
         });
-        // queued is transient (250ms); just require failed gate evidence exists
-        return hasFailedGate;
+        return (
+          hasFailedGate &&
+          data.task.state === "queued" &&
+          data.task.attempt >= 1
+        );
       },
       60_000,
       100,
     );
     expect(failed).toBe(true);
 
+    // clear the gate backoff deterministically under stall before unstalling
     const afterFail = await http(env.port, "GET", `/tasks/${targetTask}`);
+    expect(
+      (afterFail.body as { task: { attempt: number; state: string } }).task
+        .state,
+    ).toBe("queued");
     expect(
       (afterFail.body as { task: { attempt: number } }).task.attempt,
     ).toBeGreaterThanOrEqual(1);
-
     await http(env.port, "POST", `/tasks/${targetTask}/retry`);
+    // Verify retry cleared backoff under stall before letting implementer run
+    const clearCheck = await http(env.port, "GET", `/tasks/${targetTask}`);
+    expect(
+      (clearCheck.body as { task: { next_retry_at: string | null } }).task
+        .next_retry_at,
+    ).toBeNull();
+    (
+      env.boundary.script as unknown as { implementerStall?: boolean }
+    ).implementerStall = false;
 
     const merged = await waitFor(
       "merged after gate",
@@ -1449,6 +1521,9 @@ describe("api e2e control — 6. abandon", () => {
       "POST",
       `/tasks/${canceled!.id}/cancel`,
     );
-    if (cancelAgain.status !== 200) expect(cancelAgain.status).toBe(409);
+    expect(cancelAgain.status).toBe(409);
+    expect(
+      (cancelAgain.body as { error?: { code?: string } })?.error?.code,
+    ).toBe("SCOPE_ABANDONED");
   }, 90_000);
 });
