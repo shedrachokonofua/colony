@@ -1048,6 +1048,17 @@ body {
   outline: none;
 }
 
+/* ---------- Duration ---------- */
+
+.dur {
+  display: inline-block;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 7ch;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
 /* ---------- Task / plan detail ---------- */
 
 .task-title {
