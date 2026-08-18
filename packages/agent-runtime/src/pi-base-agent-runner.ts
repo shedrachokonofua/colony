@@ -117,7 +117,7 @@ export function buildRunTools(
   const webTools = createWebTools(options.webTools);
   return {
     customTools: [...baseCustomTools, ...webTools],
-    toolNames: [...baseToolNames, ...WEB_TOOL_NAMES],
+    toolNames: [...baseToolNames, "web_search", "web_fetch"],
   };
 }
 
@@ -238,7 +238,7 @@ export class PiBaseAgentRunner implements PiRunner {
       const webTools = createWebTools(this.options.webTools);
       return {
         customTools: [...base, ...webTools],
-        toolNames: [...workTools, submitTool.name, ...WEB_TOOL_NAMES],
+        toolNames: [...workTools, submitTool.name, "web_search", "web_fetch"],
       };
     })();
     const clearTimeoutGuard = withRunTimeout(
