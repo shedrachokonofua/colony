@@ -112,6 +112,10 @@ export interface KubernetesSandboxClient {
     namespace: string,
     body: SandboxCustomResource,
   ): Promise<unknown>;
+  listSandboxes(
+    namespace: string,
+    labelSelector: string,
+  ): Promise<readonly string[]>;
   getSandbox(
     namespace: string,
     name: string,

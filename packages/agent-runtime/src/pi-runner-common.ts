@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { Agent, AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
@@ -322,6 +322,12 @@ export function resolvePacketCloneUrl(
   }
 
   if (repoUrl.startsWith("git@")) {
+    return { cloneUrl: repoUrl, displayUrl: repoUrl };
+  }
+
+  // Absolute filesystem paths are valid local clone sources. Do not reinterpret
+  // them as GitLab project paths merely because the daemon has a base URL.
+  if (isAbsolute(repoUrl)) {
     return { cloneUrl: repoUrl, displayUrl: repoUrl };
   }
 

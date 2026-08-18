@@ -106,6 +106,34 @@ function asConditionArray(value: unknown): {
   if (!Array.isArray(value)) return [];
   return value as { type?: string; status?: string; reason?: string }[];
 }
+
+function sandboxNamesFromList(body: unknown): string[] {
+  if (
+    body === null ||
+    typeof body !== "object" ||
+    !("items" in body) ||
+    !Array.isArray(body.items)
+  ) {
+    throw new Error("Kubernetes Sandbox list response has no items array");
+  }
+
+  const names: string[] = [];
+  for (const item of body.items) {
+    if (
+      item === null ||
+      typeof item !== "object" ||
+      !("metadata" in item) ||
+      item.metadata === null ||
+      typeof item.metadata !== "object" ||
+      !("name" in item.metadata) ||
+      typeof item.metadata.name !== "string"
+    ) {
+      throw new Error("Kubernetes Sandbox list item has no metadata.name");
+    }
+    names.push(item.metadata.name);
+  }
+  return names;
+}
 type KubernetesEnvironment = Readonly<
   Partial<Record<"KUBERNETES_SERVICE_HOST" | "KUBERNETES_SERVICE_PORT", string>>
 >;
@@ -171,6 +199,17 @@ export function createKubernetesClient(
         plural: SANDBOX_PLURAL,
         body,
       });
+    },
+
+    async listSandboxes(namespace: string, labelSelector: string) {
+      const body = await custom.listNamespacedCustomObject({
+        group: SANDBOX_GROUP,
+        version: await currentVersion(),
+        namespace,
+        plural: SANDBOX_PLURAL,
+        labelSelector,
+      });
+      return sandboxNamesFromList(body);
     },
 
     async getSandbox(namespace: string, name: string) {

@@ -237,6 +237,7 @@ interface FakeClientConfig {
   scenarios?: Map<string, ExecScenario>;
   /** Response for any non-transfer exec command without an explicit scenario. */
   fallback?: ExecScenario;
+  startupSandboxes?: readonly string[];
 }
 
 function createFakeClient(
@@ -251,6 +252,7 @@ function createFakeClient(
   const deleted: string[] = [];
   const execCalls: FakeExecCall[] = [];
   const scenarios = config.scenarios ?? new Map<string, ExecScenario>();
+  const startupSandboxes = new Set(config.startupSandboxes ?? []);
 
   const transferCommand = ["tar", "-xf", "-", "-C", POD_WORKSPACE_DIR];
 
@@ -269,11 +271,15 @@ function createFakeClient(
       state.ready = true;
       return undefined;
     },
+    async listSandboxes() {
+      return [...startupSandboxes];
+    },
     async getSandbox() {
       return { ready: state.ready };
     },
     async deleteSandbox(_namespace: string, name: string): Promise<void> {
       deleted.push(name);
+      startupSandboxes.delete(name);
     },
     async listPods() {
       return state.ready
@@ -454,6 +460,34 @@ describe("createKubernetesEngine", () => {
     }
   });
 
+  it("reaps restart-orphaned sandboxes once before admitting new work", async () => {
+    const parentDir = await mkdtemp(join(tmpdir(), "k8s-reap-"));
+    const workspace = join(parentDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    try {
+      const state = { ready: false };
+      const client = createFakeClient(state, {
+        startupSandboxes: ["orphan-a", "orphan-b"],
+      });
+      const engine = createKubernetesEngine({
+        client,
+        provisionTimeoutMs: 2000,
+        pollIntervalMs: 5,
+      });
+      const profile = buildSandboxLaunchProfile("developer");
+
+      const first = await engine.provision(profile, workspace);
+      const second = await engine.provision(profile, workspace);
+
+      expect(client.deleted).toEqual(["orphan-a", "orphan-b"]);
+      expect(client.createdAt).toHaveLength(2);
+
+      await Promise.all([first.destroy(), second.destroy()]);
+    } finally {
+      await rm(parentDir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed into a SandboxRbacError on a 403", async () => {
     const client: KubernetesSandboxClient = {
       async discoverGroupVersions() {
@@ -467,6 +501,9 @@ describe("createKubernetesEngine", () => {
         err.code = 403;
         err.statusCode = 403;
         throw err;
+      },
+      async listSandboxes() {
+        return [];
       },
       async getSandbox() {
         return { ready: true };
@@ -514,6 +551,9 @@ describe("createKubernetesEngine", () => {
       async createSandbox(namespace, body) {
         createdAt.push({ namespace, body });
         return undefined;
+      },
+      async listSandboxes() {
+        return [];
       },
       // Never becomes ready: forces the ready-wait deadline to throw.
       async getSandbox() {

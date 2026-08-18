@@ -3,13 +3,15 @@ import { randomUUID } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
-import type {
-  ExecEvent,
-  ExecRequest,
-  ExecResult,
-  SandboxEngine,
-  SandboxHandle,
-  SandboxLaunchProfile,
+import {
+  SANDBOX_PART_OF_LABEL,
+  SANDBOX_PART_OF_VALUE,
+  type ExecEvent,
+  type ExecRequest,
+  type ExecResult,
+  type SandboxEngine,
+  type SandboxHandle,
+  type SandboxLaunchProfile,
 } from "@colony/sandbox";
 import {
   DEFAULT_KUBERNETES_NAMESPACE,
@@ -438,6 +440,32 @@ function waitForEnd(stream: Readable): Promise<void> {
   });
 }
 
+async function removeStartupOrphans(
+  client: KubernetesSandboxClient,
+  namespace: string,
+  pollIntervalMs: number,
+  timeoutMs: number,
+): Promise<void> {
+  const labelSelector = `${SANDBOX_PART_OF_LABEL}=${SANDBOX_PART_OF_VALUE}`;
+  const names = await client.listSandboxes(namespace, labelSelector);
+  await Promise.all(names.map((name) => client.deleteSandbox(namespace, name)));
+
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const [remainingSandboxes, remainingPods] = await Promise.all([
+      client.listSandboxes(namespace, labelSelector),
+      client.listPods(namespace, labelSelector),
+    ]);
+    if (remainingSandboxes.length === 0 && remainingPods.length === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out after ${timeoutMs}ms reaping ${names.length} startup-orphaned Sandbox CRs in namespace ${namespace}`,
+      );
+    }
+    await sleep(pollIntervalMs);
+  }
+}
+
 /**
  * Lazy Kubernetes sandbox engine. Constructing it touches nothing: kubeconfig
  * loading and all cluster I/O happen only inside `provision()`. Pass a
@@ -447,6 +475,7 @@ function waitForEnd(stream: Readable): Promise<void> {
 export function createKubernetesEngine(
   options: KubernetesSandboxEngineOptions = {},
 ): SandboxEngine {
+  let startupCleanup: Promise<void> | undefined;
   return {
     async provision(
       profile: SandboxLaunchProfile,
@@ -468,6 +497,17 @@ export function createKubernetesEngine(
         kubeconfig = kc;
         client = createKubernetesClient(kc);
       }
+
+      // Agent sessions do not survive a colonyd process restart. Reap every
+      // Sandbox CR from the previous process before admitting new work so
+      // abandoned pods cannot strand namespace quota.
+      startupCleanup ??= removeStartupOrphans(
+        client,
+        namespace,
+        pollIntervalMs,
+        provisionTimeoutMs,
+      );
+      await startupCleanup;
 
       // Discover the served apiVersion from the cluster — never hardcoded.
       let apiVersion: string;
