@@ -74,11 +74,25 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
   ): Promise<import("@colony/agent-runtime").AgentRunMetadata> {
     if (runEnvironment.role === "architect" && this.script.architectStall) {
       if (!this.architectGate) this.architectGate = createDeferred();
-      await this.architectGate.promise;
+      const gate = this.architectGate;
+      // Race: flag may have been cleared between outer check and gate creation.
+      // If stall is now false the new gate would never be resolved — resolve it immediately.
+      if (!this.script.architectStall) {
+        gate.resolve();
+        this.architectGate = null;
+      } else {
+        await gate.promise;
+      }
     }
     if (runEnvironment.role === "developer" && this.script.implementerStall) {
       if (!this.implementerGate) this.implementerGate = createDeferred();
-      await this.implementerGate.promise;
+      const gate = this.implementerGate;
+      if (!this.script.implementerStall) {
+        gate.resolve();
+        this.implementerGate = null;
+      } else {
+        await gate.promise;
+      }
     }
     return super.startRun(packet, runEnvironment);
   }
