@@ -259,6 +259,32 @@ export function createScriptedBoundary(): ScriptedBoundary {
   );
 
   const adapter = new ScriptedAgentRuntimeAdapter(script, provider);
+  // Make *Stall reactive: assigning false unblocks the waiting deferred.
+  // This lets tests toggle stall via direct property assignment.
+  let _implementerStall = script.implementerStall;
+  Object.defineProperty(script, "implementerStall", {
+    get() {
+      return _implementerStall;
+    },
+    set(v: boolean) {
+      _implementerStall = v;
+      if (!v) adapter.unstallImplementer();
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  let _architectStall = script.architectStall;
+  Object.defineProperty(script, "architectStall", {
+    get() {
+      return _architectStall;
+    },
+    set(v: boolean) {
+      _architectStall = v;
+      if (!v) adapter.unstallArchitect();
+    },
+    enumerable: true,
+    configurable: true,
+  });
 
   const agents: ColonydContext["agents"] = {
     runtime: "fake",
