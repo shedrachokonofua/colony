@@ -27,6 +27,9 @@ async function main(): Promise<void> {
 
   const { boot } = await import("../src/main.js");
   const boundary = createScriptedBoundary();
+  if (process.env["COLONY_E2E_MODE"] === "stall-implementer") {
+    boundary.script.implementerStall = true;
+  }
   const project = await boundary.provider.projects.create({
     name: "console-e2e",
     path: "so/console-e2e",

@@ -65,8 +65,11 @@ export async function prepareEnvWithPort(
   const dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
   const configPath = join(dir, "colony.yaml");
   writeColonyYaml(configPath);
-  const dbPath = join(dir, "colonyd.db");
-  const port = await freePort();
+  const e2eDbPath = process.env["COLONY_E2E_DB_PATH"];
+  const e2ePort = process.env["COLONY_E2E_PORT"];
+  const dbPath =
+    e2eDbPath && e2eDbPath.trim() ? e2eDbPath : join(dir, "colonyd.db");
+  const port = e2ePort && e2ePort.trim() ? Number(e2ePort) : await freePort();
   const cleanup = (): void => {
     rmSync(dir, { recursive: true, force: true });
   };
@@ -91,7 +94,15 @@ export function buildEnvVars(input: {
   port: number;
   configPath: string;
   webhookSecret?: string;
+  oidcIssuer?: string;
+  oidcClientId?: string;
+  oidcRequiredRole?: string;
+  tickMs?: string | number;
 }): Record<string, string> {
+  const tickMs =
+    input.tickMs !== undefined
+      ? String(input.tickMs)
+      : (process.env["COLONYD_TICK_MS"] ?? "250");
   return {
     NODE_ENV: "test",
     AGENT_RUNTIME: "fake",
@@ -99,14 +110,17 @@ export function buildEnvVars(input: {
     GITLAB_WEBHOOK_SECRET: input.webhookSecret ?? "",
     COLONYD_DB_PATH: input.dbPath,
     COLONYD_PORT: String(input.port),
-    COLONYD_TICK_MS: "250",
+    COLONYD_TICK_MS: tickMs,
     COLONYD_MAX_CONCURRENT: "1",
     COLONYD_MAX_ATTEMPTS: "3",
     COLONYD_SINGLE_TOKEN: "0",
     COLONY_CONFIG_PATH: input.configPath,
     PUBLIC_HOST: "localhost",
-    COLONY_OIDC_ISSUER: "",
-    COLONY_OIDC_CLIENT_ID: "",
-    COLONY_OIDC_REQUIRED_ROLE: "",
+    COLONY_OIDC_ISSUER:
+      input.oidcIssuer ?? process.env["COLONY_OIDC_ISSUER"] ?? "",
+    COLONY_OIDC_CLIENT_ID:
+      input.oidcClientId ?? process.env["COLONY_OIDC_CLIENT_ID"] ?? "",
+    COLONY_OIDC_REQUIRED_ROLE:
+      input.oidcRequiredRole ?? process.env["COLONY_OIDC_REQUIRED_ROLE"] ?? "",
   };
 }
