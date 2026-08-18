@@ -237,6 +237,15 @@ function parsePlan(raw) {
     return null;
   }
 }
+function parseAuditDetail(raw) {
+  if (!raw) return {};
+  try {
+    const detail = JSON.parse(raw);
+    return detail && typeof detail === "object" ? detail : {};
+  } catch {
+    return {};
+  }
+}
 
 function scopeTitle(scope) {
   if (!scope) return "";
@@ -518,6 +527,16 @@ function demoWorld() {
     detail: { scope, tasks, deps, runs },
     runEvents,
     audit: [
+      {
+        id: 10,
+        at: new Date(Date.now() - 28 * 60 * 1000).toISOString(),
+        actor: "human:op-1",
+        action: "plan.replan_requested",
+        detail_json: JSON.stringify({
+          feedback:
+            "Split the rollout check from the migration task and make the rollback path explicit.",
+        }),
+      },
       {
         id: 9,
         at: new Date(Date.now() - 12 * 1000).toISOString(),
@@ -1346,6 +1365,13 @@ function renderPlanCard(scope, detail) {
   const architectRuns = (detail?.runs || []).filter(
     (run) => run.kind === "architect",
   );
+  const replanRequests = state.audit.flatMap((row) => {
+    if (row.action !== "plan.replan_requested") return [];
+    const feedback = parseAuditDetail(row.detail_json).feedback;
+    return typeof feedback === "string" && feedback.trim()
+      ? [{ ...row, feedback }]
+      : [];
+  });
   if (!plan && !architectRuns.length) return nothing;
   const summary = plan
     ? plan.summary || "Ready for approval."
@@ -1370,6 +1396,29 @@ function renderPlanCard(scope, detail) {
         ? html`<button class="goal-toggle" @click=${() => toggle("planOpen")}>
             ${state.planOpen ? "Show less" : "Show more"}
           </button>`
+        : nothing}
+      ${replanRequests.length
+        ? html`<section
+            class="plan-history"
+            aria-label="Replan request history"
+          >
+            <p class="plan-history-title">
+              Replan requests <span>${replanRequests.length}</span>
+            </p>
+            <ol>
+              ${repeat(
+                replanRequests,
+                (row) => row.id,
+                (row) =>
+                  html`<li>
+                    <p class="plan-history-meta">
+                      <span>${rel(row.at)}</span><span>${row.actor}</span>
+                    </p>
+                    <p>${row.feedback}</p>
+                  </li>`,
+              )}
+            </ol>
+          </section>`
         : nothing}
       ${approvable
         ? html`<div class="plan-actions">
@@ -1687,7 +1736,7 @@ async function refresh() {
     if (id) {
       const [detail, audit] = await Promise.all([
         api(`/scopes/${encodeURIComponent(id)}`),
-        api(`/audit?scope_id=${encodeURIComponent(id)}&limit=20`),
+        api(`/audit?scope_id=${encodeURIComponent(id)}&limit=1000`),
       ]);
       state.detail = detail;
       state.audit = audit;

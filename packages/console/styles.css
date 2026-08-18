@@ -1135,6 +1135,62 @@ body {
   gap: 0.5rem;
   margin-top: 0.7rem;
 }
+.plan-history {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.plan-history-title {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 0.55rem;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.plan-history-title span {
+  color: var(--faint);
+  font: 400 0.72rem var(--mono);
+}
+
+.plan-history ol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-history li {
+  padding-left: 0.65rem;
+  border-left: 2px solid var(--blue);
+}
+
+.plan-history li > p:last-child {
+  margin: 0.22rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plan-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0;
+  color: var(--faint);
+  font: 400 0.68rem var(--mono);
+}
+
+.plan-history-meta span + span::before {
+  content: "·";
+  margin-right: 0.45rem;
+}
 
 /* ---------- Runs ---------- */
 
