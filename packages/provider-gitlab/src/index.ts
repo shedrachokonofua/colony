@@ -36,7 +36,9 @@ import {
 export const COLONY_PROVIDER_GITLAB_PACKAGE =
   "@colony/provider-gitlab" as const;
 
-type Fetch = typeof fetch;
+/** Only the (url, init) call form is used, so test stubs need not implement the
+ *  whole runtime `fetch` surface (Bun's adds `preconnect`). */
+type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 interface GitLabProviderAdapterOptions {
   readonly baseUrl: string;

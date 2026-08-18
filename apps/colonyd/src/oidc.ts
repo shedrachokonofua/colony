@@ -28,8 +28,9 @@ export interface OidcVerifierOptions {
   readonly clientId: string;
   /** Realm role required in realm_access.roles / roles. Empty: any user. */
   readonly requiredRole?: string;
-  /** Test seam. */
-  readonly fetchImpl?: typeof fetch;
+  /** Test seam. Only the URL form is used, so stubs need not implement all of
+   *  the runtime's `fetch` surface (Bun adds `preconnect`, for instance). */
+  readonly fetchImpl?: (url: string) => Promise<Response>;
   /** JWKS cache TTL in ms. */
   readonly jwksTtlMs?: number;
 }

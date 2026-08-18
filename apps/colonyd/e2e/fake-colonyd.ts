@@ -1,4 +1,4 @@
-#!/usr/bin/env -S tsx
+#!/usr/bin/env bun
 import { createServer } from "node:http";
 import { resetEnvCache } from "@colony/config";
 import { buildEnvVars, installEnv, prepareEnvWithPort } from "./env.js";

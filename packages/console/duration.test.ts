@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 import {
   createRunTicker,
   durationAriaLabel,
@@ -137,79 +137,106 @@ describe("durationAriaLabel", () => {
   });
 });
 
+/**
+ * The ticker takes injectable timer functions, so its tests drive a manual
+ * clock instead of patching globals: same contract, no runner-specific fake
+ * timers.
+ */
+const MANUAL_INTERVAL_HANDLE = 42;
+
+interface ManualTimers {
+  readonly setIntervalFn: (fn: () => void) => number;
+  readonly clearIntervalFn: (id: unknown) => void;
+  tick(times?: number): void;
+  readonly clearedId: unknown;
+}
+
+function manualTimers(): ManualTimers {
+  let handler: (() => void) | undefined;
+  let clearedId: unknown = null;
+  const setIntervalFn = mock((fn: () => void): number => {
+    handler = fn;
+    return MANUAL_INTERVAL_HANDLE;
+  });
+  const clearIntervalFn = mock((id: unknown) => {
+    clearedId = id;
+    handler = undefined;
+  });
+  return {
+    setIntervalFn,
+    clearIntervalFn,
+    tick(times = 1) {
+      for (let index = 0; index < times; index += 1) handler?.();
+    },
+    get clearedId() {
+      return clearedId;
+    },
+  };
+}
+
 describe("createRunTicker", () => {
   it("fires onTick once per interval", () => {
-    vi.useFakeTimers();
-    const onTick = vi.fn();
-    const ticker = createRunTicker(onTick, { intervalMs: 1000 });
+    const timers = manualTimers();
+    const onTick = mock(() => {});
+    const ticker = createRunTicker(onTick, {
+      intervalMs: 1000,
+      setIntervalFn: timers.setIntervalFn as never,
+      clearIntervalFn: timers.clearIntervalFn as never,
+    });
     ticker.start();
     expect(onTick).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1000);
+    expect(timers.setIntervalFn).toHaveBeenCalledTimes(1);
+    timers.tick();
     expect(onTick).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(2000);
+    timers.tick(2);
     expect(onTick).toHaveBeenCalledTimes(3);
     ticker.stop();
-    vi.useRealTimers();
   });
 
   it("start is idempotent", () => {
-    vi.useFakeTimers();
-    const onTick = vi.fn();
-    const ticker = createRunTicker(onTick);
+    const timers = manualTimers();
+    const onTick = mock(() => {});
+    const ticker = createRunTicker(onTick, {
+      setIntervalFn: timers.setIntervalFn as never,
+      clearIntervalFn: timers.clearIntervalFn as never,
+    });
     ticker.start();
     ticker.start();
-    vi.advanceTimersByTime(1000);
+    expect(timers.setIntervalFn).toHaveBeenCalledTimes(1);
+    timers.tick();
     expect(onTick).toHaveBeenCalledTimes(1);
     ticker.stop();
-    vi.useRealTimers();
   });
 
-  it("stop is idempotent", () => {
-    vi.useFakeTimers();
-    const onTick = vi.fn();
-    const ticker = createRunTicker(onTick);
+  it("stop is idempotent and clears the interval it created", () => {
+    const timers = manualTimers();
+    const onTick = mock(() => {});
+    const ticker = createRunTicker(onTick, {
+      setIntervalFn: timers.setIntervalFn as never,
+      clearIntervalFn: timers.clearIntervalFn as never,
+    });
     ticker.start();
     ticker.stop();
     ticker.stop();
-    vi.advanceTimersByTime(2000);
+    expect(timers.clearIntervalFn).toHaveBeenCalledTimes(1);
+    expect(timers.clearedId).toBe(MANUAL_INTERVAL_HANDLE);
+    timers.tick(2);
     expect(onTick).toHaveBeenCalledTimes(0);
-    vi.useRealTimers();
   });
 
   it("running() reflects state", () => {
-    vi.useFakeTimers();
-    const ticker = createRunTicker(vi.fn());
+    const timers = manualTimers();
+    const ticker = createRunTicker(
+      mock(() => {}),
+      {
+        setIntervalFn: timers.setIntervalFn as never,
+        clearIntervalFn: timers.clearIntervalFn as never,
+      },
+    );
     expect(ticker.running()).toBe(false);
     ticker.start();
     expect(ticker.running()).toBe(true);
     ticker.stop();
-    expect(ticker.running()).toBe(false);
-    vi.useRealTimers();
-  });
-
-  it("supports injectable timer functions", () => {
-    const onTick = vi.fn();
-    let stored: () => void = () => {};
-    let cleared: unknown = null;
-    const setIntervalFn = vi.fn((fn: () => void) => {
-      stored = fn;
-      return 42 as unknown as ReturnType<typeof setInterval>;
-    });
-    const clearIntervalFn = vi.fn((id: unknown) => {
-      cleared = id;
-    });
-    const ticker = createRunTicker(onTick, {
-      setIntervalFn: setIntervalFn as never,
-      clearIntervalFn: clearIntervalFn as never,
-    });
-    ticker.start();
-    expect(setIntervalFn).toHaveBeenCalledTimes(1);
-    stored();
-    expect(onTick).toHaveBeenCalledTimes(1);
-    expect(ticker.running()).toBe(true);
-    ticker.stop();
-    expect(clearIntervalFn).toHaveBeenCalledWith(42);
-    expect(cleared).toBe(42);
     expect(ticker.running()).toBe(false);
   });
 });

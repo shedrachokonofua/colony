@@ -12,7 +12,7 @@ import type {
 } from "@colony/sandbox";
 import { buildSandboxLaunchProfile } from "@colony/sandbox";
 import { createInProcessEngine } from "@colony/sandbox-in-process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,

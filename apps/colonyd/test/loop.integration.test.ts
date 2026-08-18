@@ -1,7 +1,14 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "bun:test";
 import { resetEnvCache } from "@colony/config";
 import {
   FakeAgentRuntimeAdapter,
@@ -297,11 +304,17 @@ beforeAll(() => {
   );
 });
 
-afterAll(() => {
+afterAll(async () => {
+  // The last handle booted by a scenario still owns process-wide telemetry and
+  // a tick interval; leaving it running leaks both into other test files.
+  await handle?.shutdown();
   rmSync(dir, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
+  // Each scenario boots its own colonyd; retire the previous one first so its
+  // telemetry registration and tick interval do not outlive the test.
+  await handle?.shutdown();
   script.implementerFailures.clear();
   script.implementerCalls.clear();
   script.gateFailOnceFor = undefined;

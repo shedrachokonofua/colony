@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { resolveWebToolsConfig } from "../src/agent-runtime.js";
 import { env, resetEnvCache } from "@colony/config";
 

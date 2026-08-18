@@ -12,7 +12,7 @@ stages:
 
 variables:
   NIX_CONFIG: "experimental-features = nix-command flakes"
-  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm-cache"
+  BUN_INSTALL_CACHE_DIR: "$CI_PROJECT_DIR/.bun-cache"
   STORAGE_DRIVER: "vfs"
   BUILDAH_FORMAT: "docker"
 
@@ -27,27 +27,27 @@ default:
   cache:
     key:
       files:
-        - package-lock.json
+        - bun.lock
     paths:
-      - .npm-cache/
+      - .bun-cache/
       - node_modules/
 
 .with-deps:
   before_script:
     - nix --version
-    - nix develop --command npm ci --prefer-offline --no-audit --no-fund
+    - nix develop --command bun install --frozen-lockfile
 
 validate:
   stage: validate
   extends: .with-deps
   script:
-    - nix develop --command bash -c 'set -euxo pipefail; npm run lint && npm run typecheck'
+    - nix develop --command bash -c 'set -euxo pipefail; bun run lint && bun run typecheck'
 
 unit-tests:
   stage: unit
   extends: .with-deps
   script:
-    - nix develop --command npm run test:unit
+    - nix develop --command bun run test:unit
 
 build:colonyd:
   stage: build

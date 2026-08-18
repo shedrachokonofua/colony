@@ -1,5 +1,5 @@
 {
-  description = "Colony dev shell (Node, OpenTofu, Kubernetes, GitLab CLI)";
+  description = "Colony dev shell (Bun, OpenTofu, Kubernetes, GitLab CLI)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -19,6 +19,9 @@
           name = "colony";
 
           packages = with pkgs; [
+            # Bun runs colonyd and its tests; the agent runtime SDK ships Bun-native
+            # TypeScript. Node stays for tooling that still shells out to it.
+            bun
             nodejs_24
             sqlite
 
@@ -45,7 +48,7 @@
           ];
 
           shellHook = ''
-            echo "Colony dev shell: node $(node --version), npm $(npm --version)"
+            echo "Colony dev shell: bun $(bun --version), node $(node --version)"
           '';
         };
 

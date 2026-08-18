@@ -19,13 +19,9 @@
       "@colony/sandbox-k8s": ["./packages/sandbox-k8s/src/index.ts"],
       "@colony/schemas": ["./packages/schemas/src/index.ts"],
       "@colony/sandbox-tests": ["./packages/sandbox-tests/src/index.ts"]
-    }
+    },
+    "types": ["bun"]
   },
-  "include": [
-    "apps/**/*.ts",
-    "packages/**/*.ts",
-    "scripts/acceptance.ts",
-    "vitest.config.ts"
-  ],
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/acceptance.ts"],
   "exclude": ["node_modules", "dist"]
 }

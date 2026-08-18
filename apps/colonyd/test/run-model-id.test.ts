@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetEnvCache } from "@colony/config";
 import { FakeAgentRuntimeAdapter } from "@colony/agent-runtime";
 import { FakeProviderAdapter } from "@colony/provider";
@@ -49,7 +49,10 @@ beforeAll(() => {
   );
 });
 
-afterAll(() => {
+afterAll(async () => {
+  // The booted daemon owns process-wide telemetry and a tick interval; leaving
+  // it running leaks both into every test file sharing this process.
+  await handle?.shutdown();
   rmSync(dir, { recursive: true, force: true });
 });
 

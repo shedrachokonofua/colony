@@ -10,17 +10,16 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "npm --workspace @colony/colonyd run dev",
+    "dev": "bun --watch apps/colonyd/src/main.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
-    "test:unit": "vitest run --exclude '**/*.integration.test.ts'",
+    "test": "bun test",
+    "test:unit": "bun test --path-ignore-patterns='**/*.integration.test.ts'",
     "lint": "prettier --check .",
     "format": "prettier --write ."
   },
   "devDependencies": {
+    "@types/bun": "^1.3.14",
     "prettier": "3.8.3",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vitest": "^3.0.2"
+    "typescript": "^5.7.2"
   }
 }

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { Store } from "@colony/core";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import type { ColonydContext } from "../src/context.js";
