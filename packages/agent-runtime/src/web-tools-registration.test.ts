@@ -1,9 +1,10 @@
+import type { PiModelSpec } from "./pi-runner-common.js";
 import { describe, it, expect, afterEach } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
 import {
   PiBaseAgentRunner,
   buildRunTools,
@@ -189,7 +190,7 @@ describe("e2e: model invokes web_search against injected transport", () => {
     const addr = server.address();
     if (!addr || typeof addr === "string") throw new Error("no port");
     const baseUrl = `http://127.0.0.1:${(addr as import("node:net").AddressInfo).port}/v1`;
-    const model: Model<Api> = {
+    const model: PiModelSpec = {
       id: "wired-web",
       name: "wired-web",
       api: "openai-completions",
@@ -200,7 +201,6 @@ describe("e2e: model invokes web_search against injected transport", () => {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
       maxTokens: 8_192,
-      compat: { supportsStore: false },
     };
 
     const scratchDir = mkdtempSync(join(tmpdir(), "colony-web-wiring-"));

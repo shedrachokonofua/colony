@@ -1,7 +1,7 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   FakeAgentRuntimeAdapter,
   PiAgentRuntimeAdapter,
+  type PiModelSpec,
   type AgentRuntimeAdapter,
   type CredentialBroker,
 } from "@colony/agent-runtime";
@@ -219,7 +219,7 @@ export function resolveWebToolsConfig(
 
 function fallbackModelsFromConfig(
   config: ResolvedAgentConfig,
-): readonly Model<Api>[] {
+): readonly PiModelSpec[] {
   return config.fallbackModels.map((model) =>
     modelFromConfig({ ...config, model, fallbackModels: [] }),
   );
@@ -253,7 +253,7 @@ function piProviderId(agent: ResolvedAgentConfig): string {
   return agent.providerKey;
 }
 
-export function modelFromConfig(config: ResolvedAgentConfig): Model<Api> {
+export function modelFromConfig(config: ResolvedAgentConfig): PiModelSpec {
   const provider = piProviderId(config);
   const baseUrl =
     config.baseUrl ??
@@ -282,10 +282,6 @@ export function modelFromConfig(config: ResolvedAgentConfig): Model<Api> {
     contextWindow: config.model.contextWindow ?? 128_000,
     maxTokens: config.model.maxTokens ?? 16_384,
     headers: config.headers ? { ...config.headers } : undefined,
-    compat:
-      config.api === "openai-completions"
-        ? { supportsStore: false }
-        : undefined,
   };
 }
 

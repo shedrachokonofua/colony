@@ -1,12 +1,16 @@
 import {
-  ModelRuntime,
+  ModelRegistry,
   SessionManager,
-  SettingsManager,
+  Settings,
   createAgentSession,
+  discoverAuthStorage,
   type AgentSession,
   type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+} from "@oh-my-pi/pi-coding-agent";
+import {
+  ThinkingLevel,
+  type ThinkingLevel as SdkThinkingLevel,
+} from "@oh-my-pi/pi-agent-core";
 import type { z } from "zod";
 import type { AgentRuntimePacket, AgentRuntimeRole } from "./adapter.js";
 import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
@@ -26,11 +30,9 @@ import {
   createImplementerSubmitTool,
   createReviewerSubmitTool,
   createSandboxId,
-  finalizeEnvelopeWithStructuredOutput,
   implementerCompletionEnvelopeTypeBox,
   installRunGuards,
   packetRepo,
-  noOpResourceLoader,
   provisionRepoWorkspace,
   provisionScratchDir,
   resolvePiModel,
@@ -40,10 +42,7 @@ import {
   withRunTimeout,
 } from "./pi-runner-common.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
-import {
-  buildSandboxBaseTools,
-  type SandboxBaseTools,
-} from "./sandbox-tools.js";
+import { buildSandboxTools } from "./sandbox-tools.js";
 import {
   buildSandboxLaunchProfile,
   type SandboxEngine,
@@ -67,6 +66,32 @@ export type PiWorkspaceMode = "repo-required" | "scratch";
 
 /** Binding name reported to the credential broker for colonyd runs. */
 export const PI_RUNTIME_BINDING_NAME = "colonyd";
+
+/** Colony's configured levels as they appear in colony.yaml. */
+type ColonyThinkingLevel =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
+
+/**
+ * Colony's config carries plain strings; the SDK's selector values come from its
+ * own effort enum, so map rather than cast.
+ */
+const SDK_THINKING_LEVELS = {
+  off: ThinkingLevel.Off,
+  minimal: ThinkingLevel.Minimal,
+  low: ThinkingLevel.Low,
+  medium: ThinkingLevel.Medium,
+  high: ThinkingLevel.High,
+  xhigh: ThinkingLevel.XHigh,
+} as const satisfies Record<ColonyThinkingLevel, SdkThinkingLevel>;
+
+function toSdkThinkingLevel(level: ColonyThinkingLevel): SdkThinkingLevel {
+  return SDK_THINKING_LEVELS[level];
+}
 
 export interface PiRoleProfile {
   readonly role: AgentRuntimeRole;
@@ -181,7 +206,8 @@ export class PiBaseAgentRunner implements PiRunner {
       resolveCapturedEnvelope?.();
     });
 
-    const credentials = new InMemoryCredentialStore();
+    // The credential broker owns key resolution; the registry only needs a
+    // provider record per model so `createAgentSession` can resolve selectors.
     const providerApiKeys = new Map<string, string>();
     for (const candidate of models) {
       if (providerApiKeys.has(candidate.provider)) continue;
@@ -193,22 +219,15 @@ export class PiBaseAgentRunner implements PiRunner {
       });
       if (!apiKey) continue;
       providerApiKeys.set(candidate.provider, apiKey);
-      await credentials.modify(candidate.provider, async () => ({
-        type: "api_key",
-        key: apiKey,
-      }));
     }
-    const modelRuntime = await ModelRuntime.create({
-      credentials,
-      modelsPath: null,
-      refreshOnCreate: false,
-    });
+    const authStorage = await discoverAuthStorage();
+    const modelRegistry = new ModelRegistry(authStorage);
     for (const [provider, apiKey] of providerApiKeys) {
       const providerModels = models.filter(
         (candidate) => candidate.provider === provider,
       );
       const first = providerModels[0]!;
-      modelRuntime.registerProvider(provider, {
+      modelRegistry.registerProvider(provider, {
         apiKey,
         api: first.api,
         baseUrl: first.baseUrl,
@@ -218,16 +237,27 @@ export class PiBaseAgentRunner implements PiRunner {
           api: candidate.api,
           baseUrl: candidate.baseUrl,
           reasoning: candidate.reasoning,
-          thinkingLevelMap: candidate.thinkingLevelMap,
-          input: candidate.input,
-          cost: candidate.cost,
-          contextWindow: candidate.contextWindow,
-          maxTokens: candidate.maxTokens,
-          samplingParams: candidate.samplingParams,
+          input: [...candidate.input],
+          cost: { ...candidate.cost },
+          // Colony's config leaves these nullable; the registry wants numbers.
+          contextWindow: candidate.contextWindow ?? 128_000,
+          maxTokens: candidate.maxTokens ?? 16_384,
           headers: candidate.headers,
-          compat: candidate.compat,
         })),
       });
+    }
+
+    // Specs are registered above; the registry owns compat resolution, so ask it
+    // for the real models the session and its fallbacks will use.
+    const resolvedModels = models.flatMap((candidate) => {
+      const resolved = modelRegistry.find(candidate.provider, candidate.id);
+      return resolved ? [resolved] : [];
+    });
+    const primaryModel = resolvedModels[0];
+    if (!primaryModel) {
+      throw new Error(
+        `no credentialed provider for ${models[0]?.provider}/${models[0]?.id}; check the ${request.environment.role} agent's provider auth`,
+      );
     }
 
     const { customTools, toolNames } = (() => {
@@ -265,53 +295,58 @@ export class PiBaseAgentRunner implements PiRunner {
     });
 
     try {
-      let baseToolsOverride: SandboxBaseTools | undefined;
+      let sandboxTools: readonly ToolDefinition[] = [];
       if (this.options.engine) {
         handle = await this.options.engine.provision(
           buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
           cwd,
         );
-        baseToolsOverride = buildSandboxBaseTools(handle, cwd);
+        sandboxTools = buildSandboxTools(handle, cwd);
       }
       const result = await createAgentSession({
         cwd,
-        model,
-        thinkingLevel:
+        model: primaryModel,
+        thinkingLevel: toSdkThinkingLevel(
           this.options.thinkingLevel ?? this.profile.defaultThinkingLevel,
-        modelRuntime,
-        scopedModels: models.map((candidate) => ({ model: candidate })),
-        settingsManager: SettingsManager.inMemory({
-          compaction: { enabled: false },
-          retry: { enabled: true, maxRetries: 1 },
-        }),
-        resourceLoader: noOpResourceLoader(
-          `${this.profile.systemPrompt()}\n\n${steering.budgetBlock()}`,
         ),
+        authStorage,
+        modelRegistry,
+        getApiKey: async (candidate) =>
+          broker.resolve({
+            provider: candidate.provider,
+            capability: `agent.llm.${candidate.provider}.invoke`,
+            bindingName: PI_RUNTIME_BINDING_NAME,
+            environment: request.environment,
+          }),
+        scopedModels: resolvedModels.map((candidate) => ({ model: candidate })),
+        settings: Settings.isolated({
+          "compaction.enabled": true,
+          "retry.enabled": true,
+          "todo.enabled": true,
+          "todo.reminders": true,
+        }),
+        systemPrompt: `${this.profile.systemPrompt()}\n\n${steering.budgetBlock()}`,
         sessionManager: SessionManager.inMemory(cwd),
-        customTools,
-        tools: toolNames,
+        // Colony owns every tool a run may call: the sandbox-routed file/shell
+        // tools when an engine is configured, plus the role's submit tool and
+        // any web tools. Nothing may reach the daemon's own filesystem.
+        customTools: [...customTools, ...sandboxTools],
+        toolNames: [...toolNames, ...sandboxTools.map((tool) => tool.name)],
+        restrictToolNames: true,
+        allowRestrictedCustomTools: true,
+        // Arming prewalk keeps the todo tool active, which is what drives omp's
+        // mid-run progress reminders.
+        prewalk: { target: primaryModel },
+        deadline:
+          Date.now() + (this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS),
+        enableMCP: false,
+        enableLsp: false,
+        disableExtensionDiscovery: true,
       });
       session = result.session;
-      if (baseToolsOverride) {
-        // The pi-coding-agent SDK's createAgentSession does not forward a
-        // base-tools override, so inject it onto the session and rebuild its
-        // runtime so every bash/file tool executes through the sandbox handle.
-        (
-          session as unknown as { _baseToolsOverride?: SandboxBaseTools }
-        )._baseToolsOverride = baseToolsOverride;
-        await session.reload();
-      }
       if (timeoutTriggered) {
         void session.abort();
       }
-      session.agent.getApiKey = async (provider) =>
-        broker.resolve({
-          provider,
-          capability: `agent.llm.${provider}.invoke`,
-          bindingName: PI_RUNTIME_BINDING_NAME,
-          environment: request.environment,
-        });
-
       const unsubscribeGuards = installRunGuards(session.agent, runId, {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
         logger: this.options.logger,
@@ -382,11 +417,10 @@ export class PiBaseAgentRunner implements PiRunner {
 
       try {
         if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {
-          for (let index = 0; index < models.length; index += 1) {
-            const candidate = models[index]!;
+          for (let index = 0; index < resolvedModels.length; index += 1) {
+            const candidate = resolvedModels[index]!;
             if (index > 0) {
               await session.setModel(candidate);
-              model = candidate;
             }
             const prompt =
               index === 0
@@ -396,7 +430,6 @@ export class PiBaseAgentRunner implements PiRunner {
               const promptPromise = session
                 .prompt(prompt, {
                   expandPromptTemplates: false,
-                  source: "extension",
                 })
                 .catch((err) => {
                   if (capturedEnvelope !== undefined) return;
@@ -470,7 +503,6 @@ export class PiBaseAgentRunner implements PiRunner {
             const steerPromise = session
               .prompt(steer, {
                 expandPromptTemplates: false,
-                source: "extension",
               })
               .catch((err) => {
                 if (capturedEnvelope !== undefined) return;
@@ -506,26 +538,11 @@ export class PiBaseAgentRunner implements PiRunner {
       ) {
         failureReason ??= "repository_inspection_required";
       } else if (capturedEnvelope === undefined) {
-        const rawEnvelope = await finalizeEnvelopeWithStructuredOutput({
-          model,
-          stream: (finalizerModel, context, options) =>
-            modelRuntime.streamSimple(finalizerModel, context, options),
-          systemPrompt: this.profile.systemPrompt(),
-          messages: session.agent.state.messages,
-          finalUserMessage: this.profile.finalizerPrompt(request.packet),
-          schemaName: this.profile.schemaName,
-          typeboxSchema: this.profile.typeboxSchema,
-          maxAttempts:
-            this.profile.schemaName === "implementer_completion" ? 5 : 3,
-          validate: this.profile.validate,
-          logger: this.options.logger,
-          runId,
-        });
-        if (rawEnvelope === undefined) {
-          failureReason ??= "finalize_no_submission";
-        } else {
-          capturedEnvelope = rawEnvelope;
-        }
+        // No separate finalizer pass: a rejected submission surfaces as a tool
+        // error and keeps the session open, the SDK retries transport failures,
+        // and the continuation steer re-prompts a model that stopped early. If
+        // the run still produced no envelope, colonyd retries the attempt.
+        failureReason ??= "finalize_no_submission";
       }
     } finally {
       clearTimeoutGuard();

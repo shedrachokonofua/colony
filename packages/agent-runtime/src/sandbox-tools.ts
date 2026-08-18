@@ -1,47 +1,38 @@
 import path from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@oh-my-pi/omptype/typebox";
+import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import {
   createBashTool,
-  createEditTool,
   createFindTool,
-  createGrepTool,
   createLsTool,
-  createReadTool,
-  createWriteTool,
   type BashOperations,
-  type EditOperations,
   type FindOperations,
-  type GrepOperations,
   type LsOperations,
-  type ReadOperations,
-  type WriteOperations,
-} from "@earendil-works/pi-coding-agent";
+} from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import type { SandboxHandle } from "@colony/sandbox";
 
 /**
- * Sandbox-delegated base tools for pi runs. Each tool keeps pi-coding-agent's
- * canonical parameter schema and rendering, but its `operations` override
- * routes every underlying bash/file call through a provisioned `SandboxHandle`
- * instead of the local filesystem/child_process. This is what makes agent tool
- * execution actually run through the sandbox (env filtering included) while
- * leaving pi-model-fallback's default local tools untouched when no engine is
- * configured.
+ * Sandbox-delegated tools for agent runs. `bash`, `find`, and `ls` keep the SDK's
+ * canonical schemas and rendering with their `operations` seam routed through a
+ * provisioned `SandboxHandle` instead of the local filesystem/child_process.
  *
- * The sandbox handle contract (packages/sandbox/src/exec-protocol.ts) requires
+ * `read`, `grep`, `write`, and `edit` are Colony's own. The SDK exposes no seam
+ * for them — its read tool has none, and grep/write/edit reject one outright
+ * because they touch the local filesystem natively. Shipping those versions
+ * would let a run read and write the daemon's own disk, so Colony defines them
+ * against the handle.
+ *
+ * The handle contract (packages/sandbox/src/exec-protocol.ts) requires
  * workspace-relative paths — absolute paths are rejected by the in-process
- * engine. pi-coding-agent hands every operation an absolute path resolved from
- * the tool's `cwd` (the run workspace), so each operation translates its
- * argument back to a workspace-relative path before calling into the handle.
- * Paths outside the workspace relativize to `../...` and are rejected by the
- * engine, which is exactly the sandbox boundary we want.
+ * engine. The SDK hands every operation an absolute path resolved from the
+ * tool's `cwd` (the run workspace), so each operation translates back to a
+ * workspace-relative path first. Paths outside the workspace relativize to
+ * `../...` and are rejected by the engine, which is exactly the boundary we
+ * want.
  */
 
-/**
- * Base tools each role may expose. Only the tools registered in a profile's
- * `defaultTools`/`tools` are actually handed to the agent; this override map
- * is keyed by tool name so `createAgentSession` can substitute them.
- */
-export type SandboxBaseTools = Record<string, AgentTool>;
+/** Cap on bytes returned by Colony's own read/grep tools. */
+const MAX_TOOL_OUTPUT_BYTES = 128 * 1024;
 
 interface ExecCapture {
   readonly output: Buffer;
@@ -168,53 +159,187 @@ function bashOperations(handle: SandboxHandle, base: string): BashOperations {
   };
 }
 
-function readOperations(handle: SandboxHandle, base: string): ReadOperations {
-  const rel = (p: string) => toWorkspaceRelative(base, p);
+/**
+ * Colony's `read`: line-addressable file read executed inside the sandbox.
+ * Mirrors the SDK tool's shape (path plus optional window) because the role
+ * prompts tell agents to read before editing.
+ */
+function sandboxReadTool(handle: SandboxHandle, base: string): ToolDefinition {
+  const parameters = Type.Object(
+    {
+      path: Type.String({
+        description: "Workspace-relative path to read.",
+      }),
+      offset: Type.Optional(
+        Type.Integer({ minimum: 1, description: "First line, 1-indexed." }),
+      ),
+      limit: Type.Optional(
+        Type.Integer({ minimum: 1, description: "Maximum lines to return." }),
+      ),
+    },
+    { additionalProperties: false },
+  );
   return {
-    readFile: (absolutePath) => handle.readFile(rel(absolutePath)),
-    access: async (absolutePath) => {
-      const { exitCode } = await execCapture(
-        handle,
-        `test -r ${shellQuote(rel(absolutePath))}`,
+    name: "read",
+    label: "Read file",
+    description:
+      "Read a file from the run workspace. Returns numbered lines; use offset/limit for a window instead of reading huge files whole.",
+    parameters,
+    approval: "read",
+    execute: async (_toolCallId, rawParams) => {
+      // The SDK validates against `parameters` before calling execute; this cast
+      // just names the validated shape.
+      const params = rawParams as {
+        path: string;
+        offset?: number;
+        limit?: number;
+      };
+      const relative = toWorkspaceRelative(
+        base,
+        path.resolve(base, params.path),
       );
-      if (exitCode !== 0) {
-        throw new Error(`not readable: ${absolutePath}`);
-      }
+      const buffer = await handle.readFile(relative);
+      const text = buffer.subarray(0, MAX_TOOL_OUTPUT_BYTES).toString("utf8");
+      const lines = text.split("\n");
+      const start = (params.offset ?? 1) - 1;
+      const end =
+        params.limit === undefined ? lines.length : start + params.limit;
+      const window = lines.slice(start, end);
+      const numbered = window
+        .map((line, index) => `${start + index + 1}:${line}`)
+        .join("\n");
+      const truncated =
+        buffer.byteLength > MAX_TOOL_OUTPUT_BYTES || end < lines.length;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: truncated ? `${numbered}\n… truncated` : numbered,
+          },
+        ],
+        details: { path: params.path, lines: window.length, truncated },
+      };
     },
   };
 }
 
-function writeOperations(handle: SandboxHandle, base: string): WriteOperations {
-  const rel = (p: string) => toWorkspaceRelative(base, p);
+/**
+ * Colony's `write`: create or overwrite a workspace file inside the sandbox.
+ * The SDK's write tool rejects an operations seam outright ("writes the local
+ * filesystem natively"), so a sandboxed run needs Colony's own.
+ */
+function sandboxWriteTool(handle: SandboxHandle, base: string): ToolDefinition {
+  const parameters = Type.Object(
+    {
+      path: Type.String({ description: "Workspace-relative path to write." }),
+      content: Type.String({ description: "Full file content." }),
+    },
+    { additionalProperties: false },
+  );
   return {
-    writeFile: (absolutePath, content) =>
-      handle.writeFile(rel(absolutePath), content),
-    mkdir: async (dir) => {
-      const { exitCode } = await execCapture(
-        handle,
-        `mkdir -p ${shellQuote(rel(dir))}`,
+    name: "write",
+    label: "Write file",
+    description:
+      "Create or overwrite a file in the run workspace with the exact content given.",
+    parameters,
+    approval: "write",
+    execute: async (_toolCallId, rawParams) => {
+      const params = rawParams as { path: string; content: string };
+      const relative = toWorkspaceRelative(
+        base,
+        path.resolve(base, params.path),
       );
-      if (exitCode !== 0) {
-        throw new Error(`cannot create directory: ${dir}`);
+      const parent = path.posix.dirname(relative);
+      if (parent && parent !== "." && parent !== "/") {
+        const { exitCode } = await execCapture(
+          handle,
+          `mkdir -p ${shellQuote(parent)}`,
+        );
+        if (exitCode !== 0) {
+          throw new Error(`cannot create directory: ${parent}`);
+        }
       }
+      await handle.writeFile(relative, params.content);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `wrote ${params.path} (${Buffer.byteLength(params.content)} bytes)`,
+          },
+        ],
+        details: {
+          path: params.path,
+          bytes: Buffer.byteLength(params.content),
+        },
+      };
     },
   };
 }
 
-function editOperations(handle: SandboxHandle, base: string): EditOperations {
-  const rel = (p: string) => toWorkspaceRelative(base, p);
+/**
+ * Colony's `edit`: exact-string replacements inside a workspace file. Each
+ * `oldText` must appear exactly once, so an ambiguous edit fails loudly instead
+ * of silently patching the wrong occurrence.
+ */
+function sandboxEditTool(handle: SandboxHandle, base: string): ToolDefinition {
+  const parameters = Type.Object(
+    {
+      path: Type.String({ description: "Workspace-relative path to edit." }),
+      edits: Type.Array(
+        Type.Object(
+          {
+            oldText: Type.String({ minLength: 1 }),
+            newText: Type.String(),
+          },
+          { additionalProperties: false },
+        ),
+        { minItems: 1 },
+      ),
+    },
+    { additionalProperties: false },
+  );
   return {
-    readFile: (absolutePath) => handle.readFile(rel(absolutePath)),
-    writeFile: (absolutePath, content) =>
-      handle.writeFile(rel(absolutePath), content),
-    access: async (absolutePath) => {
-      const { exitCode } = await execCapture(
-        handle,
-        `test -w ${shellQuote(rel(absolutePath))}`,
+    name: "edit",
+    label: "Edit file",
+    description:
+      "Replace exact strings in a workspace file. Every oldText must occur exactly once in the file.",
+    parameters,
+    approval: "write",
+    execute: async (_toolCallId, rawParams) => {
+      const params = rawParams as {
+        path: string;
+        edits: ReadonlyArray<{ oldText: string; newText: string }>;
+      };
+      const relative = toWorkspaceRelative(
+        base,
+        path.resolve(base, params.path),
       );
-      if (exitCode !== 0) {
-        throw new Error(`not writable: ${absolutePath}`);
+      const before = (await handle.readFile(relative)).toString("utf8");
+      let after = before;
+      for (const edit of params.edits) {
+        const occurrences = after.split(edit.oldText).length - 1;
+        if (occurrences === 0) {
+          throw new Error(
+            `edit rejected: oldText not found in ${params.path}: ${edit.oldText.slice(0, 80)}`,
+          );
+        }
+        if (occurrences > 1) {
+          throw new Error(
+            `edit rejected: oldText occurs ${occurrences} times in ${params.path}; include more surrounding context to make it unique`,
+          );
+        }
+        after = after.replace(edit.oldText, edit.newText);
       }
+      await handle.writeFile(relative, after);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `applied ${params.edits.length} edit(s) to ${params.path}`,
+          },
+        ],
+        details: { path: params.path, edits: params.edits.length },
+      };
     },
   };
 }
@@ -253,19 +378,62 @@ function findOperations(handle: SandboxHandle, base: string): FindOperations {
   };
 }
 
-function grepOperations(handle: SandboxHandle, base: string): GrepOperations {
-  const rel = (p: string) => toWorkspaceRelative(base, p);
-  return {
-    isDirectory: async (absolutePath) => {
-      const { exitCode } = await execCapture(
-        handle,
-        `test -d ${shellQuote(rel(absolutePath))}`,
-      );
-      return exitCode === 0;
+/**
+ * Colony's `grep`: pattern search executed inside the sandbox. The SDK's grep
+ * runs ripgrep on the local filesystem with no seam to redirect, so Colony runs
+ * the search in the workspace instead.
+ */
+function sandboxGrepTool(handle: SandboxHandle, base: string): ToolDefinition {
+  const parameters = Type.Object(
+    {
+      pattern: Type.String({ description: "Extended regular expression." }),
+      path: Type.Optional(
+        Type.String({
+          description:
+            "Workspace-relative file or directory. Defaults to the workspace root.",
+        }),
+      ),
+      case_sensitive: Type.Optional(Type.Boolean()),
     },
-    readFile: async (absolutePath) => {
-      const buffer = await handle.readFile(rel(absolutePath));
-      return buffer.toString("utf8");
+    { additionalProperties: false },
+  );
+  return {
+    name: "grep",
+    label: "Search workspace",
+    description:
+      "Search the run workspace for a regular expression. Returns file:line:text matches from inside the sandbox.",
+    parameters,
+    approval: "read",
+    execute: async (_toolCallId, rawParams) => {
+      const params = rawParams as {
+        pattern: string;
+        path?: string;
+        case_sensitive?: boolean;
+      };
+      const target = toWorkspaceRelative(
+        base,
+        path.resolve(base, params.path ?? "."),
+      );
+      const flags = params.case_sensitive === false ? "-rInE" : "-rnIE";
+      const { output, exitCode } = await execCapture(
+        handle,
+        `grep ${flags} -- ${shellQuote(params.pattern)} ${shellQuote(target)} || true`,
+      );
+      const text = output.subarray(0, MAX_TOOL_OUTPUT_BYTES).toString("utf8");
+      const matches = text.split("\n").filter((line) => line.length > 0);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: matches.length ? matches.join("\n") : "no matches",
+          },
+        ],
+        details: {
+          matchCount: matches.length,
+          truncated: output.byteLength > MAX_TOOL_OUTPUT_BYTES,
+          exitCode,
+        },
+      };
     },
   };
 }
@@ -342,22 +510,22 @@ function globToRegExp(glob: string): RegExp {
 }
 
 /**
- * Build the `baseToolsOverride` map for `createAgentSession`. Every tool is
- * created with pi-coding-agent's standard `cwd` (the run workspace) and the
- * sandbox-delegating operations above, so parameter schemas and rendering are
- * preserved exactly while execution routes through `handle`.
+ * Every tool a sandboxed run may call, ready to hand to `createAgentSession` as
+ * `customTools` under `restrictToolNames`. The SDK-backed tools keep their
+ * canonical schemas via the `operations` seam; `read` and `grep` are Colony's,
+ * because the SDK offers no seam for them.
  */
-export function buildSandboxBaseTools(
+export function buildSandboxTools(
   handle: SandboxHandle,
   cwd: string,
-): SandboxBaseTools {
-  return {
-    bash: createBashTool(cwd, { operations: bashOperations(handle, cwd) }),
-    read: createReadTool(cwd, { operations: readOperations(handle, cwd) }),
-    write: createWriteTool(cwd, { operations: writeOperations(handle, cwd) }),
-    edit: createEditTool(cwd, { operations: editOperations(handle, cwd) }),
-    find: createFindTool(cwd, { operations: findOperations(handle, cwd) }),
-    grep: createGrepTool(cwd, { operations: grepOperations(handle, cwd) }),
-    ls: createLsTool(cwd, { operations: lsOperations(handle, cwd) }),
-  };
+): readonly ToolDefinition[] {
+  return [
+    createBashTool(cwd, { operations: bashOperations(handle, cwd) }),
+    createFindTool(cwd, { operations: findOperations(handle, cwd) }),
+    createLsTool(cwd, { operations: lsOperations(handle, cwd) }),
+    sandboxReadTool(handle, cwd),
+    sandboxGrepTool(handle, cwd),
+    sandboxWriteTool(handle, cwd),
+    sandboxEditTool(handle, cwd),
+  ];
 }

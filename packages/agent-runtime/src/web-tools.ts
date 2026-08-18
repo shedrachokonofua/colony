@@ -1,8 +1,8 @@
 import * as https from "node:https";
 import * as dns from "node:dns/promises";
 import * as net from "node:net";
-import { Type } from "@earendil-works/pi-ai";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "@oh-my-pi/omptype/typebox";
+import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -786,16 +786,17 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
     description:
       "Search the web via SearXNG. Input { query } 1-400 chars. Returns { query, results: [{title,url,content}], resultCount }.",
     parameters: webSearchParams,
-    prepareArguments: searchPrepare as (args: unknown) => never,
     execute: async (
       toolCallId: string,
-      params: unknown,
+      rawParams: unknown,
       signal: unknown,
       _onUpdate: unknown,
       _ctx: unknown,
     ) => {
       void toolCallId;
-      const args = params as { query: string };
+      // The SDK has no argument-preparation seam, so normalize here: a thrown
+      // error becomes the tool result the model must correct.
+      const args = searchPrepare(rawParams) as { query: string };
       const abortSignal = signal instanceof AbortSignal ? signal : undefined;
       const base = baseUrl.toString().replace(/\/+$/, "");
       const url = new URL(
@@ -889,16 +890,15 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
     description:
       "Fetch a https URL, follow up to 5 redirects, extract text, cap at 200k bytes. Input { url } must be https://.",
     parameters: webFetchParams,
-    prepareArguments: fetchPrepare as (args: unknown) => never,
     execute: async (
       toolCallId: string,
-      params: unknown,
+      rawParams: unknown,
       signal: unknown,
       _onUpdate: unknown,
       _ctx: unknown,
     ) => {
       void toolCallId;
-      const args = params as { url: string };
+      const args = fetchPrepare(rawParams) as { url: string };
       const abortSignal = signal instanceof AbortSignal ? signal : undefined;
       let currentUrl: URL;
       try {

@@ -1,9 +1,10 @@
+import type { PiModelSpec } from "./pi-runner-common.js";
+import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type {
   ExecEvent,
   ExecRequest,
@@ -17,7 +18,7 @@ import {
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,
 } from "./pi-base-agent-runner.js";
-import { buildSandboxBaseTools } from "./sandbox-tools.js";
+import { buildSandboxTools } from "./sandbox-tools.js";
 
 const servers: Server[] = [];
 const scratchDirs: string[] = [];
@@ -112,6 +113,9 @@ function writeToolCallResponse(
   response.end("data: [DONE]\n\n");
 }
 
+/** Sandbox tools ignore the extension context; a stub keeps the SDK signature. */
+const toolContext = {} as ExtensionContext;
+
 describe("sandbox tool wiring", () => {
   it("routes bash/file tool calls through the sandbox handle and destroys it exactly once", async () => {
     const headSha = "b".repeat(40);
@@ -150,7 +154,7 @@ describe("sandbox tool wiring", () => {
           writeToolCallResponse(
             response,
             "write",
-            { path: "out.txt", content: "wired body" },
+            { path: "nested/out.txt", content: "wired body" },
             model,
           );
         } else {
@@ -171,7 +175,7 @@ describe("sandbox tool wiring", () => {
     if (!address || typeof address === "string")
       throw new Error("missing port");
     const baseUrl = `http://127.0.0.1:${address.port}/v1`;
-    const model: Model<Api> = {
+    const model: PiModelSpec = {
       id: "wired",
       name: "wired",
       api: "openai-completions",
@@ -182,7 +186,6 @@ describe("sandbox tool wiring", () => {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
       maxTokens: 8_192,
-      compat: { supportsStore: false },
     };
 
     const scratchDir = mkdtempSync(join(tmpdir(), "colony-wiring-test-"));
@@ -218,7 +221,8 @@ describe("sandbox tool wiring", () => {
     ).toBe(true);
     // Read routed through the handle (its `access` also shells out through exec).
     expect(handle.reads.some((path) => path.includes("notes.txt"))).toBe(true);
-    // Write routed through the handle (mkdir via exec + writeFile).
+    // Write routed through the handle: parent directory created via exec, then
+    // the file written through writeFile.
     expect(
       handle.writes.some(
         (write) =>
@@ -246,47 +250,92 @@ describe("sandbox tool wiring", () => {
       buildSandboxLaunchProfile("developer"),
       workspace,
     );
-    const tools = buildSandboxBaseTools(handle, workspace);
+    const toolList = buildSandboxTools(handle, workspace);
+    const tools = Object.fromEntries(
+      toolList.map((tool) => [tool.name, tool]),
+    ) as Record<string, (typeof toolList)[number]>;
     try {
       // write → handle.writeFile (mkdir via handle.exec)
-      await (tools.write as AgentTool).execute("w1", {
-        path: "src/notes.txt",
-        content: "hello sandbox\nsecond line\n",
-      });
+      await tools.write.execute(
+        "w1",
+        {
+          path: "src/notes.txt",
+          content: "hello sandbox\nsecond line\n",
+        },
+        undefined,
+        undefined,
+        toolContext,
+      );
       // read → handle.readFile + handle.exec('test -r …') on the same path
-      const read = await (tools.read as AgentTool).execute("r1", {
-        path: "src/notes.txt",
-      });
+      const read = await tools.read.execute(
+        "r1",
+        {
+          path: "src/notes.txt",
+        },
+        undefined,
+        undefined,
+        toolContext,
+      );
       expect(toolText(read)).toContain("hello sandbox");
       expect(toolText(read)).toContain("second line");
 
       // bash → handle.exec with a workspace-relative cwd
-      const bash = await (tools.bash as AgentTool).execute("b1", {
-        command: "cat src/notes.txt",
-      });
+      const bash = await tools.bash.execute(
+        "b1",
+        {
+          command: "cat src/notes.txt",
+        },
+        undefined,
+        undefined,
+        toolContext,
+      );
       expect(toolText(bash)).toContain("hello sandbox");
 
       // ls → handle.exec('test -e/'test -d/'ls -1 …')
-      const ls = await (tools.ls as AgentTool).execute("l1", {
-        path: "src",
-      });
+      const ls = await tools.ls.execute(
+        "l1",
+        {
+          path: "src",
+        },
+        undefined,
+        undefined,
+        toolContext,
+      );
       expect(toolText(ls)).toContain("notes.txt");
 
       // edit → handle.readFile + handle.writeFile + handle.exec('test -w …')
-      const edit = await (tools.edit as AgentTool).execute("e1", {
-        path: "src/notes.txt",
-        edits: [{ oldText: "hello sandbox", newText: "edited sandbox" }],
-      });
-      const afterEdit = await (tools.read as AgentTool).execute("r2", {
-        path: "src/notes.txt",
-      });
+      const edit = await tools.edit.execute(
+        "e1",
+        {
+          path: "src/notes.txt",
+          edits: [{ oldText: "hello sandbox", newText: "edited sandbox" }],
+        },
+        undefined,
+        undefined,
+        toolContext,
+      );
+      const afterEdit = await tools.read.execute(
+        "r2",
+        {
+          path: "src/notes.txt",
+        },
+        undefined,
+        undefined,
+        toolContext,
+      );
       expect(toolText(afterEdit)).toContain("edited sandbox");
       expect(edit.details ?? undefined).toBeDefined();
 
       // find → handle.exec('find … -type f')
-      const find = await (tools.find as AgentTool).execute("f1", {
-        pattern: "**/*.txt",
-      });
+      const find = await tools.find.execute(
+        "f1",
+        {
+          pattern: "**/*.txt",
+        },
+        undefined,
+        undefined,
+        toolContext,
+      );
       expect(toolText(find)).toContain("notes.txt");
 
       // Absolute paths (the tool resolves them) never reach the handle; the

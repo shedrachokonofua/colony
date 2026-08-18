@@ -19,6 +19,10 @@
     "@earendil-works/pi-agent-core": "^0.84.2",
     "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@oh-my-pi/omptype": "^17.3.7",
+    "@oh-my-pi/pi-agent-core": "17.3.7",
+    "@oh-my-pi/pi-ai": "17.3.7",
+    "@oh-my-pi/pi-coding-agent": "17.3.7",
     "zod": "^4.3.6"
   }
 }

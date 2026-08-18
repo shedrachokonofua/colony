@@ -41,7 +41,9 @@ describe("implementer submission", () => {
       undefined as never,
     );
 
-    expect(accepted.terminate).toBe(true);
+    // The SDK's tool result carries no early-termination flag; the accepted
+    // envelope reaching the capture callback is what ends the run.
+    expect(accepted.content).toBeDefined();
     expect(captured).toEqual(corrected);
   });
 });
