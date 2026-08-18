@@ -60,17 +60,32 @@ export function writeColonyYaml(path: string): void {
 export async function prepareEnvWithPort(
   opts: {
     webhookSecret?: string;
+    dbPath?: string;
+    port?: number;
   } = {},
 ): Promise<PreparedEnv> {
   const dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
   const configPath = join(dir, "colony.yaml");
   writeColonyYaml(configPath);
-  const e2eDbPath = process.env["COLONY_E2E_DB_PATH"];
-  const e2ePort = process.env["COLONY_E2E_PORT"];
-  const dbPath =
-    e2eDbPath && e2eDbPath.trim() ? e2eDbPath : join(dir, "colonyd.db");
-  const port = e2ePort && e2ePort.trim() ? Number(e2ePort) : await freePort();
+  const rawDbPath = opts.dbPath?.trim();
+  const dbPath = rawDbPath ? rawDbPath : join(dir, "colonyd.db");
+  const isExternalDb = Boolean(rawDbPath);
+  let port: number;
+  if (opts.port !== undefined) {
+    const n = opts.port;
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 65535) {
+      throw new Error(`invalid COLONY_E2E_PORT: ${String(opts.port)}`);
+    }
+    port = n;
+  } else {
+    port = await freePort();
+  }
   const cleanup = (): void => {
+    if (isExternalDb) {
+      rmSync(dbPath, { force: true });
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+    }
     rmSync(dir, { recursive: true, force: true });
   };
   return {
@@ -99,10 +114,7 @@ export function buildEnvVars(input: {
   oidcRequiredRole?: string;
   tickMs?: string | number;
 }): Record<string, string> {
-  const tickMs =
-    input.tickMs !== undefined
-      ? String(input.tickMs)
-      : (process.env["COLONYD_TICK_MS"] ?? "250");
+  const tickMs = input.tickMs !== undefined ? String(input.tickMs) : "250";
   return {
     NODE_ENV: "test",
     AGENT_RUNTIME: "fake",
@@ -116,11 +128,8 @@ export function buildEnvVars(input: {
     COLONYD_SINGLE_TOKEN: "0",
     COLONY_CONFIG_PATH: input.configPath,
     PUBLIC_HOST: "localhost",
-    COLONY_OIDC_ISSUER:
-      input.oidcIssuer ?? process.env["COLONY_OIDC_ISSUER"] ?? "",
-    COLONY_OIDC_CLIENT_ID:
-      input.oidcClientId ?? process.env["COLONY_OIDC_CLIENT_ID"] ?? "",
-    COLONY_OIDC_REQUIRED_ROLE:
-      input.oidcRequiredRole ?? process.env["COLONY_OIDC_REQUIRED_ROLE"] ?? "",
+    COLONY_OIDC_ISSUER: input.oidcIssuer ?? "",
+    COLONY_OIDC_CLIENT_ID: input.oidcClientId ?? "",
+    COLONY_OIDC_REQUIRED_ROLE: input.oidcRequiredRole ?? "",
   };
 }
