@@ -97,7 +97,7 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
  * must only block on failures the agent could have prevented.
  */
 const INFRA_FAILURE =
-  /^process_restart$|\b50[234]\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed/i;
+  /^process_restart$|\b(?:429|50[234])\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|workspace_provision_failed|RBAC: denied creating|timed out .* waiting for (?:backing pod of )?Sandbox CR|Sandbox CR .* failed:/i;
 
 /** Exported for tests: classify a run error as infrastructure-caused. */
 export function isInfraError(error: string | null | undefined): boolean {

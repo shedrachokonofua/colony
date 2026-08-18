@@ -487,6 +487,12 @@ describe("operator controls", () => {
     expect(isInfraError("502 status code (no body)")).toBe(true);
     expect(isInfraError("fetch failed")).toBe(true);
     expect(isInfraError("ECONNRESET")).toBe(true);
+    expect(
+      isInfraError(
+        "timed out after 300000ms waiting for Sandbox CR colony-a in namespace colony-sandboxes to become ready",
+      ),
+    ).toBe(true);
+    expect(isInfraError("429 model cooldown")).toBe(true);
     expect(isInfraError("envelope invalid")).toBe(false);
     expect(isInfraError("timeout_without_envelope")).toBe(false);
     expect(isInfraError(null)).toBe(false);
