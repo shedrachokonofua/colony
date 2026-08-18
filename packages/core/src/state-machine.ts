@@ -43,16 +43,17 @@ export const TERMINAL_SCOPE_STATUSES: ReadonlySet<ScopeStatus> = new Set([
  *   mr_open  -> merged     gate passed AND GitLab reports merged at gated SHA
  *   mr_open  -> queued     gate failed -> requeue with evidence; attempt++
  *   mr_open  -> blocked    3 consecutive gate failures on same head SHA, or merge refused 3x
+ *   queued/blocked -> merged provider observed a merge after an ambiguous gate timeout
  *   blocked  -> queued     operator unblock; resets attempt=0, next_retry_at=NULL
  *   canceled -> queued     operator restores a permanently canceled task
  *   any nonterminal -> canceled (operator)
  */
 const TASK_TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
-  queued: ["running", "canceled"],
+  queued: ["running", "merged", "canceled"],
   running: ["mr_open", "queued", "blocked", "canceled"],
   mr_open: ["merged", "queued", "blocked", "canceled"],
   merged: [],
-  blocked: ["queued", "canceled"],
+  blocked: ["queued", "merged", "canceled"],
   canceled: ["queued"],
 };
 

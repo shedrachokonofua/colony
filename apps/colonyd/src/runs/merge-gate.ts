@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
-import type { ProviderProjectRef } from "@colony/provider";
+import type {
+  ProviderMergeRequest,
+  ProviderProjectRef,
+} from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -175,9 +178,44 @@ async function executeMergeGate(
       return;
     }
 
-    const mergeResult = await ctx.provider.mergeRequests.merge(project, mr.id, {
-      sha: headSha,
-    });
+    let mergeResult: ProviderMergeRequest;
+    try {
+      mergeResult = await ctx.provider.mergeRequests.merge(project, mr.id, {
+        sha: headSha,
+      });
+    } catch (mergeError) {
+      let observed: ProviderMergeRequest | undefined;
+      try {
+        observed = await ctx.provider.mergeRequests.get(project, mr.id);
+      } catch {
+        // Preserve the merge error when the confirming read also fails.
+      }
+      if (
+        observed?.state === "merged" &&
+        observed.head_commit_sha === headSha
+      ) {
+        const evidence = {
+          reason: "merge_observed_after_error",
+          error:
+            mergeError instanceof Error
+              ? mergeError.message
+              : String(mergeError),
+          head_sha: headSha,
+        };
+        ctx.store.finishRun(runId, "succeeded", {
+          head_sha: headSha,
+          evidence_json: JSON.stringify(evidence),
+        });
+        ctx.store.audit(SERVICE_ACTOR, "gate.pass", {
+          scope_id: scope.id,
+          task_id: task.id,
+          run_id: runId,
+          detail: evidence,
+        });
+        return;
+      }
+      throw mergeError;
+    }
     if (mergeResult.merged === false) {
       const evidence = {
         reason: `merge_refused:${mergeResult.reason ?? "unknown"}`,

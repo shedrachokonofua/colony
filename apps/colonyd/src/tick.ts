@@ -239,17 +239,21 @@ async function pollProviderFacts(
 // ---------------------------------------------------------------------------
 
 async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
-  const openTasks = ctx.store
+  const candidates = ctx.store
     .listScopes()
     .filter((s) => s.status === "active")
     .flatMap((scope) =>
       ctx.store
         .listTasks(scope.id)
-        .filter((t) => t.state === "mr_open" && t.mr_iid !== null)
+        .filter(
+          (t) =>
+            ["mr_open", "queued", "blocked"].includes(t.state) &&
+            t.mr_iid !== null,
+        )
         .map((task) => ({ scope, task })),
     );
 
-  for (const { scope, task } of openTasks) {
+  for (const { scope, task } of candidates) {
     let mr;
     try {
       mr = await ctx.provider.mergeRequests.get(
@@ -273,25 +277,35 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
       .at(-1);
 
     if (mr.state === "merged") {
-      // The merge fact is observed — transition regardless of gate history.
-      if (headSha && lastGate && lastGate.status === "succeeded") {
-        const evidence = parseEvidence(lastGate.evidence_json);
-        if (evidence?.head_sha !== headSha) {
-          // MR merged at a SHA the gate never approved. Record and hold.
-          ctx.store.audit(SERVICE_ACTOR, "gate.stale_merge_observed", {
-            scope_id: scope.id,
-            task_id: task.id,
-            detail: { head_sha: headSha, gated_sha: evidence?.head_sha },
-          });
-          continue;
-        }
-      } else if (!lastGate || lastGate.status !== "succeeded") {
+      const evidence = parseEvidence(lastGate?.evidence_json ?? null);
+      const gatePassedAtHead =
+        headSha !== undefined &&
+        lastGate?.status === "succeeded" &&
+        evidence?.head_sha === headSha;
+      const timedOutMergeObserved =
+        headSha !== undefined &&
+        lastGate?.status === "failed" &&
+        evidence?.head_sha === headSha &&
+        evidence.reason === "workspace_failed" &&
+        isMergeRequestTimeout(evidence.error);
+      if (!gatePassedAtHead && !timedOutMergeObserved) {
+        // MR merged at a SHA the gate never approved. Record and hold.
         ctx.store.audit(SERVICE_ACTOR, "gate.stale_merge_observed", {
           scope_id: scope.id,
           task_id: task.id,
-          detail: { head_sha: headSha },
+          detail: { head_sha: headSha, gated_sha: evidence?.head_sha },
         });
         continue;
+      }
+      if (timedOutMergeObserved) {
+        // Compatibility recovery for runs written before the merge gate
+        // confirmed an ambiguous timeout by re-reading the MR.
+        ctx.store.audit(SERVICE_ACTOR, "gate.merge_timeout_reconciled", {
+          scope_id: scope.id,
+          task_id: task.id,
+          run_id: lastGate.id,
+          detail: { head_sha: headSha, error: evidence.error },
+        });
       }
       ctx.store.transitionTask(
         task.id,
@@ -308,6 +322,7 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
     }
 
     if (mr.state !== "opened") continue;
+    if (task.state !== "mr_open") continue;
 
     // Pipeline requirement: if the MR head has a pipeline it must succeed
     // before the gate runs; unknown pipeline state fails closed this tick.
@@ -377,18 +392,29 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
   }
 }
 
-function parseEvidence(
-  evidenceJson: string | null,
-): { head_sha?: string; verdict?: string } | undefined {
+interface RunEvidence {
+  readonly head_sha?: string;
+  readonly verdict?: string;
+  readonly reason?: string;
+  readonly error?: string;
+}
+
+function parseEvidence(evidenceJson: string | null): RunEvidence | undefined {
   if (!evidenceJson) return undefined;
   try {
-    return JSON.parse(evidenceJson) as {
-      head_sha?: string;
-      verdict?: string;
-    };
+    return JSON.parse(evidenceJson) as RunEvidence;
   } catch {
     return undefined;
   }
+}
+
+function isMergeRequestTimeout(error: string | undefined): boolean {
+  return (
+    typeof error === "string" &&
+    /^GitLab (?:PUT|POST) .*\/merge_requests\/[^/]+\/merge timed out$/.test(
+      error,
+    )
+  );
 }
 
 /**

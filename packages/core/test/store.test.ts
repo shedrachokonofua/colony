@@ -30,6 +30,7 @@ describe("state machine", () => {
   it("permits every legal task transition", () => {
     const legal: Array<[string, string]> = [
       ["queued", "running"],
+      ["queued", "merged"],
       ["running", "mr_open"],
       ["running", "queued"],
       ["running", "blocked"],
@@ -37,6 +38,7 @@ describe("state machine", () => {
       ["mr_open", "queued"],
       ["mr_open", "blocked"],
       ["blocked", "queued"],
+      ["blocked", "merged"],
       ["queued", "canceled"],
       ["running", "canceled"],
       ["mr_open", "canceled"],
@@ -53,7 +55,6 @@ describe("state machine", () => {
   it("rejects every illegal task transition", () => {
     const illegal: Array<[string, string]> = [
       ["queued", "mr_open"],
-      ["queued", "merged"],
       ["queued", "blocked"],
       ["queued", "queued"],
       ["running", "merged"],
@@ -62,7 +63,6 @@ describe("state machine", () => {
       ["merged", "blocked"],
       ["merged", "canceled"],
       ["blocked", "running"],
-      ["blocked", "merged"],
       ["blocked", "blocked"],
     ];
     for (const [from, to] of illegal) {
@@ -243,7 +243,7 @@ describe("Store", () => {
     store.setScopeStatus(scopeId, "planning", "svc:colonyd");
     const [a] = store.materializePlan(scopeId, plan(), "svc:colonyd");
     expect(() =>
-      store.transitionTask(a!.id, 0, "merged", "svc:colonyd"),
+      store.transitionTask(a!.id, 0, "blocked", "svc:colonyd"),
     ).toThrow(DomainStateError);
   });
 

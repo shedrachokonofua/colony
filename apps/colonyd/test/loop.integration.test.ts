@@ -500,6 +500,88 @@ describe("colonyd fake end-to-end loop", () => {
     expect(auditMrOpened).toHaveLength(1);
   }, 30_000);
 
+  it("treats a timed-out merge response as success when the MR confirms the merge", async () => {
+    const scopeId = await createScope("ambiguous merge response");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch A -> mr_open
+
+    const originalMerge = provider.mergeRequests.merge.bind(
+      provider.mergeRequests,
+    );
+    provider.mergeRequests.merge = async (project, id, input) => {
+      await originalMerge(project, id, input);
+      throw new Error(
+        "GitLab PUT /projects/1/merge_requests/1/merge timed out",
+      );
+    };
+
+    await tickAndSettle(); // gate merges, observes the timeout outcome
+    await tickAndSettle(); // provider fact advances mr_open -> merged
+
+    const taskA = handle.ctx.store
+      .listTasks(scopeId)
+      .find((task) => task.id.endsWith(".1"))!;
+    expect(taskA.state).toBe("merged");
+    expect(taskA.attempt).toBe(0);
+    const gate = handle.ctx.store
+      .runsForTask(taskA.id)
+      .find((run) => run.kind === "merge_gate");
+    expect(gate?.status).toBe("succeeded");
+    expect(JSON.parse(gate!.evidence_json!)).toMatchObject({
+      reason: "merge_observed_after_error",
+      head_sha: SHA_A,
+    });
+  }, 30_000);
+
+  it("reconciles a queued task whose merge completed before a legacy timeout failure", async () => {
+    const scopeId = await createScope("legacy ambiguous merge response");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch A -> mr_open
+
+    let taskA = handle.ctx.store
+      .listTasks(scopeId)
+      .find((task) => task.id.endsWith(".1"))!;
+    await provider.mergeRequests.merge(
+      { id: projectId },
+      `${projectId}:${taskA.mr_iid}`,
+      { sha: SHA_A },
+    );
+    const gate = handle.ctx.store.startRun({
+      scope_id: scopeId,
+      task_id: taskA.id,
+      kind: "merge_gate",
+      lease_ttl_ms: 30 * 60_000,
+      base_sha: SHA_A,
+    });
+    handle.ctx.store.finishRun(gate.id, "failed", {
+      evidence_json: JSON.stringify({
+        reason: "workspace_failed",
+        error: "GitLab PUT /projects/1/merge_requests/1/merge timed out",
+        head_sha: SHA_A,
+      }),
+    });
+    handle.ctx.store.transitionTask(
+      taskA.id,
+      taskA.state_version,
+      "queued",
+      "svc:colonyd",
+      {
+        attempt: 1,
+        next_retry_at: new Date(Date.now() + 60_000).toISOString(),
+      },
+    );
+
+    await tickAndSettle();
+
+    taskA = handle.ctx.store.getTask(taskA.id)!;
+    expect(taskA.state).toBe("merged");
+    expect(
+      handle.ctx.store
+        .listAudit({ task_id: taskA.id, limit: 100 })
+        .some((row) => row.action === "gate.merge_timeout_reconciled"),
+    ).toBe(true);
+  }, 30_000);
+
   it("restart: dead lease expires once; task requeues exactly once without duplicate runs", async () => {
     // Retarget this case at a stable DB path before creating any state: the
     // scenario closes the store mid-run and boots a fresh colonyd on the
