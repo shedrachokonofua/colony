@@ -16,6 +16,13 @@ export const DEFAULT_FETCH_MAX_BYTES = 200_000;
 export const DEFAULT_MAX_RESULTS = 8;
 export const DEFAULT_MAX_REDIRECTS = 5;
 
+export const WEB_SEARCH_TOOL_NAME = "web_search" as const;
+export const WEB_FETCH_TOOL_NAME = "web_fetch" as const;
+export const WEB_TOOL_NAMES = [
+  WEB_SEARCH_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
+] as const;
+
 const MAX_SEARCH_TIMEOUT_MS = 30_000;
 const MAX_FETCH_TIMEOUT_MS = 60_000;
 const MAX_FETCH_MAX_BYTES = 1_000_000;
@@ -774,7 +781,7 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
   const fetchPrepare = makeZodPrepare(webFetchInputSchema);
 
   const webSearchTool: ToolDefinition = {
-    name: "web_search",
+    name: WEB_SEARCH_TOOL_NAME,
     label: "Web search",
     description:
       "Search the web via SearXNG. Input { query } 1-400 chars. Returns { query, results: [{title,url,content}], resultCount }.",
@@ -877,7 +884,7 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
   } as unknown as ToolDefinition;
 
   const webFetchTool: ToolDefinition = {
-    name: "web_fetch",
+    name: WEB_FETCH_TOOL_NAME,
     label: "Web fetch",
     description:
       "Fetch a https URL, follow up to 5 redirects, extract text, cap at 200k bytes. Input { url } must be https://.",

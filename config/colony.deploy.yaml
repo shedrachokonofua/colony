@@ -1,6 +1,11 @@
 # Production agent config baked into the colonyd image (see Dockerfile).
 # The aether-side deployment points COLONY_CONFIG_PATH here; editing this
 # file redeploys colonyd through the normal image build on main.
+#
+# Web research (env-gated): web_search/web_fetch are enabled only when
+# COLONY_SEARXNG_URL is set (e.g. https://searxng.home.shdr.ch). No API key.
+# Activation in this file is deferred — the aether deployment sets the env
+# separately after this change merges.
 agent_runtime: pi
 allow_literal_keys: false
 
