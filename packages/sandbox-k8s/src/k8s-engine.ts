@@ -345,21 +345,10 @@ class K8sSandboxHandle implements SandboxHandle {
           exitCode = parseExecExitCode(status);
         },
       );
-      // Wrap the socket so we detect when close() is called (by timeout,
-      // destroy, or any other path). If the WebSocket closes without a
-      // Status message — destroy() closing an in-flight exec socket, a
-      // dropped apiserver connection, or a protocol downgrade — the exec
-      // promise would hang forever waiting for stream ends that never come.
-      let socketCloseResolve!: () => void;
-      const socketClosePromise = new Promise<void>((r) => {
-        socketCloseResolve = r;
-      });
-      socket = {
-        close(code?: number, data?: string): void {
-          rawSocket.close(code, data);
-          socketCloseResolve();
-        },
-      };
+      // The remote WebSocket close is a completion signal independent of
+      // client-node's writable stream lifecycle. Without it, fast commands
+      // can exit in the pod while both local streams remain open forever.
+      socket = rawSocket;
       this.sockets.add(socket);
       if (settled) {
         // Timed out while the exec session was still connecting — abort it.
@@ -370,11 +359,11 @@ class K8sSandboxHandle implements SandboxHandle {
         }
         return;
       }
-      // Race stream ends against socket close so the promise settles even
-      // when the socket closes without a terminal Status message.
+      // Race stream ends against remote or local socket closure so every
+      // terminal pods/exec path settles.
       await Promise.all([
-        Promise.race([waitForEnd(stdout), socketClosePromise]),
-        Promise.race([waitForEnd(stderr), socketClosePromise]),
+        Promise.race([waitForEnd(stdout), rawSocket.closed]),
+        Promise.race([waitForEnd(stderr), rawSocket.closed]),
       ]);
       finish(exitCode, false);
     };

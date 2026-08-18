@@ -223,6 +223,8 @@ interface ExecScenario {
   exit?: number;
   /** If true, never emit a status or end the streams (exec hangs). */
   hang?: boolean;
+  /** If true, close the remote WebSocket without ending either stream. */
+  remoteClose?: boolean;
 }
 
 function scenarioKey(command: readonly string[]): string {
@@ -291,6 +293,10 @@ function createFakeClient(
         wsClosed: false,
       };
       execCalls.push(record);
+      let resolveClosed!: () => void;
+      const closed = new Promise<void>((resolve) => {
+        resolveClosed = resolve;
+      });
 
       if (stdin !== null) {
         stdin.on("data", (d: Buffer | string) => {
@@ -330,10 +336,15 @@ function createFakeClient(
           });
         }
       }
+      if (scenario.remoteClose === true) {
+        queueMicrotask(resolveClosed);
+      }
 
       return {
+        closed,
         close(): void {
           record.wsClosed = true;
+          resolveClosed();
         },
       };
     },
@@ -771,6 +782,22 @@ describe("K8sSandboxHandle exec channel", () => {
       expect(finalEvent.kind).toBe("exit");
       expect(finalEvent.kind === "exit" && finalEvent.exitCode).toBe(42);
 
+      await handle.destroy();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("settles exec when the remote WebSocket closes first", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "k8s-remote-close-"));
+    try {
+      const { handle } = await provisionWith(workspace, {
+        fallback: { hang: true, remoteClose: true },
+      });
+
+      const result = await handle.exec({ command: "true" }, () => {});
+
+      expect(result).toMatchObject({ exitCode: null, timedOut: false });
       await handle.destroy();
     } finally {
       await rm(workspace, { recursive: true, force: true });

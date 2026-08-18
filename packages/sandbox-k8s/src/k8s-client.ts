@@ -226,9 +226,10 @@ export function createKubernetesClient(
       stdin: import("node:stream").Readable | null,
       statusCallback: (status: import("./contract.js").ExecPodStatus) => void,
     ) {
-      // The returned WebSocket from Exec.exec is the pod exec session; the
-      // engine closes it to abort a timed-out or destroyed run.
-      return new Exec(kc).exec(
+      // The WebSocket's remote close is the only reliable completion signal
+      // for fast commands: client-node does not consistently end the supplied
+      // stdout/stderr streams after kubelet sends terminal status.
+      const socket = await new Exec(kc).exec(
         namespace,
         podName,
         SANDBOX_CONTAINER_NAME,
@@ -239,6 +240,19 @@ export function createKubernetesClient(
         false /* tty */,
         statusCallback,
       );
+      const closed = new Promise<void>((resolve) => {
+        if (socket.readyState === 3) {
+          resolve();
+          return;
+        }
+        socket.once("close", () => resolve());
+      });
+      return {
+        closed,
+        close(code?: number, data?: string): void {
+          socket.close(code, data);
+        },
+      };
     },
   };
 }

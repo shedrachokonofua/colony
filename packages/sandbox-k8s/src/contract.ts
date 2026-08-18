@@ -129,7 +129,7 @@ export interface KubernetesSandboxClient {
    * stdout/stderr of the pod process are streamed into the given writables;
    * `stdin` (when provided) is piped into the pod process's stdin. The
    * `statusCallback` receives the exec session's terminal status (exit code).
-   * Returns the underlying WebSocket so a caller can close it (e.g. on timeout).
+   * The returned connection exposes both cancellation and remote closure.
    */
   execPod(
     namespace: string,
@@ -168,10 +168,12 @@ export interface ExecPodStatus {
 }
 
 /**
- * Minimal structural shape of the WebSocket returned by pods/exec so the seam
- * stays free of `@kubernetes/client-node` / `ws` types.
+ * Minimal structural shape of a pods/exec WebSocket. `closed` settles for
+ * both local and remote closure so completed commands cannot strand callers
+ * when the Kubernetes client leaves stdout/stderr streams open.
  */
 export interface ExecPodConnection {
+  readonly closed: Promise<void>;
   close(code?: number, data?: string): void;
 }
 
