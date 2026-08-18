@@ -207,6 +207,36 @@ export interface ScriptedBoundary {
   script: ScriptKnobs;
 }
 
+function wrapValidateSet(script: ScriptKnobs, base: Set<string>): Set<string> {
+  return new Proxy(base, {
+    get(target, prop, receiver) {
+      if (prop === "add") {
+        return (value: string) => {
+          const had = target.has(value);
+          if (!had) script._validateCalls.delete(value);
+          return target.add(value);
+        };
+      }
+      if (prop === "delete") {
+        return (value: string) => {
+          script._validateCalls.delete(value);
+          return target.delete(value);
+        };
+      }
+      if (prop === "clear") {
+        return () => {
+          script._validateCalls.clear();
+          return target.clear();
+        };
+      }
+      const v = Reflect.get(target, prop, receiver);
+      if (typeof v === "function")
+        return (v as (...args: unknown[]) => unknown).bind(target);
+      return v;
+    },
+  }) as unknown as Set<string>;
+}
+
 export function createScriptedBoundary(): ScriptedBoundary {
   const provider = new FakeProviderAdapter();
   const script: ScriptKnobs = {
@@ -221,6 +251,12 @@ export function createScriptedBoundary(): ScriptedBoundary {
     validateFailFirstFor: new Set<string>(),
     _validateCalls: new Map<string, number>(),
   };
+  // Wrap validateFailFirstFor so direct Set mutation (e.g. .add() in tests)
+  // correctly resets the per-scope counter, not just patchScript.
+  script.validateFailFirstFor = wrapValidateSet(
+    script,
+    script.validateFailFirstFor,
+  );
 
   const adapter = new ScriptedAgentRuntimeAdapter(script, provider);
 
@@ -244,7 +280,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
     return null;
   };
 
-  const validateExecutor: ValidateExecutor = async () => {
+  const validateExecutor: ValidateExecutor = async (input) => {
     if (script.validateFail) {
       return {
         passed: false,
@@ -259,15 +295,10 @@ export function createScriptedBoundary(): ScriptedBoundary {
         ],
       };
     }
-    // Contract: when validateFailFirstFor is non-empty, the NEXT validate run
-    // fails once; subsequent runs succeed. The set's entries (e.g. scope ids)
-    // are treated as an opaque flag because ValidateExecutor input carries no
-    // scope id — per-scope discrimination is not possible without adding scope
-    // context to ValidateExecutionInput.
-    if (script.validateFailFirstFor.size > 0) {
-      const key = "__next_fail__";
-      const count = script._validateCalls.get(key) ?? 0;
-      script._validateCalls.set(key, count + 1);
+    const scopeId = input.scopeId;
+    if (scopeId && script.validateFailFirstFor.has(scopeId)) {
+      const count = script._validateCalls.get(scopeId) ?? 0;
+      script._validateCalls.set(scopeId, count + 1);
       if (count === 0) {
         return {
           passed: false,
@@ -348,10 +379,15 @@ export function patchScript(
     script.validateFail = patch.validateFail;
   }
   if (Array.isArray(patch.validateFailFirstFor)) {
-    script.validateFailFirstFor = new Set(
-      patch.validateFailFirstFor as string[],
+    const next = wrapValidateSet(
+      script,
+      new Set(patch.validateFailFirstFor as string[]),
     );
-    // reset global counter when set changes so next validate fails once
-    script._validateCalls.clear();
+    // Prune counters for scopes no longer in the set so a re-added scope
+    // can fail again on its first validate after being removed.
+    for (const key of [...script._validateCalls.keys()]) {
+      if (!next.has(key)) script._validateCalls.delete(key);
+    }
+    script.validateFailFirstFor = next;
   }
 }

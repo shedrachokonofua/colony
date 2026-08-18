@@ -42,6 +42,11 @@ export interface ValidateExecutionInput {
    */
   readonly baseSha?: string;
   /**
+   * Scope id that triggered the validation. Supplied by runValidation so
+   * scripted fakes can implement per-scope fail-first semantics.
+   */
+  readonly scopeId?: string;
+  /**
    * Sandbox engine used to provision the validate handle. Optional: defaults
    * to the in-process engine so the executor is directly callable from unit
    * tests without boot wiring.
@@ -221,6 +226,7 @@ async function executeValidate(
       targetBranch: scope.default_branch,
       acceptance,
       baseSha,
+      scopeId: scope.id,
       engine: ctx.validateEngine,
     });
   } catch (err) {

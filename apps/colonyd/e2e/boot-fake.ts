@@ -1,9 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { resetEnvCache } from "@colony/config";
 import type { ColonydHandle } from "../src/main.js";
-import { buildEnvVars, freePort, writeColonyYaml } from "./env.js";
+import { buildEnvVars, installEnv, prepareEnvWithPort } from "./env.js";
 import { createScriptedBoundary } from "./fakes.js";
 
 export interface BootFakeHandle {
@@ -20,19 +17,17 @@ export async function bootFake(
     webhookSecret?: string;
   } = {},
 ): Promise<BootFakeHandle> {
-  const dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
-  const configPath = join(dir, "colony.yaml");
-  writeColonyYaml(configPath);
-  const dbPath = join(dir, "colonyd.db");
-  const port = await freePort();
-
-  const envVars = buildEnvVars({
-    dbPath,
-    port,
-    configPath,
+  const prepared = await prepareEnvWithPort({
     webhookSecret: opts.webhookSecret ?? "",
   });
-  for (const [k, v] of Object.entries(envVars)) process.env[k] = v;
+
+  const envVars = buildEnvVars({
+    dbPath: prepared.dbPath,
+    port: prepared.port,
+    configPath: prepared.configPath,
+    webhookSecret: prepared.webhookSecret,
+  });
+  installEnv(envVars);
   resetEnvCache();
 
   const { boot } = await import("../src/main.js");
@@ -47,9 +42,6 @@ export async function bootFake(
   const projectId = project.id;
   boundary.script.projectId = projectId;
 
-  // Create a seeded branch commit root optional
-  // provider starts with empty commits; branches.create uses headSha mapping
-
   const handle = await boot({
     provider: boundary.provider,
     agents: boundary.agents,
@@ -59,8 +51,15 @@ export async function bootFake(
 
   const cleanup = async (): Promise<void> => {
     await handle.shutdown();
-    rmSync(dir, { recursive: true, force: true });
+    prepared.cleanup();
   };
 
-  return { handle, port, dir, boundary, projectId, cleanup };
+  return {
+    handle,
+    port: prepared.port,
+    dir: prepared.dir,
+    boundary,
+    projectId,
+    cleanup,
+  };
 }

@@ -1,10 +1,7 @@
 #!/usr/bin/env -S tsx
 import { createServer } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { resetEnvCache } from "@colony/config";
-import { buildEnvVars, freePort, writeColonyYaml } from "./env.js";
+import { buildEnvVars, installEnv, prepareEnvWithPort } from "./env.js";
 import {
   createScriptedBoundary,
   patchScript,
@@ -15,24 +12,17 @@ import type { ScriptedAgentRuntimeAdapter } from "./fakes.js";
 const CONTROL_PORT = Number(process.env.COLONY_E2E_CONTROL_PORT || "4478");
 
 async function main(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
-  const configPath = join(dir, "colony.yaml");
-  writeColonyYaml(configPath);
-  const dbPath = join(dir, "colonyd.db");
-  const port = process.env.COLONYD_PORT
-    ? Number(process.env.COLONYD_PORT)
-    : await freePort();
-  const webhookSecret = process.env.GITLAB_WEBHOOK_SECRET ?? "";
+  const prepared = await prepareEnvWithPort({
+    webhookSecret: process.env.GITLAB_WEBHOOK_SECRET ?? "",
+  });
 
   const envVars = buildEnvVars({
-    dbPath,
-    port,
-    configPath,
-    webhookSecret,
+    dbPath: prepared.dbPath,
+    port: prepared.port,
+    configPath: prepared.configPath,
+    webhookSecret: prepared.webhookSecret,
   });
-  // Preserve COLONY_E2E_CONTROL_PORT for diagnostic
-  for (const [k, v] of Object.entries(envVars)) process.env[k] = v;
-  if (!process.env.COLONYD_PORT) process.env.COLONYD_PORT = String(port);
+  installEnv(envVars);
   resetEnvCache();
 
   const { boot } = await import("../src/main.js");
@@ -86,7 +76,7 @@ async function main(): Promise<void> {
 
   control.listen(CONTROL_PORT, "127.0.0.1", () => {
     console.log(
-      `[fake-colonyd] api :${port} control :${CONTROL_PORT} db ${dbPath}`,
+      `[fake-colonyd] api :${prepared.port} control :${CONTROL_PORT} db ${prepared.dbPath}`,
     );
   });
 
@@ -94,7 +84,7 @@ async function main(): Promise<void> {
     console.log("[fake-colonyd] shutting down");
     control.close();
     await handle.shutdown();
-    rmSync(dir, { recursive: true, force: true });
+    prepared.cleanup();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());
