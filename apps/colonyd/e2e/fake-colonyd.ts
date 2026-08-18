@@ -12,8 +12,20 @@ import type { ScriptedAgentRuntimeAdapter } from "./fakes.js";
 const CONTROL_PORT = Number(process.env.COLONY_E2E_CONTROL_PORT || "4478");
 
 async function main(): Promise<void> {
+  const rawE2eDbPath = process.env["COLONY_E2E_DB_PATH"]?.trim() || undefined;
+  const rawE2ePort = process.env["COLONY_E2E_PORT"]?.trim();
+  let e2ePort: number | undefined;
+  if (rawE2ePort) {
+    const n = Number(rawE2ePort);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 65535) {
+      throw new Error(`invalid COLONY_E2E_PORT: ${rawE2ePort}`);
+    }
+    e2ePort = n;
+  }
   const prepared = await prepareEnvWithPort({
     webhookSecret: process.env.GITLAB_WEBHOOK_SECRET ?? "",
+    dbPath: rawE2eDbPath,
+    port: e2ePort,
   });
 
   const envVars = buildEnvVars({
@@ -21,12 +33,19 @@ async function main(): Promise<void> {
     port: prepared.port,
     configPath: prepared.configPath,
     webhookSecret: prepared.webhookSecret,
+    tickMs: process.env["COLONYD_TICK_MS"],
+    oidcIssuer: process.env["COLONY_OIDC_ISSUER"],
+    oidcClientId: process.env["COLONY_OIDC_CLIENT_ID"],
+    oidcRequiredRole: process.env["COLONY_OIDC_REQUIRED_ROLE"],
   });
   installEnv(envVars);
   resetEnvCache();
 
   const { boot } = await import("../src/main.js");
   const boundary = createScriptedBoundary();
+  if (process.env["COLONY_E2E_MODE"] === "stall-implementer") {
+    boundary.script.implementerStall = true;
+  }
   const project = await boundary.provider.projects.create({
     name: "console-e2e",
     path: "so/console-e2e",

@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createServer } from "node:net";
 
 export interface PreparedEnv {
@@ -60,14 +60,46 @@ export function writeColonyYaml(path: string): void {
 export async function prepareEnvWithPort(
   opts: {
     webhookSecret?: string;
+    dbPath?: string;
+    port?: number;
   } = {},
 ): Promise<PreparedEnv> {
-  const dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
+  const rawDbPath = opts.dbPath?.trim();
+  const isExternalDb = Boolean(rawDbPath);
+  let dir: string;
+  if (isExternalDb) {
+    // When an external DB path is supplied (restart e2e), place the temp
+    // config dir under the same parent so a SIGKILLed fake-colonyd that
+    // never runs prepared.cleanup() does not leak /tmp/colonyd-e2e-* —
+    // the test's restartDir cleanup reclaims it.
+    const parent = dirname(rawDbPath!);
+    try {
+      dir = mkdtempSync(join(parent, "colonyd-e2e-"));
+    } catch {
+      dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
+    }
+  } else {
+    dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
+  }
   const configPath = join(dir, "colony.yaml");
   writeColonyYaml(configPath);
-  const dbPath = join(dir, "colonyd.db");
-  const port = await freePort();
+  const dbPath = rawDbPath ? rawDbPath : join(dir, "colonyd.db");
+  let port: number;
+  if (opts.port !== undefined) {
+    const n = opts.port;
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 65535) {
+      throw new Error(`invalid COLONY_E2E_PORT: ${String(opts.port)}`);
+    }
+    port = n;
+  } else {
+    port = await freePort();
+  }
   const cleanup = (): void => {
+    if (isExternalDb) {
+      rmSync(dbPath, { force: true });
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+    }
     rmSync(dir, { recursive: true, force: true });
   };
   return {
@@ -91,7 +123,12 @@ export function buildEnvVars(input: {
   port: number;
   configPath: string;
   webhookSecret?: string;
+  oidcIssuer?: string;
+  oidcClientId?: string;
+  oidcRequiredRole?: string;
+  tickMs?: string | number;
 }): Record<string, string> {
+  const tickMs = input.tickMs !== undefined ? String(input.tickMs) : "250";
   return {
     NODE_ENV: "test",
     AGENT_RUNTIME: "fake",
@@ -99,14 +136,14 @@ export function buildEnvVars(input: {
     GITLAB_WEBHOOK_SECRET: input.webhookSecret ?? "",
     COLONYD_DB_PATH: input.dbPath,
     COLONYD_PORT: String(input.port),
-    COLONYD_TICK_MS: "250",
+    COLONYD_TICK_MS: tickMs,
     COLONYD_MAX_CONCURRENT: "1",
     COLONYD_MAX_ATTEMPTS: "3",
     COLONYD_SINGLE_TOKEN: "0",
     COLONY_CONFIG_PATH: input.configPath,
     PUBLIC_HOST: "localhost",
-    COLONY_OIDC_ISSUER: "",
-    COLONY_OIDC_CLIENT_ID: "",
-    COLONY_OIDC_REQUIRED_ROLE: "",
+    COLONY_OIDC_ISSUER: input.oidcIssuer ?? "",
+    COLONY_OIDC_CLIENT_ID: input.oidcClientId ?? "",
+    COLONY_OIDC_REQUIRED_ROLE: input.oidcRequiredRole ?? "",
   };
 }
