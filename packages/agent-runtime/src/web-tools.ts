@@ -109,7 +109,7 @@ export function isRoutableAddress(address: string): boolean {
   if (fam === 4) {
     const octs = parseIpv4(address);
     if (!octs) return false;
-    const [a, b, c, d] = octs as [number, number, number, number];
+    const [a, b, c] = octs as [number, number, number, number];
 
     // 0.0.0.0/8
     if (a === 0) return false;
@@ -141,7 +141,6 @@ export function isRoutableAddress(address: string): boolean {
     if (a >= 224 && a <= 239) return false;
     // 240/4 reserved 240-255 incl broadcast
     if (a >= 240 && a <= 255) return false;
-    // also check broadcast 255.255.255.255 covered above
 
     return true;
   }
@@ -382,7 +381,6 @@ export function createNodeHttpsTransport(
     maxBytes,
     guard,
   }: HttpTransportRequest): Promise<HttpTransportResponse> => {
-    // Basic https-only enforcement at transport level as well
     if (url.protocol !== "https:") {
       throw new Error(
         `web_fetch blocked: unsupported protocol ${url.protocol} (SSRF guard)`,
@@ -414,6 +412,15 @@ export function createNodeHttpsTransport(
 
     return await new Promise<HttpTransportResponse>((resolve, reject) => {
       let settled = false;
+      let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const clearTimer = () => {
+        if (absoluteTimer !== undefined) {
+          clearTimeout(absoluteTimer);
+          absoluteTimer = undefined;
+        }
+      };
+
       const req = https.request(
         url,
         {
@@ -435,21 +442,18 @@ export function createNodeHttpsTransport(
 
           const chunks: Buffer[] = [];
           let storedBytes = 0;
-          let observed = 0;
           let truncated = false;
 
           res.on("data", (chunk: Buffer) => {
             const buf = Buffer.isBuffer(chunk)
               ? chunk
               : Buffer.from(chunk as unknown as string);
-            observed += buf.length;
             if (truncated) return;
             if (storedBytes + buf.length > maxBytes) {
               const remaining = maxBytes - storedBytes;
               if (remaining > 0) chunks.push(buf.subarray(0, remaining));
               storedBytes = maxBytes;
               truncated = true;
-              // stop further download
               res.destroy();
             } else {
               chunks.push(buf);
@@ -460,6 +464,7 @@ export function createNodeHttpsTransport(
           res.on("end", () => {
             if (settled) return;
             settled = true;
+            clearTimer();
             const body = Buffer.concat(chunks).toString("utf8");
             resolve({
               status,
@@ -472,15 +477,15 @@ export function createNodeHttpsTransport(
           res.on("error", (err) => {
             if (settled) return;
             settled = true;
+            clearTimer();
             reject(err);
           });
 
-          // In case we destroyed after truncation, 'end' may not fire; handle close
           res.on("close", () => {
             if (settled) return;
-            // if truncated we consider it done
             if (truncated) {
               settled = true;
+              clearTimer();
               const body = Buffer.concat(chunks).toString("utf8");
               resolve({
                 status,
@@ -496,20 +501,20 @@ export function createNodeHttpsTransport(
       req.on("error", (err) => {
         if (settled) return;
         settled = true;
+        clearTimer();
         reject(err);
       });
 
-      // Timeout handling
-      req.setTimeout(timeoutMs, () => {
+      // Absolute deadline — bounds total request time regardless of socket activity
+      absoluteTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
         const err = new Error(
           `timed out after ${timeoutMs}ms fetching ${url.toString()}`,
         );
         req.destroy(err);
-        if (!settled) {
-          settled = true;
-          reject(err);
-        }
-      });
+        reject(err);
+      }, timeoutMs);
 
       req.end();
     });
@@ -592,14 +597,6 @@ function boundMessage(msg: string, limit = 500): string {
   return msg.length > limit ? msg.slice(0, limit) : msg;
 }
 
-function truncateErrorPrefix(tool: string, detail: string): string {
-  return boundMessage(`${tool} ${detail}`);
-}
-
-function isValidHttpsUrl(u: URL): boolean {
-  return u.protocol === "https:" && !u.username && !u.password;
-}
-
 function normalizedHostname(url: URL): string {
   let h = url.hostname;
   if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
@@ -646,7 +643,6 @@ function makeZodPrepare<T>(schema: z.ZodType<T>): (args: unknown) => T {
   };
 }
 
-// Validate searxngUrl once
 function validateSearxngUrl(raw: string): URL {
   let u: URL;
   try {
@@ -665,6 +661,54 @@ function validateSearxngUrl(raw: string): URL {
   return u;
 }
 
+function withDeadline<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  urlStr: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      reject(new Error(`timed out after ${timeoutMs}ms fetching ${urlStr}`));
+    }, timeoutMs);
+
+    let onAbort: (() => void) | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        cleanup();
+        reject(new Error(`timed out after ${timeoutMs}ms fetching ${urlStr}`));
+        return;
+      }
+      onAbort = () => {
+        cleanup();
+        reject(new Error(`timed out after ${timeoutMs}ms fetching ${urlStr}`));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    promise.then(
+      (v) => {
+        cleanup();
+        resolve(v);
+      },
+      (e) => {
+        cleanup();
+        reject(e);
+      },
+    );
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tool factory
 // ---------------------------------------------------------------------------
@@ -675,7 +719,6 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
 
   const baseUrl = validateSearxngUrl(rawUrl);
 
-  // Resolve deps: support both top-level and nested deps
   const resolver: AddressResolver | undefined =
     config.resolver ?? config.deps?.resolver;
   const injectedTransport: HttpTransport | undefined =
@@ -715,7 +758,6 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
   const transport: HttpTransport =
     injectedTransport ?? createNodeHttpsTransport(resolver ?? defaultResolver);
 
-  // TypeBox parameters mirroring Zod schemas
   const webSearchParams = Type.Object({
     query: Type.String({
       minLength: 1,
@@ -741,120 +783,96 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
     execute: async (
       toolCallId: string,
       params: unknown,
-      _signal: unknown,
+      signal: unknown,
       _onUpdate: unknown,
       _ctx: unknown,
     ) => {
+      void toolCallId;
       const args = params as { query: string };
-      try {
-        void toolCallId;
-        const searchUrl = new URL("search", baseUrl.toString());
-        // Ensure trailing slash handling: baseUrl already validated, use its origin + search path
-        // If baseUrl has path, keep it.
-        const base = baseUrl.toString().replace(/\/+$/, "");
-        const url = new URL(
-          `${base}/search?q=${encodeURIComponent(args.query)}&format=json`,
-        );
+      const abortSignal = signal instanceof AbortSignal ? signal : undefined;
+      const base = baseUrl.toString().replace(/\/+$/, "");
+      const url = new URL(
+        `${base}/search?q=${encodeURIComponent(args.query)}&format=json`,
+      );
 
-        let res: HttpTransportResponse;
-        try {
-          res = await transport({
+      let res: HttpTransportResponse;
+      try {
+        res = await withDeadline(
+          transport({
             url,
             timeoutMs: searchTimeoutMs,
             maxBytes: SEARCH_MAX_BYTES,
             guard: "trusted",
-          });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes("timed out after")) {
-            const out = truncateErrorPrefix("web_search failed:", ` ${msg}`);
-            return {
-              content: [{ type: "text", text: boundMessage(out) }],
-              details: {},
-              isError: true,
-            } as unknown as never;
-          }
-          if (msg.includes("SSRF guard") || msg.includes("non-public")) {
-            const out = `web_search blocked: host resolves only to non-public addresses (SSRF guard)`;
-            return {
-              content: [{ type: "text", text: boundMessage(out) }],
-              details: {},
-              isError: true,
-            } as unknown as never;
-          }
-          const snippet = sanitizeSnippet(msg);
-          const out = truncateErrorPrefix(
-            "web_search failed:",
-            ` ${snippet} fetching ${url.toString()}`,
-          );
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-
-        if (res.status < 200 || res.status >= 300) {
-          const snippet = sanitizeSnippet(res.body);
-          const baseMsg = `web_search failed: upstream HTTP ${res.status} from ${url.toString()}`;
-          const withSnippet = snippet ? `${baseMsg} (${snippet})` : baseMsg;
-          return {
-            content: [{ type: "text", text: boundMessage(withSnippet) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-
-        let json: unknown;
-        try {
-          json = JSON.parse(res.body);
-        } catch {
-          const out = `web_search failed: SearXNG returned malformed JSON (HTTP ${res.status})`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-
-        const parsed = searxngResponseSchema.safeParse(json);
-        if (!parsed.success) {
-          const out = `web_search failed: SearXNG returned malformed JSON (HTTP ${res.status})`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-
-        const mapped = parsed.data.results.slice(0, maxResults).map((r) => ({
-          title: r.title,
-          url: r.url,
-          content: r.content ?? "",
-        }));
-
-        const output = {
-          query: args.query,
-          results: mapped,
-          resultCount: mapped.length,
-        };
-
-        const validated = webSearchOutputSchema.parse(output);
-
-        return {
-          content: [{ type: "text", text: JSON.stringify(validated) }],
-          details: validated,
-        } as unknown as never;
+          }),
+          searchTimeoutMs,
+          url.toString(),
+          abortSignal,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // Zod validation from prepare already throws; but execute also may throw for other reasons
-        const out = boundMessage(`web_search failed: ${sanitizeSnippet(msg)}`);
-        return {
-          content: [{ type: "text", text: out }],
-          details: {},
-          isError: true,
-        } as unknown as never;
+        if (msg.includes("timed out after")) {
+          throw new Error(boundMessage(`web_search failed: ${msg}`));
+        }
+        if (msg.includes("SSRF guard") || msg.includes("non-public")) {
+          throw new Error(
+            boundMessage(
+              `web_search blocked: host resolves only to non-public addresses (SSRF guard)`,
+            ),
+          );
+        }
+        const snippet = sanitizeSnippet(msg);
+        throw new Error(
+          boundMessage(
+            `web_search failed: ${snippet} fetching ${url.toString()}`,
+          ),
+        );
       }
+
+      if (res.status < 200 || res.status >= 300) {
+        const snippet = sanitizeSnippet(res.body);
+        const baseMsg = `web_search failed: upstream HTTP ${res.status} from ${url.toString()}`;
+        const withSnippet = snippet ? `${baseMsg} (${snippet})` : baseMsg;
+        throw new Error(boundMessage(withSnippet));
+      }
+
+      let json: unknown;
+      try {
+        json = JSON.parse(res.body);
+      } catch {
+        throw new Error(
+          boundMessage(
+            `web_search failed: SearXNG returned malformed JSON (HTTP ${res.status})`,
+          ),
+        );
+      }
+
+      const parsed = searxngResponseSchema.safeParse(json);
+      if (!parsed.success) {
+        throw new Error(
+          boundMessage(
+            `web_search failed: SearXNG returned malformed JSON (HTTP ${res.status})`,
+          ),
+        );
+      }
+
+      const mapped = parsed.data.results.slice(0, maxResults).map((r) => ({
+        title: r.title,
+        url: r.url,
+        content: r.content ?? "",
+      }));
+
+      const output = {
+        query: args.query,
+        results: mapped,
+        resultCount: mapped.length,
+      };
+
+      const validated = webSearchOutputSchema.parse(output);
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(validated) }],
+        details: validated,
+      } as unknown as never;
     },
   } as unknown as ToolDefinition;
 
@@ -868,284 +886,233 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
     execute: async (
       toolCallId: string,
       params: unknown,
-      _signal: unknown,
+      signal: unknown,
       _onUpdate: unknown,
       _ctx: unknown,
     ) => {
+      void toolCallId;
       const args = params as { url: string };
+      const abortSignal = signal instanceof AbortSignal ? signal : undefined;
+      let currentUrl: URL;
       try {
-        void toolCallId;
-        let currentUrl: URL;
+        currentUrl = new URL(args.url);
+      } catch {
+        throw new Error(
+          boundMessage(
+            `web_fetch failed: invalid URL ${sanitizeSnippet(args.url)}`,
+          ),
+        );
+      }
+
+      if (currentUrl.protocol !== "https:") {
+        throw new Error(
+          boundMessage(
+            `web_fetch failed: url must be https:// (got ${currentUrl.protocol})`,
+          ),
+        );
+      }
+      if (currentUrl.username || currentUrl.password) {
+        throw new Error(
+          boundMessage(
+            `web_fetch blocked: URL contains credentials (SSRF guard)`,
+          ),
+        );
+      }
+      if (currentUrl.hash) {
+        throw new Error(
+          boundMessage(
+            `web_fetch blocked: URL must not contain fragment (SSRF guard)`,
+          ),
+        );
+      }
+      const initialHost = normalizedHostname(currentUrl);
+      if (isBlockedHostname(initialHost)) {
+        throw new Error(
+          boundMessage(
+            `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`,
+          ),
+        );
+      }
+      const famInit = net.isIP(initialHost);
+      if (famInit !== 0 && !isRoutableAddress(initialHost)) {
+        throw new Error(
+          boundMessage(
+            `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`,
+          ),
+        );
+      }
+
+      let redirects = 0;
+      let finalRes: HttpTransportResponse | null = null;
+      let finalUrl = currentUrl;
+
+      while (true) {
+        let res: HttpTransportResponse;
         try {
-          currentUrl = new URL(args.url);
-        } catch {
-          const out = `web_fetch failed: invalid URL ${sanitizeSnippet(args.url)}`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-
-        // Initial validation
-        if (currentUrl.protocol !== "https:") {
-          const out = `web_fetch failed: url must be https:// (got ${currentUrl.protocol})`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-        if (currentUrl.username || currentUrl.password) {
-          const out = `web_fetch blocked: URL contains credentials (SSRF guard)`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-        if (currentUrl.hash) {
-          const out = `web_fetch blocked: URL must not contain fragment (SSRF guard)`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-        // Literal IP / localhost check for initial URL when strict
-        const initialHost = normalizedHostname(currentUrl);
-        if (isBlockedHostname(initialHost)) {
-          const out = `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-        const famInit = net.isIP(initialHost);
-        if (famInit !== 0 && !isRoutableAddress(initialHost)) {
-          const out = `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
-        }
-
-        let redirects = 0;
-        let finalRes: HttpTransportResponse | null = null;
-        let finalUrl = currentUrl;
-
-        while (true) {
-          let res: HttpTransportResponse;
-          try {
-            res = await transport({
+          res = await withDeadline(
+            transport({
               url: currentUrl,
               timeoutMs: fetchTimeoutMs,
               maxBytes: fetchMaxBytes,
               guard: "strict",
-            });
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes("timed out after")) {
-              const out = `web_fetch failed: ${msg}`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            if (msg.includes("SSRF guard") || msg.includes("non-public")) {
-              const out = `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            if (
-              msg.includes("unsupported protocol") ||
-              msg.includes("credentials")
-            ) {
-              const out = `web_fetch blocked: ${sanitizeSnippet(msg)} (SSRF guard)`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            const snippet = sanitizeSnippet(msg);
-            const out = `web_fetch failed: ${snippet} fetching ${currentUrl.toString()}`;
-            return {
-              content: [{ type: "text", text: boundMessage(out) }],
-              details: {},
-              isError: true,
-            } as unknown as never;
+            }),
+            fetchTimeoutMs,
+            currentUrl.toString(),
+            abortSignal,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes("timed out after")) {
+            throw new Error(boundMessage(`web_fetch failed: ${msg}`));
+          }
+          if (msg.includes("SSRF guard") || msg.includes("non-public")) {
+            throw new Error(
+              boundMessage(
+                `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`,
+              ),
+            );
+          }
+          if (
+            msg.includes("unsupported protocol") ||
+            msg.includes("credentials")
+          ) {
+            throw new Error(
+              boundMessage(
+                `web_fetch blocked: ${sanitizeSnippet(msg)} (SSRF guard)`,
+              ),
+            );
+          }
+          const snippet = sanitizeSnippet(msg);
+          throw new Error(
+            boundMessage(
+              `web_fetch failed: ${snippet} fetching ${currentUrl.toString()}`,
+            ),
+          );
+        }
+
+        const isRedirect =
+          [301, 302, 303, 307, 308].includes(res.status) &&
+          !!res.headers["location"];
+
+        if (isRedirect) {
+          if (redirects >= maxRedirects) {
+            throw new Error(
+              boundMessage(
+                `web_fetch failed: too many redirects (${maxRedirects}) fetching ${currentUrl.toString()}`,
+              ),
+            );
+          }
+          const loc = res.headers["location"]!;
+          let nextUrl: URL;
+          try {
+            nextUrl = new URL(loc, currentUrl);
+          } catch {
+            throw new Error(
+              boundMessage(
+                `web_fetch failed: invalid redirect location ${sanitizeSnippet(loc)} from ${currentUrl.toString()}`,
+              ),
+            );
           }
 
-          const isRedirect =
-            [301, 302, 303, 307, 308].includes(res.status) &&
-            !!res.headers["location"];
-
-          if (isRedirect) {
-            if (redirects >= maxRedirects) {
-              const out = `web_fetch failed: too many redirects (${maxRedirects}) fetching ${currentUrl.toString()}`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            const loc = res.headers["location"]!;
-            let nextUrl: URL;
-            try {
-              nextUrl = new URL(loc, currentUrl);
-            } catch {
-              const out = `web_fetch failed: invalid redirect location ${sanitizeSnippet(loc)} from ${currentUrl.toString()}`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-
-            // Redirect policy validation before requesting next hop
-            if (nextUrl.protocol !== "https:") {
-              const out = `web_fetch blocked: redirect to non-https URL ${nextUrl.toString()} (SSRF guard)`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            if (nextUrl.username || nextUrl.password) {
-              const out = `web_fetch blocked: redirect URL contains credentials (SSRF guard)`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            if (nextUrl.hash) {
-              const out = `web_fetch blocked: redirect URL must not contain fragment (SSRF guard)`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            const host = normalizedHostname(nextUrl);
-            if (isBlockedHostname(host)) {
-              const out = `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-            const fam = net.isIP(host);
-            if (fam !== 0 && !isRoutableAddress(host)) {
-              const out = `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`;
-              return {
-                content: [{ type: "text", text: boundMessage(out) }],
-                details: {},
-                isError: true,
-              } as unknown as never;
-            }
-
-            currentUrl = nextUrl;
-            redirects += 1;
-            continue;
+          if (nextUrl.protocol !== "https:") {
+            throw new Error(
+              boundMessage(
+                `web_fetch blocked: redirect to non-https URL ${nextUrl.toString()} (SSRF guard)`,
+              ),
+            );
+          }
+          if (nextUrl.username || nextUrl.password) {
+            throw new Error(
+              boundMessage(
+                `web_fetch blocked: redirect URL contains credentials (SSRF guard)`,
+              ),
+            );
+          }
+          if (nextUrl.hash) {
+            throw new Error(
+              boundMessage(
+                `web_fetch blocked: redirect URL must not contain fragment (SSRF guard)`,
+              ),
+            );
+          }
+          const host = normalizedHostname(nextUrl);
+          if (isBlockedHostname(host)) {
+            throw new Error(
+              boundMessage(
+                `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`,
+              ),
+            );
+          }
+          const fam = net.isIP(host);
+          if (fam !== 0 && !isRoutableAddress(host)) {
+            throw new Error(
+              boundMessage(
+                `web_fetch blocked: host resolves only to non-public addresses (SSRF guard)`,
+              ),
+            );
           }
 
-          // Not a redirect: handle status
-          if (res.status < 200 || res.status >= 300) {
-            const snippet = sanitizeSnippet(res.body);
-            const baseMsg = `web_fetch failed: upstream HTTP ${res.status} from ${currentUrl.toString()}`;
-            const withSnippet = snippet ? `${baseMsg} (${snippet})` : baseMsg;
-            return {
-              content: [{ type: "text", text: boundMessage(withSnippet) }],
-              details: {},
-              isError: true,
-            } as unknown as never;
-          }
-
-          finalRes = res;
-          finalUrl = currentUrl;
-          break;
+          currentUrl = nextUrl;
+          redirects += 1;
+          continue;
         }
 
-        if (!finalRes) {
-          const out = `web_fetch failed: no response from ${currentUrl.toString()}`;
-          return {
-            content: [{ type: "text", text: boundMessage(out) }],
-            details: {},
-            isError: true,
-          } as unknown as never;
+        if (res.status < 200 || res.status >= 300) {
+          const snippet = sanitizeSnippet(res.body);
+          const baseMsg = `web_fetch failed: upstream HTTP ${res.status} from ${currentUrl.toString()}`;
+          const withSnippet = snippet ? `${baseMsg} (${snippet})` : baseMsg;
+          throw new Error(boundMessage(withSnippet));
         }
 
-        const contentType = finalRes.headers["content-type"] ?? "";
-        const extracted = extractText(finalRes.body, contentType);
-        // byteCount: per spec, observed byte count; we store truncated length vs original?
-        // Our transport's body is already truncated to maxBytes; truncated flag indicates cap hit.
-        // byteCount should be the actual bytes of content before extraction? But we need to report byteCount as per transport.
-        // For simplicity, byteCount = truncated ? maxBytes : Buffer.byteLength(finalRes.body, "utf8")
-        // However spec says "plus the observed byte count when the cap hits" — we can report truncated ? maxBytes + extra? But we don't have extra observed beyond maxBytes because we destroyed.
-        // We'll report byteCount as stored length when not truncated, and maxBytes when truncated (observed capped). Tests likely check byteCount equals capped length.
-        // To satisfy both interpretations, we will set byteCount = truncated ? fetchMaxBytes : Buffer.byteLength(finalRes.body, "utf8")
-        // But if body was truncated, byteCount should be >= fetchMaxBytes. We'll use fetchMaxBytes for truncated.
-        // Alternatively if transport had observed > maxBytes we would need extra. We'll approximate by using fetchMaxBytes for truncated case.
-
-        // For more accurate observed, we could track observed in transport but we discarded. We'll just use byteCount as truncated ? fetchMaxBytes : Buffer.byteLength(finalRes.body)
-
-        let byteCount: number;
-        if (finalRes.truncated) {
-          byteCount = fetchMaxBytes;
-          // truncated content already capped; ensure content length <= max
-        } else {
-          byteCount = Buffer.byteLength(finalRes.body, "utf8");
-        }
-
-        // content is extracted text, but ensure also capped at byte level? The extraction after might change length, but spec says body capped at byte level during streaming, then extraction. So we report extracted content (which for html is shorter).
-        // For truncation test with text/plain, extracted is same as body, so byteCount should reflect body length.
-        // We'll set content to extracted truncated if needed? Extraction for html may shrink, but we still report truncated flag.
-
-        // If extracted longer than fetchMaxBytes (unlikely), cap it.
-        let content = extracted;
-        const contentBytes = Buffer.byteLength(content, "utf8");
-        let truncated = finalRes.truncated;
-        if (contentBytes > fetchMaxBytes) {
-          content = Buffer.from(content, "utf8")
-            .subarray(0, fetchMaxBytes)
-            .toString("utf8");
-          truncated = true;
-          byteCount = fetchMaxBytes;
-        }
-
-        const output = {
-          url: finalUrl.toString(),
-          status: finalRes.status,
-          contentType,
-          content,
-          truncated,
-          byteCount,
-        };
-
-        const validated = webFetchOutputSchema.parse(output);
-
-        return {
-          content: [{ type: "text", text: JSON.stringify(validated) }],
-          details: validated,
-        } as unknown as never;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const out = boundMessage(`web_fetch failed: ${sanitizeSnippet(msg)}`);
-        return {
-          content: [{ type: "text", text: out }],
-          details: {},
-          isError: true,
-        } as unknown as never;
+        finalRes = res;
+        finalUrl = currentUrl;
+        break;
       }
+
+      if (!finalRes) {
+        throw new Error(
+          boundMessage(
+            `web_fetch failed: no response from ${currentUrl.toString()}`,
+          ),
+        );
+      }
+
+      const contentType = finalRes.headers["content-type"] ?? "";
+      const extracted = extractText(finalRes.body, contentType);
+
+      let byteCount: number;
+      if (finalRes.truncated) {
+        byteCount = fetchMaxBytes;
+      } else {
+        byteCount = Buffer.byteLength(finalRes.body, "utf8");
+      }
+
+      let content = extracted;
+      const contentBytes = Buffer.byteLength(content, "utf8");
+      let truncated = finalRes.truncated;
+      if (contentBytes > fetchMaxBytes) {
+        content = Buffer.from(content, "utf8")
+          .subarray(0, fetchMaxBytes)
+          .toString("utf8");
+        truncated = true;
+        byteCount = fetchMaxBytes;
+      }
+
+      const output = {
+        url: finalUrl.toString(),
+        status: finalRes.status,
+        contentType,
+        content,
+        truncated,
+        byteCount,
+      };
+
+      const validated = webFetchOutputSchema.parse(output);
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(validated) }],
+        details: validated,
+      } as unknown as never;
     },
   } as unknown as ToolDefinition;
 

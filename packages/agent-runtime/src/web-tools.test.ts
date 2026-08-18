@@ -1,7 +1,5 @@
-// @ts-nocheck
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as http from "node:http";
-import * as net from "node:net";
 import {
   createWebTools,
   isRoutableAddress,
@@ -15,10 +13,6 @@ import type { HttpTransport } from "./web-tools.js";
 
 // helpers
 
-function fakeTransportFactory(handler: HttpTransport): HttpTransport {
-  return handler;
-}
-
 async function callTool(
   tool: {
     prepareArguments?: (a: unknown) => unknown;
@@ -26,7 +20,7 @@ async function callTool(
   },
   rawArgs: unknown,
 ): Promise<{
-  isError?: boolean;
+  isError: boolean;
   content: { type: string; text: string }[];
   details?: unknown;
 }> {
@@ -34,18 +28,45 @@ async function callTool(
   if (tool.prepareArguments) {
     prepared = tool.prepareArguments(rawArgs);
   }
-  const res = (await tool.execute(
-    "test-id",
-    prepared,
-    undefined,
-    undefined,
-    undefined,
-  )) as {
-    isError?: boolean;
-    content: { type: string; text: string }[];
-    details?: unknown;
-  };
-  return res;
+  try {
+    const res = (await tool.execute(
+      "test-id",
+      prepared,
+      undefined,
+      undefined,
+      undefined,
+    )) as {
+      content: { type: string; text: string }[];
+      details?: unknown;
+    };
+    // Tools now throw on error (agent loop converts to isError:true).
+    // For direct invocations, map thrown errors to isError shape so tests
+    // can assert on content regardless of calling path.
+    return { isError: false, content: res.content, details: res.details };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { isError: true, content: [{ type: "text", text: msg }] };
+  }
+}
+
+async function callToolThrows(
+  tool: {
+    prepareArguments?: (a: unknown) => unknown;
+    execute: (...args: unknown[]) => Promise<unknown>;
+  },
+  rawArgs: unknown,
+): Promise<Error> {
+  let prepared: unknown = rawArgs;
+  if (tool.prepareArguments) {
+    prepared = tool.prepareArguments(rawArgs);
+  }
+  try {
+    await tool.execute("test-id", prepared, undefined, undefined, undefined);
+    throw new Error("expected tool to throw");
+  } catch (err) {
+    if ((err as Error).message === "expected tool to throw") throw err;
+    return err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 describe("web-tools factory & registration", () => {
@@ -140,7 +161,7 @@ describe("successful search via injected transport", () => {
     };
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
       maxResults: 2,
     });
     const search = tools.find((t) => t.name === "web_search")!;
@@ -195,7 +216,7 @@ describe("successful fetch incl one redirect hop", () => {
     };
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
       fetchMaxBytes: 5000,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
@@ -231,7 +252,7 @@ describe("successful fetch incl one redirect hop", () => {
     };
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
     const res = await callTool(fetch as unknown as never, {
@@ -251,7 +272,7 @@ describe("successful fetch incl one redirect hop", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
     const res = await callTool(fetch as unknown as never, {
@@ -262,7 +283,6 @@ describe("successful fetch incl one redirect hop", () => {
     expect(data.content).not.toContain("<style");
     expect(data.content).not.toContain("<p>");
     expect(data.content).toContain("Hello & <world>");
-    // no runs of 3+ blank lines
     expect(data.content).not.toMatch(/\n{3,}/);
   });
 });
@@ -277,7 +297,7 @@ describe("malformed upstream JSON → descriptive error", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const search = tools.find((t) => t.name === "web_search")!;
     const res = await callTool(search as unknown as never, { query: "hello" });
@@ -295,7 +315,7 @@ describe("malformed upstream JSON → descriptive error", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const search = tools.find((t) => t.name === "web_search")!;
     const res = await callTool(search as unknown as never, { query: "hello" });
@@ -315,7 +335,7 @@ describe("HTTP failure (404 and 502) for both tools", () => {
       });
       const tools = createWebTools({
         searxngUrl: "https://searx.example.com",
-        transport: handler,
+        transport: handler as unknown as HttpTransport,
       });
       const search = tools.find((t) => t.name === "web_search")!;
       const res = await callTool(search as unknown as never, {
@@ -324,7 +344,6 @@ describe("HTTP failure (404 and 502) for both tools", () => {
       expect(res.isError).toBe(true);
       expect(res.content[0]!.text).toMatch(new RegExp(`upstream HTTP ${code}`));
       expect(res.content[0]!.text.length).toBeLessThanOrEqual(500);
-      // body not fully pasted
       expect(res.content[0]!.text.length).toBeLessThan(400);
     }
   });
@@ -339,7 +358,7 @@ describe("HTTP failure (404 and 502) for both tools", () => {
       });
       const tools = createWebTools({
         searxngUrl: "https://searx.example.com",
-        transport: handler,
+        transport: handler as unknown as HttpTransport,
       });
       const fetch = tools.find((t) => t.name === "web_fetch")!;
       const res = await callTool(fetch as unknown as never, {
@@ -353,46 +372,32 @@ describe("HTTP failure (404 and 502) for both tools", () => {
 });
 
 describe("timeout via injected never-resolving transport", () => {
-  it("web_search timeout includes ms", async () => {
-    const handler = () => new Promise(() => {});
+  it("web_search timeout includes ms (genuinely never-resolving)", async () => {
+    const never: HttpTransport = () => new Promise(() => {}) as Promise<any>;
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: never,
       searchTimeoutMs: 10,
-      fetchTimeoutMs: 10,
     });
-    // The injected transport never resolves; but our web_search does not enforce timeout itself when using injected transport.
-    // Instead we test via real transport timeout path by using a transport that throws timeout error.
-    const throwing: HttpTransport = async () => {
-      throw new Error(
-        `timed out after 10ms fetching https://searx.example.com/search?q=hi&format=json`,
-      );
-    };
-    const tools2 = createWebTools({
-      searxngUrl: "https://searx.example.com",
-      transport: throwing,
+    const search = tools.find((t) => t.name === "web_search")!;
+    const err = await callToolThrows(search as unknown as never, {
+      query: "hi",
     });
-    const search = tools2.find((t) => t.name === "web_search")!;
-    const res = await callTool(search as unknown as never, { query: "hi" });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/timed out after 10ms/);
+    expect(err.message).toMatch(/timed out after 10ms/);
   });
 
-  it("web_fetch timeout includes ms", async () => {
-    const throwing: HttpTransport = async () => {
-      throw new Error(`timed out after 20ms fetching https://example.com/x`);
-    };
+  it("web_fetch timeout includes ms (genuinely never-resolving)", async () => {
+    const never: HttpTransport = () => new Promise(() => {}) as Promise<any>;
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: throwing,
-      fetchTimeoutMs: 20,
+      transport: never,
+      fetchTimeoutMs: 15,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
-    const res = await callTool(fetch as unknown as never, {
+    const err = await callToolThrows(fetch as unknown as never, {
       url: "https://example.com/x",
     });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/timed out after 20ms/);
+    expect(err.message).toMatch(/timed out after 15ms/);
   });
 });
 
@@ -407,7 +412,7 @@ describe("truncation", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
       fetchMaxBytes: 200,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
@@ -418,7 +423,6 @@ describe("truncation", () => {
     const data = JSON.parse(res.content[0]!.text);
     expect(data.truncated).toBe(true);
     expect(data.byteCount).toBe(200);
-    // content may be truncated as well
     expect(Buffer.byteLength(data.content, "utf8")).toBeLessThanOrEqual(200);
   });
 
@@ -431,7 +435,7 @@ describe("truncation", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
       fetchMaxBytes: 200_000,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
@@ -608,12 +612,11 @@ describe("redirect-SSRF: blocks before hop", () => {
           truncated: false,
         };
       }
-      // should never be called
       return { status: 200, headers: {}, body: "evil", truncated: false };
     };
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
     const res = await callTool(fetch as unknown as never, {
@@ -633,7 +636,7 @@ describe("redirect-SSRF: blocks before hop", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
     const res = await callTool(fetch as unknown as never, {
@@ -652,7 +655,7 @@ describe("redirect-SSRF: blocks before hop", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
     const res = await callTool(fetch as unknown as never, {
@@ -702,7 +705,6 @@ describe("SSRF proofs through REAL default transport", () => {
         connections = 0;
         const tools = createWebTools({
           searxngUrl: "https://searx.example.com",
-          // use real transport
         });
         const fetch = tools.find((t) => t.name === "web_fetch")!;
         const f3 = fetch as unknown as {
@@ -710,13 +712,19 @@ describe("SSRF proofs through REAL default transport", () => {
             a: string,
             b: unknown,
           ) => Promise<{
-            isError?: boolean;
             content: { type: string; text: string }[];
           }>;
         };
-        const res = await f3.execute("test-id", { url });
-        expect(res.isError).toBe(true);
-        expect(res.content[0]!.text).toMatch(/SSRF guard/);
+        let threw = false;
+        let msg = "";
+        try {
+          await f3.execute("test-id", { url });
+        } catch (err) {
+          threw = true;
+          msg = err instanceof Error ? err.message : String(err);
+        }
+        expect(threw).toBe(true);
+        expect(msg).toMatch(/SSRF guard/);
         expect(connections).toBe(0);
       }
     });
@@ -739,7 +747,6 @@ describe("SSRF proofs through REAL default transport", () => {
       { address: "127.0.0.1", family: 4 as const },
     ];
     connections = 0;
-    // Use real transport but with evil resolver
     const transport = createNodeHttpsTransport(evilResolver);
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
@@ -783,7 +790,7 @@ describe("web_fetch literal IP validation", () => {
     };
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
     const res = await callTool(fetch as unknown as never, {
@@ -803,7 +810,7 @@ describe("web_fetch literal IP validation", () => {
     });
     const tools = createWebTools({
       searxngUrl: "https://searx.example.com",
-      transport: handler,
+      transport: handler as unknown as HttpTransport,
     });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
     const f = fetch as unknown as {
@@ -811,12 +818,18 @@ describe("web_fetch literal IP validation", () => {
         a: string,
         b: unknown,
       ) => Promise<{
-        isError?: boolean;
         content: { type: string; text: string }[];
       }>;
     };
-    const res = await f.execute("test-id", { url: "http://example.com/" });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/https/);
+    let threw = false;
+    let msg = "";
+    try {
+      await f.execute("test-id", { url: "http://example.com/" });
+    } catch (err) {
+      threw = true;
+      msg = err instanceof Error ? err.message : String(err);
+    }
+    expect(threw).toBe(true);
+    expect(msg).toMatch(/https/);
   });
 });
