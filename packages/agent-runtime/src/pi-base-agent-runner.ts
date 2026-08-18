@@ -48,6 +48,13 @@ import {
   type SandboxRole,
 } from "@colony/sandbox";
 import {
+  createWebTools,
+  WEB_SEARCH_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
+  WEB_TOOL_NAMES,
+} from "./web-tools.js";
+import type { WebToolsConfig } from "./web-tools.js";
+import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
@@ -90,6 +97,28 @@ export interface PiRoleProfile {
 export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
   readonly tools?: readonly string[];
   readonly logToolArgs?: boolean;
+}
+
+export { WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME, WEB_TOOL_NAMES };
+
+export function buildRunTools(
+  profile: PiRoleProfile,
+  options: PiBaseAgentRunnerOptions,
+): { customTools: ToolDefinition[]; toolNames: readonly string[] } {
+  const workTools = options.tools ?? profile.defaultTools;
+  // capture helper for submit tool — caller replaces it with real capture when wiring session
+  const dummyCapture = () => {};
+  const submitTool = profile.submitTool(dummyCapture);
+  const baseCustomTools: ToolDefinition[] = [submitTool];
+  const baseToolNames = [...workTools, submitTool.name];
+  if (!options.webTools) {
+    return { customTools: baseCustomTools, toolNames: baseToolNames };
+  }
+  const webTools = createWebTools(options.webTools);
+  return {
+    customTools: [...baseCustomTools, ...webTools],
+    toolNames: [...baseToolNames, ...WEB_TOOL_NAMES],
+  };
 }
 
 export class PiBaseAgentRunner implements PiRunner {
@@ -198,8 +227,20 @@ export class PiBaseAgentRunner implements PiRunner {
       });
     }
 
-    const customTools: ToolDefinition[] = [submitTool];
-    const toolNames = [...workTools, submitTool.name];
+    const { customTools, toolNames } = (() => {
+      // use the session-local capture so the submit envelope is wired
+      const base = [submitTool];
+      if (!this.options.webTools)
+        return {
+          customTools: base,
+          toolNames: [...workTools, submitTool.name],
+        };
+      const webTools = createWebTools(this.options.webTools);
+      return {
+        customTools: [...base, ...webTools],
+        toolNames: [...workTools, submitTool.name, ...WEB_TOOL_NAMES],
+      };
+    })();
     const clearTimeoutGuard = withRunTimeout(
       runId,
       this.options.runTimeoutMs,

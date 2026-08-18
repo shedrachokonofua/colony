@@ -23,6 +23,9 @@ hitl:
 review:
   mode: off
 
+# Web research (env-gated): set COLONY_SEARXNG_URL=https://searxng.home.shdr.ch to expose
+# web_search/web_fetch to all Pi agents (architect/developer/reviewer). No API key.
+
 # sandbox:
 #   engine: in-process   # default; agents run in-process
 #   # engine: kubernetes  # isolated kata sandboxes via the agent-sandbox controller

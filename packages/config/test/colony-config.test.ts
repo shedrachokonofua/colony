@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ColonyConfigError, loadColonyConfig } from "../src/colony-config.js";
+import { env, resetEnvCache } from "../src/index.js";
 
 function tempConfig(yaml: string): string {
   const dir = mkdtempSync(join(tmpdir(), "colony-config-"));
@@ -435,5 +436,27 @@ ${VALID_YAML}`),
 ${VALID_YAML}`),
       }),
     ).toThrow(/validation failed/);
+  });
+
+  it("parses COLONY_SEARXNG_URL as optional non-empty (unset → undefined)", () => {
+    const prev = process.env["COLONY_SEARXNG_URL"];
+    try {
+      delete process.env["COLONY_SEARXNG_URL"];
+      resetEnvCache();
+      expect(env().COLONY_SEARXNG_URL).toBeUndefined();
+      process.env["COLONY_SEARXNG_URL"] = "";
+      resetEnvCache();
+      expect(env().COLONY_SEARXNG_URL).toBeUndefined();
+      process.env["COLONY_SEARXNG_URL"] = "   ";
+      resetEnvCache();
+      expect(env().COLONY_SEARXNG_URL).toBeUndefined();
+      process.env["COLONY_SEARXNG_URL"] = "https://searxng.home.shdr.ch";
+      resetEnvCache();
+      expect(env().COLONY_SEARXNG_URL).toBe("https://searxng.home.shdr.ch");
+    } finally {
+      if (prev === undefined) delete process.env["COLONY_SEARXNG_URL"];
+      else process.env["COLONY_SEARXNG_URL"] = prev;
+      resetEnvCache();
+    }
   });
 });

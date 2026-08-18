@@ -72,6 +72,23 @@ COLONY_CONFIG_PATH=config/colony.yaml AGENT_RUNTIME=pi \
 npx tsx scripts/acceptance.ts
 ```
 
+## Web research tools
+
+When `COLONY_SEARXNG_URL` is set (e.g. `https://searxng.home.shdr.ch`) and `AGENT_RUNTIME=pi`, every Pi run for architect, implementer (developer), and reviewer exposes two extra tools alongside the normal file/shell tools:
+
+- `web_search { query }` — queries the SearXNG JSON API (`/search?q=…&format=json`) and returns `{ query, results: [{title,url,content}], resultCount }` capped to 8 results.
+- `web_fetch { url }` — fetches an `https://` URL, follows up to 5 redirects, extracts text (HTML → plain text), and returns `{ url, status, contentType, content, truncated, byteCount }` capped at 200 KB.
+
+Bounds: search results 8 (clamped 1–20), fetch 200 KB (clamped 1–1 MB), search timeout 10 s, fetch timeout 20 s, redirect cap 5 (0–10). Large bodies are truncated and `truncated: true` is returned.
+
+SSRF / private-network policy: `web_fetch` enforces strict SSRF filtering. Literal private/loopback/multicast/reserved IPs and hostnames resolving only to non-public addresses (e.g. `localhost`, `10/8`, `192.168/16`) are blocked. `web_search` transports to the configured SearXNG origin are `trusted` (the configured SearXNG host is exempt from that filter — the operator trusts that host). Redirect targets for `web_fetch` are always filtered. Credentials in URLs are rejected. SearXNG itself uses Colony's standard SearXNG JSON API.
+
+No API key: `COLONY_SEARXNG_URL` is the only new configuration and no SearXNG API key is required or supported. Credentials belong in the credential broker flow, not in these tools.
+
+When `COLONY_SEARXNG_URL` is unset or empty, no web tool names are registered and agent tool sets are byte-identical to today's.
+
+A set-but-invalid `COLONY_SEARXNG_URL` (not `https://`, embedded `user:pass@`) fails fast at colonyd boot with `COLONY_SEARXNG_URL must be an https:// URL without embedded credentials`.
+
 ## Cluster
 
 CI builds `registry.gitlab.home.shdr.ch/so/colony/colonyd:$SHA` and plans Tofu into `colony`. Apply on `main` is manual. Live URL: https://colony.home.shdr.ch (operator sheet at `/`, health at `/health`).

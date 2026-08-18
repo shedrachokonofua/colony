@@ -5,6 +5,7 @@ import {
   type AgentRuntimeAdapter,
   type CredentialBroker,
 } from "@colony/agent-runtime";
+import { env } from "@colony/config";
 import type {
   ColonyConfig,
   ResolvedAgentConfig,
@@ -12,6 +13,8 @@ import type {
 } from "@colony/config";
 import type { Store } from "@colony/core";
 import type { SandboxEngine } from "@colony/sandbox";
+
+type WebToolsConfig = { searxngUrl?: string };
 
 export interface AgentWiring {
   readonly runtime: "fake" | "pi";
@@ -120,6 +123,7 @@ export async function createAgentWiring(
 
   const broker = createConfigCredentialBroker(agentsToCheck);
   const engine = await createEngine(config.sandbox.engine, config);
+  const webTools = resolveWebToolsConfig(env().COLONY_SEARXNG_URL);
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");
   const { PiCodingAgentRunner } =
@@ -143,6 +147,7 @@ export async function createAgentWiring(
         thinkingLevel: reviewerConfig.thinkingLevel,
         logger: reviewerLogger,
         engine,
+        ...(webTools ? { webTools } : {}),
       }),
       {
         provider: reviewerConfig.providerKey,
@@ -163,6 +168,7 @@ export async function createAgentWiring(
         thinkingLevel: architectConfig.thinkingLevel,
         logger: architectLogger,
         engine,
+        ...(webTools ? { webTools } : {}),
       }),
       {
         provider: architectConfig.providerKey,
@@ -179,6 +185,7 @@ export async function createAgentWiring(
         thinkingLevel: developerConfig.thinkingLevel,
         logger: developerLogger,
         engine,
+        ...(webTools ? { webTools } : {}),
       }),
       {
         provider: developerConfig.providerKey,
@@ -187,6 +194,27 @@ export async function createAgentWiring(
     ),
     reviewer,
   };
+}
+
+export function resolveWebToolsConfig(
+  url: string | undefined,
+): WebToolsConfig | undefined {
+  const trimmed = url?.trim();
+  if (!trimmed) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(
+      "COLONY_SEARXNG_URL must be an https:// URL without embedded credentials",
+    );
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
+    throw new Error(
+      "COLONY_SEARXNG_URL must be an https:// URL without embedded credentials",
+    );
+  }
+  return { searxngUrl: trimmed };
 }
 
 function fallbackModelsFromConfig(

@@ -28,6 +28,7 @@ import type { CredentialBroker } from "./credential-broker.js";
 import { permissiveCredentialBroker } from "./credential-broker.js";
 import type { PiRunRequest } from "./pi-adapter.js";
 import type { SandboxEngine } from "@colony/sandbox";
+import type { WebToolsConfig } from "./web-tools.js";
 
 export interface PiRunnerLogger {
   info?(fields: Record<string, unknown>, message: string): void;
@@ -39,6 +40,7 @@ export interface PiRunnerBaseOptions {
   readonly broker?: CredentialBroker;
   readonly logger?: PiRunnerLogger;
   readonly model?: Model<Api> | PiModelResolver;
+  readonly webTools?: WebToolsConfig;
   readonly fallbackModels?: readonly Model<Api>[];
   readonly thinkingLevel?:
     | "off"

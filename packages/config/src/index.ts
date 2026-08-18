@@ -50,6 +50,8 @@ const envSchema = z.object({
   COLONY_OIDC_ISSUER: z.string().default(""),
   COLONY_OIDC_CLIENT_ID: z.string().default("colony"),
   COLONY_OIDC_REQUIRED_ROLE: z.string().default(""),
+
+  COLONY_SEARXNG_URL: optionalNonEmptyString,
 });
 
 export type Env = z.infer<typeof envSchema>;
