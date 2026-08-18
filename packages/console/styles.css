@@ -1048,6 +1048,16 @@ body {
   outline: none;
 }
 
+/* ---------- Duration ---------- */
+
+.dur {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 7ch;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
 /* ---------- Task / plan detail ---------- */
 
 .task-title {
@@ -1321,6 +1331,10 @@ pre.runlog {
 }
 
 @media (max-width: 900px) {
+  .dur {
+    min-width: 0;
+  }
+
   .board,
   .sheet-cols {
     grid-template-columns: 1fr;

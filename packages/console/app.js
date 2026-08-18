@@ -7,6 +7,13 @@ import {
   repeat,
   live,
 } from "/ui/vendor/lit-html.js";
+import {
+  createRunTicker,
+  durationAriaLabel,
+  formatDuration,
+  isoDuration,
+  runDurationMs,
+} from "./duration.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
@@ -39,6 +46,7 @@ const state = {
   error: "",
   confirm: null,
   poll: 0,
+  durationTicker: null,
 };
 
 const app = document.getElementById("app");
@@ -785,9 +793,16 @@ function renderDag(detail) {
         <foreignObject x=${box.x} y=${box.y} width=${box.w} height=${box.h}>
           <div class="node-html" xmlns="http://www.w3.org/1999/xhtml">
             <span class="ntitle">${node.title}</span>
-            <span class="nstate">${node.state}${
-              live ? ` · ${KIND_LABEL[live.kind] || live.kind}` : ""
-            }<span class="nid">#${tail}</span></span>
+            <span class="nstate"
+              >${node.state}${
+                live
+                  ? ` · ${KIND_LABEL[live.kind] || live.kind}${(() => {
+                      const ms = runDurationMs(live, Date.now());
+                      return ms === null ? "" : ` ${formatDuration(ms)}`;
+                    })()}`
+                  : ""
+              }<span class="nid">#${tail}</span></span
+            >
           </div>
         </foreignObject>
         <rect class="node-hit" tabindex="0" role="button"
@@ -908,6 +923,17 @@ function runLine(run) {
       </ul>`
     : nothing;
   const verdict = evidence?.verdict ? ` · ${evidence.verdict}` : "";
+  const ms = runDurationMs(run, Date.now());
+  const dur =
+    ms === null
+      ? html`<span class="dur">—</span>`
+      : html`<time
+          class="dur"
+          datetime=${isoDuration(ms)}
+          title=${`started ${run.started_at}${run.finished_at ? `, finished ${run.finished_at}` : ""}`}
+          aria-label=${durationAriaLabel(run, Date.now())}
+          >${formatDuration(ms)}</time
+        >`;
   return html`<div class="run" data-status=${run.status}>
     <i></i>
     <div>
@@ -916,9 +942,8 @@ function runLine(run) {
       </p>
       <p class="meta">
         ${run.model_id ? `${run.model_id} · ` : ""} ${shortSha(run.head_sha)} ·
-        ${rel(run.finished_at || run.started_at)}${run.error
-          ? ` · ${run.error}`
-          : ""}
+        ${rel(run.finished_at || run.started_at)} ·
+        ${dur}${run.error ? ` · ${run.error}` : ""}
       </p>
       ${findings}
     </div>
@@ -1451,7 +1476,19 @@ function renderValidationCard(scope, detail) {
               "is-failed": Boolean(evidence && !evidence.passed),
             })}
           >
-            ${summary}
+            ${summary}${(() => {
+              if (!latest) return nothing;
+              const ms = runDurationMs(latest, Date.now());
+              if (ms === null) return nothing;
+              return html` ·
+                <time
+                  class="dur"
+                  datetime=${isoDuration(ms)}
+                  title=${`started ${latest.started_at}${latest.finished_at ? `, finished ${latest.finished_at}` : ""}`}
+                  aria-label=${durationAriaLabel(latest, Date.now())}
+                  >${formatDuration(ms)}</time
+                >`;
+            })()}
           </p>`
         : nothing}
       ${scope.status === "validating" && failed
@@ -1633,20 +1670,28 @@ function renderActivity() {
   </aside>`;
 }
 
+let _paintDepth = 0;
 function paint() {
-  const view =
-    state.oidc && !state.auth
-      ? renderSignin()
-      : routeIsNew()
-        ? renderCreate()
-        : routeScopeId()
-          ? renderSheet()
-          : renderBoard();
-  litRender(
-    html`${renderTopbar()}
-      <main class="view">${view}</main>`,
-    app,
-  );
+  if (_paintDepth > 0) return;
+  _paintDepth++;
+  try {
+    const view =
+      state.oidc && !state.auth
+        ? renderSignin()
+        : routeIsNew()
+          ? renderCreate()
+          : routeScopeId()
+            ? renderSheet()
+            : renderBoard();
+    litRender(
+      html`${renderTopbar()}
+        <main class="view">${view}</main>`,
+      app,
+    );
+  } finally {
+    _paintDepth--;
+  }
+  syncDurationTicker();
 }
 
 // ---------------------------------------------------------------------------
@@ -1779,6 +1824,38 @@ document.addEventListener("visibilitychange", () => {
 function isEditing() {
   const el = document.activeElement;
   return el?.tagName === "INPUT" || el?.tagName === "TEXTAREA";
+}
+
+function hasVisibleRunningRun() {
+  const detail = state.detail;
+  if (!detail) return false;
+  const runs = detail.runs || [];
+  // Any running run on the current scope is considered visible:
+  // drawer runs, plan achitect runs, validation, or DAG live nodes all
+  // surface through the rendered sheet so a single check covers them.
+  return runs.some((run) => run.status === "running");
+}
+
+function syncDurationTicker() {
+  const needsTick = hasVisibleRunningRun();
+  if (needsTick) {
+    if (!state.durationTicker) {
+      state.durationTicker = createRunTicker(
+        () => {
+          if (document.hidden || isEditing()) return;
+          if (!hasVisibleRunningRun()) {
+            state.durationTicker?.stop();
+            return;
+          }
+          paint();
+        },
+        { intervalMs: 1000 },
+      );
+    }
+    if (!state.durationTicker.running()) state.durationTicker.start();
+  } else {
+    state.durationTicker?.stop();
+  }
 }
 
 void refresh();

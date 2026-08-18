@@ -90,6 +90,13 @@ describe("operator console", () => {
     );
   });
 
+  it("serves duration.js as a loadable ES module", async () => {
+    const app = appWithStore();
+    const res = await app.request("/ui/duration.js");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/javascript/);
+  });
+
   it("exposes public console config without secrets", async () => {
     const app = appWithStore();
     const res = await app.request("/ui/config");
