@@ -887,13 +887,21 @@ export function createImplementerSubmitTool(
     prepareArguments: makeZodPrepare(implementerCompletionV2Schema) as (
       args: unknown,
     ) => Static<typeof implementerCompletionEnvelopeTypeBox>,
-    execute: (_toolCallId, params) => {
+    execute: async (_toolCallId, params) => {
+      if (
+        params.status === "complete" &&
+        (params.commands?.length ?? 0) === 0
+      ) {
+        throw new Error(
+          "Submission rejected: a complete implementation requires command evidence. Run the relevant checks, then submit again with commands and exit codes.",
+        );
+      }
       capture(params);
-      return Promise.resolve({
+      return {
         content: [{ type: "text", text: "implementer envelope captured" }],
         details: {},
         terminate: true,
-      });
+      };
     },
   };
 }
