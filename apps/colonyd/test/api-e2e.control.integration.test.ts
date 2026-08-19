@@ -90,38 +90,8 @@ describe("api e2e control — 1. replan + replacement plan", () => {
       },
     );
     expect(replanRes.status).toBe(200);
-    // replan response itself must have null plan_json
-    const replanScope =
-      (
-        replanRes.body as {
-          scope?: { plan_json: string | null };
-          plan_json?: string | null;
-          status?: string;
-        }
-      ).scope ??
-      (replanRes.body as { plan_json: string | null; status: string });
-    // Some store returns scope directly, some wraps; check either
-    const replanPlanJson = (replanScope as { plan_json?: string | null })
-      ?.plan_json;
-    if (replanPlanJson !== undefined) expect(replanPlanJson).toBeNull();
-    else {
-      const afterReplanImmediate = await http(
-        env.port,
-        "GET",
-        `/scopes/${scopeId}`,
-      );
-      expect(
-        (afterReplanImmediate.body as { scope: { plan_json: string | null } })
-          .scope.plan_json,
-      ).toBeNull();
-    }
-    expect(
-      (replanRes.body as { status: string }).status ??
-        (replanRes.body as { scope: { status: string } }).scope?.status ??
-        (await http(env.port, "GET", `/scopes/${scopeId}`).then(
-          (r) => (r.body as { scope: { status: string } }).scope.status,
-        )),
-    ).toBeTruthy();
+    expect((replanRes.body as { plan_json: string | null }).plan_json).toBeNull();
+    expect((replanRes.body as { status: string }).status).toBe("planning");
 
     const afterReplanSnap = await http(env.port, "GET", `/scopes/${scopeId}`);
     expect(
@@ -131,23 +101,6 @@ describe("api e2e control — 1. replan + replacement plan", () => {
       (afterReplanSnap.body as { scope: { plan_json: string | null } }).scope
         .plan_json,
     ).toBeNull();
-
-    const sawNull = await waitFor(
-      "plan null after replan",
-      async () => {
-        const res = await http(env.port, "GET", `/scopes/${scopeId}`);
-        if (res.status !== 200) return false;
-        const data = res.body as {
-          scope: { status: string; plan_json: string | null };
-        };
-        return (
-          data.scope.status === "planning" && data.scope.plan_json === null
-        );
-      },
-      5_000,
-      250,
-    );
-    expect(sawNull).toBe(true);
     // release architect to produce revised plan
     (
       env.boundary.script as unknown as { architectStall?: boolean }
@@ -363,83 +316,69 @@ describe("api e2e control — 2. task transitions", () => {
     // never picks it while .1 is pending, making it quiescent. Still, the
     // reconciler (expireLeases) requeues a synthetic running task on its
     // next 250ms tick before /stop arrives. Retry once if we lose that race.
+    // NO_ACTIVE_RUN — deterministic via isolated abandoned scope (no dispatch/reconcile race).
+    // Abandon before synthetic running transition: transitionTask does not check scope status,
+    // dispatchImplementers/advanceMrOpenTasks skip non-active scopes, and expireLeases has no runs to expire.
+    (
+      env.boundary.script as unknown as { singleTask?: boolean }
+    ).singleTask = true;
     (
       env.boundary.script as unknown as { implementerStall?: boolean }
-    ).implementerStall = false;
-    await waitFor(
-      "no running before synthetic",
-      async () => {
-        const snap = await http(env.port, "GET", `/scopes/${stopScopeId}`);
-        if (snap.status !== 200) return false;
-        const d = snap.body as { tasks: { state: string }[] };
-        return d.tasks.every((t) => t.state !== "running");
+    ).implementerStall = true;
+    const noRunScopeRes = await http(env.port, "POST", "/scopes", {
+      body: {
+        goal: "no active run deterministic goal",
+        project: { path: "so/console-e2e" },
+        approvals: "manual",
       },
-      15_000,
+    });
+    expect(noRunScopeRes.status).toBe(201);
+    const noRunScopeId = (noRunScopeRes.body as { id: string }).id;
+    await waitFor(
+      "noRun planning",
+      async () => {
+        const r = await http(env.port, "GET", `/scopes/${noRunScopeId}`);
+        const d = r.body as {
+          scope: { status: string; plan_json: string | null };
+        };
+        return d.scope.status === "planning" && !!d.scope.plan_json;
+      },
+      30_000,
       250,
     );
-    const pickQueuedDependent = async () => {
-      const snap = await http(env.port, "GET", `/scopes/${stopScopeId}`);
-      const tasks = (snap.body as { tasks: { id: string; state: string }[] })
-        .tasks;
-      return tasks.find((t) => t.state === "queued" && t.id.endsWith(".2"));
-    };
-    let noRunTaskId: string | undefined;
-    let noRunRes: { status: number; body: unknown } | undefined;
-    for (let attemptNo = 0; attemptNo < 3; attemptNo++) {
-      const candidate = await pickQueuedDependent();
-      expect(candidate).toBeDefined();
-      noRunTaskId = candidate!.id;
-      const curVer = store
-        .listTasks(stopScopeId)
-        .find((t) => t.id === noRunTaskId)!.state_version;
-      try {
-        store.transitionTask(noRunTaskId, curVer, "running", "human:e2e");
-      } catch {
-        continue;
-      }
-      noRunRes = await http(env.port, "POST", `/tasks/${noRunTaskId}/stop`);
-      if (
-        noRunRes.status === 409 &&
-        (noRunRes.body as { error?: { code?: string } })?.error?.code ===
-          "NO_ACTIVE_RUN"
-      ) {
-        break;
-      }
-      // Lost to reconciler (NOT_RUNNING) or dispatch race — restore and retry
-      const curAfterMiss = store
-        .listTasks(stopScopeId)
-        .find((t) => t.id === noRunTaskId);
-      if (curAfterMiss?.state === "running") {
-        store.transitionTask(
-          curAfterMiss.id,
-          curAfterMiss.state_version,
-          "queued",
-          "human:e2e",
-          { attempt: 0, next_retry_at: null },
-        );
-      }
-      await waitFor("cooldown", async () => true, 100, 100);
-    }
-    expect(noRunRes).toBeDefined();
-    expect(noRunRes!.status).toBe(409);
-    expect((noRunRes!.body as { error?: { code?: string } })?.error?.code).toBe(
+    await http(env.port, "POST", `/scopes/${noRunScopeId}/approve-plan`);
+    await waitFor(
+      "noRun queued",
+      async () => {
+        const r = await http(env.port, "GET", `/scopes/${noRunScopeId}`);
+        const d = r.body as { tasks: { id: string }[] };
+        return d.tasks.some((t) => t.id === `${noRunScopeId}.1`);
+      },
+      10_000,
+      250,
+    );
+    await http(env.port, "POST", `/scopes/${noRunScopeId}/abandon`);
+    const noRunTaskId = `${noRunScopeId}.1`;
+    // Force to running deterministically (bypass state machine from canceled) — isolated abandoned scope has no active runs.
+    store.db
+      .prepare(
+        "UPDATE tasks SET state='running', state_version=state_version+1, updated_at=? WHERE id=?",
+      )
+      .run(new Date().toISOString(), noRunTaskId);
+    const noRunRes = await http(env.port, "POST", `/tasks/${noRunTaskId}/stop`);
+    expect(noRunRes.status).toBe(409);
+    expect((noRunRes.body as { error?: { code?: string } })?.error?.code).toBe(
       "NO_ACTIVE_RUN",
     );
-    const curAfter = store
-      .listTasks(stopScopeId)
-      .find((t) => t.id === noRunTaskId)!;
-    if (curAfter.state === "running") {
-      store.transitionTask(
-        curAfter.id,
-        curAfter.state_version,
-        "queued",
-        "human:e2e",
-        {
-          attempt: 0,
-          next_retry_at: null,
-        },
-      );
-    }
+    // Restore to canceled via SQL for clean abandoned scope (no effect on dispatch as scope abandoned)
+    store.db
+      .prepare(
+        "UPDATE tasks SET state='canceled', state_version=state_version+1, updated_at=? WHERE id=?",
+      )
+      .run(new Date().toISOString(), noRunTaskId);
+    (
+      env.boundary.script as unknown as { singleTask?: boolean }
+    ).singleTask = false;
     (
       env.boundary.script as unknown as { implementerStall?: boolean }
     ).implementerStall = true;
@@ -639,7 +578,7 @@ describe("api e2e control — 2. task transitions", () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     store.db
       .prepare(
-        "UPDATE tasks SET next_retry_at = ?, updated_at = ? WHERE id = ?",
+        "UPDATE tasks SET next_retry_at = ?, state_version = state_version + 1, updated_at = ? WHERE id = ?",
       )
       .run(future, new Date().toISOString(), toRetry.id);
     const retryRes = await http(env.port, "POST", `/tasks/${toRetry.id}/retry`);
