@@ -531,6 +531,7 @@ test.describe("console mobile", () => {
     const scope = await createScopeViaApi(page, {
       title: `abandon-${Date.now()}`,
       goal: `Abandon scope goal ${Date.now()} — confirmation flow`,
+      approvals: "manual",
     });
     await page.goto(`/#/${scope.id}`);
     await assertMobileViewport(page);
