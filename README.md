@@ -99,7 +99,7 @@ The e2e suites verify the full stack against a fake boundary and an isolated SQL
 
 ```bash
 # Browser suite (Playwright desktop + mobile)
-npm ci && npx playwright install chromium && npm run test:e2e
+bun install --frozen-lockfile && npx playwright install chromium && npm run test:e2e
 # API e2e + unit (includes *.integration.test.ts)
 npm test
 ```
