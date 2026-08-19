@@ -7,3 +7,4 @@ secrets/
 data/
 packages/console/vendor/
 PACKET.json
+.bun-cache/
