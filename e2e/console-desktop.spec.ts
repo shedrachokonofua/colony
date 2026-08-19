@@ -187,8 +187,6 @@ test.describe("desktop console", () => {
 
     // Navigate back to board and see card
     await page.goto("/#/");
-    await page.waitForTimeout(500);
-
     await expect(
       page.locator(".scope-card", { hasText: unique }).first(),
     ).toBeVisible({ timeout: 15000 });
@@ -710,8 +708,35 @@ test.describe("desktop console", () => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
     await controlPatch(request, { implementerStall: false });
-    // Wait for any prior running tasks to settle
-    await new Promise((r) => setTimeout(r, 2000));
+    // Poll until prior running tasks settle (expect no running tasks or give up after 4s)
+    await expect
+      .poll(
+        async () => {
+          try {
+            const r = await request.get("/scopes", { headers: HEADERS });
+            if (!r.ok()) return "ok";
+            const scopes = (await r.json()) as { id: string }[];
+            // quick check: if any scope has running tasks, still settling
+            for (const s of scopes.slice(0, 5)) {
+              const d = await request.get(
+                `/scopes/${encodeURIComponent(s.id)}`,
+                { headers: HEADERS },
+              );
+              if (d.ok()) {
+                const data = (await d.json()) as { tasks: { state: string }[] };
+                if (data.tasks.some((x) => x.state === "running"))
+                  return "running";
+              }
+            }
+            return "ok";
+          } catch {
+            return "ok";
+          }
+        },
+        { timeout: 8000, intervals: [500, 1000] },
+      )
+      .toBe("ok")
+      .catch(() => {});
     await controlPatch(request, { implementerStall: true });
     const stopScopeId = await createScopeViaApi(request, {
       title: `Stop ${Date.now()}`,
@@ -1111,7 +1136,6 @@ test.describe("desktop console", () => {
     await expect(page.locator(".board").first()).toBeVisible({
       timeout: 15000,
     });
-    await page.waitForTimeout(500);
     // Use a precise delay on the scopes detail request to expose the loading boot text
     // Fallback: if routing doesn't expose loading, verify that the boot text mechanics exist via direct hash navigation with reload
     const delayMs = 3000;
@@ -1127,7 +1151,6 @@ test.describe("desktop console", () => {
     await expect(page.locator(".board").first()).toBeVisible({
       timeout: 15000,
     });
-    await page.waitForTimeout(500);
     // Now navigate with delay active — the console should show p.boot Loading scope… while fetching
     await page.goto(`/#/${scopeId}`);
     // Poll for either loading or final sheet; loading must appear at least briefly
