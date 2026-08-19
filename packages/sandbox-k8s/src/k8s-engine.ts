@@ -5,6 +5,7 @@ import { PassThrough, Readable } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
 import {
   SANDBOX_PART_OF_LABEL,
+  DEFAULT_EXEC_TIMEOUT_MS,
   SANDBOX_PART_OF_VALUE,
   type ExecEvent,
   type ExecRequest,
@@ -263,14 +264,21 @@ class K8sSandboxHandle implements SandboxHandle {
    * Drives a pods/exec session. `stdin` (Buffer or Readable) is streamed into
    * the pod process; stdout/stderr chunks are surfaced to `onEvent` (when
    * given) with a single monotonic `seq`, and a final `exit` event closes the
-   * stream. On `timeoutMs` the WebSocket is closed, an exit event with
+   * stream. On timeout the WebSocket is closed, an exit event with
    * `exitCode: null` is emitted, and the result resolves with `timedOut: true`.
+   *
+   * Every exec is deadline-bounded. The pods/exec WebSocket has no heartbeat,
+   * so a silently dropped connection otherwise waits forever: production runs
+   * hung 30-50 minutes on exactly that. Callers may pass a longer or shorter
+   * `timeoutMs`; absence means DEFAULT_EXEC_TIMEOUT_MS, never unbounded. The
+   * deadline is enforced by a local timer, not the remote side, so it fires
+   * regardless of socket state.
    */
   private async runPod(
     command: readonly string[],
     stdin: Buffer | Readable | undefined,
     onEvent: ((event: ExecEvent) => void) | undefined,
-    timeoutMs?: number,
+    timeoutMs: number = DEFAULT_EXEC_TIMEOUT_MS,
   ): Promise<{ exitCode: number | null; timedOut: boolean; stdout: string }> {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
@@ -390,18 +398,16 @@ class K8sSandboxHandle implements SandboxHandle {
     };
     void doExec().catch(fail);
 
-    if (timeoutMs !== undefined) {
-      timer = setTimeout(() => {
-        if (socket !== undefined) {
-          try {
-            socket.close();
-          } catch {
-            // Already closed.
-          }
+    timer = setTimeout(() => {
+      if (socket !== undefined) {
+        try {
+          socket.close();
+        } catch {
+          // Already closed.
         }
-        finish(null, true);
-      }, timeoutMs);
-    }
+      }
+      finish(null, true);
+    }, timeoutMs);
 
     return promise;
   }

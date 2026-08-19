@@ -2,13 +2,14 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import type {
-  ExecEvent,
-  ExecRequest,
-  ExecResult,
-  SandboxEngine,
-  SandboxHandle,
-  SandboxLaunchProfile,
+import {
+  DEFAULT_EXEC_TIMEOUT_MS,
+  type ExecEvent,
+  type ExecRequest,
+  type ExecResult,
+  type SandboxEngine,
+  type SandboxHandle,
+  type SandboxLaunchProfile,
 } from "@colony/sandbox";
 
 /**
@@ -126,20 +127,18 @@ class InProcessSandboxHandle implements SandboxHandle {
 
     let seq = 0;
     let timedOut = false;
-    const timer =
-      request.timeoutMs !== undefined
-        ? setTimeout(() => {
-            timedOut = true;
-            if (child.pid !== undefined) {
-              try {
-                // Negative pid signals the whole process group.
-                process.kill(-child.pid, "SIGKILL");
-              } catch {
-                // Process group already gone.
-              }
-            }
-          }, request.timeoutMs)
-        : undefined;
+    const timeoutMs = request.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid !== undefined) {
+        try {
+          // Negative pid signals the whole process group.
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // Process group already gone.
+        }
+      }
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk: string | Buffer) => {
       seq += 1;

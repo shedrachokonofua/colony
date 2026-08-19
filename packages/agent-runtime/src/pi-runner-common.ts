@@ -77,6 +77,16 @@ export type PiModelResolver = (
 ) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
+  /**
+   * Max silence between agent events before the run is declared dead.
+   * Liveness is judged from observed progress (message deltas, turn/tool
+   * boundaries), the way Temporal's heartbeat_timeout polices activities:
+   * a run that emits nothing for this long is hung in some remote await
+   * (LLM fetch, exec socket) that its own cancellation path failed to bound.
+   * Tool executions are exempt while in flight - each exec carries its own
+   * engine-enforced deadline, so tool time is already bounded.
+   */
+  readonly livenessTimeoutMs?: number;
 }
 
 export interface ActivePiRun {
@@ -387,6 +397,11 @@ export function createSandboxId(prefix: string): string {
   return `${prefix}-${randomUUID()}`;
 }
 
+/** Silence budget before a run with no tool in flight is declared hung. */
+export const DEFAULT_LIVENESS_TIMEOUT_MS = 12 * 60_000;
+
+export const LIVENESS_FAILURE_REASON = "liveness_watchdog_no_progress";
+
 export function installRunGuards(
   agent: Agent,
   runId: string,
@@ -397,7 +412,51 @@ export function installRunGuards(
   let previousMessageAt = performance.now();
   const maxTurns = options.maxTurns ?? 60;
 
-  return agent.subscribe((event) => {
+  // Progress-based liveness (Temporal heartbeat_timeout analog): every agent
+  // event is a heartbeat. Forensics on hung runs showed two client-side hang
+  // seams under Bun - an LLM fetch whose abort never surfaced and an exec
+  // WebSocket that died silently - each burning the whole wall clock while
+  // stream-level guards saw nothing. The watchdog bounds every such seam at
+  // once because it trusts only observed events, not any transport's own
+  // timeout. Tool time is exempt while in flight: engine-side exec deadlines
+  // bound it, and a quiet-but-legitimate long command must not be killed.
+  const livenessTimeoutMs =
+    options.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
+  let inFlightTools = 0;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let unsubscribed = false;
+  const armWatchdog = (): void => {
+    clearTimeout(watchdog);
+    if (unsubscribed || livenessTimeoutMs <= 0) return;
+    watchdog = setTimeout(() => {
+      watchdog = undefined;
+      if (inFlightTools > 0) {
+        // A tool is executing under its own engine deadline; its completion
+        // event will re-arm. Re-arm here too so a tool seam that loses its
+        // completion event entirely still gets caught one budget later.
+        armWatchdog();
+        return;
+      }
+      options.logger?.warn?.(
+        {
+          runId,
+          silenceMs: livenessTimeoutMs,
+          reason: LIVENESS_FAILURE_REASON,
+        },
+        "pi_liveness_watchdog",
+      );
+      options.onFailure?.(LIVENESS_FAILURE_REASON);
+      agent.abort();
+    }, livenessTimeoutMs);
+  };
+  armWatchdog();
+
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type === "tool_execution_start") inFlightTools += 1;
+    if (event.type === "tool_execution_end") {
+      inFlightTools = Math.max(0, inFlightTools - 1);
+    }
+    armWatchdog();
     if (event.type === "turn_end") {
       turns += 1;
     }
@@ -437,6 +496,11 @@ export function installRunGuards(
       agent.abort();
     }
   });
+  return () => {
+    unsubscribed = true;
+    clearTimeout(watchdog);
+    unsubscribe();
+  };
 }
 
 export function withRunTimeout(

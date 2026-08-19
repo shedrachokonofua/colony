@@ -9,7 +9,7 @@ import {
   type FindOperations,
   type LsOperations,
 } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
-import type { SandboxHandle } from "@colony/sandbox";
+import { DEFAULT_EXEC_TIMEOUT_MS, type SandboxHandle } from "@colony/sandbox";
 
 /**
  * Sandbox-delegated tools for agent runs. `bash`, `find`, and `ls` keep the SDK's
@@ -101,7 +101,7 @@ function runWithSignal(
   },
   signal: AbortSignal | undefined,
   onData: (data: string) => void,
-): Promise<{ exitCode: number | null }> {
+): Promise<{ exitCode: number | null; timedOut?: boolean }> {
   if (signal?.aborted) {
     return Promise.reject(new Error("aborted"));
   }
@@ -154,6 +154,14 @@ function bashOperations(handle: SandboxHandle, base: string): BashOperations {
         signal,
         (data) => onData(Buffer.from(data)),
       );
+      if (result.timedOut) {
+        // The shim's `timeout:<seconds>` contract renders as "Command timed
+        // out after N seconds" - an actionable tool error the agent can react
+        // to (rerun with an explicit longer timeout) instead of the shim's
+        // exitCode-null path, which it would report as success.
+        const seconds = timeout ?? Math.round(DEFAULT_EXEC_TIMEOUT_MS / 1000);
+        throw new Error(`timeout:${seconds}`);
+      }
       return { exitCode: result.exitCode };
     },
   };

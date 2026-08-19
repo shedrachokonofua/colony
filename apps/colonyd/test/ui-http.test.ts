@@ -494,6 +494,7 @@ describe("operator controls", () => {
     expect(isInfraError("502 status code (no body)")).toBe(true);
     expect(isInfraError("fetch failed")).toBe(true);
     expect(isInfraError("ECONNRESET")).toBe(true);
+    expect(isInfraError("liveness_watchdog_no_progress")).toBe(true);
     expect(
       isInfraError(
         "timed out after 300000ms waiting for Sandbox CR colony-a in namespace colony-sandboxes to become ready",

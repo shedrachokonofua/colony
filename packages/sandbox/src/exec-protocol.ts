@@ -16,6 +16,16 @@ export const ExecRequestSchema = z.object({
 });
 export type ExecRequest = z.infer<typeof ExecRequestSchema>;
 
+/**
+ * Default deadline for a single exec when the request carries no `timeoutMs`
+ * (Temporal start_to_close analog). Engines MUST apply it: the transport under
+ * an exec (pods/exec WebSocket, child process pipe) has no heartbeat, so an
+ * unbounded exec turns one silently dropped connection into a hung run.
+ * Callers pass an explicit `timeoutMs` for commands that legitimately run
+ * longer. A timed-out exec resolves `{ exitCode: null, timedOut: true }`.
+ */
+export const DEFAULT_EXEC_TIMEOUT_MS = 10 * 60_000;
+
 export const ExecEventSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("stdout"),

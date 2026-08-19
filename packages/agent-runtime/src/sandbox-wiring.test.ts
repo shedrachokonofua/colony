@@ -358,3 +358,28 @@ export function toolText(result: {
     )
     .join("\n");
 }
+
+describe("exec deadline surfacing", () => {
+  it("reports a timed-out exec as a tool error, never success", async () => {
+    // A dropped exec socket resolves { exitCode: null, timedOut: true } at the
+    // engine deadline. The shim treats exitCode null as success, so the bash
+    // operations seam must translate timedOut into its `timeout:` contract.
+    const handle: SandboxHandle = {
+      exec: () => Promise.resolve({ exitCode: null, timedOut: true }),
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new Error("unused")),
+      destroy: () => Promise.resolve(),
+    };
+    const tools = buildSandboxTools(handle, "/workspace");
+    const bash = tools.find((tool) => tool.name === "bash") as AgentTool;
+    await expect(
+      bash.execute(
+        "b-timeout",
+        { command: "sleep 1200" },
+        undefined,
+        undefined,
+        toolContext,
+      ),
+    ).rejects.toThrow(/timed out after 600 seconds/);
+  });
+});
