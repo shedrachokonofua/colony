@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { http, httpRaw, waitFor } from "../e2e/client.js";
 import { bootFake, type BootFakeHandle } from "../e2e/boot-fake.js";
 
