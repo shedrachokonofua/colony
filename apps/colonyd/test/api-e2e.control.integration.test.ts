@@ -360,15 +360,24 @@ describe("api e2e control — 2. task transitions", () => {
     );
     await http(env.port, "POST", `/scopes/${noRunScopeId}/abandon`);
     const noRunTaskId = `${noRunScopeId}.1`;
-    // Force to running deterministically (bypass state machine from canceled) — isolated abandoned scope has no active runs.
-    store.db
-      .prepare(
-        "UPDATE tasks SET state='running', state_version=state_version+1, updated_at=? WHERE id=?",
-      )
-      .run(new Date().toISOString(), noRunTaskId);
-    const noRunRes = await http(env.port, "POST", `/tasks/${noRunTaskId}/stop`);
-    expect(noRunRes.status).toBe(409);
-    expect((noRunRes.body as { error?: { code?: string } })?.error?.code).toBe(
+    // Contract under test: stop on a task in 'running' with no active run
+    // rows is 409 NO_ACTIVE_RUN. That state is transient BY DESIGN - the tick
+    // reconciler requeues exactly such tasks every tick - so manufacture it
+    // and race the stop against the reconciler with bounded retries: if the
+    // reconciler wins (stop sees a requeued task), re-force and try again.
+    // The assertion on the observed 409 path stays strict.
+    let noRunRes: Awaited<ReturnType<typeof http>> | undefined;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      store.db
+        .prepare(
+          "UPDATE tasks SET state='running', state_version=state_version+1, updated_at=? WHERE id=?",
+        )
+        .run(new Date().toISOString(), noRunTaskId);
+      noRunRes = await http(env.port, "POST", `/tasks/${noRunTaskId}/stop`);
+      if (noRunRes.status === 409) break;
+    }
+    expect(noRunRes?.status).toBe(409);
+    expect((noRunRes?.body as { error?: { code?: string } })?.error?.code).toBe(
       "NO_ACTIVE_RUN",
     );
     // Restore to canceled via SQL for clean abandoned scope (no effect on dispatch as scope abandoned)
