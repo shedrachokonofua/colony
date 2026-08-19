@@ -90,7 +90,9 @@ describe("api e2e control — 1. replan + replacement plan", () => {
       },
     );
     expect(replanRes.status).toBe(200);
-    expect((replanRes.body as { plan_json: string | null }).plan_json).toBeNull();
+    expect(
+      (replanRes.body as { plan_json: string | null }).plan_json,
+    ).toBeNull();
     expect((replanRes.body as { status: string }).status).toBe("planning");
 
     const afterReplanSnap = await http(env.port, "GET", `/scopes/${scopeId}`);
@@ -319,9 +321,8 @@ describe("api e2e control — 2. task transitions", () => {
     // NO_ACTIVE_RUN — deterministic via isolated abandoned scope (no dispatch/reconcile race).
     // Abandon before synthetic running transition: transitionTask does not check scope status,
     // dispatchImplementers/advanceMrOpenTasks skip non-active scopes, and expireLeases has no runs to expire.
-    (
-      env.boundary.script as unknown as { singleTask?: boolean }
-    ).singleTask = true;
+    (env.boundary.script as unknown as { singleTask?: boolean }).singleTask =
+      true;
     (
       env.boundary.script as unknown as { implementerStall?: boolean }
     ).implementerStall = true;
@@ -376,9 +377,8 @@ describe("api e2e control — 2. task transitions", () => {
         "UPDATE tasks SET state='canceled', state_version=state_version+1, updated_at=? WHERE id=?",
       )
       .run(new Date().toISOString(), noRunTaskId);
-    (
-      env.boundary.script as unknown as { singleTask?: boolean }
-    ).singleTask = false;
+    (env.boundary.script as unknown as { singleTask?: boolean }).singleTask =
+      false;
     (
       env.boundary.script as unknown as { implementerStall?: boolean }
     ).implementerStall = true;
