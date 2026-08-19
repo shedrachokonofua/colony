@@ -324,6 +324,13 @@ export class PiBaseAgentRunner implements PiRunner {
           "retry.enabled": true,
           "todo.enabled": true,
           "todo.reminders": true,
+          // A dead upstream stream must become a bounded retry, not a
+          // run-long hang: muse once sat 31 minutes emitting zero tokens and
+          // only the wall clock killed the run. Defaults are -1 (disabled).
+          // First-event tolerates worst-case local prefill on a loaded GPU;
+          // idle after first token means the generation died mid-stream.
+          "providers.streamFirstEventTimeoutSeconds": 600,
+          "providers.streamIdleTimeoutSeconds": 300,
         }),
         systemPrompt: `${this.profile.systemPrompt()}\n\n${steering.budgetBlock()}`,
         sessionManager: SessionManager.inMemory(cwd),
