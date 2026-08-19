@@ -77,26 +77,67 @@ export async function prepareEnvWithPort(
     reviewMode?: "off" | "required";
   } = {},
 ): Promise<PreparedEnv> {
-  const rawDbPath = opts.dbPath?.trim();
+  const e2eTmp = process.env.COLONY_E2E_TMP_DIR?.trim() || undefined;
+  const e2eDbPath = process.env.COLONY_E2E_DB_PATH?.trim() || undefined;
+  const rawE2ePort = process.env.COLONY_E2E_PORT?.trim();
+  let e2ePort: number | undefined;
+  if (rawE2ePort) {
+    const n = Number(rawE2ePort);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 65535) {
+      throw new Error(`invalid COLONY_E2E_PORT: ${rawE2ePort}`);
+    }
+    e2ePort = n;
+  }
+
+  const rawDbPath = opts.dbPath?.trim() || undefined;
   const isExternalDb = Boolean(rawDbPath);
-  let dir: string;
   if (isExternalDb) {
     // When an external DB path is supplied (restart e2e), place the temp
     // config dir under the same parent so a SIGKILLed fake-colonyd that
     // never runs prepared.cleanup() does not leak /tmp/colonyd-e2e-* —
     // the test's restartDir cleanup reclaims it.
     const parent = dirname(rawDbPath!);
+    let dir: string;
     try {
       dir = mkdtempSync(join(parent, "colonyd-e2e-"));
     } catch {
       dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
     }
-  } else {
-    dir = mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
+    const configPath = join(dir, "colony.yaml");
+    writeColonyYaml(configPath, { reviewMode: opts.reviewMode });
+    const dbPath = rawDbPath!;
+    let port: number;
+    if (opts.port !== undefined) {
+      const n = opts.port;
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 65535) {
+        throw new Error(`invalid COLONY_E2E_PORT: ${String(opts.port)}`);
+      }
+      port = n;
+    } else if (e2ePort !== undefined) {
+      port = e2ePort;
+    } else {
+      port = await freePort();
+    }
+    const cleanup = (): void => {
+      rmSync(dbPath, { force: true });
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+      rmSync(dir, { recursive: true, force: true });
+    };
+    return {
+      dir,
+      dbPath,
+      configPath,
+      port,
+      webhookSecret: opts.webhookSecret ?? "",
+      cleanup,
+    };
   }
+
+  const dir = e2eTmp ?? mkdtempSync(join(tmpdir(), "colonyd-e2e-"));
   const configPath = join(dir, "colony.yaml");
   writeColonyYaml(configPath, { reviewMode: opts.reviewMode });
-  const dbPath = rawDbPath ? rawDbPath : join(dir, "colonyd.db");
+  const dbPath = e2eDbPath ?? join(dir, "colonyd.db");
   let port: number;
   if (opts.port !== undefined) {
     const n = opts.port;
@@ -104,15 +145,14 @@ export async function prepareEnvWithPort(
       throw new Error(`invalid COLONY_E2E_PORT: ${String(opts.port)}`);
     }
     port = n;
+  } else if (e2ePort !== undefined) {
+    port = e2ePort;
   } else {
     port = await freePort();
   }
+  const ownsDir = !e2eTmp;
   const cleanup = (): void => {
-    if (isExternalDb) {
-      rmSync(dbPath, { force: true });
-      rmSync(`${dbPath}-wal`, { force: true });
-      rmSync(`${dbPath}-shm`, { force: true });
-    }
+    if (!ownsDir) return;
     rmSync(dir, { recursive: true, force: true });
   };
   return {

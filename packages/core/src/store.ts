@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "./sqlite-compat.js";
 import {
   DomainStateError,
   domainError,
@@ -145,7 +145,7 @@ function named(values: Record<string, SQLQueryBindings>): SQLQueryBindings {
 }
 
 export class Store {
-  readonly db: Database;
+  readonly db: InstanceType<typeof Database>;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });

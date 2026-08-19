@@ -22,6 +22,12 @@
     },
     "types": ["bun"]
   },
-  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/acceptance.ts"],
+  "include": [
+    "apps/**/*.ts",
+    "packages/**/*.ts",
+    "scripts/acceptance.ts",
+    "e2e/**/*.ts",
+    "playwright.config.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }
