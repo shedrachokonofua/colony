@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { ArchitectDecompositionV2 } from "./v2.js";
 
 function validDecomposition() {

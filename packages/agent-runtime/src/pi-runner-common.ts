@@ -3,18 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import type { Agent, AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
-import type { Static } from "typebox";
-import type {
-  ResourceLoader,
-  ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
-import {
-  convertToLlm,
-  createExtensionRuntime,
-} from "@earendil-works/pi-coding-agent";
+import type { Agent, AgentTool, StreamFn } from "@oh-my-pi/pi-agent-core";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import { Type } from "@oh-my-pi/omptype/typebox";
+import type { Static } from "@oh-my-pi/omptype/typebox";
+import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import {
   type ArchitectDecompositionV2,
   type ImplementerCompletionV2,
@@ -36,12 +29,36 @@ export interface PiRunnerLogger {
   error?(fields: Record<string, unknown>, message: string): void;
 }
 
+/**
+ * A model as Colony's config describes it. The SDK's `Model` carries a resolved
+ * provider-compatibility policy that only its registry can produce, so runners
+ * register specs and then resolve the real `Model` back out of the registry.
+ */
+export interface PiModelSpec {
+  readonly id: string;
+  readonly name: string;
+  readonly api: Api;
+  readonly provider: string;
+  readonly baseUrl: string;
+  readonly reasoning: boolean;
+  readonly input: ReadonlyArray<"text" | "image">;
+  readonly cost: {
+    readonly input: number;
+    readonly output: number;
+    readonly cacheRead: number;
+    readonly cacheWrite: number;
+  };
+  readonly contextWindow: number;
+  readonly maxTokens: number;
+  readonly headers?: Record<string, string>;
+}
+
 export interface PiRunnerBaseOptions {
   readonly broker?: CredentialBroker;
   readonly logger?: PiRunnerLogger;
-  readonly model?: Model<Api> | PiModelResolver;
+  readonly model?: PiModelSpec | PiModelResolver;
   readonly webTools?: WebToolsConfig;
-  readonly fallbackModels?: readonly Model<Api>[];
+  readonly fallbackModels?: readonly PiModelSpec[];
   readonly thinkingLevel?:
     | "off"
     | "minimal"
@@ -57,7 +74,7 @@ export interface PiRunnerBaseOptions {
 
 export type PiModelResolver = (
   request: PiRunRequest,
-) => Promise<Model<Api>> | Model<Api>;
+) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
 }
@@ -79,7 +96,7 @@ export function runnerBroker(options: PiRunnerBaseOptions): CredentialBroker {
 export async function resolvePiModel(
   request: PiRunRequest,
   model: PiRunnerBaseOptions["model"],
-): Promise<Model<Api>> {
+): Promise<PiModelSpec> {
   if (typeof model === "function") {
     return model(request);
   }
@@ -366,26 +383,6 @@ export function sanitizeSecret(
     .replaceAll(encodeURIComponent(secret), "[redacted]");
 }
 
-export function noOpResourceLoader(systemPrompt: string): ResourceLoader {
-  return {
-    getExtensions: () => ({
-      extensions: [],
-      errors: [],
-      runtime: createExtensionRuntime(),
-    }),
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => systemPrompt,
-    getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => [],
-    getAppendSystemPromptSources: () => [],
-    extendResources: () => {},
-    reload: async () => {},
-  };
-}
-
 export function createSandboxId(prefix: string): string {
   return `${prefix}-${randomUUID()}`;
 }
@@ -462,220 +459,6 @@ export async function waitForIdleOrCapturedEnvelope(
   await Promise.race([agent.waitForIdle(), capturedEnvelope]);
 }
 
-export interface FinalizeEnvelopeOptions {
-  readonly model: Model<Api>;
-  readonly stream: StreamFn;
-  readonly systemPrompt: string;
-  readonly messages: ReadonlyArray<unknown>;
-  readonly finalUserMessage: string;
-  readonly schemaName: string;
-  readonly typeboxSchema: unknown;
-  /**
-   * Optional validator. When provided, enables a retry loop: if the
-   * model's first envelope fails validation, the finalizer reruns the
-   * tool turn with the validation errors injected as user feedback.
-   * Returns `null` when valid; an array of human-readable error
-   * descriptions when invalid.
-   */
-  readonly validate?: (value: unknown) => string[] | null;
-  /** Max attempts including the first. Default 3. */
-  readonly maxAttempts?: number;
-  /** Max time to wait for a finalizer stream event before giving up. */
-  readonly streamTimeoutMs?: number;
-  readonly logger?: PiRunnerLogger;
-  readonly runId: string;
-}
-
-class FinalizerStreamTimeoutError extends Error {
-  constructor(readonly timeoutMs: number) {
-    super(`finalizer stream timed out after ${timeoutMs}ms`);
-    this.name = "FinalizerStreamTimeoutError";
-  }
-}
-
-async function nextWithTimeout<T>(
-  iterator: AsyncIterator<T>,
-  timeoutMs: number,
-): Promise<IteratorResult<T>> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      iterator.next(),
-      new Promise<IteratorResult<T>>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new FinalizerStreamTimeoutError(timeoutMs)),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Last-mile envelope capture for runs where the in-loop submit tool was
- * never called (e.g., Ollama-served models that ignore mid-loop
- * tool_choice forcing because of multiple available tools).
- *
- * Strategy: a single pi-ai `streamSimple` call with **only** the submit
- * tool registered + `toolChoice` forcing it. With one tool the
- * constraint is unambiguous and Ollama-class providers honor it (probed
- * directly: ~1.9s, schema-conforming args).
- *
- * We deliberately do not use `response_format: json_schema strict` here:
- * Ollama Cloud accepts the parameter but doesn't reliably enforce the
- * schema across all models.
- */
-export async function finalizeEnvelopeWithStructuredOutput(
-  options: FinalizeEnvelopeOptions,
-): Promise<unknown> {
-  const llmHistory = convertToLlm(
-    options.messages as unknown as Parameters<typeof convertToLlm>[0],
-  );
-  const toolName = `submit_${options.schemaName}`;
-  const tools = [
-    {
-      name: toolName,
-      label: toolName,
-      description: `Submit the final ${options.schemaName} envelope. Required.`,
-      parameters:
-        options.typeboxSchema as Parameters<StreamFn>[1]["tools"] extends ReadonlyArray<
-          infer T
-        >
-          ? T extends { parameters: infer P }
-            ? P
-            : never
-          : never,
-    },
-  ];
-  const maxAttempts = Math.max(1, options.maxAttempts ?? 3);
-  const streamTimeoutMs = options.streamTimeoutMs ?? 180_000;
-
-  let userMessage = options.finalUserMessage;
-  let lastErrors: string[] | null = null;
-  let lastCaptured: unknown;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const messages = [
-      ...llmHistory,
-      {
-        role: "user" as const,
-        content: [{ type: "text" as const, text: userMessage }],
-        timestamp: Date.now(),
-      },
-    ];
-    const streamOptions = (
-      options.model.api === "openai-completions"
-        ? { toolChoice: { type: "function", function: { name: toolName } } }
-        : {}
-    ) as Parameters<StreamFn>[2];
-    const events = await options.stream(
-      options.model,
-      {
-        systemPrompt: options.systemPrompt,
-        messages,
-        tools,
-      },
-      streamOptions,
-    );
-
-    let captured: unknown;
-    const iterator = events[Symbol.asyncIterator]();
-    try {
-      for (;;) {
-        const next = await nextWithTimeout(iterator, streamTimeoutMs);
-        if (next.done) break;
-        const event = next.value;
-        if (event.type === "toolcall_end" && event.toolCall.name === toolName) {
-          captured = event.toolCall.arguments;
-          break;
-        }
-        if (event.type === "error") {
-          options.logger?.error?.(
-            { runId: options.runId, attempt, reason: event.reason },
-            "finalize_envelope_stream_error",
-          );
-          return undefined;
-        }
-      }
-    } catch (err) {
-      if (err instanceof FinalizerStreamTimeoutError) {
-        options.logger?.warn?.(
-          {
-            runId: options.runId,
-            attempt,
-            timeoutMs: err.timeoutMs,
-          },
-          "finalize_envelope_stream_timeout",
-        );
-        await iterator.return?.();
-        return undefined;
-      }
-      options.logger?.error?.(
-        {
-          runId: options.runId,
-          attempt,
-          error: err instanceof Error ? err.message : String(err),
-        },
-        "finalize_envelope_stream_threw",
-      );
-      return undefined;
-    } finally {
-      await iterator.return?.();
-    }
-
-    lastCaptured = captured;
-    if (captured === undefined) {
-      options.logger?.warn?.(
-        { runId: options.runId, attempt },
-        "finalize_envelope_no_tool_call",
-      );
-      return undefined;
-    }
-
-    if (!options.validate) {
-      return captured;
-    }
-
-    const errors = options.validate(captured);
-    if (errors === null) {
-      if (attempt > 1) {
-        options.logger?.info?.(
-          { runId: options.runId, attempt },
-          "finalize_envelope_repaired",
-        );
-      }
-      return captured;
-    }
-
-    lastErrors = errors;
-    options.logger?.warn?.(
-      {
-        runId: options.runId,
-        attempt,
-        errorCount: errors.length,
-        errors: errors.slice(0, 8),
-      },
-      "finalize_envelope_validation_failed",
-    );
-    if (attempt < maxAttempts) {
-      userMessage = [
-        "Your previous envelope failed validation:",
-        ...errors.slice(0, 12).map((e) => `  - ${e}`),
-        "",
-        "Submit a corrected envelope by calling the submit tool again. Start from the canonical envelope template you were given, keep deterministic packet fields unchanged, do not omit required fields, and use only the listed enum values exactly.",
-      ].join("\n");
-    }
-  }
-
-  options.logger?.error?.(
-    { runId: options.runId, errors: lastErrors?.slice(0, 6) },
-    "finalize_envelope_validation_unrecoverable",
-  );
-  return lastCaptured;
-}
-
 export function buildImplementerSystemPrompt(): string {
   return [
     "# Role",
@@ -691,12 +474,14 @@ export function buildImplementerSystemPrompt(): string {
     "2. Explore: inspect the relevant files, tests, imports, and neighboring patterns. Check whether equivalent behavior already exists before creating anything new; reuse existing schemas, helpers, dependencies, and conventions.",
     "3. Plan: decide the smallest idiomatic change that satisfies the spec. For bug fixes, reproduce the failure FIRST and keep the reproduction as your finish line.",
     "4. Implement incrementally: make a focused change, then immediately verify it (typecheck, the narrowest relevant test) before moving on. Re-read files after editing them.",
-    "5. Verify like the gate will: before finishing, run the full relevant checks (install if needed, typecheck, lint, tests) and record every command with its exit code.",
-    "6. Self-review: read your final `git diff origin/<base>...HEAD` as if you were the reviewer — every hunk must serve the spec, and every spec requirement must appear in the diff. Cut anything that does not; add anything missing.",
-    "7. Land: commit on the work branch, `git push origin <branch>`, then confirm the push (`git log origin/<branch>..HEAD` must be empty).",
+    "5. Checkpoint: as soon as your change compiles, commit on the work branch and `git push origin <branch>` — BEFORE any full-suite run or other long verification. A run that is killed keeps only what you pushed; unpushed work is lost. Keep committing and pushing as you go.",
+    "6. Verify like the gate will: run the full relevant checks (install if needed, typecheck, lint, tests) and record every command with its exit code.",
+    "7. Self-review: read your final `git diff origin/<base>...HEAD` as if you were the reviewer — every hunk must serve the spec, and every spec requirement must appear in the diff. Cut anything that does not; add anything missing.",
+    "8. Land: push the final commit on the work branch, then confirm the push (`git log origin/<branch>..HEAD` must be empty).",
     "",
     "# Discipline",
     "- The diff must contain ONLY changes the spec requires. Do what it asks, but no more: no drive-by refactors, new dependencies, generated files, public contract changes, or type suppressions unless the spec makes them necessary.",
+    "- When you change a signature, pattern, or check, grep for every other call site and duplicate copy that needs the identical change. A fix applied to only some matching sites is a broken change, and reviewers reject it.",
     "- Completely implement what you start. Never leave comments describing code instead of code, TODO stubs, or placeholder implementations.",
     "- Never delete or weaken a failing test to make the suite pass: debug the implementation first; change a test only when the spec requires it or the test is demonstrably wrong — and say so in your summary.",
     "- Edit files in place. Never create parallel copies (file_v2, file_new); delete any temporary scripts you created before finishing.",
@@ -864,38 +649,43 @@ export const architectDecompositionEnvelopeTypeBox = Type.Object(
   { additionalProperties: false },
 );
 
-function makeZodPrepare(
-  schema: z.ZodType<unknown>,
-): (args: unknown) => unknown {
-  return (args: unknown) => {
-    const parsed = schema.safeParse(args);
-    if (parsed.success) return parsed.data;
-    // pi-agent-core's downstream TypeBox validator emits "must be equal to
-    // constant" for `Type.Union([Type.Literal(...), ...])` enums, which is
-    // useless to a model deciding which value to retry with. Throw a Zod-
-    // formatted message instead — Zod lists the allowed enum values
-    // explicitly.
-    const lines = parsed.error.issues.map(
-      (i) => `  - ${i.path.length ? i.path.join(".") : "<root>"}: ${i.message}`,
-    );
-    throw new Error(`Envelope failed schema validation:\n${lines.join("\n")}`);
-  };
+/**
+ * Validate a submitted envelope inside the tool call. The SDK has no
+ * argument-preparation seam, so a rejection is thrown here: the tool result
+ * carries the error, the session stays open, and the model can correct and
+ * submit again.
+ */
+function parseEnvelopeArguments<T>(schema: z.ZodType<T>, args: unknown): T {
+  const parsed = schema.safeParse(args);
+  if (parsed.success) return parsed.data;
+  // pi-agent-core's downstream TypeBox validator emits "must be equal to
+  // constant" for `Type.Union([Type.Literal(...), ...])` enums, which is
+  // useless to a model deciding which value to retry with. Throw a Zod-
+  // formatted message instead — Zod lists the allowed enum values
+  // explicitly.
+  // The SDK's TypeBox validator emits "must be equal to constant" for literal
+  // unions, which is useless to a model deciding what to retry with. Zod lists
+  // the allowed values explicitly.
+  const lines = parsed.error.issues.map(
+    (i) => `  - ${i.path.length ? i.path.join(".") : "<root>"}: ${i.message}`,
+  );
+  throw new Error(`Envelope failed schema validation:\n${lines.join("\n")}`);
 }
 
 export function createImplementerSubmitTool(
   capture: (value: unknown) => void,
-): ToolDefinition<typeof implementerCompletionEnvelopeTypeBox> {
+): ToolDefinition {
   return {
     name: "submit_implementer_completion",
     label: "Submit implementer completion",
     description:
       "Submit a schema-valid implementer_completion envelope with the branch and head SHA you actually pushed. A rejected submission keeps the session open so you can correct and retry it.",
     parameters: implementerCompletionEnvelopeTypeBox,
-    executionMode: "sequential",
-    prepareArguments: makeZodPrepare(implementerCompletionV2Schema) as (
-      args: unknown,
-    ) => Static<typeof implementerCompletionEnvelopeTypeBox>,
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, rawParams) => {
+      const params = parseEnvelopeArguments(
+        implementerCompletionV2Schema,
+        rawParams,
+      );
       if (
         params.status === "complete" &&
         (params.commands?.length ?? 0) === 0
@@ -993,18 +783,15 @@ export const reviewerVerdictEnvelopeTypeBox = Type.Object(
 
 export function createReviewerSubmitTool(
   capture: (value: unknown) => void,
-): AgentTool<typeof reviewerVerdictEnvelopeTypeBox> {
+): ToolDefinition {
   return {
     name: "submit_reviewer_verdict",
     label: "Submit reviewer verdict",
     description:
       "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. request_changes requires at least one finding.",
     parameters: reviewerVerdictEnvelopeTypeBox,
-    executionMode: "sequential",
-    prepareArguments: makeZodPrepare(reviewerVerdictV2Schema) as (
-      args: unknown,
-    ) => Static<typeof reviewerVerdictEnvelopeTypeBox>,
-    execute: (_toolCallId, params) => {
+    execute: async (_toolCallId, rawParams) => {
+      const params = parseEnvelopeArguments(reviewerVerdictV2Schema, rawParams);
       capture(params);
       return Promise.resolve({
         content: [{ type: "text", text: "reviewer envelope captured" }],
@@ -1017,18 +804,18 @@ export function createReviewerSubmitTool(
 
 export function createArchitectSubmitTool(
   capture: (value: unknown) => void,
-): AgentTool<typeof architectDecompositionEnvelopeTypeBox> {
+): ToolDefinition {
   return {
     name: "submit_architect_decomposition",
     label: "Submit architect decomposition",
     description:
       "Final action. Submit exactly one schema-valid architect_decomposition envelope with outcome-oriented tasks and an acyclic depends_on graph.",
     parameters: architectDecompositionEnvelopeTypeBox,
-    executionMode: "sequential",
-    prepareArguments: makeZodPrepare(architectDecompositionV2Schema) as (
-      args: unknown,
-    ) => Static<typeof architectDecompositionEnvelopeTypeBox>,
-    execute: (_toolCallId, params) => {
+    execute: async (_toolCallId, rawParams) => {
+      const params = parseEnvelopeArguments(
+        architectDecompositionV2Schema,
+        rawParams,
+      );
       capture(params);
       return Promise.resolve({
         content: [{ type: "text", text: "architect envelope captured" }],

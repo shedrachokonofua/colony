@@ -1,11 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { GitLabProviderAdapter, GitLabProviderError } from "./index.js";
 
 describe("GitLabProviderAdapter bootstrap", () => {
   it("provisions resources through the GitLab API and returns normalized IDs", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = [];
     let userId = 30;
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const rawBody = typeof init?.body === "string" ? init.body : undefined;
       const urlText =
@@ -122,7 +122,7 @@ describe("GitLabProviderAdapter bootstrap", () => {
 describe("GitLabProviderAdapter projects", () => {
   it("creates a new project under a namespace using the bot PAT (no admin credential)", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = [];
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const rawBody = typeof init?.body === "string" ? init.body : undefined;
       const urlText =
@@ -176,7 +176,7 @@ describe("GitLabProviderAdapter projects", () => {
   });
 
   it("returns the existing project when create is called against a path that already exists", async () => {
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
         typeof url === "string"
@@ -215,7 +215,7 @@ describe("GitLabProviderAdapter projects", () => {
   });
 
   it("looks projects up by id and by path", async () => {
-    const fetchMock: typeof fetch = (url) => {
+    const fetchMock = (url: string | URL | Request) => {
       const urlText =
         typeof url === "string"
           ? url
@@ -257,7 +257,7 @@ describe("GitLabProviderAdapter projects", () => {
 describe("GitLabProviderAdapter accessTokens", () => {
   it("mints and revokes project access tokens", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = [];
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const rawBody = typeof init?.body === "string" ? init.body : undefined;
       const urlText =
@@ -324,7 +324,7 @@ describe("GitLabProviderAdapter accessTokens", () => {
   });
 
   it("lists active project access tokens without requiring the secret", async () => {
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
         typeof url === "string"
@@ -374,7 +374,7 @@ describe("GitLabProviderAdapter accessTokens", () => {
   });
 
   it("treats revoke 404 as already revoked", async () => {
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
         typeof url === "string"
@@ -416,7 +416,7 @@ describe("GitLabProviderAdapter issues", () => {
       assignees: [] as Array<{ id: number; username: string; name: string }>,
       web_url: "https://gitlab.test/colony/dev/-/issues/7",
     };
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const rawBody = typeof init?.body === "string" ? init.body : undefined;
       const body = rawBody
@@ -567,7 +567,7 @@ describe("GitLabProviderAdapter issues", () => {
 
   it("routes the same iid to different projects when the project ref changes", async () => {
     const calls: Array<{ url: string; method: string }> = [];
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
         typeof url === "string"
@@ -632,7 +632,7 @@ describe("GitLabProviderAdapter mergeRequests", () => {
       state: "opened",
       web_url: "https://gitlab.test/colony/dev/-/merge_requests/5",
     };
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const rawBody = typeof init?.body === "string" ? init.body : undefined;
       const body = rawBody
@@ -925,7 +925,7 @@ describe("GitLabProviderAdapter branches", () => {
   it("creates, deletes, and idempotently protects a branch", async () => {
     const calls: Array<{ url: string; method: string }> = [];
     let protectedExists = false;
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
         typeof url === "string"
@@ -1016,7 +1016,7 @@ describe("GitLabProviderAdapter branches", () => {
 
 describe("GitLabProviderAdapter commits and pipelines", () => {
   it("gets a commit, fetches its diff, gets a pipeline, and triggers a pipeline", async () => {
-    const fetchMock: typeof fetch = (url, init) => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
         typeof url === "string"

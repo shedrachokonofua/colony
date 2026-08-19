@@ -156,7 +156,7 @@ class K8sSandboxHandle implements SandboxHandle {
    * either a non-zero local tar exit or a non-successful pod tar exec.
    *
    * Failure edges are handled:
-   * - On local spawn error (ENOENT etc.), local.stdout is destroyed so the
+   * - On local spawn error (ENOENT etc.), the pipe is destroyed so the
    *   pod-side stdin pump sees EOF and does not block forever.
    * - On pod-side failure, the local tar child is killed so it does not leak
    *   and block on its pipe buffer.
@@ -166,12 +166,18 @@ class K8sSandboxHandle implements SandboxHandle {
     const local = spawn("tar", ["-cf", "-", "-C", workspace, "."], {
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // client-node pumps stdin with `.on("data")`. Under Bun, a ChildProcess
+    // stdout attached that way never flows (no bytes, no "end"), which strands
+    // the pod-side tar on stdin forever. A piped PassThrough restores real
+    // Readable semantics under both runtimes.
+    const pipe = new PassThrough();
+    local.stdout.pipe(pipe);
     let spawnFailed = false;
     local.once("error", () => {
       spawnFailed = true;
-      // Destroy the stdout stream so the pod-side stdin pump sees EOF
-      // rather than blocking forever waiting for data that will never come.
-      local.stdout?.destroy();
+      // Destroy the pipe so the pod-side stdin pump sees EOF rather than
+      // blocking forever waiting for data that will never come.
+      pipe.destroy();
     });
     const localExitPromise = new Promise<number | null>((resolveExit) => {
       local.once("close", (code) => resolveExit(code));
@@ -185,7 +191,7 @@ class K8sSandboxHandle implements SandboxHandle {
     try {
       podResult = await this.runPod(
         ["tar", "-xf", "-", "-C", POD_WORKSPACE_DIR],
-        local.stdout,
+        pipe,
         undefined,
       );
     } catch (err) {

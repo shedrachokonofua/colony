@@ -27,7 +27,7 @@ import { z } from "zod";
  */
 
 // ---------------------------------------------------------------------------
-// Provider api kinds — verbatim from Pi (`@earendil-works/pi-ai` README).
+// Provider api kinds — verbatim from Pi (`@oh-my-pi/pi-ai` README).
 // ---------------------------------------------------------------------------
 
 export const PI_API_KINDS = [

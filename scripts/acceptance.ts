@@ -1,4 +1,4 @@
-#!/usr/bin/env -S tsx
+#!/usr/bin/env bun
 /**
  * Colony real-GitLab acceptance.
  *
@@ -483,11 +483,14 @@ function spawnColonyd(
   dbPath: string,
   configPath: string,
 ): ChildProcess {
-  // Spawn node directly (not `npx tsx`) in a new process group so SIGKILL
-  // cannot leave the real colonyd process behind.
+  // Spawn the runtime directly (not through a package runner) in a new process
+  // group so SIGKILL cannot leave the real colonyd process behind. Bun executes
+  // the TypeScript entry as-is; Node needs the tsx loader.
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", "apps/colonyd/src/main.ts"],
+    process.versions.bun
+      ? ["apps/colonyd/src/main.ts"]
+      : ["--import", "tsx", "apps/colonyd/src/main.ts"],
     {
       cwd: process.cwd(),
       env: {

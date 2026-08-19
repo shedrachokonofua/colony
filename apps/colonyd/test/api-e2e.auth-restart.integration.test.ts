@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetEnvCache } from "@colony/config";
 import { bootFake, type BootFakeHandle } from "../e2e/boot-fake.js";
 import { freePort } from "../e2e/env.js";
@@ -15,9 +15,13 @@ import { http, httpRaw, waitFor } from "../e2e/client.js";
 // ---------------------------------------------------------------------------
 
 function spawnColonyd(env: Record<string, string>): ChildProcess {
+  // Bun executes TypeScript directly; Node needs the tsx loader. Spawn whatever
+  // runtime is running this suite so the child matches the parent.
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", "apps/colonyd/e2e/fake-colonyd.ts"],
+    process.versions.bun
+      ? ["apps/colonyd/e2e/fake-colonyd.ts"]
+      : ["--import", "tsx", "apps/colonyd/e2e/fake-colonyd.ts"],
     {
       cwd: process.cwd(),
       env: { ...process.env, ...env },

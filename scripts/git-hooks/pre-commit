@@ -21,8 +21,8 @@ if git diff --cached --quiet; then
 fi
 
 echo "→ lint"
-npm run -s lint
+bun run --silent lint
 echo "→ typecheck"
-npm run -s typecheck
+bun run --silent typecheck
 echo "→ test:unit"
-npm run -s test:unit
+bun run --silent test:unit

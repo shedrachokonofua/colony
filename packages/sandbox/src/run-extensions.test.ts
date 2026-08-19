@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { assertValidRunExtensions } from "./run-extensions.js";
 
 describe("run extension validation", () => {

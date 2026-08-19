@@ -1,4 +1,4 @@
-import { describe } from "vitest";
+import { describe } from "bun:test";
 import { describeEngineTests } from "@colony/sandbox-tests";
 import { createKubernetesEngine } from "./index.js";
 
@@ -28,8 +28,8 @@ const PER_TEST_TIMEOUT_MS = 180_000;
         // are not visible in the pod. The in-process engine does not have this
         // constraint because it reads from the host filesystem directly.
         seesPostProvisionLocalWrites: false,
+        timeoutMs: PER_TEST_TIMEOUT_MS,
       },
     );
   },
-  PER_TEST_TIMEOUT_MS,
 );

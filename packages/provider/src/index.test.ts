@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import {
   FakeProviderAdapter,
   PROVIDER_COMMAND_SYNTAX,

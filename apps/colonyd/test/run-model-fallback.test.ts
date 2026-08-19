@@ -1,10 +1,10 @@
+import type { PiModelSpec } from "@colony/agent-runtime";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
 import { Store } from "@colony/core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,
@@ -109,7 +109,7 @@ describe("run event sink persists pi_model_fallback", () => {
     if (!address || typeof address === "string")
       throw new Error("missing port");
     const baseUrl = `http://127.0.0.1:${address.port}/v1`;
-    const model = (id: string): Model<Api> => ({
+    const model = (id: string): PiModelSpec => ({
       id,
       name: id,
       api: "openai-completions",
@@ -120,7 +120,6 @@ describe("run event sink persists pi_model_fallback", () => {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
       maxTokens: 8_192,
-      compat: { supportsStore: false },
     });
 
     const dbDir = mkdtempSync(join(tmpdir(), "colony-fallback-store-"));

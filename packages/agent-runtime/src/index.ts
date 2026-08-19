@@ -23,4 +23,4 @@ export {
   reviewerVerdictEnvelopeTypeBox,
   provisionRepoWorkspace,
 } from "./pi-runner-common.js";
-export type { PiRunnerLogger } from "./pi-runner-common.js";
+export type { PiModelSpec, PiRunnerLogger } from "./pi-runner-common.js";

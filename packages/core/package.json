@@ -11,10 +11,7 @@
   },
   "dependencies": {
     "@colony/domain": "*",
-    "@colony/schemas": "*",
-    "better-sqlite3": "^12.4.1"
+    "@colony/schemas": "*"
   },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
-  }
+  "devDependencies": {}
 }

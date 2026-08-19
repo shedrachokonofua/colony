@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import * as http from "node:http";
 import {
   createWebTools,
@@ -15,7 +16,6 @@ import type { HttpTransport } from "./web-tools.js";
 
 async function callTool(
   tool: {
-    prepareArguments?: (a: unknown) => unknown;
     execute: (...args: unknown[]) => Promise<unknown>;
   },
   rawArgs: unknown,
@@ -25,9 +25,6 @@ async function callTool(
   details?: unknown;
 }> {
   let prepared: unknown = rawArgs;
-  if (tool.prepareArguments) {
-    prepared = tool.prepareArguments(rawArgs);
-  }
   try {
     const res = (await tool.execute(
       "test-id",
@@ -51,15 +48,11 @@ async function callTool(
 
 async function callToolThrows(
   tool: {
-    prepareArguments?: (a: unknown) => unknown;
     execute: (...args: unknown[]) => Promise<unknown>;
   },
   rawArgs: unknown,
 ): Promise<Error> {
   let prepared: unknown = rawArgs;
-  if (tool.prepareArguments) {
-    prepared = tool.prepareArguments(rawArgs);
-  }
   try {
     await tool.execute("test-id", prepared, undefined, undefined, undefined);
     throw new Error("expected tool to throw");
@@ -68,6 +61,9 @@ async function callToolThrows(
     return err instanceof Error ? err : new Error(String(err));
   }
 }
+
+/** Web tools ignore the extension context; a stub keeps the SDK signature. */
+const toolContext = {} as ExtensionContext;
 
 describe("web-tools factory & registration", () => {
   it("returns [] when searxngUrl absent/empty", () => {
@@ -100,26 +96,29 @@ describe("web-tools factory & registration", () => {
     expect(fetch.description).toBeTruthy();
     expect(search.parameters).toBeTruthy();
     expect(fetch.parameters).toBeTruthy();
-    expect(search.prepareArguments).toBeTypeOf("function");
-    expect(fetch.prepareArguments).toBeTypeOf("function");
+    expect(search.execute).toBeTypeOf("function");
+    expect(fetch.execute).toBeTypeOf("function");
   });
 });
 
 describe("input-bound rejections via Zod schemas", () => {
-  it("rejects oversized query", () => {
+  it("rejects oversized query", async () => {
     expect(() =>
       webSearchInputSchema.parse({ query: "a".repeat(401) }),
     ).toThrow();
     const tools = createWebTools({ searxngUrl: "https://searx.example.com" });
     const search = tools.find((t) => t.name === "web_search")!;
-    expect(() =>
-      search.prepareArguments!({ query: "a".repeat(401) }),
-    ).toThrow();
-    expect(() => search.prepareArguments!({ query: "   " })).toThrow();
-    expect(() => search.prepareArguments!({ query: "" })).toThrow();
+    // The tool validates inside execute now, so a rejection is a rejected call.
+    const reject = (query: string) =>
+      expect(
+        search.execute("t", { query }, undefined, undefined, toolContext),
+      ).rejects.toThrow();
+    await reject("a".repeat(401));
+    await reject("   ");
+    await reject("");
   });
 
-  it("rejects non-https URL via Zod", () => {
+  it("rejects non-https URL via Zod", async () => {
     expect(() =>
       webFetchInputSchema.parse({ url: "http://example.com" }),
     ).toThrow();
@@ -128,9 +127,15 @@ describe("input-bound rejections via Zod schemas", () => {
     ).toThrow();
     const tools = createWebTools({ searxngUrl: "https://searx.example.com" });
     const fetch = tools.find((t) => t.name === "web_fetch")!;
-    expect(() =>
-      fetch.prepareArguments!({ url: "http://example.com" }),
-    ).toThrow();
+    await expect(
+      fetch.execute(
+        "t",
+        { url: "http://example.com" },
+        undefined,
+        undefined,
+        toolContext,
+      ),
+    ).rejects.toThrow();
   });
 });
 

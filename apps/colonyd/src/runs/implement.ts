@@ -10,6 +10,9 @@ import { trackRun } from "./registry.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
+/** Run errors that mean "killed before it could submit", not "did the wrong thing". */
+const INTERRUPTED_RUN_ERROR =
+  /timeout_without_envelope|process_restart|operation was aborted/i;
 
 export interface ImplementRunOptions {
   readonly leaseTtlMs?: number;
@@ -291,6 +294,14 @@ function buildPacketBody(ctx: ColonydContext, task: Task): string {
     "- Never commit PACKET.json or credentials; keep the diff limited to this task.",
     "- Submit implementer_completion with the exact branch and head SHA you pushed.",
   ];
+  const interrupted = interruptedAttempt(ctx, task);
+  if (interrupted) {
+    sections.push(
+      "",
+      "## Previous attempt was interrupted — RESUME MODE",
+      interrupted,
+    );
+  }
   const gateFailure = latestGateFailure(ctx, task);
   if (gateFailure) {
     sections.push(
@@ -320,6 +331,38 @@ function buildPacketBody(ctx: ColonydContext, task: Task): string {
     sections.push("", "## Operator feedback", task.human_feedback);
   }
   return sections.join("\n");
+}
+
+/**
+ * Continuity for a retry after an interrupted attempt. A run killed by the
+ * wall clock or a colonyd restart leaves no envelope, so the next attempt used
+ * to start blank and re-explore from scratch — sometimes re-deriving work its
+ * predecessor had already pushed. Tell it what happened and where to look.
+ */
+function interruptedAttempt(
+  ctx: ColonydContext,
+  task: Task,
+): string | undefined {
+  const runs = ctx.store
+    .runsForTask(task.id)
+    .filter((run) => run.kind === "implement");
+  const last = runs.at(-1);
+  if (!last || last.status !== "failed" || !last.error) return undefined;
+  if (!INTERRUPTED_RUN_ERROR.test(last.error)) return undefined;
+  const minutes =
+    last.finished_at && last.started_at
+      ? Math.round(
+          (Date.parse(last.finished_at) - Date.parse(last.started_at)) / 60_000,
+        )
+      : undefined;
+  const ran = minutes === undefined ? "" : ` after ${minutes} minutes`;
+  return [
+    `The previous attempt was cut off${ran} (${last.error}) without submitting an envelope.`,
+    "It may already have pushed part of this task. BEFORE writing anything:",
+    "- `git log --oneline origin/<branch> -5` and `git diff origin/<base_commit>...origin/<branch>` (branch and base_commit are in packet.repo) to see what already landed.",
+    "- Continue from that state; never restart work that is already pushed.",
+    "Then write the remaining change, push it early, and submit.",
+  ].join("\n");
 }
 
 function latestReviewFindings(

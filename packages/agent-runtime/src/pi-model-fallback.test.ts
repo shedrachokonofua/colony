@@ -1,9 +1,9 @@
+import type { PiModelSpec } from "./pi-runner-common.js";
 import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,
@@ -110,7 +110,7 @@ describe("Pi model fallback", () => {
     if (!address || typeof address === "string")
       throw new Error("missing port");
     const baseUrl = `http://127.0.0.1:${address.port}/v1`;
-    const model = (id: string): Model<Api> => ({
+    const model = (id: string): PiModelSpec => ({
       id,
       name: id,
       api: "openai-completions",
@@ -121,7 +121,6 @@ describe("Pi model fallback", () => {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
       maxTokens: 8_192,
-      compat: { supportsStore: false },
     });
     const scratchDir = mkdtempSync(join(tmpdir(), "colony-fallback-test-"));
     scratchDirs.push(scratchDir);

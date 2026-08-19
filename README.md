@@ -40,9 +40,13 @@ TypeScript **npm workspaces** monorepo (Node **24+**).
 ```bash
 nix develop
 cp .env.example .env   # set GITLAB_TOKEN, COLONY_OPENAI_COMPATIBLE_API_KEY
-npm install
-npm run dev            # colonyd in watch mode (port 4400)
+bun install
+bun run dev            # colonyd in watch mode (port 4400)
 ```
+
+Colony runs on Bun, not Node: the agent runtime depends on
+`@oh-my-pi/pi-coding-agent`, which ships Bun-native TypeScript, and colonyd's
+own sources execute without a build step or loader.
 
 Operator sheet: [http://localhost:4400](http://localhost:4400). Sign it with `human:op-1` (sent as `X-Actor-Id`).
 
@@ -58,10 +62,10 @@ curl -X POST localhost:4400/scopes \
 Checks:
 
 ```bash
-npm run typecheck
-npm test          # unit + fake e2e (loop.integration.test.ts)
-npm run test:unit # unit only
-npm run lint
+bun run typecheck
+bun test          # unit + fake e2e (loop.integration.test.ts)
+bun run test:unit # unit only
+bun run lint
 ```
 
 Real-GitLab acceptance:
@@ -69,7 +73,7 @@ Real-GitLab acceptance:
 ```bash
 GITLAB_BASE_URL=https://gitlab.home.shdr.ch GITLAB_TOKEN=*** \
 COLONY_CONFIG_PATH=config/colony.yaml AGENT_RUNTIME=pi \
-npx tsx scripts/acceptance.ts
+bun scripts/acceptance.ts
 ```
 
 ## Web research tools

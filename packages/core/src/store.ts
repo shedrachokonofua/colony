@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import Database from "better-sqlite3";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import {
   DomainStateError,
   domainError,
@@ -129,8 +129,23 @@ export function nowIso(date: Date = new Date()): string {
   return date.toISOString();
 }
 
+/**
+ * bun:sqlite binds named parameters only when the object keys carry the
+ * placeholder prefix, unlike better-sqlite3's bare keys.
+ *
+ * The driver types `run/get/all` as variadic positional binds; the named-object
+ * form is legal at runtime but only expressible through `prepare`'s Params type
+ * parameter, which every statement here would have to thread. Assert once at
+ * this boundary instead.
+ */
+function named(values: Record<string, SQLQueryBindings>): SQLQueryBindings {
+  const bound: Record<string, SQLQueryBindings> = {};
+  for (const [key, value] of Object.entries(values)) bound[`@${key}`] = value;
+  return bound as unknown as SQLQueryBindings;
+}
+
 export class Store {
-  readonly db: Database.Database;
+  readonly db: Database;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -181,7 +196,7 @@ export class Store {
       `CREATE TABLE ${table}_new (`,
     );
 
-    this.db.pragma("foreign_keys = OFF");
+    this.db.exec("PRAGMA foreign_keys = OFF");
     try {
       this.db.transaction(() => {
         this.db.exec(newDdl);
@@ -215,14 +230,14 @@ export class Store {
         this.db.exec(`DROP TABLE ${table}`);
         this.db.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
       })();
-      const violations = this.db.pragma("foreign_key_check") as unknown[];
+      const violations = this.db.prepare("PRAGMA foreign_key_check").all();
       if (violations.length > 0) {
         throw new Error(
           `${table} rebuild broke foreign keys: ${JSON.stringify(violations[0])}`,
         );
       }
     } finally {
-      this.db.pragma("foreign_keys = ON");
+      this.db.exec("PRAGMA foreign_keys = ON");
     }
   }
 
@@ -241,15 +256,17 @@ export class Store {
         `INSERT INTO scopes (id, goal, title, status, approvals, provider_project_id, provider_project_path, default_branch)
          VALUES (@id, @goal, @title, 'draft', @approvals, @provider_project_id, @provider_project_path, @default_branch)`,
       )
-      .run({
-        id,
-        goal: input.goal,
-        title: input.title ?? null,
-        approvals: input.approvals ?? "auto",
-        provider_project_id: input.provider_project_id,
-        provider_project_path: input.provider_project_path,
-        default_branch: input.default_branch ?? "main",
-      });
+      .run(
+        named({
+          id,
+          goal: input.goal,
+          title: input.title ?? null,
+          approvals: input.approvals ?? "auto",
+          provider_project_id: input.provider_project_id,
+          provider_project_path: input.provider_project_path,
+          default_branch: input.default_branch ?? "main",
+        }),
+      );
     const scope = this.getScope(id);
     if (!scope) throw new Error(`scope insert lost: ${id}`);
     return scope;
@@ -307,7 +324,7 @@ export class Store {
           `UPDATE scopes SET status = @status, blocked_reason = @blocked_reason,
            updated_at = @now WHERE id = @id`,
         )
-        .run({ id: scope.id, status, blocked_reason, now: nowIso() });
+        .run(named({ id: scope.id, status, blocked_reason, now: nowIso() }));
       this.audit(actor, "scope.transition", {
         scope_id: scope.id,
         detail: { from: scope.status, to: status, ...detail },
@@ -534,17 +551,19 @@ export class Store {
            updated_at = @now
            WHERE id = @id AND state_version = @expectedVersion`,
         )
-        .run({
-          id: task.id,
-          expectedVersion,
-          state: to,
-          branch,
-          mr_iid,
-          attempt,
-          next_retry_at,
-          blocked_reason,
-          now: nowIso(),
-        });
+        .run(
+          named({
+            id: task.id,
+            expectedVersion,
+            state: to,
+            branch,
+            mr_iid,
+            attempt,
+            next_retry_at,
+            blocked_reason,
+            now: nowIso(),
+          }),
+        );
       if (updated.changes !== 1) {
         throw new DomainStateError(
           domainError(
@@ -583,9 +602,9 @@ export class Store {
          )
          ${scopeId ? "AND t.scope_id = @scopeId" : ""}
        ORDER BY t.id`;
-    const params: Record<string, unknown> = { now };
-    if (scopeId) params.scopeId = scopeId;
-    return this.db.prepare(sql).all(params) as Task[];
+    const params: Record<string, SQLQueryBindings> = { now };
+    if (scopeId) params.scopeId = String(scopeId);
+    return this.db.prepare(sql).all(named(params)) as Task[];
   }
 
   // ---------------------------------------------------------------------
@@ -608,16 +627,18 @@ export class Store {
         `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id)
          VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id)`,
       )
-      .run({
-        id,
-        scope_id: input.scope_id,
-        task_id: input.task_id ?? null,
-        kind: input.kind,
-        lease,
-        base_sha: input.base_sha ?? null,
-        workspace_path: input.workspace_path ?? null,
-        model_id: input.model_id ?? null,
-      });
+      .run(
+        named({
+          id,
+          scope_id: input.scope_id,
+          task_id: input.task_id ?? null,
+          kind: input.kind,
+          lease,
+          base_sha: input.base_sha ?? null,
+          workspace_path: input.workspace_path ?? null,
+          model_id: input.model_id ?? null,
+        }),
+      );
     const run = this.getRun(id);
     if (!run) throw new Error(`run insert lost: ${id}`);
     return run;
@@ -680,15 +701,17 @@ export class Store {
          error = @error, finished_at = @now
          WHERE id = @id AND status = 'running'`,
       )
-      .run({
-        id: runId,
-        status,
-        head_sha: patch.head_sha ?? null,
-        envelope_json: patch.envelope_json ?? null,
-        evidence_json: patch.evidence_json ?? null,
-        error: patch.error ?? null,
-        now: nowIso(),
-      });
+      .run(
+        named({
+          id: runId,
+          status,
+          head_sha: patch.head_sha ?? null,
+          envelope_json: patch.envelope_json ?? null,
+          evidence_json: patch.evidence_json ?? null,
+          error: patch.error ?? null,
+          now: nowIso(),
+        }),
+      );
     const run = this.getRun(runId);
     if (!run) throw new Error(`run lost after finish: ${runId}`);
     return run;
@@ -773,7 +796,7 @@ export class Store {
          AND (@taskId IS NULL OR task_id = @taskId)
          ORDER BY started_at DESC LIMIT 1`,
       )
-      .get({ scopeId, kind, taskId: taskId ?? null }) as Run | undefined;
+      .get(named({ scopeId, kind, taskId: taskId ?? null })) as Run | undefined;
   }
 
   /** Append-only activity feed for a run (tool calls, limits, failures). */
@@ -834,19 +857,21 @@ export class Store {
         `INSERT INTO audit (actor, action, scope_id, task_id, run_id, detail_json)
          VALUES (@actor, @action, @scope_id, @task_id, @run_id, @detail_json)`,
       )
-      .run({
-        actor,
-        action,
-        scope_id: refs.scope_id ?? null,
-        task_id: refs.task_id ?? null,
-        run_id: refs.run_id ?? null,
-        detail_json: JSON.stringify(refs.detail ?? {}),
-      });
+      .run(
+        named({
+          actor,
+          action,
+          scope_id: refs.scope_id ?? null,
+          task_id: refs.task_id ?? null,
+          run_id: refs.run_id ?? null,
+          detail_json: JSON.stringify(refs.detail ?? {}),
+        }),
+      );
   }
 
   listAudit(filter: AuditFilter = {}): AuditRow[] {
     const clauses: string[] = [];
-    const params: Record<string, unknown> = {
+    const params: Record<string, SQLQueryBindings> = {
       scopeId: filter.scope_id ?? null,
       taskId: filter.task_id ?? null,
     };
@@ -857,7 +882,7 @@ export class Store {
       .prepare(
         `SELECT * FROM audit ${where} ORDER BY id DESC LIMIT ${Math.max(1, Math.min(filter.limit ?? 200, 1000))}`,
       )
-      .all(params) as AuditRow[];
+      .all(named(params)) as AuditRow[];
   }
 }
 

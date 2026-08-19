@@ -39,7 +39,12 @@ providers:
         name: muse-spark
         reasoning: true
         context_window: 1048576
-        max_tokens: 131072
+        # Operational cap, not the model's limit. Turn telemetry from a walled
+        # 30-minute run: median turn 404 output tokens, but outliers reached
+        # 30k tokens / 203 seconds, and 27 of the 30 minutes went to model
+        # generation. Bounding a single response keeps the run acting instead
+        # of monologuing.
+        max_tokens: 16384
         cost: { input: 0, output: 0 }
       - id: router/glm-5.2
         name: glm-5.2
@@ -96,13 +101,15 @@ providers:
         cost: { input: 0, output: 0 }
 
 agents:
+  # Budgets sized from observed run durations (12h window, 2026-08-18):
+  # implement 20-26 min at the old 30 min cap, review 10-23 min, plan 8-25 min.
   developer:
     provider: openai_compatible
     model: muse-spark
     fallback_models:
       [deepseek-v4-flash, deepseek-v4-flash-router, mimo-v2.5-pro, qwen3.8-27b]
-    thinking_level: high
-    timeout_ms: 1800000
+    thinking_level: medium
+    timeout_ms: 3600000
     max_turns: 250
   reviewer:
     provider: openai_compatible
@@ -114,13 +121,13 @@ agents:
       - deepseek-v4-pro
       - qwen3.8-27b
     thinking_level: xhigh
-    timeout_ms: 1800000
+    timeout_ms: 2700000
     max_turns: 200
   architect:
     provider: openai_compatible
     model: glm-5.3
     fallback_models: [kimi-k3, glm-5.2, deepseek-v4-pro]
-    timeout_ms: 1800000
+    timeout_ms: 2700000
     max_turns: 200
   memory_consolidator:
     provider: openai_compatible

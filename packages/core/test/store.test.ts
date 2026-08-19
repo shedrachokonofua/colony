@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
 import { DomainStateError } from "@colony/domain";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
@@ -159,8 +159,8 @@ describe("Store", () => {
     store.setScopeStatus(scopeId, "planning", "svc:colonyd");
     const tasks = store.materializePlan(scopeId, plan(), "svc:colonyd");
     expect(tasks).toHaveLength(2);
-    expect(tasks[0]!.id).toBe(`${scopeId}.1`);
-    expect(tasks[1]!.id).toBe(`${scopeId}.2`);
+    expect(String(tasks[0]!.id)).toBe(`${scopeId}.1`);
+    expect(String(tasks[1]!.id)).toBe(`${scopeId}.2`);
     expect(store.getScope(scopeId)!.status).toBe("active");
     expect(store.taskDeps(tasks[1]!.id)).toEqual([tasks[0]!.id]);
   });
@@ -452,7 +452,9 @@ describe("legacy CHECK constraint migrations", () => {
         // The migration preserved rows and the FK relationship...
         const scope = migrated.getScope("col-legacy1");
         expect(scope?.status).toBe("active");
-        expect(migrated.getTask("col-legacy1.1")?.scope_id).toBe("col-legacy1");
+        expect(String(migrated.getTask("col-legacy1.1")?.scope_id)).toBe(
+          "col-legacy1",
+        );
         // ...and the rebuilt table accepts the new status.
         migrated.setScopeStatus("col-legacy1", "validating", "svc:test");
         expect(migrated.getScope("col-legacy1")?.status).toBe("validating");

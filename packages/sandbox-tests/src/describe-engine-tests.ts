@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -123,6 +123,8 @@ async function checkExecRoundTrip(makeEngine: MakeEngine): Promise<void> {
 export interface EngineTestOptions {
   readonly enforcesExecIsolation?: boolean;
   readonly seesPostProvisionLocalWrites?: boolean;
+  /** Per-test timeout in ms for engines that provision real infrastructure. */
+  readonly timeoutMs?: number;
 }
 
 async function checkApiContainment(makeEngine: MakeEngine): Promise<void> {
@@ -269,33 +271,58 @@ export async function runSandboxEngineChecks(
 }
 
 /**
- * Registers a vitest conformance suite every sandbox engine must pass.
+ * Registers a conformance suite every sandbox engine must pass.
  *
  * Each `it` provisions a fresh engine/workspace and destroys its own handle,
- * so tests are independent and serial-friendly.
+ * so tests are independent and serial-friendly. Engines that provision real
+ * infrastructure pass `timeoutMs`, which is applied per test — the runner's
+ * `describe` takes no timeout argument.
  */
 export function describeEngineTests(
   name: string,
   makeEngine: MakeEngine,
   options: EngineTestOptions = {},
 ): void {
+  const timeout = options.timeoutMs;
   describe(`sandbox engine conformance (${name})`, () => {
-    it("exec round-trip surfaces ordered stdout/stderr with strictly increasing seq and exitCode 0", () =>
-      checkExecRoundTrip(makeEngine));
+    it(
+      "exec round-trip surfaces ordered stdout/stderr with strictly increasing seq and exitCode 0",
+      () => checkExecRoundTrip(makeEngine),
+      timeout,
+    );
     if (options.seesPostProvisionLocalWrites !== false) {
-      it("workspace contents are visible to exec and readFile", () =>
-        checkWorkspaceVisibility(makeEngine));
+      it(
+        "workspace contents are visible to exec and readFile",
+        () => checkWorkspaceVisibility(makeEngine),
+        timeout,
+      );
     }
-    it("rejects handle API paths escaping the workspace", () =>
-      checkApiContainment(makeEngine));
+    it(
+      "rejects handle API paths escaping the workspace",
+      () => checkApiContainment(makeEngine),
+      timeout,
+    );
     if (options.enforcesExecIsolation !== false) {
-      it("exec cannot surface content outside the workspace", () =>
-        checkExecContainment(makeEngine));
+      it(
+        "exec cannot surface content outside the workspace",
+        () => checkExecContainment(makeEngine),
+        timeout,
+      );
     }
-    it("filters env vars not in the launch profile envAllowlist", () =>
-      checkEnvFiltering(makeEngine));
-    it("destroy() is idempotent", () => checkDestroyIdempotent(makeEngine));
-    it("exec() rejects after destroy()", () =>
-      checkExecAfterDestroy(makeEngine));
+    it(
+      "filters env vars not in the launch profile envAllowlist",
+      () => checkEnvFiltering(makeEngine),
+      timeout,
+    );
+    it(
+      "destroy() is idempotent",
+      () => checkDestroyIdempotent(makeEngine),
+      timeout,
+    );
+    it(
+      "exec() rejects after destroy()",
+      () => checkExecAfterDestroy(makeEngine),
+      timeout,
+    );
   });
 }

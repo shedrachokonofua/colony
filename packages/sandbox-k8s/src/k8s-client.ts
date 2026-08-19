@@ -134,9 +134,12 @@ function sandboxNamesFromList(body: unknown): string[] {
   }
   return names;
 }
-type KubernetesEnvironment = Readonly<
-  Partial<Record<"KUBERNETES_SERVICE_HOST" | "KUBERNETES_SERVICE_PORT", string>>
->;
+/**
+ * Only the two service-account variables are read, but the type stays an
+ * open record so a runtime's own `process.env` type (Bun's differs from
+ * Node's) is assignable without a cast.
+ */
+type KubernetesEnvironment = Readonly<Record<string, string | undefined>>;
 
 /**
  * Prefer the mounted service-account configuration inside Kubernetes.

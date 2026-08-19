@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1.7
 # Build context: repo root. Built via Buildah on Aether's GitLab Kubernetes runner.
+#
+# Bun, not Node: the agent runtime depends on @oh-my-pi/pi-coding-agent, which
+# ships TypeScript source as its import entry and declares engines.bun. Bun also
+# executes colonyd's TypeScript directly, so the image needs no build step and no
+# loader.
 
-FROM docker.io/library/node:24-bookworm-slim AS deps
+FROM docker.io/oven/bun:1.3.14-debian AS deps
 WORKDIR /workspace
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
+COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
 COPY apps/colonyd/package.json ./apps/colonyd/
 COPY packages/agent-runtime/package.json ./packages/agent-runtime/
 COPY packages/config/package.json ./packages/config/
@@ -17,11 +19,13 @@ COPY packages/observability/package.json ./packages/observability/
 COPY packages/provider/package.json ./packages/provider/
 COPY packages/provider-gitlab/package.json ./packages/provider-gitlab/
 COPY packages/schemas/package.json ./packages/schemas/
+COPY packages/sandbox/package.json ./packages/sandbox/
+COPY packages/sandbox-in-process/package.json ./packages/sandbox-in-process/
 COPY packages/sandbox-k8s/package.json ./packages/sandbox-k8s/
-# tsx lives in the root workspace; keep it in the image so `npm start` works.
-RUN npm ci --include=dev --no-audit --no-fund
+COPY packages/sandbox-tests/package.json ./packages/sandbox-tests/
+RUN bun install --frozen-lockfile
 
-FROM docker.io/library/node:24-bookworm-slim AS runtime
+FROM docker.io/oven/bun:1.3.14-debian AS runtime
 WORKDIR /workspace
 ARG COLONY_VERSION=unknown
 ENV NODE_ENV=production \
@@ -32,9 +36,9 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /workspace/node_modules ./node_modules
-COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
+COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
 COPY packages ./packages
 COPY apps/colonyd ./apps/colonyd
 COPY config ./config
-USER node
-CMD ["npm", "--workspace", "@colony/colonyd", "run", "start"]
+USER bun
+CMD ["bun", "apps/colonyd/src/main.ts"]
