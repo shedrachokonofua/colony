@@ -20,3 +20,5 @@ plan.cache
 logs/
 .dev-logs/
 data/
+test-results/
+playwright-report/

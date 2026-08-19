@@ -12,12 +12,14 @@
   "scripts": {
     "dev": "bun --watch apps/colonyd/src/main.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test",
-    "test:unit": "bun test --path-ignore-patterns='**/*.integration.test.ts'",
+    "test": "bun test --path-ignore-patterns='**/e2e/**'",
+    "test:unit": "bun test --path-ignore-patterns='**/e2e/**' --path-ignore-patterns='**/*.integration.test.ts'",
+    "test:e2e": "playwright test",
     "lint": "prettier --check .",
     "format": "prettier --write ."
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@types/bun": "^1.3.14",
     "prettier": "3.8.3",
     "typescript": "^5.7.2"
