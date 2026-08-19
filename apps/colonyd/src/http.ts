@@ -407,6 +407,18 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.post("/tasks/:id/cancel", async (c) => {
     const task = ctx.store.getTask(c.req.param("id"));
     if (!task) return notFound(c, "task");
+    const scope = ctx.store.getScope(task.scope_id);
+    if (scope?.status === "abandoned") {
+      return c.json(
+        {
+          error: {
+            code: "SCOPE_ABANDONED",
+            message: "tasks in an abandoned scope cannot be canceled",
+          },
+        },
+        409,
+      );
+    }
     try {
       ctx.store.transitionTask(
         task.id,
