@@ -324,7 +324,7 @@ describe("api e2e control — 2. task transitions", () => {
       next_retry_at: string | null;
     };
     expect(stopped.state).toBe("queued");
-    expect(stopped.attempt).toBe(runningAttempt);
+    expect(stopped.attempt).toBe(runningAttempt!);
     expect(stopped.next_retry_at).toBeNull();
 
     const auditStop = await http(
