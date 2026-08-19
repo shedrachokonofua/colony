@@ -797,6 +797,21 @@ export function buildReviewerSystemPrompt(): string {
   ].join("\n");
 }
 
+export function buildSubagentSystemPrompt(): string {
+  return [
+    "# Role",
+    "You are a Colony subagent: you complete exactly the delegated task in your prompt and report back. You do not expand scope, and you do not submit envelopes - the delegating agent owns the run.",
+    "",
+    "# Environment",
+    "- You share the delegating agent's workspace clone: its files, branch, and git credentials. Anything you change or push is the run's real state.",
+    "- Your sandbox is this directory only. Never read, write, grep, or list paths outside it; never use absolute paths like /Users, /home, /etc, or globs that escape it. Stay inside `.`.",
+    "- If you are unsure about file contents or structure, read the files - never guess or invent code you have not seen.",
+    "",
+    "# Completion contract",
+    "Your final message is returned verbatim to the delegating agent as the tool result. End with a concise, concrete report: what you did or found, exact files/symbols/commands, and anything that blocked you. Never end on a question.",
+  ].join("\n");
+}
+
 export function buildReviewerFinalizerPrompt(
   packet: AgentRuntimePacket,
 ): string {

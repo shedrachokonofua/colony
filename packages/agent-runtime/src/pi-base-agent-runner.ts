@@ -26,6 +26,7 @@ import {
   buildPacketPrompt,
   buildReviewerFinalizerPrompt,
   buildReviewerSystemPrompt,
+  buildSubagentSystemPrompt,
   createArchitectSubmitTool,
   createImplementerSubmitTool,
   createReviewerSubmitTool,
@@ -41,6 +42,8 @@ import {
   waitForIdleOrCapturedEnvelope,
   withRunTimeout,
 } from "./pi-runner-common.js";
+import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
+import { createSubagentTool } from "./subagent-tool.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
 import { buildSandboxTools } from "./sandbox-tools.js";
 import {
@@ -303,27 +306,18 @@ export class PiBaseAgentRunner implements PiRunner {
         );
         sandboxTools = buildSandboxTools(handle, cwd);
       }
-      const result = await createAgentSession({
-        cwd,
-        model: primaryModel,
-        thinkingLevel: toSdkThinkingLevel(
-          this.options.thinkingLevel ?? this.profile.defaultThinkingLevel,
-        ),
-        authStorage,
-        modelRegistry,
-        getApiKey: async (candidate) =>
-          broker.resolve({
-            provider: candidate.provider,
-            capability: `agent.llm.${candidate.provider}.invoke`,
-            bindingName: PI_RUNTIME_BINDING_NAME,
-            environment: request.environment,
-          }),
-        scopedModels: resolvedModels.map((candidate) => ({ model: candidate })),
-        settings: Settings.isolated({
+      const deadline =
+        Date.now() + (this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);
+      const thinkingLevel = toSdkThinkingLevel(
+        this.options.thinkingLevel ?? this.profile.defaultThinkingLevel,
+      );
+      const buildSettings = () =>
+        Settings.isolated({
           "compaction.enabled": true,
           "retry.enabled": true,
           "todo.enabled": true,
           "todo.reminders": true,
+          "goal.enabled": true,
           // A dead upstream stream must become a bounded retry, not a
           // run-long hang: muse once sat 31 minutes emitting zero tokens and
           // only the wall clock killed the run. Defaults are -1 (disabled).
@@ -331,26 +325,163 @@ export class PiBaseAgentRunner implements PiRunner {
           // idle after first token means the generation died mid-stream.
           "providers.streamFirstEventTimeoutSeconds": 600,
           "providers.streamIdleTimeoutSeconds": 300,
-        }),
-        systemPrompt: `${this.profile.systemPrompt()}\n\n${steering.budgetBlock()}`,
+        });
+      /**
+       * Shared session wiring for the run session and its subagents: same
+       * models, broker credentials, restriction, and deadline. Only the
+       * prompt and tool set vary, so a child can never reach anything the
+       * parent could not.
+       */
+      const buildSessionOptions = (perSession: {
+        systemPrompt: string;
+        customTools: ToolDefinition[];
+        toolNames: string[];
+        prewalk: boolean;
+      }) => ({
+        cwd,
+        model: primaryModel,
+        thinkingLevel,
+        authStorage,
+        modelRegistry,
+        getApiKey: async (candidate: { provider: string }) =>
+          broker.resolve({
+            provider: candidate.provider,
+            capability: `agent.llm.${candidate.provider}.invoke`,
+            bindingName: PI_RUNTIME_BINDING_NAME,
+            environment: request.environment,
+          }),
+        scopedModels: resolvedModels.map((candidate) => ({ model: candidate })),
+        settings: buildSettings(),
+        systemPrompt: perSession.systemPrompt,
         sessionManager: SessionManager.inMemory(cwd),
         // Colony owns every tool a run may call: the sandbox-routed file/shell
         // tools when an engine is configured, plus the role's submit tool and
         // any web tools. Nothing may reach the daemon's own filesystem.
-        customTools: [...customTools, ...sandboxTools],
-        toolNames: [...toolNames, ...sandboxTools.map((tool) => tool.name)],
+        customTools: perSession.customTools,
+        toolNames: perSession.toolNames,
         restrictToolNames: true,
         allowRestrictedCustomTools: true,
         // Arming prewalk keeps the todo tool active, which is what drives omp's
         // mid-run progress reminders.
-        prewalk: { target: primaryModel },
-        deadline:
-          Date.now() + (this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS),
+        ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
+        deadline,
         enableMCP: false,
         enableLsp: false,
         disableExtensionDiscovery: true,
       });
+
+      // Subagents: Colony's own task tool. The SDK's native one is unusable
+      // here - its child sessions do not inherit customTools/restrictToolNames,
+      // which would hand a nested agent builtin tools on the daemon's own
+      // filesystem. Children share the sandbox handle and workspace, get the
+      // work tools but never submit/goal/task (depth 1, no envelope authority).
+      const childCustomTools = [
+        ...customTools.filter((tool) => tool.name !== submitTool.name),
+        ...sandboxTools,
+      ];
+      const childToolNames = [
+        ...toolNames.filter((name) => name !== submitTool.name),
+        ...sandboxTools.map((tool) => tool.name),
+      ];
+      const subagentTool = createSubagentTool(async ({ prompt }) => {
+        const child = await createAgentSession(
+          buildSessionOptions({
+            systemPrompt: buildSubagentSystemPrompt(),
+            customTools: childCustomTools,
+            toolNames: childToolNames,
+            prewalk: false,
+          }),
+        );
+        let report = "";
+        const unsubscribeReport = child.session.agent.subscribe((event) => {
+          if (
+            event.type === "message_end" &&
+            event.message.role === "assistant"
+          ) {
+            const text = event.message.content
+              .filter(
+                (block): block is { type: "text"; text: string } =>
+                  block.type === "text" && typeof block.text === "string",
+              )
+              .map((block) => block.text)
+              .join("\n");
+            if (text.trim()) report = text;
+          }
+        });
+        const unsubscribeChildGuards = installRunGuards(
+          child.session.agent,
+          `${runId}.sub`,
+          {
+            maxTurns: 24,
+            logger: this.options.logger,
+          },
+        );
+        try {
+          await child.session.prompt(prompt, { expandPromptTemplates: false });
+          await child.session.agent.waitForIdle();
+          return report;
+        } finally {
+          unsubscribeChildGuards();
+          unsubscribeReport();
+          child.session.dispose();
+        }
+      });
+
+      // Goal mode: the hidden goal tool is only registered by the SDK when
+      // restrictToolNames is off, so Colony registers the SDK's own GoalTool
+      // as a custom tool bound to this session through a late-bound adapter
+      // (tools are constructed before the session exists).
+      const goalTool = new GoalTool({
+        getGoalRuntime: () => session?.goalRuntime,
+        getGoalModeState: () => session?.getGoalModeState(),
+      } as never) as unknown as ToolDefinition;
+
+      // The SDK's injected goal context claims goal completion "ends the
+      // autonomous loop" - in Colony only an accepted submission does. This
+      // block outranks that copy; without it a model could complete the goal
+      // and stop without submitting.
+      const harnessBlock = [
+        "# Goal and delegation",
+        '- Your packet objective is registered as this session\'s persistent goal. Completing the goal NEVER replaces the submit call: your run counts only when a submission is accepted. Call goal({op:"complete"}) at most once, only after your submission is accepted.',
+        "- The task tool runs subagents in this same workspace with your work tools (but no submit authority). Delegate independent, self-contained subtasks - research, scoped edits, running checks - and parallelize by issuing several task calls in one turn.",
+      ].join("\n");
+
+      const result = await createAgentSession(
+        buildSessionOptions({
+          systemPrompt: `${this.profile.systemPrompt()}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
+          customTools: [
+            ...customTools,
+            ...sandboxTools,
+            goalTool,
+            subagentTool,
+          ],
+          toolNames: [
+            ...toolNames,
+            ...sandboxTools.map((tool) => tool.name),
+            goalTool.name,
+            subagentTool.name,
+          ],
+          prewalk: true,
+        }),
+      );
       session = result.session;
+      // The packet objective becomes the session's persistent goal: omp's
+      // goal runtime re-injects it across turns, accounts token/time usage,
+      // and enforces evidence-based completion discipline.
+      session.setGoalModeState({
+        enabled: true,
+        mode: "active",
+        goal: {
+          id: runId,
+          objective: packetObjective(request.packet),
+          status: "active",
+          tokensUsed: 0,
+          timeUsedSeconds: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      });
+      await session.sendGoalModeContext({ deliverAs: "nextTurn" });
       if (timeoutTriggered) {
         void session.abort();
       }
