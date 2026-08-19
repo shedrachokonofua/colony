@@ -93,6 +93,24 @@ When `COLONY_SEARXNG_URL` is unset or empty, no web tool names are registered an
 
 A set-but-invalid `COLONY_SEARXNG_URL` (not `https://`, embedded `user:pass@`) fails fast at colonyd boot with `COLONY_SEARXNG_URL must be an https:// URL without embedded credentials`.
 
+## End-to-end validation
+
+The e2e suites verify the full stack against a fake boundary and an isolated SQLite file — no real GitLab and no production credentials.
+
+```bash
+# Browser suite (Playwright desktop + mobile)
+npm ci && npx playwright install chromium && npm run test:e2e
+# API e2e + unit (includes *.integration.test.ts)
+npm test
+```
+
+Environment overrides:
+
+- `COLONY_TEST_CHROMIUM_PATH` — path to a Chromium binary for Playwright. Locally omit it (Playwright uses its bundled Chromium); in CI set it to the `chromium` binary provided by `nix develop` (`command -v chromium`).
+- `COLONY_E2E_PORT` (default `4477`) and `COLONY_E2E_CONTROL_PORT` (default `4478`) — ports for the fake colonyd and its control server.
+
+All suites use only the fake boundary plus a temp SQLite DB and temp dirs under `COLONY_E2E_TMP_DIR`. No real GitLab instance or production credential is required or consumed.
+
 ## Cluster
 
 CI builds `registry.gitlab.home.shdr.ch/so/colony/colonyd:$SHA` and plans Tofu into `colony`. Apply on `main` is manual. Live URL: https://colony.home.shdr.ch (operator sheet at `/`, health at `/health`).

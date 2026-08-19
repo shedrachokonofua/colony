@@ -42,6 +42,8 @@
             nodePackages.prettier
             actionlint
 
+            chromium
+
             buildah
             podman
             git

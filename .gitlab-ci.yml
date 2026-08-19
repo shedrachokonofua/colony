@@ -8,6 +8,7 @@
 stages:
   - validate
   - unit
+  - e2e
   - build
 
 variables:
@@ -48,6 +49,14 @@ unit-tests:
   extends: .with-deps
   script:
     - nix develop --command bun run test:unit
+
+e2e-tests:
+  stage: e2e
+  extends: .with-deps
+  variables:
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+  script:
+    - nix develop --command bash -c 'export COLONY_TEST_CHROMIUM_PATH="$(command -v chromium)"; npm test && npm run test:e2e'
 
 build:colonyd:
   stage: build
