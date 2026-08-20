@@ -1622,7 +1622,7 @@ function renderValidationCard(scope, detail) {
                   // Acceptance commands often discard their own output
                   // (>/dev/null 2>&1); a tail of blank lines must not render
                   // as an empty output pane.
-                  const tail = (result.tail || [])
+                  const tail = (result?.tail || [])
                     .join("\n")
                     .replace(/\s+$/, "");
                   return failed && tail

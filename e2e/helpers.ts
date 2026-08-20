@@ -155,3 +155,14 @@ export async function controlPatch(
   }
   expect(res.ok()).toBeTruthy();
 }
+
+/**
+ * Restore the shared webServer's scripted knobs to boot defaults. The knobs
+ * are process-global, so every test MUST start from a clean script or it
+ * inherits stalls/failure modes its predecessors configured - the suite then
+ * passes in isolation and fails in the full run.
+ */
+export async function controlReset(): Promise<void> {
+  const res = await fetch(`${CONTROL_URL}/control/reset`, { method: "POST" });
+  expect(res.ok).toBeTruthy();
+}

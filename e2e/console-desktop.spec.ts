@@ -1,3 +1,4 @@
+import { controlReset } from "./helpers.js";
 import { expect, test } from "@playwright/test";
 import type { APIRequestContext } from "@playwright/test";
 
@@ -132,6 +133,9 @@ async function controlPatch(
 test.describe("desktop console", () => {
   test.beforeEach(async ({ page }, testInfo) => {
     if (testInfo.project.name !== "desktop") test.skip();
+    // The webServer's scripted knobs are process-global: start every test
+    // from boot defaults so ordering cannot leak stalls/failure scripts.
+    await controlReset();
     // ensure Actor is expected value
     await page.addInitScript(() => {
       localStorage.setItem("colony.actor", "human:op-1");

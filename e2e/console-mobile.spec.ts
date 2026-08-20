@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { controlReset } from "./helpers.js";
 
 function mobileOnly(
   args: { browserName: string },
@@ -107,6 +108,13 @@ async function createScopeViaApi(
 
 test.describe("console mobile", () => {
   test.describe.configure({ mode: "serial" });
+
+  test.beforeEach(async ({}, testInfo) => {
+    if (testInfo.project.name !== "mobile") test.skip();
+    // The webServer's scripted knobs are process-global: start every test
+    // from boot defaults so ordering cannot leak stalls/failure scripts.
+    await controlReset();
+  });
 
   test.afterAll(async () => {
     const tmp = process.env.COLONY_E2E_TMP_DIR;

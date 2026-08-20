@@ -467,3 +467,31 @@ export function patchScript(
     script.validateFailFirstFor = next;
   }
 }
+
+/**
+ * Restore every scripted knob to its boot default, keeping only the fake
+ * project binding. The knobs are process-global on the shared webServer, so
+ * without a reset each Playwright test inherits whatever stalls/failure
+ * scripts its predecessors left behind - tests then pass alone and fail in
+ * the full run depending on ordering.
+ */
+export function resetScript(
+  script: ScriptKnobs,
+  adapter?: ScriptedAgentRuntimeAdapter,
+): void {
+  script.architectStall = false;
+  script.implementerStall = false;
+  adapter?.unstallArchitect();
+  adapter?.unstallImplementer();
+  script.implementerFailures = new Map();
+  script.gateFailOnceFor = undefined;
+  script.gateCalls = new Map();
+  script.reviewerRejectFirst = false;
+  script.reviewerCalls = 0;
+  script.validateFail = false;
+  script.validateFailFirstFor = wrapValidateSet(script, new Set());
+  script._validateCalls = new Map();
+  script.distinctShas = undefined;
+  script.implementerCalls = new Map();
+  script.singleTask = undefined;
+}

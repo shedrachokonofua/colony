@@ -13,6 +13,14 @@
           inherit system;
           config.allowUnfree = true;
         };
+        # Chromium dies with a Skia fontconfig FATAL ("SkFontMgr_FontConfigInterface:
+        # Not implemented") the moment a page loads a webfont in an environment
+        # with no fonts.conf - which is exactly what CI containers are. A minimal
+        # fontconfig pointing at real font files keeps the browser alive; the
+        # Playwright e2e suite depends on it.
+        fontsConf = pkgs.makeFontsConf {
+          fontDirectories = [ pkgs.dejavu_fonts pkgs.liberation_ttf ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -43,11 +51,14 @@
             actionlint
 
             chromium
+            fontconfig
 
             buildah
             podman
             git
           ];
+
+          FONTCONFIG_FILE = fontsConf;
 
           shellHook = ''
             echo "Colony dev shell: bun $(bun --version), node $(node --version)"

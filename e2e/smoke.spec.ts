@@ -1,4 +1,11 @@
 import { expect, test } from "@playwright/test";
+import { controlReset } from "./helpers.js";
+
+// Shared webServer knobs are process-global; smoke must not inherit
+// whatever scripts earlier tests configured.
+test.beforeEach(async () => {
+  await controlReset();
+});
 
 test("board empty state, brand, actor default, no page errors", async ({
   page,

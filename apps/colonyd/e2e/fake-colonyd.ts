@@ -5,6 +5,7 @@ import { buildEnvVars, installEnv, prepareEnvWithPort } from "./env.js";
 import {
   createScriptedBoundary,
   patchScript,
+  resetScript,
   serializeScript,
 } from "./fakes.js";
 import type { ScriptedAgentRuntimeAdapter } from "./fakes.js";
@@ -65,6 +66,12 @@ async function main(): Promise<void> {
     if (req.method === "GET" && req.url === "/control/script") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(serializeScript(boundary.script)));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/control/reset") {
+      resetScript(boundary.script, adapter);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
     if (req.method === "POST" && req.url === "/control/script") {
