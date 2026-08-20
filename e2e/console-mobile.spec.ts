@@ -168,17 +168,17 @@ test.describe("console mobile", () => {
       await expect(emptyMsg.first()).toBeVisible({ timeout: 15000 });
       await expect(emptyMsg.first()).toBeInViewport({ timeout: 15000 });
     } else {
-      await page.route("**/scopes", (route) =>
+      await page.route("**/scopes?*", (route) =>
         route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify([]),
+          body: JSON.stringify({ scopes: [], total: 0, limit: 25, offset: 0 }),
         }),
       );
       await page.reload();
       await expect(emptyMsg.first()).toBeVisible({ timeout: 15000 });
       await expect(emptyMsg.first()).toBeInViewport({ timeout: 15000 });
-      await page.unroute("**/scopes");
+      await page.unroute("**/scopes?*");
     }
     await assertNoHorizontalOverflow(page);
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
