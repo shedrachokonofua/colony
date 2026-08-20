@@ -1,8 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { COLONY_SKILLS, playbookPrompt } from "./colony-skills.js";
 import type { Agent, AgentTool, StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { Type } from "@oh-my-pi/omptype/typebox";
@@ -142,7 +149,44 @@ export function provisionScratchDir(
   } catch {
     // best-effort seed; the agent can still operate without the file
   }
+  seedPlaybooks(dir);
   return dir;
+}
+
+/**
+ * Write the Colony playbooks into the workspace at `.colony/skills/` and
+ * git-exclude both the playbooks and PACKET.json. The daemon builds the
+ * workspace and the engine ships it to the sandbox pod verbatim, so the
+ * files are readable in-pod at the same relative path. Best-effort: a run
+ * without playbooks still has the prompt-level senses.
+ */
+function seedPlaybooks(dir: string): void {
+  try {
+    const skillsDir = join(dir, ".colony", "skills");
+    mkdirSync(skillsDir, { recursive: true });
+    for (const skill of COLONY_SKILLS) {
+      writeFileSync(join(skillsDir, skill.file), skill.content, "utf8");
+    }
+    const excludePath = join(dir, ".git", "info", "exclude");
+    if (existsSync(join(dir, ".git"))) {
+      mkdirSync(dirname(excludePath), { recursive: true });
+      const existing = existsSync(excludePath)
+        ? readFileSync(excludePath, "utf8")
+        : "";
+      const wanted = ["PACKET.json", ".colony/"].filter(
+        (line) => !existing.split("\n").includes(line),
+      );
+      if (wanted.length > 0) {
+        writeFileSync(
+          excludePath,
+          `${existing}${existing.endsWith("\n") || !existing ? "" : "\n"}${wanted.join("\n")}\n`,
+          "utf8",
+        );
+      }
+    }
+  } catch {
+    // best-effort; never fail provisioning over playbooks
+  }
 }
 
 export interface PacketRepoRef {
@@ -212,6 +256,7 @@ export function provisionRepoWorkspace(
       writeFileSync(join(dir, "PACKET.json"), JSON.stringify(packet, null, 2), {
         encoding: "utf8",
       });
+      seedPlaybooks(dir);
       return dir;
     } catch (err) {
       lastFailure = { stage: "packet_seed", error: err };
@@ -550,6 +595,11 @@ export function buildImplementerSystemPrompt(): string {
     "- Never delete or weaken a failing test to make the suite pass: debug the implementation first; change a test only when the spec requires it or the test is demonstrably wrong — and say so in your summary.",
     "- Edit files in place. Never create parallel copies (file_v2, file_new); delete any temporary scripts you created before finishing.",
     "",
+    "# Design senses",
+    "- When the spec requires a new function, type, or module, design DEEP: a small interface hiding a lot of behavior. The interface is everything a caller must know — signature, invariants, error modes — and fewer entry points with more leverage beat many shallow pass-throughs. The deletion test: if removing the thing would just move its complexity into N callers, it earns its place; if complexity would vanish, it was a pass-through.",
+    "- Accept dependencies as parameters instead of constructing them inside; prefer returning results over mutating state. Both make the code testable through its real interface. Do not introduce an abstraction seam only one implementation will ever fill — one adapter is a hypothetical seam, two is a real one.",
+    "- Design it twice: for any non-trivial new interface, sketch a second, materially different shape before writing the implementation, and keep the better one. The first idea is rarely the best, and this costs minutes.",
+    "",
     "# Debugging",
     "Read the WHOLE error message and stack trace first; it often names the fix. Then, before building any theory, build a FEEDBACK LOOP: one command (a test, a script, a curl) that goes red on this exact symptom and will go green when it is fixed. 'Runs without erroring' is not a loop; it must catch THIS bug. Reading code to form theories before that command exists is the classic failure — the loop is 90% of the debugging.",
     "Tighten the loop, then shrink the reproduction until every remaining element is load-bearing — a minimal repro shrinks the suspect space and becomes the regression test. For flaky bugs, raise the reproduction rate (loop the trigger 100x, add stress, narrow timing) until it is debuggable. For performance problems, measure a baseline and bisect; logs are the wrong tool.",
@@ -564,6 +614,8 @@ export function buildImplementerSystemPrompt(): string {
     "# Evidence senses",
     "- No claim without fresh proof: any 'passes', 'works', or 'fixed' in your summary must be backed by a command you ran AFTER your last code change, with its exit code. Evidence from before the final edit is stale and does not count.",
     "- Banned reasoning: 'should work', 'probably passes', 'looks correct'. If a verification is cheap, run it; if it is expensive, run the narrowest version that still proves the claim and say exactly what it covers.",
+    "",
+    playbookPrompt(["debugging.md", "design.md"]),
     "",
     "# Completion contract",
     "- colonyd opens the merge request from your pushed branch — do NOT open MRs or call provider APIs yourself.",
@@ -587,18 +639,28 @@ export function buildArchitectSystemPrompt(): string {
     "- depends_on (indexes into the tasks array, acyclic) must be EXPLICIT: if task B touches anything task A creates — files, packages, exports — B depends on A. An empty depends_on claims the task can run first on a fresh checkout.",
     "- Implementers see ONLY their own spec — never a sibling's. When task B consumes anything task A produces, B's spec must restate that contract concretely (exact paths, exported symbols, schema shapes, CLI flags), and A's spec must declare it is producing exactly that. A dependency edge without a restated contract is an unbuildable task.",
     "- Independent tasks run CONCURRENTLY: tasks without a dependency edge must not touch the same files, or their merge requests will conflict.",
+    "- Task boundary test: split two pieces of work only where a reviewer could meaningfully reject one while approving the other. Fold setup, configuration, scaffolding, and docs into the task whose deliverable needs them — they are never tasks of their own.",
     "- Two tasks must not both introduce schema migrations unless one depends on the other.",
     "- Pure verify/QA tasks with no diff cannot pass a merge gate — fold verification into the producing task as required evidence.",
     "- Tasks creating shared contracts (schemas, wire protocols, exported test suites) must say so in their spec; contract mistakes are permanent and get the strictest review.",
     "",
     "# Task spec format",
     "Each spec is outcome-oriented markdown containing: the goal, the user-observable behavior, the invariants that must hold, and the required evidence — the exact commands/tests whose success proves completion. Reference real paths and symbols you saw during exploration. Required evidence must be falsifiable: a command that would fail today and passes when the task is done — never 'verify it works'.",
+    "Banned spec content — each of these is a plan failure, not a shortcut: 'TBD', 'add appropriate error handling', 'handle edge cases', 'and similar', 'as needed', or referencing a sibling task ('like task 2 does'). If two specs need the same detail, repeat it in both. Never reference a file, symbol, or type that no task defines and the repository does not contain.",
     "",
     "# Acceptance criteria",
     "Emit an `acceptance` array of at least one entry proving the SCOPE goal (not per-task evidence). Each entry is { description, command }:",
     "- objective and cheap to run (seconds, not minutes);",
     "- each tied to an observable outcome of the scope goal — not evidence that a single task landed;",
     "- the command must run from a fresh checkout of the default branch at HEAD (a fresh `git clone` + `npm ci` where that makes sense), and exit non-zero if the goal does not hold.",
+    "",
+    "# Self-review before submitting",
+    "1. Design it twice: before settling, sketch a materially different decomposition (different slicing, different dependency shape) and submit the better one — the first plan is rarely the best.",
+    "2. Coverage walk: for every requirement in the goal, point to the task that implements it; a requirement without a task is a missing task.",
+    "3. Consistency walk: every path, symbol, and type name that appears in two specs must match exactly — `clearLayers` in task 1 and `clearFullLayers` in task 4 is a plan bug that costs a full attempt.",
+    "4. Fresh-checkout walk: for each task with empty depends_on, confirm its spec is executable against the default branch alone.",
+    "",
+    playbookPrompt(["task-specs.md"]),
     "",
     "# Completion contract",
     "Do not write code, files, or anything outside the envelope. If operator feedback on a rejected plan is present in the packet, address every point of it. Finish by calling submit_architect_decomposition exactly once — your run does not exist until that call; never finish with plain text.",
@@ -816,6 +878,8 @@ export function buildReviewerSystemPrompt(): string {
     "- Verify every blocker and major before submitting it: restate the defect precisely (half of false positives collapse at restatement), trace the actual data flow from where the bad value enters to where it bites, and play devil's advocate against your own claim. 'This pattern looks dangerous' is not analysis — upstream validation may already cover it. You are biased toward over-reporting; a finding you could not defend to the implementer does not go in the envelope.",
     "- request_changes requires at least one finding.",
     "",
+    playbookPrompt(["code-review.md"]),
+    "",
     "# Completion contract",
     "Finish by calling submit_reviewer_verdict exactly once with verdict, findings (severity + note, file where applicable), and the exact head_sha you inspected (`git rev-parse HEAD`). Your run does not exist until that call — never finish with plain text. Never include secrets in the envelope.",
   ].join("\n");
@@ -830,6 +894,13 @@ export function buildSubagentSystemPrompt(): string {
     "- You share the delegating agent's workspace clone: its files, branch, and git credentials. Anything you change or push is the run's real state.",
     "- Your sandbox is this directory only. Never read, write, grep, or list paths outside it; never use absolute paths like /Users, /home, /etc, or globs that escape it. Stay inside `.`.",
     "- If you are unsure about file contents or structure, read the files - never guess or invent code you have not seen.",
+    "",
+    "# Senses",
+    "- Editing: reuse the repository's existing patterns, helpers, and conventions — your changes must look like the repository wrote them. Change every call site a signature or pattern change touches, not just the ones your task mentions. Finish what you start: no TODO stubs, no placeholder implementations, no parallel copies (file_v2).",
+    "- Investigating: report what you OBSERVED (file, line, command output), never what you infer must be true. If you claim something passes or fails, run it and quote the result. Distinguish 'I verified X' from 'X appears likely' explicitly.",
+    "- When something fails, read the whole error first and reproduce it with one command before changing code; never stack speculative fixes. Delete any temporary scripts and debug logging you added before reporting.",
+    "",
+    playbookPrompt(["debugging.md", "design.md"]),
     "",
     "# Completion contract",
     "Your final message is returned verbatim to the delegating agent as the tool result. End with a concise, concrete report: what you did or found, exact files/symbols/commands, and anything that blocked you. Never end on a question.",
