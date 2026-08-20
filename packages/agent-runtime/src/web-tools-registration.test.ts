@@ -94,13 +94,15 @@ describe("buildRunTools registration", () => {
     ["developer", DEVELOPER_ROLE_PROFILE],
     ["reviewer", REVIEWER_ROLE_PROFILE],
   ] as const) {
-    it(`with webTools configured, ${label} run tool set contains submit plus web_search/web_fetch`, () => {
+    it(`with webTools configured, ${label} exposes web_fetch as custom and web_search by builtin name`, () => {
       const { customTools, toolNames } = buildRunTools(profile, {
         webTools: dummyWebTools as unknown as never,
       });
       const names = customTools.map((t) => (t as { name: string }).name);
       expect(names).toContain(profile.submitTool(() => {}).name);
-      expect(names).toContain(WEB_SEARCH_TOOL_NAME);
+      // web_search is the SDK builtin (SearXNG provider): enabled by NAME in
+      // toolNames, never registered as a Colony custom tool.
+      expect(names).not.toContain(WEB_SEARCH_TOOL_NAME);
       expect(names).toContain(WEB_FETCH_TOOL_NAME);
       expect(toolNames).toContain(WEB_SEARCH_TOOL_NAME);
       expect(toolNames).toContain(WEB_FETCH_TOOL_NAME);
@@ -131,34 +133,27 @@ describe("buildRunTools registration", () => {
   }
 });
 
-describe("e2e: model invokes web_search against injected transport", () => {
+describe("e2e: model invokes web_fetch against injected transport", () => {
   it("tool result is observable via stub model + injected transport", async () => {
     const headSha = "c".repeat(40);
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Search confirmed the library API.",
+      summary: "Fetch confirmed the library API.",
       findings: [] as unknown[],
       head_sha: headSha,
     };
 
-    let sawSearchInTransport = false;
+    // web_search execution is the SDK builtin's contract now; Colony's own
+    // web tool surface is web_fetch, so that is the seam this test drives.
+    let sawFetchInTransport = false;
     const injectedTransport = async ({ url }: { url: URL }) => {
-      sawSearchInTransport = true;
-      expect(url.toString()).toContain("searxng.home.shdr.ch");
-      expect(url.toString()).toContain("format=json");
+      sawFetchInTransport = true;
+      expect(url.toString()).toBe("https://example.com/docs");
       return {
         status: 200,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          results: [
-            {
-              title: "Docs",
-              url: "https://example.com/docs",
-              content: "result body",
-            },
-          ],
-        }),
+        headers: { "content-type": "text/html" },
+        body: "<html><body><p>result body</p></body></html>",
         truncated: false,
       };
     };
@@ -172,7 +167,12 @@ describe("e2e: model invokes web_search against injected transport", () => {
         const model = (JSON.parse(body) as { model: string }).model;
         callCount += 1;
         if (callCount === 1) {
-          writeToolResponse(res, "web_search", { query: "pi-ai SDK" }, model);
+          writeToolResponse(
+            res,
+            "web_fetch",
+            { url: "https://example.com/docs" },
+            model,
+          );
         } else {
           writeToolResponse(
             res,
@@ -228,12 +228,12 @@ describe("e2e: model invokes web_search against injected transport", () => {
 
     const result = await runner.run({
       runId: "web-wiring-e2e",
-      packet: { goal: "Use web_search", head_sha: headSha },
+      packet: { goal: "Use web_fetch", head_sha: headSha },
       environment: { role: "reviewer" },
     });
 
     expect(result.reason).toBeUndefined();
     expect(result.envelope).toEqual(envelope);
-    expect(sawSearchInTransport).toBe(true);
+    expect(sawFetchInTransport).toBe(true);
   });
 });

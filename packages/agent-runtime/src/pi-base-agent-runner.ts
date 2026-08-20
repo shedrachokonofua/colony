@@ -271,6 +271,13 @@ export class PiBaseAgentRunner implements PiRunner {
           customTools: base,
           toolNames: [...workTools, submitTool.name],
         };
+      // web_search is the SDK builtin (SearXNG provider). Its provider reads
+      // the GLOBAL settings singleton, not the session's isolated settings,
+      // so the endpoint travels via SEARXNG_ENDPOINT - process-wide, which is
+      // correct: one gateway per daemon. Colony supplies only web_fetch; the
+      // SDK folds URL fetching into its builtin read, which Colony replaces
+      // with the sandbox-routed one.
+      process.env["SEARXNG_ENDPOINT"] = this.options.webTools.searxngUrl;
       const webTools = createWebTools(this.options.webTools);
       return {
         customTools: [...base, ...webTools],
@@ -325,6 +332,11 @@ export class PiBaseAgentRunner implements PiRunner {
           // idle after first token means the generation died mid-stream.
           "providers.streamFirstEventTimeoutSeconds": 600,
           "providers.streamIdleTimeoutSeconds": 300,
+          // Builtin web_search: pin the provider so auto-detection never
+          // wanders to keyed providers this daemon does not carry.
+          ...(this.options.webTools
+            ? { "providers.webSearchOrder": ["searxng"] }
+            : {}),
         });
       /**
        * Shared session wiring for the run session and its subagents: same

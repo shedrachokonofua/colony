@@ -9,13 +9,18 @@ import { z } from "zod";
 // Constants & bounds
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_SEARCH_TIMEOUT_MS = 10_000;
 export const DEFAULT_FETCH_TIMEOUT_MS = 20_000;
 export const SEARCH_MAX_BYTES = 1_048_576; // 1 MiB
 export const DEFAULT_FETCH_MAX_BYTES = 200_000;
 export const DEFAULT_MAX_RESULTS = 8;
 export const DEFAULT_MAX_REDIRECTS = 5;
 
+/**
+ * Web search is the SDK's builtin `web_search` tool (SearXNG provider, endpoint
+ * via SEARXNG_ENDPOINT): registered by name, not as a Colony custom tool.
+ * Colony keeps only `web_fetch` - the SDK folds URL fetching into its builtin
+ * read tool, which Colony replaces with the sandbox-routed one.
+ */
 export const WEB_SEARCH_TOOL_NAME = "web_search" as const;
 export const WEB_FETCH_TOOL_NAME = "web_fetch" as const;
 export const WEB_TOOL_NAMES = [
@@ -23,7 +28,6 @@ export const WEB_TOOL_NAMES = [
   WEB_FETCH_TOOL_NAME,
 ] as const;
 
-const MAX_SEARCH_TIMEOUT_MS = 30_000;
 const MAX_FETCH_TIMEOUT_MS = 60_000;
 const MAX_FETCH_MAX_BYTES = 1_000_000;
 const MAX_MAX_RESULTS = 20;
@@ -281,7 +285,6 @@ export interface WebToolsDeps {
 
 export interface WebToolsConfig {
   searxngUrl?: string;
-  searchTimeoutMs?: number;
   fetchTimeoutMs?: number;
   fetchMaxBytes?: number;
   maxResults?: number;
@@ -534,12 +537,6 @@ export const defaultHttpTransport: HttpTransport = createNodeHttpsTransport();
 // Zod schemas
 // ---------------------------------------------------------------------------
 
-export const webSearchInputSchema = z
-  .object({
-    query: z.string().trim().min(1).max(400),
-  })
-  .strict();
-
 export const webFetchInputSchema = z
   .object({
     url: z
@@ -731,12 +728,6 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
   const injectedTransport: HttpTransport | undefined =
     config.transport ?? config.deps?.transport;
 
-  const searchTimeoutMs = clamp(
-    config.searchTimeoutMs,
-    DEFAULT_SEARCH_TIMEOUT_MS,
-    1,
-    MAX_SEARCH_TIMEOUT_MS,
-  );
   const fetchTimeoutMs = clamp(
     config.fetchTimeoutMs,
     DEFAULT_FETCH_TIMEOUT_MS,
@@ -765,124 +756,11 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
   const transport: HttpTransport =
     injectedTransport ?? createNodeHttpsTransport(resolver ?? defaultResolver);
 
-  const webSearchParams = Type.Object({
-    query: Type.String({
-      minLength: 1,
-      maxLength: 400,
-      description: "search query",
-    }),
-  });
-
   const webFetchParams = Type.Object({
     url: Type.String({ description: "https URL to fetch" }),
   });
 
-  const searchPrepare = makeZodPrepare(webSearchInputSchema);
   const fetchPrepare = makeZodPrepare(webFetchInputSchema);
-
-  const webSearchTool: ToolDefinition = {
-    name: WEB_SEARCH_TOOL_NAME,
-    label: "Web search",
-    description:
-      "Search the web via SearXNG. Input { query } 1-400 chars. Returns { query, results: [{title,url,content}], resultCount }.",
-    parameters: webSearchParams,
-    execute: async (
-      toolCallId: string,
-      rawParams: unknown,
-      signal: unknown,
-      _onUpdate: unknown,
-      _ctx: unknown,
-    ) => {
-      void toolCallId;
-      // The SDK has no argument-preparation seam, so normalize here: a thrown
-      // error becomes the tool result the model must correct.
-      const args = searchPrepare(rawParams) as { query: string };
-      const abortSignal = signal instanceof AbortSignal ? signal : undefined;
-      const base = baseUrl.toString().replace(/\/+$/, "");
-      const url = new URL(
-        `${base}/search?q=${encodeURIComponent(args.query)}&format=json`,
-      );
-
-      let res: HttpTransportResponse;
-      try {
-        res = await withDeadline(
-          transport({
-            url,
-            timeoutMs: searchTimeoutMs,
-            maxBytes: SEARCH_MAX_BYTES,
-            guard: "trusted",
-          }),
-          searchTimeoutMs,
-          url.toString(),
-          abortSignal,
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("timed out after")) {
-          throw new Error(boundMessage(`web_search failed: ${msg}`));
-        }
-        if (msg.includes("SSRF guard") || msg.includes("non-public")) {
-          throw new Error(
-            boundMessage(
-              `web_search blocked: host resolves only to non-public addresses (SSRF guard)`,
-            ),
-          );
-        }
-        const snippet = sanitizeSnippet(msg);
-        throw new Error(
-          boundMessage(
-            `web_search failed: ${snippet} fetching ${url.toString()}`,
-          ),
-        );
-      }
-
-      if (res.status < 200 || res.status >= 300) {
-        const snippet = sanitizeSnippet(res.body);
-        const baseMsg = `web_search failed: upstream HTTP ${res.status} from ${url.toString()}`;
-        const withSnippet = snippet ? `${baseMsg} (${snippet})` : baseMsg;
-        throw new Error(boundMessage(withSnippet));
-      }
-
-      let json: unknown;
-      try {
-        json = JSON.parse(res.body);
-      } catch {
-        throw new Error(
-          boundMessage(
-            `web_search failed: SearXNG returned malformed JSON (HTTP ${res.status})`,
-          ),
-        );
-      }
-
-      const parsed = searxngResponseSchema.safeParse(json);
-      if (!parsed.success) {
-        throw new Error(
-          boundMessage(
-            `web_search failed: SearXNG returned malformed JSON (HTTP ${res.status})`,
-          ),
-        );
-      }
-
-      const mapped = parsed.data.results.slice(0, maxResults).map((r) => ({
-        title: r.title,
-        url: r.url,
-        content: r.content ?? "",
-      }));
-
-      const output = {
-        query: args.query,
-        results: mapped,
-        resultCount: mapped.length,
-      };
-
-      const validated = webSearchOutputSchema.parse(output);
-
-      return {
-        content: [{ type: "text", text: JSON.stringify(validated) }],
-        details: validated,
-      } as unknown as never;
-    },
-  } as unknown as ToolDefinition;
 
   const webFetchTool: ToolDefinition = {
     name: WEB_FETCH_TOOL_NAME,
@@ -1123,5 +1001,5 @@ export function createWebTools(config: WebToolsConfig): ToolDefinition[] {
     },
   } as unknown as ToolDefinition;
 
-  return [webSearchTool, webFetchTool];
+  return [webFetchTool];
 }

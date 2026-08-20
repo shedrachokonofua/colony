@@ -6,7 +6,6 @@ import {
   isRoutableAddress,
   createPinnedLookup,
   createNodeHttpsTransport,
-  webSearchInputSchema,
   webFetchInputSchema,
   searxngResponseSchema,
 } from "./web-tools.js";
@@ -84,40 +83,17 @@ describe("web-tools factory & registration", () => {
     );
   });
 
-  it("exposes tool names, descriptions, TypeBox parameters", () => {
+  it("exposes only web_fetch - web_search is the SDK builtin", () => {
     const tools = createWebTools({ searxngUrl: "https://searx.example.com" });
-    expect(tools.map((t) => t.name).sort()).toEqual([
-      "web_fetch",
-      "web_search",
-    ]);
-    const search = tools.find((t) => t.name === "web_search")!;
+    expect(tools.map((t) => t.name)).toEqual(["web_fetch"]);
     const fetch = tools.find((t) => t.name === "web_fetch")!;
-    expect(search.description).toBeTruthy();
     expect(fetch.description).toBeTruthy();
-    expect(search.parameters).toBeTruthy();
     expect(fetch.parameters).toBeTruthy();
-    expect(search.execute).toBeTypeOf("function");
     expect(fetch.execute).toBeTypeOf("function");
   });
 });
 
 describe("input-bound rejections via Zod schemas", () => {
-  it("rejects oversized query", async () => {
-    expect(() =>
-      webSearchInputSchema.parse({ query: "a".repeat(401) }),
-    ).toThrow();
-    const tools = createWebTools({ searxngUrl: "https://searx.example.com" });
-    const search = tools.find((t) => t.name === "web_search")!;
-    // The tool validates inside execute now, so a rejection is a rejected call.
-    const reject = (query: string) =>
-      expect(
-        search.execute("t", { query }, undefined, undefined, toolContext),
-      ).rejects.toThrow();
-    await reject("a".repeat(401));
-    await reject("   ");
-    await reject("");
-  });
-
   it("rejects non-https URL via Zod", async () => {
     expect(() =>
       webFetchInputSchema.parse({ url: "http://example.com" }),
@@ -136,63 +112,6 @@ describe("input-bound rejections via Zod schemas", () => {
         toolContext,
       ),
     ).rejects.toThrow();
-  });
-});
-
-describe("successful search via injected transport", () => {
-  it("maps results and caps at maxResults", async () => {
-    const handler = async ({ url }: { url: URL }) => {
-      expect(url.toString()).toContain("/search?q=");
-      expect(url.toString()).toContain("format=json");
-      return {
-        status: 200,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          results: [
-            {
-              title: "t1",
-              url: "https://a.example/1",
-              content: "c1",
-              extra: "x",
-            },
-            { title: "t2", url: "https://a.example/2", content: "c2" },
-            { title: "t3", url: "https://a.example/3" },
-            { title: "t4", url: "https://a.example/4", content: "c4" },
-          ],
-          extraTop: 123,
-        }),
-        truncated: false,
-      };
-    };
-    const tools = createWebTools({
-      searxngUrl: "https://searx.example.com",
-      transport: handler as unknown as HttpTransport,
-      maxResults: 2,
-    });
-    const search = tools.find((t) => t.name === "web_search")!;
-    const res = await callTool(search as unknown as never, {
-      query: "hello world",
-    });
-    expect(res.isError).toBeFalsy();
-    const data = JSON.parse(res.content[0]!.text);
-    expect(data.query).toBe("hello world");
-    expect(data.results).toHaveLength(2);
-    expect(data.results[0].title).toBe("t1");
-    expect(data.results[1].url).toBe("https://a.example/2");
-    expect(data.resultCount).toBe(2);
-  });
-
-  it("tolerates extra SearXNG fields but requires well-typed entries", async () => {
-    const parsed = searxngResponseSchema.safeParse({
-      results: [{ title: "t", url: "https://a.example" }],
-      foo: "bar",
-      query: "hi",
-    });
-    expect(parsed.success).toBe(true);
-    const bad = searxngResponseSchema.safeParse({
-      results: [{ title: 123, url: "https://a.example" }],
-    });
-    expect(bad.success).toBe(false);
   });
 });
 
@@ -292,67 +211,7 @@ describe("successful fetch incl one redirect hop", () => {
   });
 });
 
-describe("malformed upstream JSON → descriptive error", () => {
-  it("web_search malformed JSON", async () => {
-    const handler = async () => ({
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: "not json {",
-      truncated: false,
-    });
-    const tools = createWebTools({
-      searxngUrl: "https://searx.example.com",
-      transport: handler as unknown as HttpTransport,
-    });
-    const search = tools.find((t) => t.name === "web_search")!;
-    const res = await callTool(search as unknown as never, { query: "hello" });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/malformed JSON/);
-    expect(res.content[0]!.text.length).toBeLessThanOrEqual(500);
-  });
-
-  it("web_search missing results field → malformed JSON error", async () => {
-    const handler = async () => ({
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ foo: "bar" }),
-      truncated: false,
-    });
-    const tools = createWebTools({
-      searxngUrl: "https://searx.example.com",
-      transport: handler as unknown as HttpTransport,
-    });
-    const search = tools.find((t) => t.name === "web_search")!;
-    const res = await callTool(search as unknown as never, { query: "hello" });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toMatch(/malformed JSON/);
-  });
-});
-
-describe("HTTP failure (404 and 502) for both tools", () => {
-  it("web_search 404 and 502", async () => {
-    for (const code of [404, 502]) {
-      const handler = async () => ({
-        status: code,
-        headers: {},
-        body: "upstream says no " + "x".repeat(200),
-        truncated: false,
-      });
-      const tools = createWebTools({
-        searxngUrl: "https://searx.example.com",
-        transport: handler as unknown as HttpTransport,
-      });
-      const search = tools.find((t) => t.name === "web_search")!;
-      const res = await callTool(search as unknown as never, {
-        query: "hello",
-      });
-      expect(res.isError).toBe(true);
-      expect(res.content[0]!.text).toMatch(new RegExp(`upstream HTTP ${code}`));
-      expect(res.content[0]!.text.length).toBeLessThanOrEqual(500);
-      expect(res.content[0]!.text.length).toBeLessThan(400);
-    }
-  });
-
+describe("HTTP failure (404 and 502) for web_fetch", () => {
   it("web_fetch 404 and 502", async () => {
     for (const code of [404, 502]) {
       const handler = async () => ({
@@ -377,20 +236,6 @@ describe("HTTP failure (404 and 502) for both tools", () => {
 });
 
 describe("timeout via injected never-resolving transport", () => {
-  it("web_search timeout includes ms (genuinely never-resolving)", async () => {
-    const never: HttpTransport = () => new Promise(() => {}) as Promise<any>;
-    const tools = createWebTools({
-      searxngUrl: "https://searx.example.com",
-      transport: never,
-      searchTimeoutMs: 10,
-    });
-    const search = tools.find((t) => t.name === "web_search")!;
-    const err = await callToolThrows(search as unknown as never, {
-      query: "hi",
-    });
-    expect(err.message).toMatch(/timed out after 10ms/);
-  });
-
   it("web_fetch timeout includes ms (genuinely never-resolving)", async () => {
     const never: HttpTransport = () => new Promise(() => {}) as Promise<any>;
     const tools = createWebTools({
