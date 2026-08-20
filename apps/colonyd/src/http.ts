@@ -45,6 +45,22 @@ const feedbackBody = z
   .object({ feedback: z.string().min(1).max(4000) })
   .strict();
 
+const acceptanceBody = z
+  .object({
+    acceptance: z
+      .array(
+        z
+          .object({
+            description: z.string().min(1).max(2000),
+            command: z.string().min(1).max(4000),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(20),
+  })
+  .strict();
+
 const auditQuery = z.object({
   scope_id: z.string().optional(),
   task_id: z.string().optional(),
@@ -289,6 +305,37 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }
     await abortRuns(runIds);
     return c.json(ctx.store.getScope(scope.id));
+  });
+
+  // Operator acceptance amendment: the criteria were authored at scope
+  // creation and the factory may migrate the world underneath them (runtime
+  // swaps, substrate changes). Editing them must be an audited API action,
+  // never DB surgery. Allowed while the scope can still be validated.
+  app.patch("/scopes/:id/acceptance", async (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    if (["done", "abandoned"].includes(scope.status)) {
+      return c.json(
+        {
+          error: {
+            code: "SCOPE_FINISHED",
+            message: "cannot amend acceptance on a finished scope",
+          },
+        },
+        409,
+      );
+    }
+    const parsed = acceptanceBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const updated = ctx.store.setScopeAcceptance(
+      scope.id,
+      parsed.data.acceptance,
+    );
+    ctx.store.audit(c.get("actor"), "scope.acceptance_amended", {
+      scope_id: scope.id,
+      detail: { criteria_count: parsed.data.acceptance.length },
+    });
+    return c.json({ scope: updated });
   });
 
   app.post("/scopes/:id/revalidate", (c) => {

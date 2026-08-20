@@ -119,3 +119,36 @@ describe("packetObjective", () => {
     );
   });
 });
+
+describe("repeated-failure nudge", () => {
+  it("stays silent until the same bash command fails twice verbatim", () => {
+    const steering = new RunSteering({ runTimeoutMs: 60_000 });
+    steering.observeToolCall("bash", { command: "npm ci" }, true);
+    expect(steering.takeRepeatFailureNudge()).toBeNull();
+    // A different failure resets the streak.
+    steering.observeToolCall("bash", { command: "npm test" }, true);
+    expect(steering.takeRepeatFailureNudge()).toBeNull();
+    // Same command failing twice in a row fires.
+    steering.observeToolCall("bash", { command: "npm test" }, true);
+    const nudge = steering.takeRepeatFailureNudge();
+    expect(nudge).toContain("failed twice in a row");
+    expect(nudge).toContain("timeout parameter");
+  });
+
+  it("a success breaks the streak and the nudge is capped per run", () => {
+    const steering = new RunSteering({ runTimeoutMs: 60_000 });
+    steering.observeToolCall("bash", { command: "x" }, true);
+    steering.observeToolCall("bash", { command: "x" }, false);
+    steering.observeToolCall("bash", { command: "x" }, true);
+    expect(steering.takeRepeatFailureNudge()).toBeNull();
+
+    // Two full streaks consume the cap; the third stays silent.
+    for (let streak = 0; streak < 3; streak += 1) {
+      steering.observeToolCall("bash", { command: "y" }, true);
+      steering.observeToolCall("bash", { command: "y" }, true);
+      const nudge = steering.takeRepeatFailureNudge();
+      if (streak < 2) expect(nudge).not.toBeNull();
+      else expect(nudge).toBeNull();
+    }
+  });
+});

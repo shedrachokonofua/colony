@@ -53,6 +53,10 @@ export class RunSteering {
   #nudges = 0;
   #continuations = 0;
   #pushed = false;
+  /** Last failed bash command and its consecutive-failure count. */
+  #lastFailedCommand = "";
+  #repeatFailures = 0;
+  #repeatNudges = 0;
   readonly #startedAt: number;
   readonly #runTimeoutMs: number;
   readonly #branch: string;
@@ -67,13 +71,26 @@ export class RunSteering {
 
   /**
    * Record a finished tool call. A file change or a `git commit`/`git push`
-   * counts as progress and resets the drift counter.
+   * counts as progress and resets the drift counter. A bash command that
+   * fails with the same text as the previous failure feeds the
+   * repeated-failure detector (OpenHands' action-error pattern): production
+   * runs re-ran a timed-out install verbatim until the wall killed them.
    */
-  observeToolCall(tool: string, args?: unknown): void {
+  observeToolCall(tool: string, args?: unknown, isError?: boolean): void {
     const command =
       typeof args === "object" && args !== null
         ? (args as { command?: unknown }).command
         : undefined;
+    if (tool === "bash" && typeof command === "string") {
+      if (isError) {
+        this.#repeatFailures =
+          command === this.#lastFailedCommand ? this.#repeatFailures + 1 : 1;
+        this.#lastFailedCommand = command;
+      } else {
+        this.#lastFailedCommand = "";
+        this.#repeatFailures = 0;
+      }
+    }
     const pushed =
       typeof command === "string" && PROGRESS_COMMAND.test(command);
     if (pushed) this.#pushed = true;
@@ -82,6 +99,23 @@ export class RunSteering {
       return;
     }
     this.#callsSinceProgress += 1;
+  }
+
+  /**
+   * Reminder when the same bash command has failed twice in a row verbatim.
+   * Fires at most twice per run; re-arms only after a different failure or a
+   * success breaks the streak.
+   */
+  takeRepeatFailureNudge(): string | null {
+    if (this.#repeatFailures < 2 || this.#repeatNudges >= 2) return null;
+    this.#repeatFailures = 0;
+    this.#repeatNudges += 1;
+    return [
+      "<system-reminder>",
+      "The same command just failed twice in a row with the same invocation. Re-running it unchanged will fail again and burns your budget.",
+      "Change something before the next attempt: fix the underlying cause, adjust the command (for a timeout, pass the bash tool's timeout parameter in seconds), or take a different route to the same goal.",
+      "</system-reminder>",
+    ].join("\n");
   }
 
   /**

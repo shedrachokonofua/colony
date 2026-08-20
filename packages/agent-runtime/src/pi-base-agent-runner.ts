@@ -540,7 +540,11 @@ export class PiBaseAgentRunner implements PiRunner {
         ) {
           repositoryInspected = true;
         }
-        steering.observeToolCall(context.toolCall.name, context.args);
+        steering.observeToolCall(
+          context.toolCall.name,
+          context.args,
+          context.isError,
+        );
         this.options.logger?.info?.(
           {
             runId,
@@ -551,11 +555,15 @@ export class PiBaseAgentRunner implements PiRunner {
           },
           "pi_tool_call",
         );
-        const nudge = steering.takeDriftNudge();
+        const repeatNudge = steering.takeRepeatFailureNudge();
+        const nudge = repeatNudge ?? steering.takeDriftNudge();
         if (!nudge) return base;
         // Fold the reminder in ahead of the tool's own output, the way the omp
         // harness delivers non-interrupting rule reminders.
-        this.options.logger?.warn?.({ runId, sandboxId }, "pi_drift_nudge");
+        this.options.logger?.warn?.(
+          { runId, sandboxId },
+          repeatNudge ? "pi_repeat_failure_nudge" : "pi_drift_nudge",
+        );
         return {
           ...base,
           content: [

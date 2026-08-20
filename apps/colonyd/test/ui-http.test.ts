@@ -506,3 +506,60 @@ describe("operator controls", () => {
     expect(isInfraError(null)).toBe(false);
   });
 });
+
+describe("acceptance amendment", () => {
+  it("replaces criteria on a live scope, audits, and rejects finished scopes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const scope = store.createScope({
+      goal: "acceptance surgery",
+      provider_project_id: "1",
+      provider_project_path: "so/x",
+    });
+    const acceptance = [
+      { description: "suite passes", command: "bun run test" },
+    ];
+    const res = await app.request(`/scopes/${scope.id}/acceptance`, {
+      method: "PATCH",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ acceptance }),
+    });
+    expect(res.status).toBe(200);
+    const updated = store.getScope(scope.id)!;
+    expect(JSON.parse(updated.acceptance_json!)).toEqual(acceptance);
+    const audit = store.listAudit({ scope_id: scope.id });
+    expect(audit.some((r) => r.action === "scope.acceptance_amended")).toBe(
+      true,
+    );
+
+    // Empty and oversized bodies are rejected.
+    const bad = await app.request(`/scopes/${scope.id}/acceptance`, {
+      method: "PATCH",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ acceptance: [] }),
+    });
+    expect(bad.status).toBe(400);
+
+    // Finished scopes are immutable evidence.
+    store.db
+      .prepare("UPDATE scopes SET status='done' WHERE id=?")
+      .run(scope.id);
+    const finished = await app.request(`/scopes/${scope.id}/acceptance`, {
+      method: "PATCH",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ acceptance }),
+    });
+    expect(finished.status).toBe(409);
+  });
+});

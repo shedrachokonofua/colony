@@ -393,6 +393,28 @@ export class Store {
   }
 
   /**
+   * Replace a scope's acceptance criteria. Operator-only surface: criteria
+   * are authored at scope creation, and the factory can migrate the tree
+   * underneath them (runtime swaps, substrate changes) - amendment must be
+   * an audited API action rather than DB surgery.
+   */
+  setScopeAcceptance(
+    scopeId: ScopeId | string,
+    acceptance: ReadonlyArray<{ description: string; command: string }>,
+  ): Scope {
+    this.db
+      .prepare(
+        `UPDATE scopes SET acceptance_json = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(JSON.stringify(acceptance), nowIso(), scopeId);
+    const scope = this.getScope(scopeId);
+    if (!scope) {
+      throw new Error(`scope lost after acceptance amendment: ${scopeId}`);
+    }
+    return scope;
+  }
+
+  /**
    * Materialize an approved architect decomposition: create tasks + deps
    * and move the scope planning -> active. Returns tasks in index order.
    */
