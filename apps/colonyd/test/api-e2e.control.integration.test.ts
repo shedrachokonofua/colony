@@ -1172,7 +1172,9 @@ describe("api e2e control — 4. merge gate fail-then-pass", () => {
     ).gateFailOnceFor = undefined;
     (env.boundary.script as unknown as { singleTask?: boolean }).singleTask =
       false;
-  }, 90_000);
+    // Inner waitFor budgets sum to 135s (30+60+45); the outer timeout must
+    // not undercut them. Condition polls return early on healthy runs.
+  }, 180_000);
 });
 
 describe("api e2e control — 5. manual vs auto merge approvals", () => {
