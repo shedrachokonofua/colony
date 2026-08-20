@@ -144,7 +144,9 @@ Mysterious names; duplicated logic shapes across hunks; the same few
 params travelling together (a type wanting to be born); primitives standing
 in for domain concepts; one logical change scattered across many files;
 speculative generality (hooks and params for needs the spec does not have);
-a class that mostly delegates onward.
+a class that mostly delegates onward; slop comments (narration of what the
+code plainly does, change-log comments like "// added X", commented-out
+code) - noise a maintainer must now carry.
 
 ## Tests as contracts
 - Mentally delete the feature: does some test go red? If not - finding.
@@ -208,6 +210,50 @@ checkout, not that individual tasks landed.
    the default branch alone.
 `;
 
+const CLEAN_CODE = `# Clean code playbook
+
+## Comment discipline (agents chronically over-comment)
+A comment that can be deleted without losing information is noise - delete
+it. Comments earn their place only when they carry what the code cannot:
+WHY a non-obvious approach was chosen, an invariant that must hold, a
+gotcha, a workaround with its upstream cause, a spec/ticket constraint.
+
+Slop patterns - never write these:
+- Narration: "// loop through the items", "// call the helper",
+  "// return the result". The code already says it.
+- Change-log narration: "// added X", "// new helper", "// updated to
+  handle Y", "// moved from foo.ts". Git history owns change narration;
+  code is read in its present tense.
+- Restating the signature: "/** Gets the user. @param id the id */".
+  Doc comments on exported APIs document contract - inputs, invariants,
+  error modes - or they do not exist.
+- Section banners ("// ---- helpers ----") in files that did not already
+  use them; apologetic hedges ("// this is a bit hacky"); commented-out
+  code (delete it - git remembers).
+If code seems to need a what-comment, rename or extract until it does not:
+the comment is a smell of a murky name or an overlong function.
+
+## Names
+Names carry the design. A name states what the thing IS or DOES in the
+domain's vocabulary - never its type, its history, or its author's plan
+(no Manager/Helper/Util grab-bags, no processData, no newParser2). If an
+honest name will not come, the design under it is murky - fix that first.
+Match the repository's naming conventions exactly; a second convention is
+a defect.
+
+## Functions and shape
+- One job per function; "and" in an honest description means split it.
+- Guard clauses over nested conditionals; early return over else-chains.
+- No boolean flag parameters that fork behavior - two functions.
+- Keep the happy path unindented and readable top to bottom.
+
+## Deletion is a feature
+Dead code, unused exports, stale scaffolding, unreachable branches, and
+obsolete aliases are defects to remove, not history to preserve. When a
+migration completes, delete the old path entirely - no deprecated shims
+unless the spec demands a compatibility window.
+`;
+
 export const COLONY_SKILLS: readonly ColonySkill[] = [
   {
     file: "debugging.md",
@@ -228,6 +274,12 @@ export const COLONY_SKILLS: readonly ColonySkill[] = [
     file: "task-specs.md",
     trigger: "before decomposing a goal into task specs",
     content: TASK_SPECS,
+  },
+  {
+    file: "clean-code.md",
+    trigger:
+      "before writing code, and again when reviewing your own diff for comments, names, and dead code",
+    content: CLEAN_CODE,
   },
 ];
 
