@@ -372,11 +372,23 @@ function demoWorld() {
     id: "col-a1b2c3d4",
     goal: "Add a /version endpoint that returns the running colonyd SHA",
     title: "Version endpoint",
-    status: "active",
+    status: "validating",
     provider_project_id: "49",
     provider_project_path: "so/colony",
     default_branch: "main",
     plan_json: null,
+    acceptance_json: JSON.stringify([
+      {
+        description:
+          "Fresh checkout: the full test suite passes against isolated temp SQLite + fake boundary.",
+        command: "npm ci --no-audit >/dev/null 2>&1 && npm test",
+      },
+      {
+        description:
+          "GET /version returns the running colonyd SHA with content-type application/json.",
+        command: "curl -sS localhost:4400/version | jq -e .sha",
+      },
+    ]),
     blocked_reason: null,
     created_at: new Date(Date.now() - 36 * 60 * 1000).toISOString(),
     updated_at: new Date(Date.now() - 12 * 1000).toISOString(),
@@ -433,6 +445,27 @@ function demoWorld() {
     { task_id: "col-a1b2c3d4.2", depends_on_task_id: "col-a1b2c3d4.1" },
   ];
   const runs = [
+    {
+      id: "run-validate",
+      scope_id: scope.id,
+      task_id: null,
+      kind: "validate",
+      status: "failed",
+      model_id: null,
+      head_sha: DEMO_SHA_A,
+      started_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+      finished_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+      error: null,
+      // Real acceptance commands often discard their own output; the card
+      // must render a failed criterion without an empty output pane.
+      evidence_json: JSON.stringify({
+        passed: false,
+        results: [
+          { index: 0, exit_code: 255, tail: [""] },
+          { index: 1, exit_code: 0, tail: [""] },
+        ],
+      }),
+    },
     {
       id: "run-arch",
       scope_id: scope.id,
@@ -1585,9 +1618,17 @@ function renderValidationCard(scope, detail) {
                       >${item.command}</code
                     >`
                   : nothing}
-                ${failed && result.tail?.length
-                  ? html`<pre class="runlog">${result.tail.join("\n")}</pre>`
-                  : nothing}
+                ${(() => {
+                  // Acceptance commands often discard their own output
+                  // (>/dev/null 2>&1); a tail of blank lines must not render
+                  // as an empty output pane.
+                  const tail = (result.tail || [])
+                    .join("\n")
+                    .replace(/\s+$/, "");
+                  return failed && tail
+                    ? html`<pre class="runlog">${tail}</pre>`
+                    : nothing;
+                })()}
               </div>
             </li>`;
           },

@@ -1275,6 +1275,10 @@ body {
   color: var(--danger);
 }
 
+.validation-retry {
+  margin: 0.15rem 0 0.85rem;
+}
+
 .validation-list {
   margin: 0;
   padding: 0;
