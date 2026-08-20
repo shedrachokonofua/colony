@@ -21,7 +21,7 @@ export interface Scope {
   readonly id: ScopeId;
   readonly goal: string;
   readonly title: string | null;
-  readonly initiative: string | null;
+  readonly group: string | null;
   readonly approvals: ScopeApprovals;
   readonly plan_feedback: string | null;
   readonly status: ScopeStatus;
@@ -115,7 +115,7 @@ export type ScopeApprovals = "auto" | "manual";
 export interface CreateScopeInput {
   readonly goal: string;
   readonly title?: string;
-  readonly initiative?: string;
+  readonly group?: string;
   readonly approvals?: ScopeApprovals;
   readonly provider_project_id: string;
   readonly provider_project_path: string;
@@ -161,7 +161,16 @@ export class Store {
     this.ensureColumn("scopes", "plan_feedback", "TEXT");
     this.ensureColumn("tasks", "human_feedback", "TEXT");
     this.ensureColumn("scopes", "acceptance_json", "TEXT");
-    this.ensureColumn("scopes", "initiative", "TEXT");
+    // Board grouping label. Briefly shipped as `initiative`; renamed before
+    // anything wrote to it, but a rolled-out daemon may have the old column.
+    const scopeCols = this.db.prepare(`PRAGMA table_info(scopes)`).all() as {
+      name: string;
+    }[];
+    if (scopeCols.some((c) => c.name === "initiative")) {
+      this.db.exec(`ALTER TABLE scopes RENAME COLUMN initiative TO "group"`);
+    } else {
+      this.ensureColumn("scopes", "group", "TEXT");
+    }
     this.ensureCheckContains("scopes", "validating");
     this.ensureCheckContains("runs", "validate");
   }
@@ -172,7 +181,7 @@ export class Store {
       name: string;
     }[];
     if (columns.some((column) => column.name === name)) return;
-    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN "${name}" ${type}`);
   }
 
   /**
@@ -223,10 +232,10 @@ export class Store {
           const dflt =
             col.dflt_value === null ? "" : ` DEFAULT ${col.dflt_value}`;
           this.db.exec(
-            `ALTER TABLE ${table}_new ADD COLUMN ${col.name} ${col.type || "TEXT"}${dflt}`,
+            `ALTER TABLE ${table}_new ADD COLUMN "${col.name}" ${col.type || "TEXT"}${dflt}`,
           );
         }
-        const colList = oldCols.map((c) => c.name).join(", ");
+        const colList = oldCols.map((c) => `"${c.name}"`).join(", ");
         this.db.exec(
           `INSERT INTO ${table}_new (${colList}) SELECT ${colList} FROM ${table}`,
         );
@@ -256,15 +265,15 @@ export class Store {
     const id = `col-${randomBytes(4).toString("hex")}` as ScopeId;
     this.db
       .prepare(
-        `INSERT INTO scopes (id, goal, title, initiative, status, approvals, provider_project_id, provider_project_path, default_branch)
-         VALUES (@id, @goal, @title, @initiative, 'draft', @approvals, @provider_project_id, @provider_project_path, @default_branch)`,
+        `INSERT INTO scopes (id, goal, title, "group", status, approvals, provider_project_id, provider_project_path, default_branch)
+         VALUES (@id, @goal, @title, @group, 'draft', @approvals, @provider_project_id, @provider_project_path, @default_branch)`,
       )
       .run(
         named({
           id,
           goal: input.goal,
           title: input.title ?? null,
-          initiative: input.initiative ?? null,
+          group: input.group ?? null,
           approvals: input.approvals ?? "auto",
           provider_project_id: input.provider_project_id,
           provider_project_path: input.provider_project_path,

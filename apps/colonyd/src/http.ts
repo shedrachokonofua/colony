@@ -27,7 +27,7 @@ type Env = { Variables: { actor: string } };
 const createScopeBody = z
   .object({
     goal: z.string().min(1),
-    initiative: z.string().min(1).max(120).optional(),
+    group: z.string().min(1).max(120).optional(),
     title: z.string().min(1).max(120).optional(),
     approvals: z.enum(["auto", "manual"]).optional(),
     project: z
@@ -194,7 +194,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const scope = ctx.store.createScope({
       goal: parsed.data.goal,
       title: parsed.data.title,
-      initiative: parsed.data.initiative,
+      group: parsed.data.group,
       approvals: parsed.data.approvals,
       provider_project_id: project.id,
       provider_project_path: project.path,

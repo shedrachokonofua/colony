@@ -559,7 +559,7 @@ function demoWorld() {
         id: "col-0badc0de",
         goal: "Expose run token usage per scope on the console",
         title: "Usage panel",
-        initiative: "Operator console",
+        group: "Operator console",
         status: "active",
         provider_project_path: "so/colony",
         default_branch: "main",
@@ -572,7 +572,7 @@ function demoWorld() {
         id: "col-deadbeef",
         goal: "Retire the leftover colony-dev hostname",
         title: null,
-        initiative: "Aether cleanup",
+        group: "Aether cleanup",
         status: "done",
         provider_project_path: "so/aether",
         default_branch: "main",
@@ -684,7 +684,7 @@ async function submitOpenScope(event) {
   const path = String(data.get("path") || "").trim();
   const approvals = String(data.get("approvals") || "auto");
   if (!goal || !path) return;
-  const initiative = String(data.get("initiative") || "").trim();
+  const group = String(data.get("group") || "").trim();
   try {
     const scope = await api("/scopes", {
       method: "POST",
@@ -692,7 +692,7 @@ async function submitOpenScope(event) {
         goal,
         ...(title ? { title } : {}),
         approvals,
-        ...(initiative ? { initiative } : {}),
+        ...(group ? { group } : {}),
         project: { path },
       }),
     });
@@ -1228,7 +1228,7 @@ function scopeMatchesQuery(scope) {
     scope.title,
     scope.goal,
     scope.id,
-    scope.initiative,
+    scope.group,
     scope.provider_project_path,
   ]
     .filter(Boolean)
@@ -1283,11 +1283,11 @@ function renderBoard() {
   const visible = state.scopes.filter(
     (scope) => scopeMatchesFilter(scope) && scopeMatchesQuery(scope),
   );
-  // Group by initiative, groups in page order (most recent scope first),
+  // Group scopes by their group label, in page order (most recent scope first),
   // ungrouped scopes together at the end. All-ungrouped renders flat.
   const groups = new Map();
   for (const scope of visible) {
-    const key = scope.initiative || "";
+    const key = scope.group || "";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(scope);
   }
@@ -1299,16 +1299,16 @@ function renderBoard() {
   const cards = visible.length
     ? repeat(
         [...groups.entries()],
-        ([initiative]) => initiative,
-        ([initiative, scopes]) => html`
-          ${initiative
+        ([group]) => group,
+        ([group, scopes]) => html`
+          ${group
             ? html`<h2 class="rack-group">
-                ${initiative}
+                ${group}
                 <span class="rack-count">${scopes.length}</span>
               </h2>`
             : groups.size > 1
               ? html`<h2 class="rack-group rack-group-loose">
-                  No initiative
+                  No group
                   <span class="rack-count">${scopes.length}</span>
                 </h2>`
               : nothing}
@@ -1394,9 +1394,9 @@ function renderCreate() {
               />
             </label>
             <label class="field">
-              <span>Initiative <em>optional</em></span>
+              <span>Group <em>optional</em></span>
               <input
-                name="initiative"
+                name="group"
                 maxlength="120"
                 placeholder="Groups related scopes on the board"
                 autocomplete="off"

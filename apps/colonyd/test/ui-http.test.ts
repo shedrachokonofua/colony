@@ -564,7 +564,7 @@ describe("acceptance amendment", () => {
   });
 });
 
-describe("scope pagination and initiative", () => {
+describe("scope pagination and grouping", () => {
   it("pages scopes newest-first with a total, and rejects bad params", async () => {
     const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
     dirs.push(dir);
@@ -575,7 +575,7 @@ describe("scope pagination and initiative", () => {
         goal: `scope ${i}`,
         provider_project_id: "1",
         provider_project_path: "so/x",
-        initiative: i < 3 ? "Wave one" : undefined,
+        group: i < 3 ? "Wave one" : undefined,
       });
     }
     const res = await app.request("/scopes?limit=3&offset=0", {
@@ -583,7 +583,7 @@ describe("scope pagination and initiative", () => {
     });
     expect(res.status).toBe(200);
     const page = (await res.json()) as {
-      scopes: { goal: string; initiative: string | null }[];
+      scopes: { goal: string; group: string | null }[];
       total: number;
       limit: number;
       offset: number;
@@ -609,22 +609,22 @@ describe("scope pagination and initiative", () => {
     expect(huge.status).toBe(400);
   });
 
-  it("stores initiative from POST /scopes and returns it on reads", async () => {
+  it("stores the group label and returns it on reads", async () => {
     const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
     dirs.push(dir);
     const store = new Store(join(dir, "test.db"));
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "grouped",
-      initiative: "Operator console",
+      group: "Operator console",
       provider_project_id: "1",
       provider_project_path: "so/x",
     });
-    expect(scope.initiative).toBe("Operator console");
+    expect(scope.group).toBe("Operator console");
     const res = await app.request(`/scopes/${scope.id}`, {
       headers: { "X-Actor-Id": "human:op-1" },
     });
-    const body = (await res.json()) as { scope: { initiative: string } };
-    expect(body.scope.initiative).toBe("Operator console");
+    const body = (await res.json()) as { scope: { group: string } };
+    expect(body.scope.group).toBe("Operator console");
   });
 });
