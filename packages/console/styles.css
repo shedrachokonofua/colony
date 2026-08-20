@@ -1275,12 +1275,6 @@ body {
   color: var(--danger);
 }
 
-.validation-meta {
-  margin: -0.25rem 0 0.6rem;
-  font-size: 0.72rem;
-  color: var(--faint);
-}
-
 .validation-retry {
   margin: 0.15rem 0 0.85rem;
 }

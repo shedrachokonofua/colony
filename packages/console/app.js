@@ -1582,9 +1582,6 @@ function renderValidationCard(scope, detail) {
             })()}
           </p>`
         : nothing}
-      ${latest?.model_id
-        ? html`<p class="validation-meta mono">${latest.model_id}</p>`
-        : nothing}
       ${scope.status === "validating" && failed
         ? html`<button
             class="btn btn-solid validation-retry"
