@@ -901,7 +901,9 @@ describe("api e2e control — 2. task transitions", () => {
     expect(
       (amendCanceled.body as { error?: { code?: string } })?.error?.code,
     ).toBe("TASK_FINISHED");
-  }, 90_000);
+    // Outer timeout must exceed the sum of inner waitFor budgets (~390s);
+    // condition polls return early on healthy runs.
+  }, 420_000);
 });
 
 describe("api e2e control — 3. review loop", () => {
@@ -1367,7 +1369,8 @@ describe("api e2e control — 5. manual vs auto merge approvals", () => {
     expect((early.body as { error?: { code?: string } })?.error?.code).toBe(
       "NO_OPEN_MR",
     );
-  }, 90_000);
+    // Outer timeout must exceed the sum of inner waitFor budgets (~152s).
+  }, 180_000);
 });
 
 describe("api e2e control — 6. abandon", () => {
