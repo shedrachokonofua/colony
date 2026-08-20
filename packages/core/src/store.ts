@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database, type SQLQueryBindings } from "./sqlite-compat.js";
+import { migrate } from "./migrations.js";
 import {
   DomainStateError,
   domainError,
@@ -122,11 +122,6 @@ export interface CreateScopeInput {
   readonly default_branch?: string;
 }
 
-const SCHEMA_SQL = readFileSync(
-  new URL("./schema.sql", import.meta.url),
-  "utf8",
-);
-
 export function nowIso(date: Date = new Date()): string {
   return date.toISOString();
 }
@@ -152,105 +147,11 @@ export class Store {
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
-    this.db.exec(SCHEMA_SQL);
-    this.ensureColumn("runs", "token_id", "TEXT");
-    this.ensureColumn("runs", "model_id", "TEXT");
-    this.ensureColumn("scopes", "title", "TEXT");
-    this.ensureColumn("scopes", "approvals", "TEXT NOT NULL DEFAULT 'auto'");
-    this.ensureColumn("tasks", "merge_approved_sha", "TEXT");
-    this.ensureColumn("scopes", "plan_feedback", "TEXT");
-    this.ensureColumn("tasks", "human_feedback", "TEXT");
-    this.ensureColumn("scopes", "acceptance_json", "TEXT");
-    // Board grouping label. Briefly shipped as `initiative`; renamed before
-    // anything wrote to it, but a rolled-out daemon may have the old column.
-    const scopeCols = this.db.prepare(`PRAGMA table_info(scopes)`).all() as {
-      name: string;
-    }[];
-    if (scopeCols.some((c) => c.name === "initiative")) {
-      this.db.exec(`ALTER TABLE scopes RENAME COLUMN initiative TO "group"`);
-    } else {
-      this.ensureColumn("scopes", "group", "TEXT");
-    }
-    this.ensureCheckContains("scopes", "validating");
-    this.ensureCheckContains("runs", "validate");
-  }
-
-  /** Idempotent ADD COLUMN for DBs created before a column existed. */
-  private ensureColumn(table: string, name: string, type: string): void {
-    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as {
-      name: string;
-    }[];
-    if (columns.some((column) => column.name === name)) return;
-    this.db.exec(`ALTER TABLE ${table} ADD COLUMN "${name}" ${type}`);
-  }
-
-  /**
-   * Rebuild `table` when its CHECK constraints predate `needle` (a quoted
-   * enum value). `CREATE TABLE IF NOT EXISTS` never updates an existing
-   * table, so DBs created before a constraint changed reject new enum values
-   * forever (observed live twice: scopes.status missing 'validating', then
-   * runs.kind missing 'validate'). SQLite cannot alter a CHECK in place;
-   * this is the documented create-copy-drop-rename dance, FK-safe because
-   * the final rename restores the name dependent tables reference.
-   */
-  private ensureCheckContains(table: string, needle: string): void {
-    const row = this.db
-      .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name = ?`)
-      .get(table) as { sql: string } | undefined;
-    if (!row || row.sql.includes(`'${needle}'`)) return;
-
-    const ddlMatch = SCHEMA_SQL.match(
-      new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`),
-    );
-    if (!ddlMatch) throw new Error(`${table} DDL not found in schema.sql`);
-    const newDdl = ddlMatch[0].replace(
-      `CREATE TABLE IF NOT EXISTS ${table} (`,
-      `CREATE TABLE ${table}_new (`,
-    );
-
-    this.db.exec("PRAGMA foreign_keys = OFF");
-    try {
-      this.db.transaction(() => {
-        this.db.exec(newDdl);
-        // Carry over columns added by ensureColumn that the base DDL lacks.
-        const oldCols = this.db
-          .prepare(`PRAGMA table_info(${table})`)
-          .all() as {
-          name: string;
-          type: string;
-          dflt_value: string | null;
-        }[];
-        const newCols = new Set(
-          (
-            this.db.prepare(`PRAGMA table_info(${table}_new)`).all() as {
-              name: string;
-            }[]
-          ).map((c) => c.name),
-        );
-        for (const col of oldCols) {
-          if (newCols.has(col.name)) continue;
-          const dflt =
-            col.dflt_value === null ? "" : ` DEFAULT ${col.dflt_value}`;
-          this.db.exec(
-            `ALTER TABLE ${table}_new ADD COLUMN "${col.name}" ${col.type || "TEXT"}${dflt}`,
-          );
-        }
-        const colList = oldCols.map((c) => `"${c.name}"`).join(", ");
-        this.db.exec(
-          `INSERT INTO ${table}_new (${colList}) SELECT ${colList} FROM ${table}`,
-        );
-        this.db.exec(`DROP TABLE ${table}`);
-        this.db.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
-      })();
-      const violations = this.db.prepare("PRAGMA foreign_key_check").all();
-      if (violations.length > 0) {
-        throw new Error(
-          `${table} rebuild broke foreign keys: ${JSON.stringify(violations[0])}`,
-        );
-      }
-    } finally {
-      this.db.exec("PRAGMA foreign_keys = ON");
-    }
+    // journal_mode persists in the file but is set here for fresh DBs;
+    // foreign_keys is per-connection and MUST be set on every open.
+    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA foreign_keys = ON");
+    migrate(this.db);
   }
 
   close(): void {

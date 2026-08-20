@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { DomainStateError } from "@colony/domain";
+import { LATEST_SCHEMA_VERSION } from "../src/migrations.js";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
   Store,
@@ -476,6 +477,124 @@ describe("legacy CHECK constraint migrations", () => {
       }
     } finally {
       rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("versioned migrations", () => {
+  const tableColumns = (db: Store["db"], table: string) =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
+      .map((c) => c.name)
+      .sort();
+  const userVersion = (db: Store["db"]) =>
+    (db.prepare("PRAGMA user_version").get() as { user_version: number })
+      .user_version;
+
+  it("stamps fresh databases at the latest version without replaying migrations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig-"));
+    try {
+      const store = new Store(join(dir, "fresh.db"));
+      expect(userVersion(store.db)).toBe(LATEST_SCHEMA_VERSION);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrated legacy databases match fresh schema per table and get stamped", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig-"));
+    try {
+      // Legacy: pre-versioning DB built from the old base DDL, no extras.
+      const legacyPath = join(dir, "legacy.db");
+      const legacy = new Database(legacyPath);
+      legacy.exec(`
+        CREATE TABLE scopes (
+          id TEXT PRIMARY KEY,
+          goal TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft'
+            CHECK (status IN ('draft','planning','active','blocked','done','abandoned')),
+          provider_project_id TEXT NOT NULL,
+          provider_project_path TEXT NOT NULL,
+          default_branch TEXT NOT NULL DEFAULT 'main',
+          plan_json TEXT,
+          blocked_reason TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          scope_id TEXT NOT NULL REFERENCES scopes(id),
+          title TEXT NOT NULL,
+          spec TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'queued',
+          state_version INTEGER NOT NULL DEFAULT 0,
+          branch TEXT,
+          mr_iid INTEGER,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          next_retry_at TEXT,
+          blocked_reason TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+        CREATE TABLE runs (
+          id TEXT PRIMARY KEY,
+          scope_id TEXT NOT NULL REFERENCES scopes(id),
+          task_id TEXT REFERENCES tasks(id),
+          kind TEXT NOT NULL CHECK (kind IN ('architect','implement','merge_gate','review')),
+          status TEXT NOT NULL DEFAULT 'running'
+            CHECK (status IN ('running','succeeded','failed','canceled')),
+          lease_expires_at TEXT NOT NULL,
+          base_sha TEXT,
+          head_sha TEXT,
+          workspace_path TEXT,
+          envelope_json TEXT,
+          evidence_json TEXT,
+          error TEXT,
+          started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          finished_at TEXT
+        );
+      `);
+      legacy.close();
+
+      const migrated = new Store(legacyPath);
+      const fresh = new Store(join(dir, "fresh.db"));
+      try {
+        expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
+        for (const table of ["scopes", "tasks", "runs"]) {
+          expect(tableColumns(migrated.db, table)).toEqual(
+            tableColumns(fresh.db, table),
+          );
+        }
+        // A short-lived `initiative` column is renamed, not duplicated.
+        const renamed = new Database(join(dir, "renamed.db"));
+        renamed.exec(
+          `CREATE TABLE scopes (id TEXT PRIMARY KEY, goal TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft'
+              CHECK (status IN ('draft','planning','active','validating','blocked','done','abandoned')),
+            provider_project_id TEXT NOT NULL, provider_project_path TEXT NOT NULL,
+            default_branch TEXT NOT NULL DEFAULT 'main', plan_json TEXT, blocked_reason TEXT,
+            initiative TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+           CREATE TABLE tasks (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL REFERENCES scopes(id),
+            title TEXT NOT NULL, spec TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
+            state_version INTEGER NOT NULL DEFAULT 0);
+           CREATE TABLE runs (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL REFERENCES scopes(id),
+            task_id TEXT, kind TEXT NOT NULL CHECK (kind IN ('architect','implement','merge_gate','review','validate')),
+            status TEXT NOT NULL DEFAULT 'running', lease_expires_at TEXT NOT NULL);`,
+        );
+        renamed.close();
+        const renamedStore = new Store(join(dir, "renamed.db"));
+        const cols = tableColumns(renamedStore.db, "scopes");
+        expect(cols).toContain("group");
+        expect(cols).not.toContain("initiative");
+        renamedStore.close();
+      } finally {
+        migrated.close();
+        fresh.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
