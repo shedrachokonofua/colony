@@ -21,6 +21,7 @@ export interface Scope {
   readonly id: ScopeId;
   readonly goal: string;
   readonly title: string | null;
+  readonly initiative: string | null;
   readonly approvals: ScopeApprovals;
   readonly plan_feedback: string | null;
   readonly status: ScopeStatus;
@@ -114,6 +115,7 @@ export type ScopeApprovals = "auto" | "manual";
 export interface CreateScopeInput {
   readonly goal: string;
   readonly title?: string;
+  readonly initiative?: string;
   readonly approvals?: ScopeApprovals;
   readonly provider_project_id: string;
   readonly provider_project_path: string;
@@ -159,6 +161,7 @@ export class Store {
     this.ensureColumn("scopes", "plan_feedback", "TEXT");
     this.ensureColumn("tasks", "human_feedback", "TEXT");
     this.ensureColumn("scopes", "acceptance_json", "TEXT");
+    this.ensureColumn("scopes", "initiative", "TEXT");
     this.ensureCheckContains("scopes", "validating");
     this.ensureCheckContains("runs", "validate");
   }
@@ -253,14 +256,15 @@ export class Store {
     const id = `col-${randomBytes(4).toString("hex")}` as ScopeId;
     this.db
       .prepare(
-        `INSERT INTO scopes (id, goal, title, status, approvals, provider_project_id, provider_project_path, default_branch)
-         VALUES (@id, @goal, @title, 'draft', @approvals, @provider_project_id, @provider_project_path, @default_branch)`,
+        `INSERT INTO scopes (id, goal, title, initiative, status, approvals, provider_project_id, provider_project_path, default_branch)
+         VALUES (@id, @goal, @title, @initiative, 'draft', @approvals, @provider_project_id, @provider_project_path, @default_branch)`,
       )
       .run(
         named({
           id,
           goal: input.goal,
           title: input.title ?? null,
+          initiative: input.initiative ?? null,
           approvals: input.approvals ?? "auto",
           provider_project_id: input.provider_project_id,
           provider_project_path: input.provider_project_path,
@@ -298,6 +302,25 @@ export class Store {
     return this.db
       .prepare(`SELECT * FROM scopes ORDER BY created_at`)
       .all() as Scope[];
+  }
+
+  /**
+   * One page of scopes, most recently touched first - the board's feed.
+   * `listScopes` stays unpaginated for internal full-table walks (tick).
+   */
+  pageScopes(
+    limit: number,
+    offset: number,
+  ): { scopes: Scope[]; total: number } {
+    const scopes = this.db
+      .prepare(
+        `SELECT * FROM scopes ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`,
+      )
+      .all(limit, offset) as Scope[];
+    const { n } = this.db.prepare(`SELECT COUNT(*) AS n FROM scopes`).get() as {
+      n: number;
+    };
+    return { scopes, total: n };
   }
 
   setScopeStatus(

@@ -719,7 +719,9 @@ test.describe("desktop console", () => {
           try {
             const r = await request.get("/scopes", { headers: HEADERS });
             if (!r.ok()) return "ok";
-            const scopes = (await r.json()) as { id: string }[];
+            const { scopes } = (await r.json()) as {
+              scopes: { id: string }[];
+            };
             // quick check: if any scope has running tasks, still settling
             for (const s of scopes.slice(0, 5)) {
               const d = await request.get(

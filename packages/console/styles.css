@@ -388,6 +388,45 @@ body {
   letter-spacing: -0.01em;
 }
 
+.rack-group {
+  margin: 1.1rem 0 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.rack-group-loose {
+  color: var(--faint);
+}
+
+.rack-count {
+  font-weight: 400;
+  color: var(--faint);
+}
+
+.board-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.board-pager .btn[disabled] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.pager-range {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 .rack {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));

@@ -42,6 +42,8 @@ const state = {
   planOpen: false,
   boardFilter: "all",
   boardQuery: "",
+  boardOffset: 0,
+  scopesTotal: 0,
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -554,9 +556,23 @@ function demoWorld() {
     scopes: [
       scope,
       {
+        id: "col-0badc0de",
+        goal: "Expose run token usage per scope on the console",
+        title: "Usage panel",
+        initiative: "Operator console",
+        status: "active",
+        provider_project_path: "so/colony",
+        default_branch: "main",
+        plan_json: null,
+        blocked_reason: null,
+        created_at: new Date(Date.now() - 5 * 3600 * 1000).toISOString(),
+        updated_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+      },
+      {
         id: "col-deadbeef",
         goal: "Retire the leftover colony-dev hostname",
         title: null,
+        initiative: "Aether cleanup",
         status: "done",
         provider_project_path: "so/aether",
         default_branch: "main",
@@ -668,6 +684,7 @@ async function submitOpenScope(event) {
   const path = String(data.get("path") || "").trim();
   const approvals = String(data.get("approvals") || "auto");
   if (!goal || !path) return;
+  const initiative = String(data.get("initiative") || "").trim();
   try {
     const scope = await api("/scopes", {
       method: "POST",
@@ -675,6 +692,7 @@ async function submitOpenScope(event) {
         goal,
         ...(title ? { title } : {}),
         approvals,
+        ...(initiative ? { initiative } : {}),
         project: { path },
       }),
     });
@@ -1206,41 +1224,105 @@ function scopeMatchesFilter(scope) {
 function scopeMatchesQuery(scope) {
   const q = state.boardQuery.trim().toLowerCase();
   if (!q) return true;
-  return [scope.title, scope.goal, scope.id, scope.provider_project_path]
+  return [
+    scope.title,
+    scope.goal,
+    scope.id,
+    scope.initiative,
+    scope.provider_project_path,
+  ]
     .filter(Boolean)
     .some((field) => field.toLowerCase().includes(q));
 }
 
+const BOARD_PAGE_SIZE = 25;
+
+function scopeCard(scope) {
+  return html`<button class="scope-card" @click=${() => openScope(scope.id)}>
+    <span class="scope-top">
+      <span class="chip" data-kind=${scope.status}>${scope.status}</span>
+      <span class="scope-time">${rel(scope.updated_at)}</span>
+    </span>
+    <span class="scope-goal">${scopeTitle(scope)}</span>
+    <span class="scope-meta">
+      <span class="mono">${scope.id}</span>
+      <span>${scope.provider_project_path}</span>
+    </span>
+  </button>`;
+}
+
+function renderBoardPager() {
+  const total = state.scopesTotal;
+  if (total <= BOARD_PAGE_SIZE) return nothing;
+  const from = state.boardOffset + 1;
+  const to = Math.min(state.boardOffset + state.scopes.length, total);
+  const turn = (offset) => {
+    state.boardOffset = Math.max(0, offset);
+    void refresh();
+  };
+  return html`<nav class="board-pager" aria-label="Scope pages">
+    <button
+      class="btn btn-quiet"
+      ?disabled=${state.boardOffset === 0}
+      @click=${() => turn(state.boardOffset - BOARD_PAGE_SIZE)}
+    >
+      Newer
+    </button>
+    <span class="pager-range mono">${from}–${to} of ${total}</span>
+    <button
+      class="btn btn-quiet"
+      ?disabled=${to >= total}
+      @click=${() => turn(state.boardOffset + BOARD_PAGE_SIZE)}
+    >
+      Older
+    </button>
+  </nav>`;
+}
+
 function renderBoard() {
-  const sorted = state.scopes
-    .slice()
-    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
-  const visible = sorted.filter(
+  const visible = state.scopes.filter(
     (scope) => scopeMatchesFilter(scope) && scopeMatchesQuery(scope),
   );
+  // Group by initiative, groups in page order (most recent scope first),
+  // ungrouped scopes together at the end. All-ungrouped renders flat.
+  const groups = new Map();
+  for (const scope of visible) {
+    const key = scope.initiative || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(scope);
+  }
+  if (groups.has("") && groups.size > 1) {
+    const loose = groups.get("");
+    groups.delete("");
+    groups.set("", loose);
+  }
   const cards = visible.length
     ? repeat(
-        visible,
-        (scope) => scope.id,
-        (scope) =>
-          html`<button class="scope-card" @click=${() => openScope(scope.id)}>
-            <span class="scope-top">
-              <span class="chip" data-kind=${scope.status}
-                >${scope.status}</span
-              >
-              <span class="scope-time">${rel(scope.updated_at)}</span>
-            </span>
-            <span class="scope-goal">${scopeTitle(scope)}</span>
-            <span class="scope-meta">
-              <span class="mono">${scope.id}</span>
-              <span>${scope.provider_project_path}</span>
-            </span>
-          </button>`,
+        [...groups.entries()],
+        ([initiative]) => initiative,
+        ([initiative, scopes]) => html`
+          ${initiative
+            ? html`<h2 class="rack-group">
+                ${initiative}
+                <span class="rack-count">${scopes.length}</span>
+              </h2>`
+            : groups.size > 1
+              ? html`<h2 class="rack-group rack-group-loose">
+                  No initiative
+                  <span class="rack-count">${scopes.length}</span>
+                </h2>`
+              : nothing}
+          <div class="rack">
+            ${repeat(scopes, (scope) => scope.id, scopeCard)}
+          </div>
+        `,
       )
     : html`<p class="rack-empty">
         ${state.scopes.length
           ? "No scopes match this filter."
-          : "No scopes yet — open the first one."}
+          : state.boardOffset > 0
+            ? "Past the last page."
+            : "No scopes yet — open the first one."}
       </p>`;
   return html`
     ${state.error
@@ -1279,7 +1361,8 @@ function renderBoard() {
             }}
           />
         </div>
-        <div class="rack">${cards}</div>
+        <div class="racks">${cards}</div>
+        ${renderBoardPager()}
       </section>
       <div class="board-side">${renderActivity()}</div>
     </div>
@@ -1307,6 +1390,15 @@ function renderCreate() {
                 name="title"
                 maxlength="120"
                 placeholder="Short label for the board"
+                autocomplete="off"
+              />
+            </label>
+            <label class="field">
+              <span>Initiative <em>optional</em></span>
+              <input
+                name="initiative"
+                maxlength="120"
+                placeholder="Groups related scopes on the board"
                 autocomplete="off"
               />
             </label>
@@ -1803,6 +1895,7 @@ async function refresh() {
       const world = demoWorld();
       state.config = world.config;
       state.scopes = world.scopes;
+      state.scopesTotal = world.scopes.length;
       const id = routeScopeId();
       state.detail = id === world.detail.scope.id ? world.detail : null;
       state.audit = world.audit;
@@ -1826,7 +1919,11 @@ async function refresh() {
         return;
       }
     }
-    state.scopes = await api("/scopes");
+    const page = await api(
+      `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${state.boardOffset}`,
+    );
+    state.scopes = page.scopes;
+    state.scopesTotal = page.total;
     const id = routeScopeId();
     if (id) {
       const [detail, audit] = await Promise.all([

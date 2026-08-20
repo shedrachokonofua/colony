@@ -563,3 +563,68 @@ describe("acceptance amendment", () => {
     expect(finished.status).toBe(409);
   });
 });
+
+describe("scope pagination and initiative", () => {
+  it("pages scopes newest-first with a total, and rejects bad params", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    for (let i = 0; i < 7; i += 1) {
+      store.createScope({
+        goal: `scope ${i}`,
+        provider_project_id: "1",
+        provider_project_path: "so/x",
+        initiative: i < 3 ? "Wave one" : undefined,
+      });
+    }
+    const res = await app.request("/scopes?limit=3&offset=0", {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(res.status).toBe(200);
+    const page = (await res.json()) as {
+      scopes: { goal: string; initiative: string | null }[];
+      total: number;
+      limit: number;
+      offset: number;
+    };
+    expect(page.total).toBe(7);
+    expect(page.scopes.length).toBe(3);
+    expect(page.limit).toBe(3);
+
+    const rest = await app.request("/scopes?limit=100&offset=3", {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    const tail = (await rest.json()) as { scopes: unknown[]; total: number };
+    expect(tail.scopes.length).toBe(4);
+    expect(tail.total).toBe(7);
+
+    const bad = await app.request("/scopes?limit=0", {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(bad.status).toBe(400);
+    const huge = await app.request("/scopes?limit=101", {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(huge.status).toBe(400);
+  });
+
+  it("stores initiative from POST /scopes and returns it on reads", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const scope = store.createScope({
+      goal: "grouped",
+      initiative: "Operator console",
+      provider_project_id: "1",
+      provider_project_path: "so/x",
+    });
+    expect(scope.initiative).toBe("Operator console");
+    const res = await app.request(`/scopes/${scope.id}`, {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    const body = (await res.json()) as { scope: { initiative: string } };
+    expect(body.scope.initiative).toBe("Operator console");
+  });
+});

@@ -27,6 +27,7 @@ type Env = { Variables: { actor: string } };
 const createScopeBody = z
   .object({
     goal: z.string().min(1),
+    initiative: z.string().min(1).max(120).optional(),
     title: z.string().min(1).max(120).optional(),
     approvals: z.enum(["auto", "manual"]).optional(),
     project: z
@@ -65,6 +66,11 @@ const auditQuery = z.object({
   scope_id: z.string().optional(),
   task_id: z.string().optional(),
   limit: z.coerce.number().int().positive().max(1000).optional(),
+});
+
+const scopesQuery = z.object({
+  limit: z.coerce.number().int().positive().max(100).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
 });
 
 export function buildApp(ctx: ColonydContext): Hono<Env> {
@@ -188,6 +194,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const scope = ctx.store.createScope({
       goal: parsed.data.goal,
       title: parsed.data.title,
+      initiative: parsed.data.initiative,
       approvals: parsed.data.approvals,
       provider_project_id: project.id,
       provider_project_path: project.path,
@@ -201,7 +208,14 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(scope, 201);
   });
 
-  app.get("/scopes", (c) => c.json(ctx.store.listScopes()));
+  app.get("/scopes", (c) => {
+    const parsed = scopesQuery.safeParse(c.req.query());
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const limit = parsed.data.limit ?? 25;
+    const offset = parsed.data.offset ?? 0;
+    const { scopes, total } = ctx.store.pageScopes(limit, offset);
+    return c.json({ scopes, total, limit, offset });
+  });
 
   app.get("/scopes/:id", (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
