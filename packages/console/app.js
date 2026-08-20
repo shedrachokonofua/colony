@@ -1582,6 +1582,14 @@ function renderValidationCard(scope, detail) {
             })()}
           </p>`
         : nothing}
+      ${latest
+        ? html`<p class="validation-meta mono">
+            ${latest.model_id
+              ? `model ${latest.model_id}`
+              : "no model — acceptance commands run verbatim in a fresh sandbox clone"}
+            · run ${latest.id.slice(0, 8)}
+          </p>`
+        : nothing}
       ${scope.status === "validating" && failed
         ? html`<button
             class="btn btn-solid validation-retry"
