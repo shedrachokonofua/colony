@@ -50,11 +50,7 @@ describe("FakeProviderAdapter", () => {
     expect(updated.title).toBe("Updated task");
     expect(updated.assignee_ids).toEqual(["fake-user-1"]);
 
-    const comment = await adapter.issues.comment(
-      repo,
-      issue.id,
-      "Looks good",
-    );
+    const comment = await adapter.issues.comment(repo, issue.id, "Looks good");
     expect(comment.id).toBe("issue-comment-1");
     expect(comment.body).toBe("Looks good");
   });

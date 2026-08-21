@@ -544,9 +544,9 @@ describe("GitLabProviderAdapter issues", () => {
       author_id: "91",
     });
 
-    await expect(
-      adapter.issues.close(repo, created.id),
-    ).resolves.toMatchObject({ state: "closed" });
+    await expect(adapter.issues.close(repo, created.id)).resolves.toMatchObject(
+      { state: "closed" },
+    );
     await expect(
       adapter.issues.reopen(repo, created.id),
     ).resolves.toMatchObject({ state: "opened" });
@@ -741,10 +741,7 @@ describe("GitLabProviderAdapter mergeRequests", () => {
     const approved = await adapter.mergeRequests.approve(repo, opened.id);
     expect(approved.id).toBe("20:5");
 
-    const unapproved = await adapter.mergeRequests.unapprove(
-      repo,
-      opened.id,
-    );
+    const unapproved = await adapter.mergeRequests.unapprove(repo, opened.id);
     expect(unapproved.id).toBe("20:5");
 
     const note = await adapter.mergeRequests.comment(
@@ -979,11 +976,7 @@ describe("GitLabProviderAdapter branches", () => {
     });
     const repo = { id: "20" } as const;
 
-    const branch = await adapter.branches.create(
-      repo,
-      "feature/csv",
-      "main",
-    );
+    const branch = await adapter.branches.create(repo, "feature/csv", "main");
     expect(branch).toMatchObject({
       name: "feature/csv",
       commit_sha: "abc123",
