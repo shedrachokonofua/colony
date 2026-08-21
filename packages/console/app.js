@@ -40,6 +40,7 @@ const state = {
   scopeRunEvents: null,
   goalOpen: false,
   planOpen: false,
+  reader: null,
   boardFilter: "all",
   boardQuery: "",
   boardOffset: 0,
@@ -380,7 +381,24 @@ function demoWorld() {
     provider_project_id: "49",
     provider_project_path: "so/colony",
     default_branch: "main",
-    plan_json: null,
+    plan_json: JSON.stringify({
+      summary:
+        "One vertical task builds the Stage-1 site: **SvelteKit** + adapter-node, landing page, `/sample-report` from a static fixture, and `POST /api/waitlist` with rate limiting.",
+      acceptance: [
+        {
+          description:
+            "Fresh checkout: install, typecheck, tests, build all green.",
+          command: "npm ci && npm run typecheck && npm test && npm run build",
+        },
+      ],
+      tasks: [
+        {
+          title: "Build the Stage-1 landing page",
+          depends_on: [],
+          spec: "# Goal\n\nBuild the complete site.\n\n## Waitlist\n\n- `POST /api/waitlist` validates server-side\n- token bucket per IP, returns `429` when exhausted\n\n```ts\nexport function take(ip: string): boolean {\n  return bucket.take(ip);\n}\n```\n\n> Stage 1 must not ask visitors for real prospect data.",
+        },
+      ],
+    }),
     acceptance_json: JSON.stringify([
       {
         description:
@@ -1583,11 +1601,18 @@ function renderPlanCard(scope, detail) {
             ${summary}
           </p>`
         : nothing}
-      ${summary.length > 360
-        ? html`<button class="goal-toggle" @click=${() => toggle("planOpen")}>
-            ${state.planOpen ? "Show less" : "Show more"}
+      ${plan
+        ? html`<button
+            class="goal-toggle"
+            @click=${() => openReader("Plan", planMarkdown(scope, plan))}
+          >
+            Expand plan
           </button>`
-        : nothing}
+        : summary.length > 360
+          ? html`<button class="goal-toggle" @click=${() => toggle("planOpen")}>
+              ${state.planOpen ? "Show less" : "Show more"}
+            </button>`
+          : nothing}
       ${replanRequests.length
         ? html`<section
             class="plan-history"
@@ -1801,6 +1826,12 @@ function renderDrawer(scope, task) {
           ? html`<span class="mono">${task.branch}</span>`
           : nothing}
       </div>
+      <button
+        class="goal-toggle"
+        @click=${() => openReader(task.title, task.spec)}
+      >
+        Expand spec
+      </button>
       <pre class="spec">${task.spec}</pre>
       ${task.state === "mr_open"
         ? html`<form
@@ -1894,6 +1925,167 @@ function renderActivity() {
 }
 
 let _paintDepth = 0;
+
+// ---------------------------------------------------------------------------
+// Markdown reader: safe subset renderer for agent-authored plan/spec text.
+// Escapes EVERYTHING first, then rebuilds a small grammar: headings, fenced
+// code, lists, blockquotes, bold/italic/inline code, http(s) links.
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function mdInline(text) {
+  return text
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+    .replace(
+      /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+    );
+}
+
+function renderMarkdown(source) {
+  const lines = escapeHtml(source).split("\n");
+  const out = [];
+  let list = null; // "ul" | "ol"
+  let fence = false;
+  let fenceBuf = [];
+  const closeList = () => {
+    if (list) out.push(`</${list}>`);
+    list = null;
+  };
+  for (const raw of lines) {
+    if (/^```/.test(raw.trim())) {
+      if (fence) {
+        out.push(
+          `<pre class="md-code"><code>${fenceBuf.join("\n")}</code></pre>`,
+        );
+        fenceBuf = [];
+        fence = false;
+      } else {
+        closeList();
+        fence = true;
+      }
+      continue;
+    }
+    if (fence) {
+      fenceBuf.push(raw);
+      continue;
+    }
+    const line = raw;
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      closeList();
+      const level = Math.min(h[1].length + 1, 5);
+      out.push(`<h${level}>${mdInline(h[2])}</h${level}>`);
+      continue;
+    }
+    if (/^(-{3,}|\*{3,})\s*$/.test(line.trim())) {
+      closeList();
+      out.push("<hr />");
+      continue;
+    }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      const kind = ul ? "ul" : "ol";
+      if (list !== kind) {
+        closeList();
+        out.push(`<${kind}>`);
+        list = kind;
+      }
+      out.push(`<li>${mdInline((ul || ol)[1])}</li>`);
+      continue;
+    }
+    if (/^\s*&gt;\s?/.test(line)) {
+      closeList();
+      out.push(
+        `<blockquote>${mdInline(line.replace(/^\s*&gt;\s?/, ""))}</blockquote>`,
+      );
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      continue;
+    }
+    closeList();
+    out.push(`<p>${mdInline(line)}</p>`);
+  }
+  if (fence)
+    out.push(`<pre class="md-code"><code>${fenceBuf.join("\n")}</code></pre>`);
+  closeList();
+  return out.join("\n");
+}
+
+function mdFragment(markdown) {
+  // Our renderer escapes all input before rebuilding markup, so this HTML is
+  // console-authored, never agent-authored.
+  const tpl = document.createElement("template");
+  tpl.innerHTML = renderMarkdown(markdown);
+  return tpl.content;
+}
+
+function openReader(title, markdown) {
+  state.reader = { title, markdown };
+  paint();
+}
+
+function closeReader() {
+  state.reader = null;
+  paint();
+}
+
+function planMarkdown(scope, plan) {
+  const parts = [`# Plan — ${scopeTitle(scope)}`, "", plan.summary || ""];
+  if (Array.isArray(plan.acceptance) && plan.acceptance.length) {
+    parts.push("", "## Acceptance criteria");
+    for (const a of plan.acceptance) {
+      parts.push(`- ${a.description}`, "", "```", a.command, "```");
+    }
+  }
+  (plan.tasks || []).forEach((task, index) => {
+    const deps = (task.depends_on || []).length
+      ? ` (depends on ${task.depends_on.join(", ")})`
+      : "";
+    parts.push(
+      "",
+      `## Task ${index}: ${task.title}${deps}`,
+      "",
+      task.spec || "",
+    );
+  });
+  return parts.join("\n");
+}
+
+function renderReader() {
+  if (!state.reader) return nothing;
+  return html`<div
+    class="reader-overlay"
+    @click=${(event) => {
+      if (event.target === event.currentTarget) closeReader();
+    }}
+  >
+    <div
+      class="reader"
+      role="dialog"
+      aria-modal="true"
+      aria-label=${state.reader.title}
+    >
+      <header class="reader-head">
+        <p>${state.reader.title}</p>
+        <button class="btn btn-quiet" @click=${closeReader}>Close</button>
+      </header>
+      <div class="reader-body md">${mdFragment(state.reader.markdown)}</div>
+    </div>
+  </div>`;
+}
+
 function paint() {
   if (_paintDepth > 0) return;
   _paintDepth++;
@@ -1908,7 +2100,8 @@ function paint() {
             : renderBoard();
     litRender(
       html`${renderTopbar()}
-        <main class="view">${view}</main>`,
+        <main class="view">${view}</main>
+        ${renderReader()}`,
       app,
     );
   } finally {
@@ -2036,6 +2229,10 @@ async function refreshRunEvents(detail) {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.drawerOpen) closeDrawer();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.reader) closeReader();
 });
 
 window.addEventListener("hashchange", () => {
