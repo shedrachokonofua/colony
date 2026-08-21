@@ -144,8 +144,14 @@ function legacyReconcile(db: Db): void {
   const scopeCols = db.prepare(`PRAGMA table_info(scopes)`).all() as {
     name: string;
   }[];
+  // The label column has been called initiative, then "group", then
+  // project_name; daemons from every era must converge on project_name with
+  // their values intact (a fresh NULL column would strand them: migration 2's
+  // guards and backfill only look at project_name).
   if (scopeCols.some((c) => c.name === "initiative")) {
     db.exec(`ALTER TABLE scopes RENAME COLUMN initiative TO project_name`);
+  } else if (scopeCols.some((c) => c.name === "group")) {
+    db.exec(`ALTER TABLE scopes RENAME COLUMN "group" TO project_name`);
   } else {
     addColumn(db, "scopes", "project_name", "TEXT");
   }

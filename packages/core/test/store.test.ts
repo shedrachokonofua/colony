@@ -593,6 +593,48 @@ describe("versioned migrations", () => {
         expect(cols).not.toContain("group");
         renamedStore.close();
 
+        // A pre-versioning DB from the "group"-era (user_version=0, real
+        // "group" column with operator data, never had `initiative`):
+        // legacyReconcile must rename "group" rather than strand its values.
+        const groupEra = new Database(join(dir, "group-era.db"));
+        groupEra.exec(
+          `CREATE TABLE scopes (id TEXT PRIMARY KEY, goal TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft'
+              CHECK (status IN ('draft','planning','active','blocked','done','abandoned')),
+            provider_project_id TEXT NOT NULL, provider_project_path TEXT NOT NULL,
+            default_branch TEXT NOT NULL DEFAULT 'main', plan_json TEXT, blocked_reason TEXT,
+            "group" TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+           CREATE TABLE tasks (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL REFERENCES scopes(id),
+            title TEXT NOT NULL, spec TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
+            state_version INTEGER NOT NULL DEFAULT 0);
+           CREATE TABLE runs (id TEXT PRIMARY KEY, scope_id TEXT NOT NULL REFERENCES scopes(id),
+            task_id TEXT, kind TEXT NOT NULL CHECK (kind IN ('architect','implement','merge_gate','review')),
+            status TEXT NOT NULL DEFAULT 'running', lease_expires_at TEXT NOT NULL);
+           INSERT INTO scopes (id, goal, "group", provider_project_id, provider_project_path)
+             VALUES ('col-grpa', 'g1', 'Wave one', '9', 'so/grp');
+           INSERT INTO scopes (id, goal, provider_project_id, provider_project_path)
+             VALUES ('col-grpb', 'g2', '10', 'so/grp');`,
+        );
+        groupEra.close();
+        const groupEraStore = new Store(join(dir, "group-era.db"));
+        const grpCols = tableColumns(groupEraStore.db, "scopes");
+        expect(grpCols).toContain("project_name");
+        expect(grpCols).not.toContain("group");
+        expect(groupEraStore.getScope("col-grpa")?.project_name).toBe(
+          "Wave one",
+        );
+        expect(groupEraStore.getScope("col-grpb")?.project_name).toBeNull();
+        expect(groupEraStore.getProject("Wave one")).toMatchObject({
+          name: "Wave one",
+          context_doc: null,
+        });
+        expect(groupEraStore.listProjects().map((p) => p.name)).toEqual([
+          "Wave one",
+        ]);
+        groupEraStore.close();
+
         // A version-1 DB (post legacy-reconcile, pre migration 2) converges:
         // "group" values become projects rows and the scope points at one.
         const v1 = new Database(join(dir, "v1.db"));

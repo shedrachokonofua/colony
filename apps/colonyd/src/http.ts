@@ -193,7 +193,6 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!repo) {
       return c.json({ error: { code: "REPO_NOT_FOUND" } }, 404);
     }
-    if (parsed.data.project) ctx.store.ensureProject(parsed.data.project);
     const scope = ctx.store.createScope({
       goal: parsed.data.goal,
       title: parsed.data.title,
