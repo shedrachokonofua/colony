@@ -404,6 +404,18 @@ body {
   color: var(--faint);
 }
 
+.rack-group-link {
+  all: unset;
+  cursor: pointer;
+  letter-spacing: inherit;
+}
+
+.rack-group-link:hover,
+.rack-group-link:focus-visible {
+  color: var(--brand, #2761e6);
+  text-decoration: underline;
+}
+
 .rack-count {
   font-weight: 400;
   color: var(--faint);

@@ -71,6 +71,7 @@ const auditQuery = z.object({
 const scopesQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
+  group: z.string().min(1).max(120).optional(),
 });
 
 export function buildApp(ctx: ColonydContext): Hono<Env> {
@@ -213,8 +214,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!parsed.success) return badBody(c, parsed.error.message);
     const limit = parsed.data.limit ?? 25;
     const offset = parsed.data.offset ?? 0;
-    const { scopes, total } = ctx.store.pageScopes(limit, offset);
-    return c.json({ scopes, total, limit, offset });
+    const { scopes, total, groups } = ctx.store.pageScopes(
+      limit,
+      offset,
+      parsed.data.group,
+    );
+    return c.json({ scopes, total, limit, offset, groups });
   });
 
   app.get("/scopes/:id", (c) => {

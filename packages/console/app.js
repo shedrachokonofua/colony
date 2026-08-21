@@ -43,7 +43,9 @@ const state = {
   boardFilter: "all",
   boardQuery: "",
   boardOffset: 0,
+  boardGroup: null,
   scopesTotal: 0,
+  scopeGroups: [],
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -1279,6 +1281,11 @@ function renderBoardPager() {
   </nav>`;
 }
 
+function groupTotal(group) {
+  const row = state.scopeGroups.find((g) => g.group === group);
+  return row ? row.n : null;
+}
+
 function renderBoard() {
   const visible = state.scopes.filter(
     (scope) => scopeMatchesFilter(scope) && scopeMatchesQuery(scope),
@@ -1303,8 +1310,20 @@ function renderBoard() {
         ([group, scopes]) => html`
           ${group
             ? html`<h2 class="rack-group">
-                ${group}
-                <span class="rack-count">${scopes.length}</span>
+                <button
+                  class="rack-group-link"
+                  title="Show only this group"
+                  @click=${() => {
+                    state.boardGroup = group;
+                    state.boardOffset = 0;
+                    void refresh();
+                  }}
+                >
+                  ${group}
+                </button>
+                <span class="rack-count"
+                  >${groupTotal(group) ?? scopes.length}</span
+                >
               </h2>`
             : groups.size > 1
               ? html`<h2 class="rack-group rack-group-loose">
@@ -1350,6 +1369,19 @@ function renderBoard() {
                 ${f.label}
               </button>`,
           )}
+          ${state.boardGroup
+            ? html`<button
+                class="filter-chip is-active"
+                title="Clear group filter"
+                @click=${() => {
+                  state.boardGroup = null;
+                  state.boardOffset = 0;
+                  void refresh();
+                }}
+              >
+                ${state.boardGroup} ✕
+              </button>`
+            : nothing}
           <input
             class="board-search"
             type="search"
@@ -1896,6 +1928,7 @@ async function refresh() {
       state.config = world.config;
       state.scopes = world.scopes;
       state.scopesTotal = world.scopes.length;
+      state.scopeGroups = [];
       const id = routeScopeId();
       state.detail = id === world.detail.scope.id ? world.detail : null;
       state.audit = world.audit;
@@ -1920,10 +1953,13 @@ async function refresh() {
       }
     }
     const page = await api(
-      `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${state.boardOffset}`,
+      `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${state.boardOffset}${
+        state.boardGroup ? `&group=${encodeURIComponent(state.boardGroup)}` : ""
+      }`,
     );
     state.scopes = page.scopes;
     state.scopesTotal = page.total;
+    state.scopeGroups = page.groups ?? [];
     const id = routeScopeId();
     if (id) {
       const [detail, audit] = await Promise.all([

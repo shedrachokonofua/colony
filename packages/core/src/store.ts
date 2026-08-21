@@ -216,21 +216,39 @@ export class Store {
 
   /**
    * One page of scopes, most recently touched first - the board's feed.
-   * `listScopes` stays unpaginated for internal full-table walks (tick).
+   * Optional `group` filters and paginates within one group label; `counts`
+   * reports whole-table group sizes so page-local grouping can show honest
+   * totals. `listScopes` stays unpaginated for internal full-table walks.
    */
   pageScopes(
     limit: number,
     offset: number,
-  ): { scopes: Scope[]; total: number } {
+    group?: string,
+  ): {
+    scopes: Scope[];
+    total: number;
+    groups: { group: string | null; n: number }[];
+  } {
+    const where = group === undefined ? "" : ` WHERE "group" = ?`;
+    const args: (string | number)[] = group === undefined ? [] : [group];
     const scopes = this.db
       .prepare(
-        `SELECT * FROM scopes ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`,
+        `SELECT * FROM scopes${where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`,
       )
-      .all(limit, offset) as Scope[];
-    const { n } = this.db.prepare(`SELECT COUNT(*) AS n FROM scopes`).get() as {
-      n: number;
+      .all(...args, limit, offset) as Scope[];
+    const { n } = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM scopes${where}`)
+      .get(...args) as { n: number };
+    const groups = this.db
+      .prepare(
+        `SELECT "group" AS grp, COUNT(*) AS n FROM scopes GROUP BY "group" ORDER BY MAX(updated_at) DESC`,
+      )
+      .all() as { grp: string | null; n: number }[];
+    return {
+      scopes,
+      total: n,
+      groups: groups.map((g) => ({ group: g.grp, n: g.n })),
     };
-    return { scopes, total: n };
   }
 
   setScopeStatus(

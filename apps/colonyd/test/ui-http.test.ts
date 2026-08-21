@@ -599,6 +599,19 @@ describe("scope pagination and grouping", () => {
     expect(tail.scopes.length).toBe(4);
     expect(tail.total).toBe(7);
 
+    const grouped = await app.request("/scopes?limit=100&group=Wave%20one", {
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    const g = (await grouped.json()) as {
+      scopes: { group: string | null }[];
+      total: number;
+      groups: { group: string | null; n: number }[];
+    };
+    expect(g.total).toBe(3);
+    expect(g.scopes.every((s) => s.group === "Wave one")).toBe(true);
+    expect(g.groups.find((x) => x.group === "Wave one")?.n).toBe(3);
+    expect(g.groups.find((x) => x.group === null)?.n).toBe(4);
+
     const bad = await app.request("/scopes?limit=0", {
       headers: { "X-Actor-Id": "human:op-1" },
     });
