@@ -209,6 +209,12 @@ default branch today and pass when the task is done. "Verify it works" is
 banned. Scope-level acceptance criteria prove the GOAL from a fresh
 checkout, not that individual tasks landed.
 
+Acceptance commands run in a minimal Node sandbox: node, npm, git, bash -
+nothing else (no curl/wget/jq/docker; HTTP checks via node -e with fetch).
+Wait for conditions, never for time: a fixed sleep before probing a server
+is a plan failure - poll readiness in a bounded loop. Background processes
+must be killed and must not decide the exit code.
+
 ## Self-review before submitting
 1. Design it twice: sketch a materially different decomposition; keep the
    better one.
