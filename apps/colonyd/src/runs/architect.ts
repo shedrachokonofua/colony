@@ -95,9 +95,8 @@ async function executeArchitect(
       },
     });
 
-    const baseSha = (
-      await ctx.provider.commits.get(repo, scope.default_branch)
-    ).sha;
+    const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
+      .sha;
     const packet = {
       kind: "architect_scope",
       scope_id: scope.id,

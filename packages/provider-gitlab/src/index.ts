@@ -342,8 +342,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       this.updateIssue(repo, id, { remove_labels: [label] }),
     setAssignees: async (repo, id, assigneeIds) =>
       this.updateIssue(repo, id, { assignee_ids: assigneeIds }),
-    comment: async (repo, id, body) =>
-      this.commentOnIssue(repo, id, body),
+    comment: async (repo, id, body) => this.commentOnIssue(repo, id, body),
   };
 
   readonly epics: ProviderAdapter["epics"] = {
@@ -1430,10 +1429,7 @@ function toGroup(provider: "gitlab", entity: GitLabEntity): ProviderGroup {
   };
 }
 
-function toRepoInfo(
-  provider: "gitlab",
-  repo: GitLabProject,
-): ProviderRepoInfo {
+function toRepoInfo(provider: "gitlab", repo: GitLabProject): ProviderRepoInfo {
   const visibility: ProviderVisibility =
     repo.visibility === "public" || repo.visibility === "internal"
       ? repo.visibility

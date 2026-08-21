@@ -112,12 +112,7 @@ function rebuildForCheck(db: Db, table: string, needle: string): void {
  * Guarded column rename: only when the old name exists and the new one does
  * not, so partially-shaped databases converge instead of erroring.
  */
-function renameColumn(
-  db: Db,
-  table: string,
-  from: string,
-  to: string,
-): void {
+function renameColumn(db: Db, table: string, from: string, to: string): void {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as {
     name: string;
   }[];

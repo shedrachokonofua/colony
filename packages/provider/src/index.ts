@@ -379,10 +379,7 @@ export interface ProviderAdapter {
     close(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderIssue>;
   };
   readonly mergeRequests: {
-    get(
-      repo: ProviderRepoRef,
-      id: ProviderId,
-    ): Promise<ProviderMergeRequest>;
+    get(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderMergeRequest>;
     open(
       repo: ProviderRepoRef,
       input: {
@@ -410,10 +407,7 @@ export interface ProviderAdapter {
       id: ProviderId,
       input?: { readonly sha?: string },
     ): Promise<ProviderMergeRequest>;
-    close(
-      repo: ProviderRepoRef,
-      id: ProviderId,
-    ): Promise<ProviderMergeRequest>;
+    close(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderMergeRequest>;
     comment(
       repo: ProviderRepoRef,
       id: ProviderId,
@@ -465,14 +459,8 @@ export interface ProviderAdapter {
     ): Promise<ProviderCommit>;
   };
   readonly pipelines: {
-    getStatus(
-      repo: ProviderRepoRef,
-      id: ProviderId,
-    ): Promise<ProviderPipeline>;
-    trigger(
-      repo: ProviderRepoRef,
-      ref: string,
-    ): Promise<ProviderPipeline>;
+    getStatus(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderPipeline>;
+    trigger(repo: ProviderRepoRef, ref: string): Promise<ProviderPipeline>;
   };
   readonly users: {
     create(input: CreateProviderUserInput): Promise<ProviderUser>;
@@ -767,8 +755,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
       }),
     close: async (_repo, id) =>
       this.replaceMr(id, { ...this.requireMr(id), state: "closed" }),
-    comment: async (_repo, _id, body) =>
-      this.createComment("mr-comment", body),
+    comment: async (_repo, _id, body) => this.createComment("mr-comment", body),
     addReviewThread: async (_repo, _id, body) =>
       this.createComment("review-thread", body),
     diff: async () => [],
@@ -1049,10 +1036,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
     return issue;
   }
 
-  private requireIssue(
-    _repo: ProviderRepoRef,
-    id: ProviderId,
-  ): ProviderIssue {
+  private requireIssue(_repo: ProviderRepoRef, id: ProviderId): ProviderIssue {
     const issue = this.issuesById.get(id);
     if (!issue) throw new Error(`fake provider issue not found: ${id}`);
     return issue;

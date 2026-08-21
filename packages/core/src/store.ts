@@ -203,9 +203,9 @@ export class Store {
   // ---------------------------------------------------------------------
 
   getProject(name: string): Project | undefined {
-    return this.db.prepare(`SELECT * FROM projects WHERE name = ?`).get(name) as
-      | Project
-      | undefined;
+    return this.db
+      .prepare(`SELECT * FROM projects WHERE name = ?`)
+      .get(name) as Project | undefined;
   }
 
   listProjects(): Project[] {
@@ -220,9 +220,7 @@ export class Store {
    */
   ensureProject(name: string): Project {
     this.db
-      .prepare(
-        `INSERT OR IGNORE INTO projects (name) VALUES (@name)`,
-      )
+      .prepare(`INSERT OR IGNORE INTO projects (name) VALUES (@name)`)
       .run(named({ name }));
     const project = this.getProject(name);
     if (!project) throw new Error(`project insert lost: ${name}`);

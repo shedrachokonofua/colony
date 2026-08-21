@@ -626,9 +626,7 @@ describe("versioned migrations", () => {
         expect(v1Store.getProject("Wave one")?.created_at).toBe(
           v1Store.getProject("Wave one")?.updated_at,
         );
-        expect(v1Store.listProjects().map((p) => p.name)).toEqual([
-          "Wave one",
-        ]);
+        expect(v1Store.listProjects().map((p) => p.name)).toEqual(["Wave one"]);
         v1Store.close();
       } finally {
         migrated.close();

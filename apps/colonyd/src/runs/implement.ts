@@ -106,9 +106,8 @@ async function executeImplement(
       },
     });
 
-    const baseSha = (
-      await ctx.provider.commits.get(repo, scope.default_branch)
-    ).sha;
+    const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
+      .sha;
     const branch = `colony/${task.id}`;
     const packet = {
       kind: "implement_task",

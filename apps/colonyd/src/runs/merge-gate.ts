@@ -5,10 +5,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
-import type {
-  ProviderMergeRequest,
-  ProviderRepoRef,
-} from "@colony/provider";
+import type { ProviderMergeRequest, ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -91,14 +88,7 @@ export async function runMergeGate(
     detail: { kind: "merge_gate", head_sha: headSha },
   });
 
-  const execution = executeMergeGate(
-    ctx,
-    repo,
-    scope,
-    task,
-    run.id,
-    headSha,
-  );
+  const execution = executeMergeGate(ctx, repo, scope, task, run.id, headSha);
   trackRun(run.id, execution, () => Promise.resolve());
   await execution;
 }
