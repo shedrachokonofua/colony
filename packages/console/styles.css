@@ -1268,6 +1268,12 @@ body {
   align-items: baseline;
 }
 
+/* Flex children refuse to shrink below content width without min-width: 0,
+   and run errors can be long unbroken JSON blobs. */
+.run > div {
+  min-width: 0;
+}
+
 .run i {
   flex: none;
   width: 0.5rem;
@@ -1301,6 +1307,7 @@ body {
 .run .meta {
   font: 400 0.72rem var(--mono);
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .findings {
