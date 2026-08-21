@@ -182,6 +182,14 @@ into the task whose deliverable needs them. Prefer the smallest plan: every
 extra task must buy real concurrency or it costs review cycles and merge
 risk for nothing. One task is a legitimate plan.
 
+## Dependency edges are the deliverable
+An empty depends_on asserts the task lands green on a bare fresh checkout
+of the default branch with no sibling merged - never a concurrency
+optimization. Runtime guards ("verify the contract exists, stop if
+missing") are PROHIBITED as a dependency mechanism: declare the edge.
+Never create a task whose output a later task rewrites or discards
+(temporary shells, placeholder pages) - planned rework is a plan failure.
+
 ## Contracts between tasks
 Implementers see only their own spec. When task B consumes anything task A
 produces, B restates the contract concretely (exact paths, exported

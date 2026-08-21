@@ -105,8 +105,7 @@ agents:
   developer:
     provider: openai_compatible
     model: ox-alpha
-    fallback_models:
-      [muse-spark, deepseek-v4-flash, mimo-v2.5-pro, qwen3.8-27b]
+    fallback_models: [muse-spark, deepseek-v4-flash, mimo-v2.5-pro, qwen3.8-27b]
     thinking_level: medium
     timeout_ms: 3600000
     max_turns: 250
