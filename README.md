@@ -56,7 +56,7 @@ Open a scope:
 curl -X POST localhost:4400/scopes \
   -H 'X-Actor-Id: human:op-1' \
   -H 'content-type: application/json' \
-  -d '{"goal":"add /version endpoint","project":{"path":"so/my-project"}}'
+  -d '{"goal":"add /version endpoint","repo":{"path":"so/my-repo"},"project":"console"}'
 ```
 
 Checks:

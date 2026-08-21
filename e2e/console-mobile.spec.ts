@@ -92,7 +92,7 @@ async function createScopeViaApi(
       title,
       goal,
       approvals: opts.approvals as unknown as "auto" | "manual" | undefined,
-      project: { path: projectPath },
+      repo: { path: projectPath },
     },
   });
   expect(res.ok(), `POST /scopes ${res.status()} ${await res.text()}`).toBe(

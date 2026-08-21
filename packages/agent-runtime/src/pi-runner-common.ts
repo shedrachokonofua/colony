@@ -400,7 +400,7 @@ export function resolvePacketCloneUrl(
   }
 
   // Absolute filesystem paths are valid local clone sources. Do not reinterpret
-  // them as GitLab project paths merely because the daemon has a base URL.
+  // them as GitLab repo paths merely because the daemon has a base URL.
   if (isAbsolute(repoUrl)) {
     return { cloneUrl: repoUrl, displayUrl: repoUrl };
   }

@@ -30,7 +30,7 @@ describe("api e2e lifecycle", () => {
       env.port,
       "POST",
       "/scopes",
-      JSON.stringify({ goal: "hello", project: { path: "so/console-e2e" } }),
+      JSON.stringify({ goal: "hello", repo: { path: "so/console-e2e" } }),
       { "content-type": "application/json" },
     );
     expect(missingActor.status).toBe(400);
@@ -38,20 +38,20 @@ describe("api e2e lifecycle", () => {
       (missingActor.body as { error?: { code?: string } })?.error?.code,
     ).toBe("MISSING_ACTOR");
 
-    // unknown project
+    // unknown repo
     const unknown = await http(env.port, "POST", "/scopes", {
-      body: { goal: "hello", project: { path: "so/unknown" } },
+      body: { goal: "hello", repo: { path: "so/unknown" } },
     });
     expect(unknown.status).toBe(404);
     expect((unknown.body as { error?: { code?: string } })?.error?.code).toBe(
-      "PROJECT_NOT_FOUND",
+      "REPO_NOT_FOUND",
     );
 
     // happy — manual approvals so the plan stays in planning until approve-plan
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "e2e lifecycle goal",
-        project: { path: "so/console-e2e" },
+        repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
     });
@@ -59,10 +59,12 @@ describe("api e2e lifecycle", () => {
     const body = created.body as {
       id: string;
       status: string;
+      provider_repo_id: string;
       provider_repo_path: string;
     };
     expect(body.id).toMatch(/^col-/);
     expect(["planning", "draft"]).toContain(body.status);
+    expect(body.provider_repo_id).toBe(env.repoId);
     expect(body.provider_repo_path).toBe("so/console-e2e");
     scopeId = body.id;
   }, 90_000);
@@ -130,7 +132,7 @@ describe("api e2e lifecycle", () => {
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "happy path auto approvals",
-        project: { path: "so/console-e2e" },
+        repo: { path: "so/console-e2e" },
       },
     });
     expect(created.status).toBe(201);
@@ -184,8 +186,8 @@ describe("api e2e lifecycle", () => {
     // MRs merged in fake provider
     for (const t of data.tasks) {
       const mr = await env.boundary.provider.mergeRequests.get(
-        { id: env.projectId },
-        `${env.projectId}:${t.mr_iid}`,
+        { id: env.repoId },
+        `${env.repoId}:${t.mr_iid}`,
       );
       expect(mr.state).toBe("merged");
     }
@@ -196,7 +198,7 @@ describe("api e2e lifecycle", () => {
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "validation retry goal",
-        project: { path: "so/console-e2e" },
+        repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
     });

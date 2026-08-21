@@ -13,7 +13,7 @@ const ACTOR = "human:t";
 
 let dir: string;
 let provider: FakeProviderAdapter;
-let projectId: string;
+let repoId: string;
 let handle: ColonydHandle;
 let configPath: string;
 
@@ -65,11 +65,11 @@ it("records the configured primary model_id on architect runs and exposes it via
   resetEnvCache();
 
   provider = new FakeProviderAdapter();
-  const project = await provider.repos.create({
+  const repo = await provider.repos.create({
     name: "fake-model-id",
     path: "so/fake-model-id",
   });
-  projectId = project.id;
+  repoId = repo.id;
 
   handle = await boot({
     provider,
@@ -83,8 +83,8 @@ it("records the configured primary model_id on architect runs and exposes it via
 
   const scope = handle.ctx.store.createScope({
     goal: "model id harness",
-    provider_repo_id: projectId,
-    provider_repo_path: project.path,
+    provider_repo_id: repoId,
+    provider_repo_path: repo.path,
   });
   handle.ctx.store.audit(ACTOR, "scope.created", { scope_id: scope.id });
 

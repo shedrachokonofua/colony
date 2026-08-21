@@ -23,7 +23,7 @@ export interface ScriptKnobs {
   validateFailFirstFor: Set<string>;
   // internal counters for validation retry per scope
   _validateCalls: Map<string, number>;
-  projectId?: string;
+  repoId?: string;
   distinctShas?: boolean;
   implementerCalls?: Map<string, number>;
   singleTask?: boolean;
@@ -208,7 +208,7 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
       script.implementerFailures.set(taskId, remaining - 1);
       throw new Error("simulated implementer failure");
     }
-    const projectId = script.projectId ?? "fake-project-1";
+    const repoId = script.repoId ?? "fake-repo-1";
     if (!script.implementerCalls)
       script.implementerCalls = new Map<string, number>();
     const calls = (script.implementerCalls.get(taskId) ?? 0) + 1;
@@ -224,7 +224,7 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
         : SHA_B;
     const branch = `colony/${taskId}`;
     // mirror loop test: create branch so envelope verification passes
-    void provider.branches.create({ id: projectId }, branch, headSha);
+    void provider.branches.create({ id: repoId }, branch, headSha);
     return {
       kind: "implementer_completion",
       status: "complete",
@@ -418,7 +418,7 @@ export function serializeScript(script: ScriptKnobs): Record<string, unknown> {
     reviewerCalls: script.reviewerCalls,
     validateFail: script.validateFail,
     validateFailFirstFor: [...script.validateFailFirstFor],
-    projectId: script.projectId ?? null,
+    repoId: script.repoId ?? null,
   };
 }
 
