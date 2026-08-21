@@ -113,7 +113,7 @@ describe("FakeProviderAdapter", () => {
 
     await adapter.groups.delete(group.id);
     expect(await adapter.groups.getByPath("colony-it")).toBeNull();
-    // Deleting the group cascades projects (matches GitLab semantics).
+    // Deleting the group cascades its repos (matches GitLab semantics).
     expect(await adapter.repos.getByPath("colony-it/throwaway")).toBeNull();
   });
 

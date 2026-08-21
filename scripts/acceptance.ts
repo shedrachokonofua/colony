@@ -372,31 +372,31 @@ function packageLockForApp(): string {
   }
 }
 
-async function emptyRepoRegistry(projectId: string): Promise<void> {
-  const repos = await gitlabApi(`/projects/${projectId}/registry/repositories`);
+async function emptyRepoRegistry(repoId: string): Promise<void> {
+  const repos = await gitlabApi(`/projects/${repoId}/registry/repositories`);
   if (!Array.isArray(repos)) return;
   for (const repo of repos as { id: number }[]) {
     const tags = await gitlabApi(
-      `/projects/${projectId}/registry/repositories/${repo.id}/tags`,
+      `/projects/${repoId}/registry/repositories/${repo.id}/tags`,
     );
     if (Array.isArray(tags)) {
       for (const tag of tags as { name: string }[]) {
         await gitlabApi(
-          `/projects/${projectId}/registry/repositories/${repo.id}/tags/${encodeURIComponent(tag.name)}`,
+          `/projects/${repoId}/registry/repositories/${repo.id}/tags/${encodeURIComponent(tag.name)}`,
           { method: "DELETE" },
         ).catch(() => undefined);
       }
     }
-    await gitlabApi(`/projects/${projectId}/registry/repositories/${repo.id}`, {
+    await gitlabApi(`/projects/${repoId}/registry/repositories/${repo.id}`, {
       method: "DELETE",
     }).catch(() => undefined);
   }
 }
 
 async function listRepoAccessTokens(
-  projectId: string,
+  repoId: string,
 ): Promise<{ id: number; name: string; active: boolean }[]> {
-  const tokens = await gitlabApi(`/projects/${projectId}/access_tokens`);
+  const tokens = await gitlabApi(`/projects/${repoId}/access_tokens`);
   return (Array.isArray(tokens) ? tokens : []) as {
     id: number;
     name: string;
@@ -405,11 +405,11 @@ async function listRepoAccessTokens(
 }
 
 async function listMrsForBranch(
-  projectId: string,
+  repoId: string,
   branch: string,
 ): Promise<{ iid: number; state: string; sha: string | null }[]> {
   const mrs = await gitlabApi(
-    `/projects/${projectId}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`,
+    `/projects/${repoId}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`,
   );
   return (Array.isArray(mrs) ? mrs : []) as {
     iid: number;

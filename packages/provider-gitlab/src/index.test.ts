@@ -214,7 +214,7 @@ describe("GitLabProviderAdapter repos", () => {
     expect(result.visibility).toBe("internal");
   });
 
-  it("looks projects up by id and by path", async () => {
+  it("looks repos up by id and by path", async () => {
     const fetchMock = (url: string | URL | Request) => {
       const urlText =
         typeof url === "string"
@@ -577,14 +577,14 @@ describe("GitLabProviderAdapter issues", () => {
             : url.url;
       calls.push({ url: urlText, method });
       const path = urlText.replace("https://gitlab.test/api/v4", "");
-      const projectMatch = /^\/projects\/(\d+)\/issues$/.exec(path);
-      if (method === "POST" && projectMatch) {
-        const projectId = Number(projectMatch[1]);
+      const repoIdMatch = /^\/projects\/(\d+)\/issues$/.exec(path);
+      if (method === "POST" && repoIdMatch) {
+        const repoId = Number(repoIdMatch[1]);
         return Promise.resolve(
           json({
-            id: projectId * 10,
+            id: repoId * 10,
             iid: 1,
-            project_id: projectId,
+            project_id: repoId,
             title: "x",
             description: "",
             state: "opened",
@@ -1094,18 +1094,18 @@ const describeLive =
  *
  *   1. discovers the bot's identity/default namespace,
  *   2. creates a throwaway top-level group `colony-it-<ts>`,
- *   3. provisions two sibling projects `a` and `b` under it,
+ *   3. provisions two sibling repos `a` and `b` under it,
  *   4. drives the full issue lifecycle on both, asserting that the same
- *      iid in the two projects produces *distinct* namespaced IDs (the
+ *      iid in the two repos produces *distinct* namespaced IDs (the
  *      acceptance check that the multi-repo target model holds), and
- *   5. cleans up by deleting the group (cascades to projects).
+ *   5. cleans up by deleting the group (cascades to its repos).
  *
  * Cleanup is best-effort. If the group delete is delayed/async (default on
  * GitLab), the resources tagged with the run timestamp will eventually be
  * removed; subsequent runs use a fresh timestamp.
  */
 describeLive("GitLabProviderAdapter live multi-repo integration", () => {
-  it("self-bootstraps a group, two projects, runs issue lifecycle on each, and cleans up", async () => {
+  it("self-bootstraps a group, two repos, runs issue lifecycle on each, and cleans up", async () => {
     const adapter = new GitLabProviderAdapter({
       baseUrl: process.env.GITLAB_BASE_URL!,
       token: process.env.GITLAB_TOKEN!,
