@@ -71,7 +71,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         }));
 
   // Crash recovery: rows left `running` belong to a dead process.
-  // Revoke any project tokens those runs minted before dying.
+  // Revoke any repo tokens those runs minted before dying.
   const orphans = store.expireOrphanedRuns();
   await revokeTokensForRuns(store, provider, orphans);
 

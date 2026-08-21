@@ -27,23 +27,23 @@ const spec = {
 describe("FakeProviderAdapter", () => {
   it("supports create/update/comment/label flows with stable provider IDs", async () => {
     const adapter = new FakeProviderAdapter();
-    const project = { id: "fake-project-dev" } as const;
-    const issue = await adapter.issues.create(project, {
+    const repo = { id: "fake-repo-dev" } as const;
+    const issue = await adapter.issues.create(repo, {
       title: "Task",
       description: "Do work",
       labels: ["state:ready"],
     });
-    expect(issue.id).toBe("fake-project-dev:issue-1");
+    expect(issue.id).toBe("fake-repo-dev:issue-1");
     expect(issue.metadata.provider).toBe("fake");
 
     const labeled = await adapter.issues.addLabel(
-      project,
+      repo,
       issue.id,
       "agent:developer",
     );
     expect(labeled.labels).toEqual(["state:ready", "agent:developer"]);
 
-    const updated = await adapter.issues.update(project, issue.id, {
+    const updated = await adapter.issues.update(repo, issue.id, {
       title: "Updated task",
       assignee_ids: ["fake-user-1"],
     });
@@ -51,7 +51,7 @@ describe("FakeProviderAdapter", () => {
     expect(updated.assignee_ids).toEqual(["fake-user-1"]);
 
     const comment = await adapter.issues.comment(
-      project,
+      repo,
       issue.id,
       "Looks good",
     );
@@ -59,7 +59,7 @@ describe("FakeProviderAdapter", () => {
     expect(comment.body).toBe("Looks good");
   });
 
-  it("creates and resolves provider projects from the projects namespace", async () => {
+  it("creates and resolves provider repos from the repos namespace", async () => {
     const adapter = new FakeProviderAdapter();
     const created = await adapter.repos.create({
       name: "Frontend",
@@ -74,7 +74,7 @@ describe("FakeProviderAdapter", () => {
     expect(await adapter.repos.getByPath("colony/frontend")).toMatchObject({
       id: created.id,
     });
-    // Idempotent on path: re-creating returns the existing project.
+    // Idempotent on path: re-creating returns the existing repo.
     const again = await adapter.repos.create({
       name: "Frontend",
       path: "colony/frontend",
@@ -108,12 +108,12 @@ describe("FakeProviderAdapter", () => {
       await adapter.users.resolveByUsername("colony-it-bot"),
     ).toMatchObject({ id: subBot.id });
 
-    const project = await adapter.repos.create({
+    const repo = await adapter.repos.create({
       name: "throwaway",
       path: "throwaway",
       namespace: group.path,
     });
-    expect(project.path).toBe("colony-it/throwaway");
+    expect(repo.path).toBe("colony-it/throwaway");
 
     await adapter.groups.delete(group.id);
     expect(await adapter.groups.getByPath("colony-it")).toBeNull();
@@ -121,7 +121,7 @@ describe("FakeProviderAdapter", () => {
     expect(await adapter.repos.getByPath("colony-it/throwaway")).toBeNull();
   });
 
-  it("isolates issues per provider project", async () => {
+  it("isolates issues per provider repo", async () => {
     const adapter = new FakeProviderAdapter();
     const fe = { id: "proj-fe" } as const;
     const be = { id: "proj-be" } as const;

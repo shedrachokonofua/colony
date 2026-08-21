@@ -157,10 +157,10 @@ function gateExecutor(): (input: {
 
 function syncMrHead(adapter: FakeProviderAdapter): void {
   const origGet = adapter.mergeRequests.get.bind(adapter.mergeRequests);
-  adapter.mergeRequests.get = async (project, id) => {
-    const mr = await origGet(project, id);
+  adapter.mergeRequests.get = async (repo, id) => {
+    const mr = await origGet(repo, id);
     if (!mr.source_branch) return mr;
-    const head = await adapter.commits.get(project, mr.source_branch);
+    const head = await adapter.commits.get(repo, mr.source_branch);
     return { ...mr, head_commit_sha: head.sha };
   };
 }
@@ -521,8 +521,8 @@ describe("colonyd fake end-to-end loop", () => {
     const originalMerge = provider.mergeRequests.merge.bind(
       provider.mergeRequests,
     );
-    provider.mergeRequests.merge = async (project, id, input) => {
-      await originalMerge(project, id, input);
+    provider.mergeRequests.merge = async (repo, id, input) => {
+      await originalMerge(repo, id, input);
       throw new Error(
         "GitLab PUT /projects/1/merge_requests/1/merge timed out",
       );

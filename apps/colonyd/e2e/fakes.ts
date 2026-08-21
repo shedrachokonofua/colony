@@ -470,7 +470,7 @@ export function patchScript(
 
 /**
  * Restore every scripted knob to its boot default, keeping only the fake
- * project binding. The knobs are process-global on the shared webServer, so
+ * repo binding. The knobs are process-global on the shared webServer, so
  * without a reset each Playwright test inherits whatever stalls/failure
  * scripts its predecessors left behind - tests then pass alone and fail in
  * the full run depending on ordering.

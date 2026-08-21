@@ -913,12 +913,12 @@ describe("api e2e control — 3. review loop", () => {
       const origGet = reviewEnv.boundary.provider.mergeRequests.get.bind(
         reviewEnv.boundary.provider.mergeRequests,
       );
-      reviewEnv.boundary.provider.mergeRequests.get = async (project, id) => {
-        const mr = await origGet(project, id);
+      reviewEnv.boundary.provider.mergeRequests.get = async (repo, id) => {
+        const mr = await origGet(repo, id);
         if (!mr.source_branch) return mr;
         try {
           const head = await reviewEnv.boundary.provider.commits.get(
-            project,
+            repo,
             mr.source_branch,
           );
           return { ...mr, head_commit_sha: head.sha };
