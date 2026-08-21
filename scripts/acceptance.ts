@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { resetEnvCache } from "@colony/config";
-import type { ProviderProjectInfo } from "@colony/provider";
+import type { ProviderRepoInfo } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
 import { boot, type ColonydHandle } from "../apps/colonyd/src/main.js";
 
@@ -57,7 +57,7 @@ interface ScenarioResult {
 
 const RESULTS: ScenarioResult[] = [];
 const RUN_SUFFIX = randomBytes(3).toString("hex");
-const PROJECTS: ProviderProjectInfo[] = [];
+const PROJECTS: ProviderRepoInfo[] = [];
 const HANDLES: ColonydHandle[] = [];
 
 function envRequired(name: string): string {
@@ -153,9 +153,9 @@ function newProvider(): GitLabProviderAdapter {
   });
 }
 
-async function createAcceptProject(name: string): Promise<ProviderProjectInfo> {
+async function createAcceptProject(name: string): Promise<ProviderRepoInfo> {
   const provider = newProvider();
-  const project = await provider.projects.create({
+  const project = await provider.repos.create({
     name,
     path: name,
     visibility: "private",
@@ -236,7 +236,7 @@ async function http(
 async function createScopeViaHttp(
   port: number,
   goal: string,
-  project: ProviderProjectInfo,
+  project: ProviderRepoInfo,
 ): Promise<string> {
   const created = await http(port, "POST", "/scopes", {
     body: { goal, project: { path: project.path } },
@@ -293,7 +293,7 @@ async function waitForScopeDone(
 }
 
 async function seedFiles(
-  project: ProviderProjectInfo,
+  project: ProviderRepoInfo,
   branch: string,
   files: Record<string, string>,
 ): Promise<void> {
@@ -419,7 +419,7 @@ async function listMrsForBranch(
 }
 
 function defaultBranchTree(
-  project: ProviderProjectInfo,
+  project: ProviderRepoInfo,
   path: string,
 ): Promise<{ name: string }[]> {
   return gitlabApi(
@@ -842,7 +842,7 @@ async function scenarioCredentialLeak(port: number): Promise<void> {
       actor: "human:acceptance",
     });
     const provider = newProvider();
-    const finalProject = await provider.projects.getById(project.id);
+    const finalProject = await provider.repos.getById(project.id);
     const filesOnMain = await defaultBranchTree(finalProject!, "");
     if (filesOnMain.some((f) => f.name === "credentials.txt")) {
       throw new Error("credentials.txt reached the default branch");
@@ -934,7 +934,7 @@ async function scenarioCleanup(): Promise<void> {
     for (const project of PROJECTS) {
       try {
         await emptyProjectRegistry(project.id);
-        await provider.projects.delete(project.id);
+        await provider.repos.delete(project.id);
       } catch (err) {
         undeleted.push(
           `${project.path}: ${err instanceof Error ? err.message : String(err)}`,

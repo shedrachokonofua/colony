@@ -45,7 +45,7 @@ export async function bootFake(
   const boundary = createScriptedBoundary();
 
   // Seed project so scopes can reference it
-  const project = await boundary.provider.projects.create({
+  const project = await boundary.provider.repos.create({
     name: "console-e2e",
     path: "so/console-e2e",
   });

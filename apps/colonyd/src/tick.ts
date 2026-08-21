@@ -214,8 +214,8 @@ async function pollProviderFacts(
   for (const { scope, task } of openTasks) {
     try {
       const mr = await ctx.provider.mergeRequests.get(
-        { id: scope.provider_project_id, path: scope.provider_project_path },
-        `${scope.provider_project_id}:${task.mr_iid}`,
+        { id: scope.provider_repo_id, path: scope.provider_repo_path },
+        `${scope.provider_repo_id}:${task.mr_iid}`,
       );
       const dedupKey = `poll:mr:${task.id}:${task.mr_iid}:${mr.head_commit_sha ?? "none"}:${now.toISOString()}`;
       ctx.store.recordObservation(
@@ -257,8 +257,8 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
     let mr;
     try {
       mr = await ctx.provider.mergeRequests.get(
-        { id: scope.provider_project_id, path: scope.provider_project_path },
-        `${scope.provider_project_id}:${task.mr_iid}`,
+        { id: scope.provider_repo_id, path: scope.provider_repo_path },
+        `${scope.provider_repo_id}:${task.mr_iid}`,
       );
     } catch (err) {
       // Fail closed: no transition on missing facts.
@@ -431,7 +431,7 @@ async function pipelineGate(
   if (!headSha) return true;
   try {
     const pipeline = await ctx.provider.pipelines.getStatus(
-      { id: scope.provider_project_id, path: scope.provider_project_path },
+      { id: scope.provider_repo_id, path: scope.provider_repo_path },
       headSha,
     );
     if (pipeline.status === "success") return true;

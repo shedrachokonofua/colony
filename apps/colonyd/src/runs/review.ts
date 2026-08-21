@@ -1,6 +1,6 @@
 import { ReviewerVerdictV2 as reviewerVerdictV2Schema } from "@colony/schemas";
 import { retryBackoffMs, type Scope, type Task } from "@colony/core";
-import type { ProviderProjectRef } from "@colony/provider";
+import type { ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -32,9 +32,9 @@ export async function runReview(
       "review run dispatched but no reviewer agent is configured",
     );
   }
-  const project: ProviderProjectRef = {
-    id: scope.provider_project_id,
-    path: scope.provider_project_path,
+  const repo: ProviderRepoRef = {
+    id: scope.provider_repo_id,
+    path: scope.provider_repo_path,
   };
   const reviewerConfig = ctx.config.forAgent("reviewer");
   const leaseTtlMs =
@@ -63,7 +63,7 @@ export async function runReview(
 
   const execution = executeReview(
     ctx,
-    project,
+    repo,
     scope,
     task,
     run.id,
@@ -83,7 +83,7 @@ export async function runReview(
 
 async function executeReview(
   ctx: ColonydContext,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   scope: Scope,
   task: Task,
   runId: string,
@@ -97,7 +97,7 @@ async function executeReview(
   }
   let minted: MintedToken | null = null;
   try {
-    minted = await mintRunToken(ctx.provider, project, {
+    minted = await mintRunToken(ctx.provider, repo, {
       name: `colony-review-${task.id}`,
       scopes: ["read_repository"],
       singleToken: ctx.env.singleToken,
@@ -109,7 +109,7 @@ async function executeReview(
       task_id: task.id,
       run_id: runId,
       detail: {
-        mode: ctx.env.singleToken ? "single_token" : "project_token",
+        mode: ctx.env.singleToken ? "single_token" : "repo_token",
         token_id: minted?.token_id ?? null,
       },
     });
@@ -124,7 +124,7 @@ async function executeReview(
       target_branch: scope.default_branch,
       body: buildReviewBody(task, scope.default_branch),
       repo: {
-        url: scope.provider_project_path,
+        url: scope.provider_repo_path,
         credentials: minted ? { token: minted.token } : undefined,
         branch: task.branch ?? `colony/${task.id}`,
         base_commit: headSha,
@@ -232,7 +232,7 @@ async function executeReview(
   } finally {
     if (minted) {
       try {
-        await revokeRunToken(ctx.provider, project, minted);
+        await revokeRunToken(ctx.provider, repo, minted);
       } catch {
         ctx.store.audit(SERVICE_ACTOR, "agent_token.revoke_failed", {
           scope_id: scope.id,

@@ -13,7 +13,7 @@ import {
 } from "@colony/sandbox";
 import { inProcessEngine } from "@colony/sandbox-in-process";
 import type { Scope } from "@colony/core";
-import type { ProviderProjectRef } from "@colony/provider";
+import type { ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -140,9 +140,9 @@ async function dispatchValidation(
 
   // Create the run row synchronously so guards see it immediately (prevents
   // double dispatch from concurrent ticks or revalidate POSTs).
-  const project: ProviderProjectRef = {
-    id: scope.provider_project_id,
-    path: scope.provider_project_path,
+  const repo: ProviderRepoRef = {
+    id: scope.provider_repo_id,
+    path: scope.provider_repo_path,
   };
   let baseSha = "unknown";
   const run = ctx.store.startRun({
@@ -154,8 +154,7 @@ async function dispatchValidation(
   });
 
   try {
-    baseSha = (await ctx.provider.commits.get(project, scope.default_branch))
-      .sha;
+    baseSha = (await ctx.provider.commits.get(repo, scope.default_branch)).sha;
     ctx.store.setRunBaseSha(run.id, baseSha);
 
     ctx.store.audit(SERVICE_ACTOR, "run.start", {
@@ -165,7 +164,7 @@ async function dispatchValidation(
       detail: { kind: "validate", head_sha: baseSha },
     });
 
-    const execution = executeValidate(ctx, scope, project, run.id, baseSha);
+    const execution = executeValidate(ctx, scope, repo, run.id, baseSha);
     trackRun(run.id, execution, () => Promise.resolve());
     await execution;
   } catch (err) {
@@ -192,7 +191,7 @@ async function dispatchValidation(
 async function executeValidate(
   ctx: ColonydContext,
   scope: Scope,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   runId: string,
   baseSha: string,
 ): Promise<void> {
@@ -217,7 +216,7 @@ async function executeValidate(
       throw new Error("acceptance criteria unparseable or empty");
     }
 
-    const clone = buildCloneUrl(ctx, scope.provider_project_path);
+    const clone = buildCloneUrl(ctx, scope.provider_repo_path);
     const executor = ctx.validateExecutor ?? defaultValidateExecutor;
     result = await executor({
       workspace: join("colonyd-validate", runId),

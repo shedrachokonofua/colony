@@ -59,11 +59,11 @@ describe("api e2e lifecycle", () => {
     const body = created.body as {
       id: string;
       status: string;
-      provider_project_path: string;
+      provider_repo_path: string;
     };
     expect(body.id).toMatch(/^col-/);
     expect(["planning", "draft"]).toContain(body.status);
-    expect(body.provider_project_path).toBe("so/console-e2e");
+    expect(body.provider_repo_path).toBe("so/console-e2e");
     scopeId = body.id;
   }, 90_000);
 

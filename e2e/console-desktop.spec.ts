@@ -46,7 +46,7 @@ async function pollScope(request: APIRequestContext, scopeId: string) {
       id: string;
       status: string;
       plan_json: string | null;
-      provider_project_path: string;
+      provider_repo_path: string;
       goal: string;
     };
     tasks: { id: string; state: string; title: string; spec: string }[];

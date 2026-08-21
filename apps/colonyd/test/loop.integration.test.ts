@@ -326,7 +326,7 @@ beforeEach(async () => {
   script.singleTask = false;
   script.validateFail = false;
   provider = new FakeProviderAdapter();
-  const project = await provider.projects.create({
+  const project = await provider.repos.create({
     name: "fake-e2e",
     path: "so/fake-e2e",
   });
@@ -339,8 +339,8 @@ beforeEach(async () => {
 async function createScope(goal: string): Promise<string> {
   const scope = handle.ctx.store.createScope({
     goal,
-    provider_project_id: projectId,
-    provider_project_path: "so/fake-e2e",
+    provider_repo_id: projectId,
+    provider_repo_path: "so/fake-e2e",
   });
   handle.ctx.store.audit(ACTOR, "scope.created", { scope_id: scope.id });
   return scope.id;

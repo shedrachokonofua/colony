@@ -31,16 +31,16 @@ export interface ProviderArtifactReference {
   readonly object_kind: string;
   readonly object_id: string;
   readonly uri?: string;
-  readonly provider_project_id?: string;
-  readonly provider_project_path?: string;
+  readonly provider_repo_id?: string;
+  readonly provider_repo_path?: string;
 }
 
 export interface RawProviderCommentReference {
   readonly provider: string;
   readonly comment_id: string;
   readonly uri?: string;
-  readonly provider_project_id?: string;
-  readonly provider_project_path?: string;
+  readonly provider_repo_id?: string;
+  readonly provider_repo_path?: string;
 }
 
 export interface ProviderCommandSource {

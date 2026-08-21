@@ -65,7 +65,7 @@ it("records the configured primary model_id on architect runs and exposes it via
   resetEnvCache();
 
   provider = new FakeProviderAdapter();
-  const project = await provider.projects.create({
+  const project = await provider.repos.create({
     name: "fake-model-id",
     path: "so/fake-model-id",
   });
@@ -83,8 +83,8 @@ it("records the configured primary model_id on architect runs and exposes it via
 
   const scope = handle.ctx.store.createScope({
     goal: "model id harness",
-    provider_project_id: projectId,
-    provider_project_path: project.path,
+    provider_repo_id: projectId,
+    provider_repo_path: project.path,
   });
   handle.ctx.store.audit(ACTOR, "scope.created", { scope_id: scope.id });
 

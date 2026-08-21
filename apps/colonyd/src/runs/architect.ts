@@ -3,7 +3,7 @@ import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
 } from "@colony/schemas";
 import type { Scope, Store } from "@colony/core";
-import type { ProviderProjectRef } from "@colony/provider";
+import type { ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -25,9 +25,9 @@ export async function runArchitect(
   scope: Scope,
   options: ArchitectRunOptions = {},
 ): Promise<void> {
-  const project: ProviderProjectRef = {
-    id: scope.provider_project_id,
-    path: scope.provider_project_path,
+  const repo: ProviderRepoRef = {
+    id: scope.provider_repo_id,
+    path: scope.provider_repo_path,
   };
   const architect = ctx.config.forAgent("architect");
   const leaseTtlMs =
@@ -52,7 +52,7 @@ export async function runArchitect(
 
   const execution = executeArchitect(
     ctx,
-    project,
+    repo,
     scope,
     run.id,
     leaseTtlMs,
@@ -71,7 +71,7 @@ export async function runArchitect(
 
 async function executeArchitect(
   ctx: ColonydContext,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   scope: Scope,
   runId: string,
   leaseTtlMs: number,
@@ -79,7 +79,7 @@ async function executeArchitect(
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {
-    minted = await mintRunToken(ctx.provider, project, {
+    minted = await mintRunToken(ctx.provider, repo, {
       name: `colony-architect-${scope.id}`,
       scopes: ["api", "read_repository"],
       singleToken: ctx.env.singleToken,
@@ -90,13 +90,13 @@ async function executeArchitect(
       scope_id: scope.id,
       run_id: runId,
       detail: {
-        mode: ctx.env.singleToken ? "single_token" : "project_token",
+        mode: ctx.env.singleToken ? "single_token" : "repo_token",
         token_id: minted?.token_id ?? null,
       },
     });
 
     const baseSha = (
-      await ctx.provider.commits.get(project, scope.default_branch)
+      await ctx.provider.commits.get(repo, scope.default_branch)
     ).sha;
     const packet = {
       kind: "architect_scope",
@@ -104,7 +104,7 @@ async function executeArchitect(
       goal: scope.goal,
       body: buildArchitectBody(scope),
       repo: {
-        url: scope.provider_project_path,
+        url: scope.provider_repo_path,
         credentials: minted ? { token: minted.token } : undefined,
         branch: scope.default_branch,
         base_commit: baseSha,
@@ -174,7 +174,7 @@ async function executeArchitect(
   } finally {
     if (minted) {
       try {
-        await revokeRunToken(ctx.provider, project, minted);
+        await revokeRunToken(ctx.provider, repo, minted);
       } catch {
         ctx.store.audit(SERVICE_ACTOR, "agent_token.revoke_failed", {
           scope_id: scope.id,

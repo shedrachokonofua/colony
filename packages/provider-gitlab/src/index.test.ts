@@ -79,7 +79,7 @@ describe("GitLabProviderAdapter bootstrap", () => {
       environment: "dev",
       base_url: "https://gitlab.test",
       group: { name: "Colony", path: "colony" },
-      project: { name: "Dev", path: "dev" },
+      repo: { name: "Dev", path: "dev" },
       oauth_application: {
         name: "Colony Web",
         redirect_uris: ["https://colony.test/oauth/callback"],
@@ -92,12 +92,12 @@ describe("GitLabProviderAdapter bootstrap", () => {
     });
 
     expect(result.group.id).toBe("10");
-    expect(result.project.id).toBe("20");
+    expect(result.repo.id).toBe("20");
     expect(result.oauth_application.client_id).toBe("oauth-client-id");
     expect(result.webhook.id).toBe("50");
     expect(result.actions.map((a) => a.resource)).toEqual([
       "group",
-      "project",
+      "repo",
       "bot:engine",
       "bot:reviewer",
       "bot:architect",
@@ -161,7 +161,7 @@ describe("GitLabProviderAdapter projects", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const created = await adapter.projects.create({
+    const created = await adapter.repos.create({
       name: "Frontend",
       path: "frontend",
       namespace: "colony",
@@ -205,7 +205,7 @@ describe("GitLabProviderAdapter projects", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const result = await adapter.projects.create({
+    const result = await adapter.repos.create({
       name: "Backend",
       path: "backend",
       namespace: "g",
@@ -244,13 +244,13 @@ describe("GitLabProviderAdapter projects", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const byId = await adapter.projects.getById("42");
+    const byId = await adapter.repos.getById("42");
     expect(byId).toMatchObject({
       id: "42",
       default_branch: "trunk",
       visibility: "public",
     });
-    expect(await adapter.projects.getByPath("g/missing")).toBeNull();
+    expect(await adapter.repos.getByPath("g/missing")).toBeNull();
   });
 });
 
@@ -904,7 +904,7 @@ describe("GitLabProviderAdapter merge preflight and transport failures", () => {
       },
     });
 
-    await adapter.projects.getById("20");
+    await adapter.repos.getById("20");
     expect(attempts).toBe(2);
   });
 
@@ -1136,13 +1136,13 @@ describeLive("GitLabProviderAdapter live multi-repo integration", () => {
       groupId = group.id;
       expect(group.path).toBe(groupPath);
 
-      const projectA = await adapter.projects.create({
+      const projectA = await adapter.repos.create({
         name: "a",
         path: "a",
         namespace: group.id,
         visibility: "private",
       });
-      const projectB = await adapter.projects.create({
+      const projectB = await adapter.repos.create({
         name: "b",
         path: "b",
         namespace: group.id,
@@ -1197,7 +1197,7 @@ describeLive("GitLabProviderAdapter live multi-repo integration", () => {
 
       // Sanity: getByPath round-trips, proving project context is what
       // the registry would store for these mirrors.
-      const fetchedA = await adapter.projects.getByPath(`${groupPath}/a`);
+      const fetchedA = await adapter.repos.getByPath(`${groupPath}/a`);
       expect(fetchedA?.id).toBe(projectA.id);
     } finally {
       if (groupId) {
@@ -1246,7 +1246,7 @@ describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
       // to branch from. `initialize_with_readme` on `projects.create` would
       // also work but the adapter doesn't expose it; using a direct API
       // call here keeps the adapter surface clean and minimal.
-      const project = await adapter.projects.create({
+      const project = await adapter.repos.create({
         name: "csv-export",
         path: "csv-export",
         namespace: group.id,

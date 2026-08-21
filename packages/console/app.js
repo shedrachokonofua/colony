@@ -377,8 +377,8 @@ function demoWorld() {
     goal: "Add a /version endpoint that returns the running colonyd SHA",
     title: "Version endpoint",
     status: "validating",
-    provider_project_id: "49",
-    provider_project_path: "so/colony",
+    provider_repo_id: "49",
+    provider_repo_path: "so/colony",
     default_branch: "main",
     plan_json: null,
     acceptance_json: JSON.stringify([
@@ -563,7 +563,7 @@ function demoWorld() {
         title: "Usage panel",
         group: "Operator console",
         status: "active",
-        provider_project_path: "so/colony",
+        provider_repo_path: "so/colony",
         default_branch: "main",
         plan_json: null,
         blocked_reason: null,
@@ -576,7 +576,7 @@ function demoWorld() {
         title: null,
         group: "Aether cleanup",
         status: "done",
-        provider_project_path: "so/aether",
+        provider_repo_path: "so/aether",
         default_branch: "main",
         plan_json: null,
         blocked_reason: null,
@@ -1231,7 +1231,7 @@ function scopeMatchesQuery(scope) {
     scope.goal,
     scope.id,
     scope.group,
-    scope.provider_project_path,
+    scope.provider_repo_path,
   ]
     .filter(Boolean)
     .some((field) => field.toLowerCase().includes(q));
@@ -1248,7 +1248,7 @@ function scopeCard(scope) {
     <span class="scope-goal">${scopeTitle(scope)}</span>
     <span class="scope-meta">
       <span class="mono">${scope.id}</span>
-      <span>${scope.provider_project_path}</span>
+      <span>${scope.provider_repo_path}</span>
     </span>
   </button>`;
 }
@@ -1482,7 +1482,7 @@ function renderSheet() {
   }
   const task = selectedTask(detail);
   const wait = waitingOnYou(scope, detail.tasks, detail);
-  const pathUrl = gitlabProjectUrl(scope.provider_project_path);
+  const pathUrl = gitlabProjectUrl(scope.provider_repo_path);
   const taskCount = detail.tasks.length;
   return html`
     <header class="sheet-head">
@@ -1491,8 +1491,8 @@ function renderSheet() {
         <p class="sheet-sub">
           <span class="mono">${scope.id}</span>
           ${pathUrl
-            ? html`<a href=${pathUrl}>${scope.provider_project_path}</a>`
-            : html`<span>${scope.provider_project_path}</span>`}
+            ? html`<a href=${pathUrl}>${scope.provider_repo_path}</a>`
+            : html`<span>${scope.provider_repo_path}</span>`}
           <span>updated ${rel(scope.updated_at)}</span>
         </p>
       </div>
@@ -1766,8 +1766,8 @@ function renderDrawer(scope, task) {
   const sha = [...(state.detail?.runs || [])]
     .reverse()
     .find((run) => run.task_id === task.id && run.head_sha)?.head_sha;
-  const mr = task.mr_iid ? mrUrl(scope.provider_project_path, task.mr_iid) : "";
-  const commit = sha ? commitUrl(scope.provider_project_path, sha) : "";
+  const mr = task.mr_iid ? mrUrl(scope.provider_repo_path, task.mr_iid) : "";
+  const commit = sha ? commitUrl(scope.provider_repo_path, sha) : "";
   const retryWait =
     task.next_retry_at && Date.parse(task.next_retry_at) > Date.now()
       ? ` · next attempt in ${Math.max(1, Math.round((Date.parse(task.next_retry_at) - Date.now()) / 60000))}m`
