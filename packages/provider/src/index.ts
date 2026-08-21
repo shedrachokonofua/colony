@@ -739,7 +739,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
       this.mergeRequestsById.set(id, mr);
       return mr;
     },
-    update: async (_project, id, input) => {
+    update: async (_repo, id, input) => {
       const mr = this.requireMr(id);
       const next = { ...mr, ...input, metadata: this.meta(id) };
       this.mergeRequestsById.set(id, next);
@@ -859,7 +859,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   };
 
   readonly webhooks: ProviderAdapter["webhooks"] = {
-    register: async (_project, input) => {
+    register: async (_repo, input) => {
       const id = `webhook-${this.webhooksById.size + 1}`;
       const hook = {
         id,

@@ -313,20 +313,20 @@ function waitingOnYou(scope, tasks, detail) {
   return "";
 }
 
-function gitlabProjectUrl(path) {
+function gitlabRepoUrl(path) {
   const base = state.config.gitlab_base_url.replace(/\/$/, "");
   if (!base || !path) return "";
   return `${base}/${path}`;
 }
 
 function mrUrl(path, iid) {
-  const project = gitlabProjectUrl(path);
-  return project && iid ? `${project}/-/merge_requests/${iid}` : "";
+  const repo = gitlabRepoUrl(path);
+  return repo && iid ? `${repo}/-/merge_requests/${iid}` : "";
 }
 
 function commitUrl(path, sha) {
-  const project = gitlabProjectUrl(path);
-  return project && sha ? `${project}/-/commit/${sha}` : "";
+  const repo = gitlabRepoUrl(path);
+  return repo && sha ? `${repo}/-/commit/${sha}` : "";
 }
 
 async function api(path, options = {}) {
@@ -1483,7 +1483,7 @@ function renderSheet() {
   }
   const task = selectedTask(detail);
   const wait = waitingOnYou(scope, detail.tasks, detail);
-  const pathUrl = gitlabProjectUrl(scope.provider_repo_path);
+  const pathUrl = gitlabRepoUrl(scope.provider_repo_path);
   const taskCount = detail.tasks.length;
   return html`
     <header class="sheet-head">

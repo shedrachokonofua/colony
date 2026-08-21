@@ -64,6 +64,7 @@ interface GitLabEntity {
   readonly application_id?: string;
 }
 
+/** GitLab calls repositories "projects" in its REST API; DTOs keep its names. */
 interface GitLabProject extends GitLabEntity {
   readonly path_with_namespace?: string;
   readonly default_branch?: string | null;
@@ -244,7 +245,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   readonly accessTokens: NonNullable<ProviderAdapter["accessTokens"]> = {
     mint: async (repo, input) => {
       const body = accessTokenInputBody(input);
-      const token = await this.projectApi<GitLabProjectAccessToken>(
+      const token = await this.repoApi<GitLabProjectAccessToken>(
         repo.id,
         "/access_tokens",
         {
@@ -256,7 +257,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     },
     revoke: async (repo, id) => {
       try {
-        await this.projectApi<unknown>(
+        await this.repoApi<unknown>(
           repo.id,
           `/access_tokens/${encodePath(id)}`,
           {
@@ -269,7 +270,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       }
     },
     list: async (repo) => {
-      const tokens = await this.projectApi<GitLabProjectAccessToken[]>(
+      const tokens = await this.repoApi<GitLabProjectAccessToken[]>(
         repo.id,
         "/access_tokens",
       );
@@ -326,7 +327,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly issues: ProviderAdapter["issues"] = {
     get: async (repo, id) => {
-      const issue = await this.projectApi<GitLabIssue>(
+      const issue = await this.repoApi<GitLabIssue>(
         repo.id,
         `/issues/${encodePath(issueIid(repo.id, id))}`,
       );
@@ -357,14 +358,14 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly mergeRequests: ProviderAdapter["mergeRequests"] = {
     get: async (repo, id) => {
-      const mr = await this.projectApi<GitLabMergeRequest>(
+      const mr = await this.repoApi<GitLabMergeRequest>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}`,
       );
       return toMergeRequest(this.provider, repo.id, mr);
     },
     open: async (repo, input) => {
-      const mr = await this.projectApi<GitLabMergeRequest>(
+      const mr = await this.repoApi<GitLabMergeRequest>(
         repo.id,
         "/merge_requests",
         {
@@ -380,7 +381,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       return toMergeRequest(this.provider, repo.id, mr);
     },
     update: async (repo, id, input) => {
-      const mr = await this.projectApi<GitLabMergeRequest>(
+      const mr = await this.repoApi<GitLabMergeRequest>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}`,
         {
@@ -397,24 +398,24 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       // GitLab's approve/unapprove endpoints return narrow MergeRequestApproval
       // payloads rather than the canonical merge request shape; refetch the
       // MR so the adapter's normalized response is consistent across calls.
-      await this.projectApi<unknown>(
+      await this.repoApi<unknown>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}/approve`,
         { method: "POST" },
       );
-      const mr = await this.projectApi<GitLabMergeRequest>(
+      const mr = await this.repoApi<GitLabMergeRequest>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}`,
       );
       return toMergeRequest(this.provider, repo.id, mr);
     },
     unapprove: async (repo, id) => {
-      await this.projectApi<unknown>(
+      await this.repoApi<unknown>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}/unapprove`,
         { method: "POST" },
       );
-      const mr = await this.projectApi<GitLabMergeRequest>(
+      const mr = await this.repoApi<GitLabMergeRequest>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}`,
       );
@@ -434,11 +435,10 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       const mergePath = `/merge_requests/${encodePath(iid)}/merge`;
       const body = JSON.stringify(input?.sha ? { sha: input.sha } : {});
       try {
-        const mr = await this.projectApi<GitLabMergeRequest>(
-          repo.id,
-          mergePath,
-          { method: "PUT", body },
-        );
+        const mr = await this.repoApi<GitLabMergeRequest>(repo.id, mergePath, {
+          method: "PUT",
+          body,
+        });
         return {
           ...toMergeRequest(this.provider, repo.id, mr),
           merged: true,
@@ -459,7 +459,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
           };
         }
         try {
-          const mr = await this.projectApi<GitLabMergeRequest>(
+          const mr = await this.repoApi<GitLabMergeRequest>(
             repo.id,
             mergePath,
             { method: "PUT", body },
@@ -484,7 +484,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       }
     },
     close: async (repo, id) => {
-      const mr = await this.projectApi<GitLabMergeRequest>(
+      const mr = await this.repoApi<GitLabMergeRequest>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}`,
         {
@@ -495,7 +495,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       return toMergeRequest(this.provider, repo.id, mr);
     },
     comment: async (repo, id, body) => {
-      const note = await this.projectApi<GitLabNote>(
+      const note = await this.repoApi<GitLabNote>(
         repo.id,
         `/merge_requests/${encodePath(mrIid(repo.id, id))}/notes`,
         {
@@ -506,7 +506,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       return toComment(this.provider, note);
     },
     addReviewThread: async (repo, id, body) => {
-      const discussion = await this.projectApi<{
+      const discussion = await this.repoApi<{
         readonly id?: string;
         readonly notes?: readonly GitLabNote[];
       }>(
@@ -542,7 +542,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         | { readonly changes?: readonly Readonly<Record<string, unknown>>[] }
         | undefined;
       try {
-        changes = await this.projectApi<{
+        changes = await this.repoApi<{
           readonly changes?: readonly Readonly<Record<string, unknown>>[];
         }>(repo.id, `/merge_requests/${encodePath(iid)}/changes`);
       } catch (error) {
@@ -557,7 +557,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         | { readonly source_branch?: string; readonly target_branch?: string }
         | undefined;
       try {
-        mr = await this.projectApi<{
+        mr = await this.repoApi<{
           readonly source_branch?: string;
           readonly target_branch?: string;
         }>(repo.id, `/merge_requests/${encodePath(iid)}`);
@@ -566,7 +566,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       }
       if (!mr?.source_branch || !mr.target_branch) return [];
       try {
-        const compare = await this.projectApi<{
+        const compare = await this.repoApi<{
           readonly diffs?: readonly Readonly<Record<string, unknown>>[];
         }>(
           repo.id,
@@ -582,7 +582,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly branches: ProviderAdapter["branches"] = {
     create: async (repo, name, ref) => {
-      const branch = await this.projectApi<GitLabBranch>(
+      const branch = await this.repoApi<GitLabBranch>(
         repo.id,
         `/repository/branches?branch=${encodeURIComponent(name)}&ref=${encodeURIComponent(ref)}`,
         { method: "POST" },
@@ -590,7 +590,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       return toBranch(this.provider, repo.id, branch);
     },
     delete: async (repo, name) => {
-      await this.projectApi<unknown>(
+      await this.repoApi<unknown>(
         repo.id,
         `/repository/branches/${encodePath(name)}`,
         { method: "DELETE" },
@@ -602,7 +602,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       // call is idempotent for callers that don't track prior protection.
       const existing = await optionalGet<GitLabBranch>(
         () =>
-          this.projectApi<GitLabBranch>(
+          this.repoApi<GitLabBranch>(
             repo.id,
             `/protected_branches/${encodePath(name)}`,
           ),
@@ -615,7 +615,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
           protected: true,
         });
       }
-      const protectedBranch = await this.projectApi<GitLabBranch>(
+      const protectedBranch = await this.repoApi<GitLabBranch>(
         repo.id,
         `/protected_branches?name=${encodeURIComponent(name)}`,
         { method: "POST" },
@@ -630,21 +630,21 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly commits: ProviderAdapter["commits"] = {
     get: async (repo, sha) => {
-      const commit = await this.projectApi<GitLabCommit>(
+      const commit = await this.repoApi<GitLabCommit>(
         repo.id,
         `/repository/commits/${encodePath(sha)}`,
       );
       return toCommit(this.provider, repo.id, commit);
     },
     diff: async (repo, sha) => {
-      const diff = await this.projectApi<readonly Record<string, unknown>[]>(
+      const diff = await this.repoApi<readonly Record<string, unknown>[]>(
         repo.id,
         `/repository/commits/${encodePath(sha)}/diff`,
       );
       return diff;
     },
     create: async (repo, input) => {
-      const commit = await this.projectApi<GitLabCommit>(
+      const commit = await this.repoApi<GitLabCommit>(
         repo.id,
         "/repository/commits",
         {
@@ -666,7 +666,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly pipelines: ProviderAdapter["pipelines"] = {
     getStatus: async (repo, id) => {
-      const pipeline = await this.projectApi<
+      const pipeline = await this.repoApi<
         GitLabEntity & {
           readonly status?: string;
           readonly sha?: string;
@@ -675,7 +675,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       return toPipeline(this.provider, pipeline);
     },
     trigger: async (repo, ref) => {
-      const pipeline = await this.projectApi<
+      const pipeline = await this.repoApi<
         GitLabEntity & {
           readonly status?: string;
           readonly sha?: string;
@@ -844,7 +844,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     repo: ProviderRepoRef,
     input: CreateIssueInput,
   ): Promise<ProviderIssue> {
-    const issue = await this.projectApi<GitLabIssue>(repo.id, "/issues", {
+    const issue = await this.repoApi<GitLabIssue>(repo.id, "/issues", {
       method: "POST",
       body: JSON.stringify(issueInputBody(input)),
     });
@@ -859,7 +859,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       readonly remove_labels?: readonly string[];
     },
   ): Promise<ProviderIssue> {
-    const issue = await this.projectApi<GitLabIssue>(
+    const issue = await this.repoApi<GitLabIssue>(
       repo.id,
       `/issues/${encodePath(issueIid(repo.id, id))}`,
       {
@@ -875,7 +875,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     id: ProviderId,
     stateEvent: "close" | "reopen",
   ): Promise<ProviderIssue> {
-    const issue = await this.projectApi<GitLabIssue>(
+    const issue = await this.repoApi<GitLabIssue>(
       repo.id,
       `/issues/${encodePath(issueIid(repo.id, id))}`,
       {
@@ -891,7 +891,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     id: ProviderId,
     body: string,
   ): Promise<ProviderComment> {
-    const note = await this.projectApi<GitLabNote>(
+    const note = await this.repoApi<GitLabNote>(
       repo.id,
       `/issues/${encodePath(issueIid(repo.id, id))}/notes`,
       {
@@ -1177,16 +1177,16 @@ export class GitLabProviderAdapter implements ProviderAdapter {
   }
 
   private async getAllDiffs(
-    projectId: ProviderId,
+    repoId: ProviderId,
     iid: string,
   ): Promise<readonly Readonly<Record<string, unknown>>[]> {
     const all: Readonly<Record<string, unknown>>[] = [];
     let page = 1;
     for (;;) {
-      const result = await this.projectApiPage<
+      const result = await this.repoApiPage<
         readonly Readonly<Record<string, unknown>>[]
       >(
-        projectId,
+        repoId,
         `/merge_requests/${encodePath(iid)}/diffs?per_page=50&page=${page}`,
       );
       all.push(...result.body);
@@ -1199,7 +1199,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     return all;
   }
   private async getMergeability(
-    projectId: ProviderId,
+    repoId: ProviderId,
     iid: string,
   ): Promise<{
     readonly mr: GitLabMergeRequest;
@@ -1209,8 +1209,8 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     const startedAt = Date.now();
     let pollDelay = 100;
     for (;;) {
-      const mr = await this.projectApi<GitLabMergeRequest>(
-        projectId,
+      const mr = await this.repoApi<GitLabMergeRequest>(
+        repoId,
         `/merge_requests/${encodePath(iid)}?with_merge_status_recheck=true`,
       );
       const detailed = mr.detailed_merge_status ?? undefined;
@@ -1242,14 +1242,14 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     }
   }
 
-  private async projectApiPage<T>(
-    projectId: ProviderId,
+  private async repoApiPage<T>(
+    repoId: ProviderId,
     path: string,
     init?: RequestInit,
   ): Promise<{ readonly body: T; readonly headers: Headers }> {
     const token = this.requireToken();
     return this.requestPage<T>(
-      `/projects/${encodePath(projectId)}${path}`,
+      `/projects/${encodePath(repoId)}${path}`,
       token,
       init,
     );
@@ -1260,12 +1260,12 @@ export class GitLabProviderAdapter implements ProviderAdapter {
     return this.request<T>(path, token, init);
   }
 
-  private async projectApi<T>(
-    projectId: ProviderId,
+  private async repoApi<T>(
+    repoId: ProviderId,
     path: string,
     init?: RequestInit,
   ): Promise<T> {
-    return this.api<T>(`/projects/${encodePath(projectId)}${path}`, init);
+    return this.api<T>(`/projects/${encodePath(repoId)}${path}`, init);
   }
 
   private requireToken(): string {
@@ -1347,28 +1347,28 @@ function accessTokenInputBody(
 
 function toAccessToken(
   provider: "gitlab",
-  projectId: ProviderId,
+  repoId: ProviderId,
   token: GitLabProjectAccessToken,
 ): ProviderAccessToken {
   if (!token.token) {
     throw new GitLabProviderError(
-      "GitLab did not return a project access token secret",
+      "GitLab did not return a repo access token secret",
       500,
       token,
     );
   }
-  return toAccessTokenListing(provider, projectId, token);
+  return toAccessTokenListing(provider, repoId, token);
 }
 
 /** List responses omit the secret; mint responses include it. */
 function toAccessTokenListing(
   provider: "gitlab",
-  projectId: ProviderId,
+  repoId: ProviderId,
   token: GitLabProjectAccessToken,
 ): ProviderAccessToken {
   return {
     id: String(token.id),
-    project_id: String(token.project_id ?? projectId),
+    project_id: String(token.project_id ?? repoId),
     name: token.name ?? String(token.id),
     token: token.token ?? "",
     scopes: [...(token.scopes ?? [])],
@@ -1379,11 +1379,11 @@ function toAccessTokenListing(
 
 function toIssue(
   provider: "gitlab",
-  projectId: ProviderId,
+  repoId: ProviderId,
   issue: GitLabIssue,
 ): ProviderIssue {
   const assignees = issue.assignees ?? (issue.assignee ? [issue.assignee] : []);
-  const id = issueId(projectId, issue);
+  const id = issueId(repoId, issue);
   return {
     id,
     iid: issue.iid,
@@ -1477,28 +1477,28 @@ async function optionalGet<T>(
   }
 }
 
-function issueId(projectId: ProviderId, issue: GitLabIssue): ProviderId {
-  return `${String(issue.project_id ?? projectId)}:${String(issue.iid ?? issue.id)}`;
+function issueId(repoId: ProviderId, issue: GitLabIssue): ProviderId {
+  return `${String(issue.project_id ?? repoId)}:${String(issue.iid ?? issue.id)}`;
 }
 
-function issueIid(projectId: ProviderId, id: ProviderId): string {
-  const prefix = `${projectId}:`;
+function issueIid(repoId: ProviderId, id: ProviderId): string {
+  const prefix = `${repoId}:`;
   if (id.startsWith(prefix)) return id.slice(prefix.length);
   const separator = id.lastIndexOf(":");
   return separator === -1 ? id : id.slice(separator + 1);
 }
 // MR IDs use the same `<project_id>:<iid>` shape as issues.
-function mrIid(projectId: ProviderId, id: ProviderId): string {
-  return issueIid(projectId, id);
+function mrIid(repoId: ProviderId, id: ProviderId): string {
+  return issueIid(repoId, id);
 }
 
 function toMergeRequest(
   provider: "gitlab",
-  projectId: ProviderId,
+  repoId: ProviderId,
   mr: GitLabMergeRequest,
 ): ProviderMergeRequest {
   const iid = mr.iid ?? Number(mr.id);
-  const id = `${String(mr.project_id ?? projectId)}:${String(mr.iid ?? mr.id)}`;
+  const id = `${String(mr.project_id ?? repoId)}:${String(mr.iid ?? mr.id)}`;
   const state = normalizeMrState(mr.state);
   return {
     id,
@@ -1526,10 +1526,10 @@ function normalizeMrState(
 
 function toBranch(
   provider: "gitlab",
-  projectId: ProviderId,
+  repoId: ProviderId,
   branch: GitLabBranch,
 ): ProviderBranch {
-  const id = `${String(projectId)}:${branch.name}`;
+  const id = `${String(repoId)}:${branch.name}`;
   return {
     id,
     name: branch.name,
@@ -1541,10 +1541,10 @@ function toBranch(
 
 function toCommit(
   provider: "gitlab",
-  projectId: ProviderId,
+  repoId: ProviderId,
   commit: GitLabCommit,
 ): ProviderCommit {
-  const id = `${String(projectId)}:${commit.id}`;
+  const id = `${String(repoId)}:${commit.id}`;
   return {
     id,
     sha: commit.id,
