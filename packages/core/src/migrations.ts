@@ -109,6 +109,24 @@ function rebuildForCheck(db: Db, table: string, needle: string): void {
 }
 
 /**
+ * Guarded column rename: only when the old name exists and the new one does
+ * not, so partially-shaped databases converge instead of erroring.
+ */
+function renameColumn(
+  db: Db,
+  table: string,
+  from: string,
+  to: string,
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  if (!columns.some((column) => column.name === from)) return;
+  if (columns.some((column) => column.name === to)) return;
+  db.exec(`ALTER TABLE ${table} RENAME COLUMN "${from}" TO "${to}"`);
+}
+
+/**
  * Every database that predates versioned migrations, reconciled by
  * inspection: columns added over the daemon's life, two CHECK-constraint
  * generations, and the short-lived `initiative` column. Runs once; new
@@ -127,20 +145,73 @@ function legacyReconcile(db: Db): void {
   addColumn(db, "scopes", "plan_feedback", "TEXT");
   addColumn(db, "tasks", "human_feedback", "TEXT");
   addColumn(db, "scopes", "acceptance_json", "TEXT");
+  renameRepoColumns(db);
   const scopeCols = db.prepare(`PRAGMA table_info(scopes)`).all() as {
     name: string;
   }[];
   if (scopeCols.some((c) => c.name === "initiative")) {
-    db.exec(`ALTER TABLE scopes RENAME COLUMN initiative TO "group"`);
+    db.exec(`ALTER TABLE scopes RENAME COLUMN initiative TO project_name`);
   } else {
-    addColumn(db, "scopes", "group", "TEXT");
+    addColumn(db, "scopes", "project_name", "TEXT");
   }
   rebuildForCheck(db, "scopes", "validating");
   rebuildForCheck(db, "runs", "validate");
 }
 
+/**
+ * Migration 2: scopes stop lying about repos (provider_project_* ->
+ * provider_repo_*, "group" -> project_name) and `project_name` graduates
+ * into a first-class `projects` entity backfilled from existing scopes.
+ * Every step is guarded so a partially-shaped DB converges; no FK on
+ * project_name means no table rebuild is needed. The renames must run
+ * BEFORE any create-copy-drop-rename of `scopes`: copying legacy rows into
+ * the current DDL would NULL the NOT NULL repo columns otherwise.
+ */
+function renameRepoColumns(db: Db): void {
+  renameColumn(db, "scopes", "provider_project_id", "provider_repo_id");
+  renameColumn(db, "scopes", "provider_project_path", "provider_repo_path");
+}
+
+const PROJECTS_DDL = `CREATE TABLE IF NOT EXISTS projects (
+  name TEXT PRIMARY KEY,
+  context_doc TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+)`;
+
+function migrateProjectsAndRename(db: Db): void {
+  db.transaction(() => {
+    renameRepoColumns(db);
+    const scopeCols = db.prepare(`PRAGMA table_info(scopes)`).all() as {
+      name: string;
+    }[];
+    if (
+      scopeCols.some((c) => c.name === "group") &&
+      !scopeCols.some((c) => c.name === "project_name")
+    ) {
+      db.exec(`ALTER TABLE scopes RENAME COLUMN "group" TO project_name`);
+    }
+    if (
+      scopeCols.some((c) => c.name === "initiative") &&
+      !scopeCols.some((c) => c.name === "project_name")
+    ) {
+      db.exec(`ALTER TABLE scopes RENAME COLUMN initiative TO project_name`);
+    }
+    db.exec(PROJECTS_DDL);
+    db.exec(
+      `INSERT OR IGNORE INTO projects (name)
+       SELECT DISTINCT project_name FROM scopes WHERE project_name IS NOT NULL`,
+    );
+  })();
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
+  {
+    version: 2,
+    name: "projects-and-repo-rename",
+    apply: migrateProjectsAndRename,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

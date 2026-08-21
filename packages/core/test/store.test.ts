@@ -148,8 +148,8 @@ function plan(
 function seededScope(): string {
   const scope = store.createScope({
     goal: "test goal",
-    provider_project_id: "42",
-    provider_project_path: "so/test",
+    provider_repo_id: "42",
+    provider_repo_path: "so/test",
   });
   return scope.id;
 }
@@ -453,6 +453,8 @@ describe("legacy CHECK constraint migrations", () => {
         // The migration preserved rows and the FK relationship...
         const scope = migrated.getScope("col-legacy1");
         expect(scope?.status).toBe("active");
+        expect(scope?.provider_repo_id).toBe("1");
+        expect(scope?.provider_repo_path).toBe("so/x");
         expect(String(migrated.getTask("col-legacy1.1")?.scope_id)).toBe(
           "col-legacy1",
         );
@@ -560,7 +562,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        for (const table of ["scopes", "tasks", "runs"]) {
+        for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
           );
@@ -586,9 +588,48 @@ describe("versioned migrations", () => {
         renamed.close();
         const renamedStore = new Store(join(dir, "renamed.db"));
         const cols = tableColumns(renamedStore.db, "scopes");
-        expect(cols).toContain("group");
+        expect(cols).toContain("project_name");
         expect(cols).not.toContain("initiative");
+        expect(cols).not.toContain("group");
         renamedStore.close();
+
+        // A version-1 DB (post legacy-reconcile, pre migration 2) converges:
+        // "group" values become projects rows and the scope points at one.
+        const v1 = new Database(join(dir, "v1.db"));
+        v1.exec(
+          `CREATE TABLE scopes (id TEXT PRIMARY KEY, goal TEXT NOT NULL,
+            title TEXT, "group" TEXT, approvals TEXT NOT NULL DEFAULT 'auto',
+            status TEXT NOT NULL DEFAULT 'draft'
+              CHECK (status IN ('draft','planning','active','validating','blocked','done','abandoned')),
+            provider_project_id TEXT NOT NULL, provider_project_path TEXT NOT NULL,
+            default_branch TEXT NOT NULL DEFAULT 'main', plan_json TEXT, plan_feedback TEXT,
+            acceptance_json TEXT, blocked_reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+           INSERT INTO scopes (id, goal, "group", provider_project_id, provider_project_path)
+             VALUES ('col-v1a', 'g1', 'Wave one', '7', 'so/v1');
+           INSERT INTO scopes (id, goal, provider_project_id, provider_project_path)
+             VALUES ('col-v1b', 'g2', '8', 'so/v1');`,
+        );
+        v1.exec(`PRAGMA user_version = 1`);
+        v1.close();
+        const v1Store = new Store(join(dir, "v1.db"));
+        const v1Scope = v1Store.getScope("col-v1a");
+        expect(v1Scope?.project_name).toBe("Wave one");
+        expect(v1Scope?.provider_repo_id).toBe("7");
+        expect(v1Scope?.provider_repo_path).toBe("so/v1");
+        expect(v1Store.getScope("col-v1b")?.project_name).toBeNull();
+        expect(v1Store.getProject("Wave one")).toMatchObject({
+          name: "Wave one",
+          context_doc: null,
+        });
+        expect(v1Store.getProject("Wave one")?.created_at).toBe(
+          v1Store.getProject("Wave one")?.updated_at,
+        );
+        expect(v1Store.listProjects().map((p) => p.name)).toEqual([
+          "Wave one",
+        ]);
+        v1Store.close();
       } finally {
         migrated.close();
         fresh.close();
