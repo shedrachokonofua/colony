@@ -7,6 +7,7 @@ import type { ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
+import { buildArchitectPacket } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -97,20 +98,24 @@ async function executeArchitect(
 
     const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
       .sha;
-    const packet = {
-      kind: "architect_scope",
-      scope_id: scope.id,
-      goal: scope.goal,
-      body: buildArchitectBody(scope),
+    const project = scope.project_name
+      ? (ctx.store.getProject(scope.project_name) ?? null)
+      : null;
+    const { repo: repoWithCredentials, ...packet } = buildArchitectPacket(
+      scope,
+      project,
+      repo,
+      baseSha,
+    );
+    const full = {
+      ...packet,
       repo: {
-        url: scope.provider_repo_path,
+        ...repoWithCredentials,
         credentials: minted ? { token: minted.token } : undefined,
-        branch: scope.default_branch,
-        base_commit: baseSha,
       },
     };
 
-    const metadata = await ctx.agents.architect.startRun(packet, {
+    const metadata = await ctx.agents.architect.startRun(full, {
       role: "architect",
       runId,
     });
@@ -182,34 +187,6 @@ async function executeArchitect(
       }
     }
   }
-}
-
-function buildArchitectBody(scope: Scope): string {
-  const lines = [
-    `Scope goal: ${scope.goal}`,
-    "",
-    "Inspect the repository (read-only) before decomposing.",
-    "Emit architect_decomposition with at most 20 outcome-oriented tasks.",
-    "Emit an acceptance array of at least one { description, command } entry proving the SCOPE goal (not per-task evidence). Each command must be objective, cheap to run, tied to an observable outcome of the scope goal, runnable from a fresh checkout of the default branch at HEAD, and exit non-zero if the goal does not hold.",
-    "Each task spec must contain: goal, user-observable behavior, invariants, required evidence.",
-    "Prefer coarse vertical tasks over file-sliced tasks.",
-    "Two tasks must not both introduce schema migrations unless one depends on the other.",
-    "depends_on entries are indexes into the tasks array; the graph must be acyclic.",
-    "depends_on must be EXPLICIT: if task B touches anything task A creates (files, packages, exports), B depends on A. An empty depends_on is a claim the task can run first in a fresh checkout.",
-    "Every task must land green ALONE on top of main: its own MR must pass install, typecheck, lint, and tests without any sibling task. New workspace packages must regenerate the lockfile in the same task.",
-    "Pure verify/QA tasks with no diff cannot pass a merge gate — fold verification into the task that produces the change, as required evidence.",
-    "Tasks creating shared contracts (schemas, wire protocols, exported test suites) must say so in their spec: contract changes are permanent and get the strictest review.",
-  ];
-  if (scope.plan_feedback) {
-    lines.push(
-      "",
-      "## Operator feedback on your previous plan",
-      scope.plan_feedback,
-      "",
-      "The previous decomposition was rejected. Revise it to address this feedback.",
-    );
-  }
-  return lines.join("\n");
 }
 
 function isAcyclic(deps: ReadonlyArray<readonly number[]>): boolean {
