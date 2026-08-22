@@ -15,7 +15,7 @@ async function createScopeViaApi(
       goal: opts.goal,
       ...(opts.title ? { title: opts.title } : {}),
       approvals: opts.approvals ?? "manual",
-      project: { path: "so/console-e2e" },
+      repo: { path: "so/console-e2e" },
     },
   });
   expect(res.ok()).toBeTruthy();
@@ -46,7 +46,7 @@ async function pollScope(request: APIRequestContext, scopeId: string) {
       id: string;
       status: string;
       plan_json: string | null;
-      provider_project_path: string;
+      provider_repo_path: string;
       goal: string;
     };
     tasks: { id: string; state: string; title: string; spec: string }[];
@@ -331,7 +331,7 @@ test.describe("desktop console", () => {
     // Check at least one node title and state present
     await expect(dag.locator("foreignObject").first()).toBeVisible();
 
-    // Sheet header shows status chip and project path link href built from gitlab_base_url
+    // Sheet header shows status chip and repo path link href built from gitlab_base_url
     const chip = page.locator(".sheet-head .chip").first();
     await expect(chip).toBeVisible();
     await expect(chip).toContainText("planning");

@@ -8,7 +8,7 @@ export interface BootFakeHandle {
   port: number;
   dir: string;
   boundary: ReturnType<typeof createScriptedBoundary>;
-  projectId: string;
+  repoId: string;
   cleanup: () => Promise<void>;
 }
 
@@ -44,13 +44,13 @@ export async function bootFake(
 
   const boundary = createScriptedBoundary();
 
-  // Seed project so scopes can reference it
-  const project = await boundary.provider.projects.create({
+  // Seed a repo so scopes can reference it
+  const repo = await boundary.provider.repos.create({
     name: "console-e2e",
     path: "so/console-e2e",
   });
-  const projectId = project.id;
-  boundary.script.projectId = projectId;
+  const repoId = repo.id;
+  boundary.script.repoId = repoId;
 
   const handle = await boot({
     provider: boundary.provider,
@@ -69,7 +69,7 @@ export async function bootFake(
     port: prepared.port,
     dir: prepared.dir,
     boundary,
-    projectId,
+    repoId,
     cleanup,
   };
 }

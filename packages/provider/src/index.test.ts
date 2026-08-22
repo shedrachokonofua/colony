@@ -12,7 +12,7 @@ const spec = {
   environment: "dev",
   base_url: "https://gitlab.example.test",
   group: { name: "Colony", path: "colony" },
-  project: { name: "Colony Dev", path: "dev" },
+  repo: { name: "Colony Dev", path: "dev" },
   oauth_application: {
     name: "Colony Web",
     redirect_uris: ["https://colony.example.test/oauth/callback"],
@@ -27,55 +27,51 @@ const spec = {
 describe("FakeProviderAdapter", () => {
   it("supports create/update/comment/label flows with stable provider IDs", async () => {
     const adapter = new FakeProviderAdapter();
-    const project = { id: "fake-project-dev" } as const;
-    const issue = await adapter.issues.create(project, {
+    const repo = { id: "fake-repo-dev" } as const;
+    const issue = await adapter.issues.create(repo, {
       title: "Task",
       description: "Do work",
       labels: ["state:ready"],
     });
-    expect(issue.id).toBe("fake-project-dev:issue-1");
+    expect(issue.id).toBe("fake-repo-dev:issue-1");
     expect(issue.metadata.provider).toBe("fake");
 
     const labeled = await adapter.issues.addLabel(
-      project,
+      repo,
       issue.id,
       "agent:developer",
     );
     expect(labeled.labels).toEqual(["state:ready", "agent:developer"]);
 
-    const updated = await adapter.issues.update(project, issue.id, {
+    const updated = await adapter.issues.update(repo, issue.id, {
       title: "Updated task",
       assignee_ids: ["fake-user-1"],
     });
     expect(updated.title).toBe("Updated task");
     expect(updated.assignee_ids).toEqual(["fake-user-1"]);
 
-    const comment = await adapter.issues.comment(
-      project,
-      issue.id,
-      "Looks good",
-    );
+    const comment = await adapter.issues.comment(repo, issue.id, "Looks good");
     expect(comment.id).toBe("issue-comment-1");
     expect(comment.body).toBe("Looks good");
   });
 
-  it("creates and resolves provider projects from the projects namespace", async () => {
+  it("creates and resolves provider repos from the repos namespace", async () => {
     const adapter = new FakeProviderAdapter();
-    const created = await adapter.projects.create({
+    const created = await adapter.repos.create({
       name: "Frontend",
       path: "colony/frontend",
       visibility: "private",
     });
     expect(created.path).toBe("colony/frontend");
     expect(created.default_branch).toBe("main");
-    expect(await adapter.projects.getById(created.id)).toMatchObject({
+    expect(await adapter.repos.getById(created.id)).toMatchObject({
       id: created.id,
     });
-    expect(await adapter.projects.getByPath("colony/frontend")).toMatchObject({
+    expect(await adapter.repos.getByPath("colony/frontend")).toMatchObject({
       id: created.id,
     });
-    // Idempotent on path: re-creating returns the existing project.
-    const again = await adapter.projects.create({
+    // Idempotent on path: re-creating returns the existing repo.
+    const again = await adapter.repos.create({
       name: "Frontend",
       path: "colony/frontend",
     });
@@ -108,20 +104,20 @@ describe("FakeProviderAdapter", () => {
       await adapter.users.resolveByUsername("colony-it-bot"),
     ).toMatchObject({ id: subBot.id });
 
-    const project = await adapter.projects.create({
+    const repo = await adapter.repos.create({
       name: "throwaway",
       path: "throwaway",
       namespace: group.path,
     });
-    expect(project.path).toBe("colony-it/throwaway");
+    expect(repo.path).toBe("colony-it/throwaway");
 
     await adapter.groups.delete(group.id);
     expect(await adapter.groups.getByPath("colony-it")).toBeNull();
-    // Deleting the group cascades projects (matches GitLab semantics).
-    expect(await adapter.projects.getByPath("colony-it/throwaway")).toBeNull();
+    // Deleting the group cascades its repos (matches GitLab semantics).
+    expect(await adapter.repos.getByPath("colony-it/throwaway")).toBeNull();
   });
 
-  it("isolates issues per provider project", async () => {
+  it("isolates issues per provider repo", async () => {
     const adapter = new FakeProviderAdapter();
     const fe = { id: "proj-fe" } as const;
     const be = { id: "proj-be" } as const;
@@ -136,7 +132,7 @@ describe("FakeProviderAdapter", () => {
     const adapter = new FakeProviderAdapter();
     const result = await adapter.bootstrap(spec);
     expect(result.group.id).toBe("fake-group-dev");
-    expect(result.project.id).toBe("fake-project-dev");
+    expect(result.repo.id).toBe("fake-repo-dev");
     expect(result.bot_users.engine.username).toBe("colony-engine");
     expect(Object.keys(result.bot_users)).toEqual([
       "engine",
@@ -185,15 +181,15 @@ const commandSource: ProviderCommandSource = {
     object_kind: "issue",
     object_id: "42",
     uri: "https://gitlab.example/colony/dev/-/issues/42",
-    provider_project_id: "100",
-    provider_project_path: "colony/dev",
+    provider_repo_id: "100",
+    provider_repo_path: "colony/dev",
   },
   raw_comment: {
     provider: "gitlab",
     comment_id: "note-99",
     uri: "https://gitlab.example/colony/dev/-/issues/42#note_99",
-    provider_project_id: "100",
-    provider_project_path: "colony/dev",
+    provider_repo_id: "100",
+    provider_repo_path: "colony/dev",
   },
 };
 

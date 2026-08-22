@@ -1,5 +1,5 @@
 import type { Run, Store } from "@colony/core";
-import type { ProviderAdapter, ProviderProjectRef } from "@colony/provider";
+import type { ProviderAdapter, ProviderRepoRef } from "@colony/provider";
 import { SERVICE_ACTOR } from "../context.js";
 
 const TOKEN_TTL_DAYS = 2;
@@ -17,13 +17,13 @@ function accessTokenExpiryDate(now = new Date()): string {
 }
 
 /**
- * Mint a per-run project access token. Returns null when the provider does
+ * Mint a per-run repo access token. Returns null when the provider does
  * not support access tokens or single-token mode is active; callers then use
  * the shared GITLAB_TOKEN.
  */
 export async function mintRunToken(
   provider: ProviderAdapter,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   input: {
     readonly name: string;
     readonly scopes: readonly string[];
@@ -44,7 +44,7 @@ export async function mintRunToken(
     };
   }
   if (!provider.accessTokens) return null;
-  const minted = await provider.accessTokens.mint(project, {
+  const minted = await provider.accessTokens.mint(repo, {
     name: input.name,
     scopes: input.scopes,
     access_level: GITLAB_DEVELOPER_ACCESS_LEVEL,
@@ -59,15 +59,15 @@ export async function mintRunToken(
 
 export async function revokeRunToken(
   provider: ProviderAdapter,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   minted: MintedToken | null,
 ): Promise<void> {
   if (!minted?.token_id || !provider.accessTokens) return;
-  await provider.accessTokens.revoke(project, minted.token_id);
+  await provider.accessTokens.revoke(repo, minted.token_id);
 }
 
 /**
- * Deterministic GitLab project-token name for a run. Crash-reap uses this
+ * Deterministic GitLab repo-token name for a run. Crash-reap uses this
  * to revoke tokens minted on the provider before token_id was persisted.
  */
 export function expectedRunTokenName(run: {
@@ -101,16 +101,16 @@ export async function revokeTokensForRuns(
   for (const run of runs) {
     const scope = store.getScope(run.scope_id);
     if (!scope) continue;
-    const project: ProviderProjectRef = {
-      id: scope.provider_project_id,
-      path: scope.provider_project_path,
+    const repo: ProviderRepoRef = {
+      id: scope.provider_repo_id,
+      path: scope.provider_repo_path,
     };
     const ids = new Set<string>();
     if (run.token_id) ids.add(run.token_id);
     const expectedName = expectedRunTokenName(run);
     if (expectedName && provider.accessTokens.list) {
       try {
-        const listed = await provider.accessTokens.list(project);
+        const listed = await provider.accessTokens.list(repo);
         for (const token of listed) {
           if (token.name === expectedName) ids.add(token.id);
         }
@@ -128,7 +128,7 @@ export async function revokeTokensForRuns(
     }
     for (const tokenId of ids) {
       try {
-        await provider.accessTokens.revoke(project, tokenId);
+        await provider.accessTokens.revoke(repo, tokenId);
         store.audit(SERVICE_ACTOR, "agent_token.revoked", {
           scope_id: run.scope_id,
           task_id: run.task_id,

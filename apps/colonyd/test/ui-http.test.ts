@@ -132,8 +132,8 @@ describe("operator console", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "add /version",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     store.startRun({
       scope_id: scope.id,
@@ -160,14 +160,14 @@ describe("operator console", () => {
     const titled = store.createScope({
       goal: "add /version",
       title: "Version endpoint",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     expect(titled.title).toBe("Version endpoint");
     const untitled = store.createScope({
       goal: "retire hostname",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     expect(untitled.title).toBeNull();
   });
@@ -179,8 +179,8 @@ describe("operator console", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "add /version",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     const run = store.startRun({
       scope_id: scope.id,
@@ -216,8 +216,8 @@ describe("operator console", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "add /version",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     const run = store.startRun({
       scope_id: scope.id,
@@ -257,16 +257,16 @@ describe("operator console", () => {
 
     const auto = store.createScope({
       goal: "auto scope",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     expect(auto.approvals).toBe("auto");
 
     const manual = store.createScope({
       goal: "manual scope",
       approvals: "manual",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     expect(manual.approvals).toBe("manual");
     store.setScopeStatus(manual.id, "planning", "svc:test");
@@ -315,8 +315,8 @@ describe("operator console", () => {
     const scope = store.createScope({
       goal: "goal",
       approvals: "manual",
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     store.setScopeStatus(scope.id, "planning", "svc:test");
     store.setScopePlan(
@@ -402,8 +402,8 @@ describe("operator controls", () => {
     const scope = store.createScope({
       goal: "goal",
       approvals,
-      provider_project_id: "1",
-      provider_project_path: "so/colony",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
     });
     store.setScopeStatus(scope.id, "planning", "svc:test");
     const [task] = store.materializePlan(
@@ -515,8 +515,8 @@ describe("acceptance amendment", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "acceptance surgery",
-      provider_project_id: "1",
-      provider_project_path: "so/x",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
     });
     const acceptance = [
       { description: "suite passes", command: "bun run test" },
@@ -573,9 +573,9 @@ describe("scope pagination and grouping", () => {
     for (let i = 0; i < 7; i += 1) {
       store.createScope({
         goal: `scope ${i}`,
-        provider_project_id: "1",
-        provider_project_path: "so/x",
-        group: i < 3 ? "Wave one" : undefined,
+        provider_repo_id: "1",
+        provider_repo_path: "so/x",
+        project: i < 3 ? "Wave one" : undefined,
       });
     }
     const res = await app.request("/scopes?limit=3&offset=0", {
@@ -583,7 +583,7 @@ describe("scope pagination and grouping", () => {
     });
     expect(res.status).toBe(200);
     const page = (await res.json()) as {
-      scopes: { goal: string; group: string | null }[];
+      scopes: { goal: string; project_name: string | null }[];
       total: number;
       limit: number;
       offset: number;
@@ -599,18 +599,18 @@ describe("scope pagination and grouping", () => {
     expect(tail.scopes.length).toBe(4);
     expect(tail.total).toBe(7);
 
-    const grouped = await app.request("/scopes?limit=100&group=Wave%20one", {
+    const grouped = await app.request("/scopes?limit=100&project=Wave%20one", {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     const g = (await grouped.json()) as {
-      scopes: { group: string | null }[];
+      scopes: { project_name: string | null }[];
       total: number;
-      groups: { group: string | null; n: number }[];
+      projects: { project: string | null; n: number }[];
     };
     expect(g.total).toBe(3);
-    expect(g.scopes.every((s) => s.group === "Wave one")).toBe(true);
-    expect(g.groups.find((x) => x.group === "Wave one")?.n).toBe(3);
-    expect(g.groups.find((x) => x.group === null)?.n).toBe(4);
+    expect(g.scopes.every((s) => s.project_name === "Wave one")).toBe(true);
+    expect(g.projects.find((x) => x.project === "Wave one")?.n).toBe(3);
+    expect(g.projects.find((x) => x.project === null)?.n).toBe(4);
 
     const bad = await app.request("/scopes?limit=0", {
       headers: { "X-Actor-Id": "human:op-1" },
@@ -622,22 +622,27 @@ describe("scope pagination and grouping", () => {
     expect(huge.status).toBe(400);
   });
 
-  it("stores the group label and returns it on reads", async () => {
+  it("stores the project name and returns it on reads", async () => {
     const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
     dirs.push(dir);
     const store = new Store(join(dir, "test.db"));
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "grouped",
-      group: "Operator console",
-      provider_project_id: "1",
-      provider_project_path: "so/x",
+      project: "Operator console",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
     });
-    expect(scope.group).toBe("Operator console");
+    expect(scope.project_name).toBe("Operator console");
+    expect(store.getProject("Operator console")).toMatchObject({
+      name: "Operator console",
+    });
     const res = await app.request(`/scopes/${scope.id}`, {
       headers: { "X-Actor-Id": "human:op-1" },
     });
-    const body = (await res.json()) as { scope: { group: string } };
-    expect(body.scope.group).toBe("Operator console");
+    const body = (await res.json()) as {
+      scope: { project_name: string };
+    };
+    expect(body.scope.project_name).toBe("Operator console");
   });
 });

@@ -13,7 +13,7 @@ export async function createScopeViaApi(
       goal: opts.goal,
       ...(opts.title ? { title: opts.title } : {}),
       approvals: opts.approvals ?? "manual",
-      project: { path: "so/console-e2e" },
+      repo: { path: "so/console-e2e" },
     },
   });
   expect(res.ok()).toBeTruthy();

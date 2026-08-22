@@ -3,7 +3,7 @@ import {
   ImplementerCompletionV2 as implementerCompletionV2Schema,
 } from "@colony/schemas";
 import type { Scope, Store, Task } from "@colony/core";
-import type { ProviderProjectRef } from "@colony/provider";
+import type { ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -31,9 +31,9 @@ export async function runImplement(
   task: Task,
   options: ImplementRunOptions = {},
 ): Promise<void> {
-  const project: ProviderProjectRef = {
-    id: scope.provider_project_id,
-    path: scope.provider_project_path,
+  const repo: ProviderRepoRef = {
+    id: scope.provider_repo_id,
+    path: scope.provider_repo_path,
   };
   const developer = ctx.config.forAgent("developer");
   const leaseTtlMs =
@@ -60,7 +60,7 @@ export async function runImplement(
 
   const execution = executeImplement(
     ctx,
-    project,
+    repo,
     scope,
     task,
     run.id,
@@ -80,7 +80,7 @@ export async function runImplement(
 
 async function executeImplement(
   ctx: ColonydContext,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   scope: Scope,
   task: Task,
   runId: string,
@@ -89,7 +89,7 @@ async function executeImplement(
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {
-    minted = await mintRunToken(ctx.provider, project, {
+    minted = await mintRunToken(ctx.provider, repo, {
       name: `colony-task-${task.id}`,
       scopes: ["api", "write_repository"],
       singleToken: ctx.env.singleToken,
@@ -101,14 +101,13 @@ async function executeImplement(
       task_id: task.id,
       run_id: runId,
       detail: {
-        mode: ctx.env.singleToken ? "single_token" : "project_token",
+        mode: ctx.env.singleToken ? "single_token" : "repo_token",
         token_id: minted?.token_id ?? null,
       },
     });
 
-    const baseSha = (
-      await ctx.provider.commits.get(project, scope.default_branch)
-    ).sha;
+    const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
+      .sha;
     const branch = `colony/${task.id}`;
     const packet = {
       kind: "implement_task",
@@ -117,7 +116,7 @@ async function executeImplement(
       goal: task.title,
       body: buildPacketBody(ctx, task),
       repo: {
-        url: scope.provider_project_path,
+        url: scope.provider_repo_path,
         credentials: minted ? { token: minted.token } : undefined,
         branch,
         base_commit: baseSha,
@@ -187,7 +186,7 @@ async function executeImplement(
     }
 
     // Verify envelope facts against the provider before any transition.
-    const verified = await verifyEnvelopeFacts(ctx, project, envelope, branch);
+    const verified = await verifyEnvelopeFacts(ctx, repo, envelope, branch);
     if (!verified.ok) {
       ctx.store.finishRun(runId, "failed", {
         error: `envelope facts unverified: ${verified.reason}`,
@@ -203,8 +202,8 @@ async function executeImplement(
     if (task.mr_iid !== null) {
       try {
         const existing = await ctx.provider.mergeRequests.get(
-          project,
-          `${scope.provider_project_id}:${task.mr_iid}`,
+          repo,
+          `${scope.provider_repo_id}:${task.mr_iid}`,
         );
         if (existing.state === "opened") {
           mrIid = task.mr_iid;
@@ -215,7 +214,7 @@ async function executeImplement(
       }
     }
     if (mrIid === undefined) {
-      const mr = await ctx.provider.mergeRequests.open(project, {
+      const mr = await ctx.provider.mergeRequests.open(repo, {
         source_branch: envelope.branch,
         target_branch: scope.default_branch,
         title: task.title,
@@ -266,7 +265,7 @@ async function executeImplement(
   } finally {
     if (minted) {
       try {
-        await revokeRunToken(ctx.provider, project, minted);
+        await revokeRunToken(ctx.provider, repo, minted);
         ctx.store.audit(SERVICE_ACTOR, "agent_token.revoked", {
           scope_id: scope.id,
           task_id: task.id,
@@ -437,12 +436,12 @@ function buildMrDescription(
 
 async function verifyEnvelopeFacts(
   ctx: ColonydContext,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   envelope: ImplementerCompletionV2,
   expectedBranch: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
-    await ctx.provider.commits.get(project, envelope.head_sha);
+    await ctx.provider.commits.get(repo, envelope.head_sha);
   } catch {
     return { ok: false, reason: `commit ${envelope.head_sha} not found` };
   }
@@ -454,7 +453,7 @@ async function verifyEnvelopeFacts(
   }
   let branchHead: string;
   try {
-    branchHead = (await ctx.provider.commits.get(project, envelope.branch)).sha;
+    branchHead = (await ctx.provider.commits.get(repo, envelope.branch)).sha;
   } catch {
     return { ok: false, reason: `branch ${envelope.branch} not found` };
   }

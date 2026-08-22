@@ -5,10 +5,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
-import type {
-  ProviderMergeRequest,
-  ProviderProjectRef,
-} from "@colony/provider";
+import type { ProviderMergeRequest, ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -73,9 +70,9 @@ export async function runMergeGate(
   task: Task,
   headSha: string,
 ): Promise<void> {
-  const project: ProviderProjectRef = {
-    id: scope.provider_project_id,
-    path: scope.provider_project_path,
+  const repo: ProviderRepoRef = {
+    id: scope.provider_repo_id,
+    path: scope.provider_repo_path,
   };
   const run = ctx.store.startRun({
     scope_id: scope.id,
@@ -91,28 +88,22 @@ export async function runMergeGate(
     detail: { kind: "merge_gate", head_sha: headSha },
   });
 
-  const execution = executeMergeGate(
-    ctx,
-    project,
-    scope,
-    task,
-    run.id,
-    headSha,
-  );
+  const execution = executeMergeGate(ctx, repo, scope, task, run.id, headSha);
   trackRun(run.id, execution, () => Promise.resolve());
   await execution;
 }
 
 async function executeMergeGate(
   ctx: ColonydContext,
-  project: ProviderProjectRef,
+  repo: ProviderRepoRef,
   scope: Scope,
   task: Task,
   runId: string,
   headSha: string,
 ): Promise<void> {
   const workspace = join(tmpdir(), "colonyd-gate", runId);
-  const clone = buildCloneUrl(ctx, scope.provider_project_path);
+  const repoPath = scope.provider_repo_path;
+  const clone = buildCloneUrl(ctx, repoPath);
   try {
     const executor = ctx.gateExecutor ?? defaultGateExecutor;
     const failure = await executor({
@@ -144,8 +135,8 @@ async function executeMergeGate(
     let mr;
     try {
       mr = await ctx.provider.mergeRequests.get(
-        project,
-        mrRef(scope.provider_project_id, task.mr_iid!),
+        repo,
+        mrRef(repo.id, task.mr_iid!),
       );
     } catch (err) {
       ctx.store.finishRun(runId, "failed", {
@@ -180,13 +171,13 @@ async function executeMergeGate(
 
     let mergeResult: ProviderMergeRequest;
     try {
-      mergeResult = await ctx.provider.mergeRequests.merge(project, mr.id, {
+      mergeResult = await ctx.provider.mergeRequests.merge(repo, mr.id, {
         sha: headSha,
       });
     } catch (mergeError) {
       let observed: ProviderMergeRequest | undefined;
       try {
-        observed = await ctx.provider.mergeRequests.get(project, mr.id);
+        observed = await ctx.provider.mergeRequests.get(repo, mr.id);
       } catch {
         // Preserve the merge error when the confirming read also fails.
       }
@@ -360,16 +351,16 @@ function countConsecutive(
   return count;
 }
 
-function mrRef(projectId: string, mrIid: number): string {
-  return `${projectId}:${mrIid}`;
+function mrRef(repoId: string, mrIid: number): string {
+  return `${repoId}:${mrIid}`;
 }
 
 export function buildCloneUrl(
   ctx: ColonydContext,
-  projectPath: string,
+  repoPath: string,
 ): { cloneUrl: string; displayUrl: string } {
   const base = ctx.env.gitlabBaseUrl.replace(/\/+$/, "");
-  const path = projectPath.replace(/^\/+/, "").replace(/\/+$/, "");
+  const path = repoPath.replace(/^\/+/, "").replace(/\/+$/, "");
   const suffix = path.endsWith(".git") ? "" : ".git";
   const url = new URL(`${base}/${path}${suffix}`);
   const display = new URL(url.href);

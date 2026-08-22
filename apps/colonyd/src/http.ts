@@ -27,17 +27,18 @@ type Env = { Variables: { actor: string } };
 const createScopeBody = z
   .object({
     goal: z.string().min(1),
-    group: z.string().min(1).max(120).optional(),
     title: z.string().min(1).max(120).optional(),
+    /** Name of the (created-on-demand) Colony project this scope belongs to. */
+    project: z.string().min(1).max(120).optional(),
     approvals: z.enum(["auto", "manual"]).optional(),
-    project: z
+    repo: z
       .object({
         id: z.string().min(1).optional(),
         path: z.string().min(1).optional(),
       })
       .strict()
-      .refine((p) => p.id || p.path, {
-        message: "project.id or project.path required",
+      .refine((r) => r.id || r.path, {
+        message: "repo.id or repo.path required",
       }),
   })
   .strict();
@@ -71,7 +72,7 @@ const auditQuery = z.object({
 const scopesQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
-  group: z.string().min(1).max(120).optional(),
+  project: z.string().min(1).max(120).optional(),
 });
 
 export function buildApp(ctx: ColonydContext): Hono<Env> {
@@ -185,25 +186,29 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const parsed = createScopeBody.safeParse(await parseBody(c));
     if (!parsed.success) return badBody(c, parsed.error.message);
 
-    const projectRef = parsed.data.project;
-    const project = projectRef.id
-      ? await ctx.provider.projects.getById(projectRef.id)
-      : await ctx.provider.projects.getByPath(projectRef.path!);
-    if (!project) {
-      return c.json({ error: { code: "PROJECT_NOT_FOUND" } }, 404);
+    const repoRef = parsed.data.repo;
+    const repo = repoRef.id
+      ? await ctx.provider.repos.getById(repoRef.id)
+      : await ctx.provider.repos.getByPath(repoRef.path!);
+    if (!repo) {
+      return c.json({ error: { code: "REPO_NOT_FOUND" } }, 404);
     }
     const scope = ctx.store.createScope({
       goal: parsed.data.goal,
       title: parsed.data.title,
-      group: parsed.data.group,
+      project: parsed.data.project,
       approvals: parsed.data.approvals,
-      provider_project_id: project.id,
-      provider_project_path: project.path,
-      default_branch: project.default_branch || "main",
+      provider_repo_id: repo.id,
+      provider_repo_path: repo.path,
+      default_branch: repo.default_branch || "main",
     });
     ctx.store.audit(c.get("actor"), "scope.created", {
       scope_id: scope.id,
-      detail: { goal: scope.goal, project: project.path },
+      detail: {
+        goal: scope.goal,
+        repo: repo.path,
+        project: parsed.data.project ?? null,
+      },
     });
     ctx.requestTick();
     return c.json(scope, 201);
@@ -214,12 +219,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!parsed.success) return badBody(c, parsed.error.message);
     const limit = parsed.data.limit ?? 25;
     const offset = parsed.data.offset ?? 0;
-    const { scopes, total, groups } = ctx.store.pageScopes(
+    const { scopes, total, projects } = ctx.store.pageScopes(
       limit,
       offset,
-      parsed.data.group,
+      parsed.data.project,
     );
-    return c.json({ scopes, total, limit, offset, groups });
+    return c.json({ scopes, total, limit, offset, projects });
   });
 
   app.get("/scopes/:id", (c) => {
@@ -729,8 +734,8 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     let mr;
     try {
       mr = await ctx.provider.mergeRequests.get(
-        { id: scope.provider_project_id, path: scope.provider_project_path },
-        `${scope.provider_project_id}:${task.mr_iid}`,
+        { id: scope.provider_repo_id, path: scope.provider_repo_path },
+        `${scope.provider_repo_id}:${task.mr_iid}`,
       );
     } catch {
       return c.json(

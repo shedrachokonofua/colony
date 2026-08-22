@@ -7,10 +7,10 @@
  *   COLONY_CONFIG_PATH=config/colony.yaml AGENT_RUNTIME=pi \
  *   npx tsx scripts/acceptance.ts
  *
- * Creates throwaway `colony-accept-*` projects, boots colonyd in-process
+ * Creates throwaway `colony-accept-*` repos, boots colonyd in-process
  * (scenario 2 as a subprocess), runs the scenarios sequentially, prints
  * PASS/FAIL per scenario, and exits nonzero on any FAIL. Cleanup (scenario 7)
- * always runs and deletes the throwaway projects.
+ * always runs and deletes the throwaway repos.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { resetEnvCache } from "@colony/config";
-import type { ProviderProjectInfo } from "@colony/provider";
+import type { ProviderRepoInfo } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
 import { boot, type ColonydHandle } from "../apps/colonyd/src/main.js";
 
@@ -57,7 +57,7 @@ interface ScenarioResult {
 
 const RESULTS: ScenarioResult[] = [];
 const RUN_SUFFIX = randomBytes(3).toString("hex");
-const PROJECTS: ProviderProjectInfo[] = [];
+const REPOS: ProviderRepoInfo[] = [];
 const HANDLES: ColonydHandle[] = [];
 
 function envRequired(name: string): string {
@@ -153,17 +153,17 @@ function newProvider(): GitLabProviderAdapter {
   });
 }
 
-async function createAcceptProject(name: string): Promise<ProviderProjectInfo> {
+async function createAcceptRepo(name: string): Promise<ProviderRepoInfo> {
   const provider = newProvider();
-  const project = await provider.projects.create({
+  const repo = await provider.repos.create({
     name,
     path: name,
     visibility: "private",
     default_branch: "main",
   });
-  PROJECTS.push(project);
-  console.log(`[setup] created project ${project.path} (${project.id})`);
-  return project;
+  REPOS.push(repo);
+  console.log(`[setup] created repo ${repo.path} (${repo.id})`);
+  return repo;
 }
 
 function setEnvForColonyd(
@@ -236,10 +236,10 @@ async function http(
 async function createScopeViaHttp(
   port: number,
   goal: string,
-  project: ProviderProjectInfo,
+  repo: ProviderRepoInfo,
 ): Promise<string> {
   const created = await http(port, "POST", "/scopes", {
-    body: { goal, project: { path: project.path } },
+    body: { goal, repo: { path: repo.path } },
     actor: "human:acceptance",
   });
   if (created.status !== 201) {
@@ -293,13 +293,13 @@ async function waitForScopeDone(
 }
 
 async function seedFiles(
-  project: ProviderProjectInfo,
+  repo: ProviderRepoInfo,
   branch: string,
   files: Record<string, string>,
 ): Promise<void> {
   const provider = newProvider();
   await provider.commits.create(
-    { id: project.id },
+    { id: repo.id },
     {
       branch,
       message: "colony acceptance seed",
@@ -372,31 +372,31 @@ function packageLockForApp(): string {
   }
 }
 
-async function emptyProjectRegistry(projectId: string): Promise<void> {
-  const repos = await gitlabApi(`/projects/${projectId}/registry/repositories`);
+async function emptyRepoRegistry(repoId: string): Promise<void> {
+  const repos = await gitlabApi(`/projects/${repoId}/registry/repositories`);
   if (!Array.isArray(repos)) return;
   for (const repo of repos as { id: number }[]) {
     const tags = await gitlabApi(
-      `/projects/${projectId}/registry/repositories/${repo.id}/tags`,
+      `/projects/${repoId}/registry/repositories/${repo.id}/tags`,
     );
     if (Array.isArray(tags)) {
       for (const tag of tags as { name: string }[]) {
         await gitlabApi(
-          `/projects/${projectId}/registry/repositories/${repo.id}/tags/${encodeURIComponent(tag.name)}`,
+          `/projects/${repoId}/registry/repositories/${repo.id}/tags/${encodeURIComponent(tag.name)}`,
           { method: "DELETE" },
         ).catch(() => undefined);
       }
     }
-    await gitlabApi(`/projects/${projectId}/registry/repositories/${repo.id}`, {
+    await gitlabApi(`/projects/${repoId}/registry/repositories/${repo.id}`, {
       method: "DELETE",
     }).catch(() => undefined);
   }
 }
 
-async function listProjectAccessTokens(
-  projectId: string,
+async function listRepoAccessTokens(
+  repoId: string,
 ): Promise<{ id: number; name: string; active: boolean }[]> {
-  const tokens = await gitlabApi(`/projects/${projectId}/access_tokens`);
+  const tokens = await gitlabApi(`/projects/${repoId}/access_tokens`);
   return (Array.isArray(tokens) ? tokens : []) as {
     id: number;
     name: string;
@@ -405,11 +405,11 @@ async function listProjectAccessTokens(
 }
 
 async function listMrsForBranch(
-  projectId: string,
+  repoId: string,
   branch: string,
 ): Promise<{ iid: number; state: string; sha: string | null }[]> {
   const mrs = await gitlabApi(
-    `/projects/${projectId}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`,
+    `/projects/${repoId}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`,
   );
   return (Array.isArray(mrs) ? mrs : []) as {
     iid: number;
@@ -419,11 +419,11 @@ async function listMrsForBranch(
 }
 
 function defaultBranchTree(
-  project: ProviderProjectInfo,
+  repo: ProviderRepoInfo,
   path: string,
 ): Promise<{ name: string }[]> {
   return gitlabApi(
-    `/projects/${project.id}/repository/tree?path=${encodeURIComponent(path)}&ref=main`,
+    `/projects/${repo.id}/repository/tree?path=${encodeURIComponent(path)}&ref=main`,
   ) as Promise<{ name: string }[]>;
 }
 
@@ -433,10 +433,10 @@ function defaultBranchTree(
 
 async function scenarioHappyPath(port: number): Promise<void> {
   const name = "1.happy-path";
-  const project = await createAcceptProject(`colony-accept-1-${RUN_SUFFIX}`);
+  const repo = await createAcceptRepo(`colony-accept-1-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
-  await seedFiles(project, "main", files);
+  await seedFiles(repo, "main", files);
 
   const dbPath = join(tmpdir(), `colony-accept-1-${RUN_SUFFIX}.db`);
   const handle = await launchColonyd(port, dbPath, YOLO_CONFIG_PATH);
@@ -444,7 +444,7 @@ async function scenarioHappyPath(port: number): Promise<void> {
     const scopeId = await createScopeViaHttp(
       port,
       "Add a /version endpoint to index.js that responds with JSON {version} taken from package.json, and extend test.js to cover it.",
-      project,
+      repo,
     );
     const final = await waitForScopeDone(port, scopeId, SCENARIO_BUDGET_MS);
     if (!final)
@@ -457,7 +457,7 @@ async function scenarioHappyPath(port: number): Promise<void> {
     const merged = final.tasks.filter((t) => t.state === "merged");
     if (merged.length < 1) throw new Error("no merged tasks");
     const indexJs = await gitlabRaw(
-      `/projects/${project.id}/repository/files/${encodeURIComponent("index.js")}/raw?ref=main`,
+      `/projects/${repo.id}/repository/files/${encodeURIComponent("index.js")}/raw?ref=main`,
     );
     if (!indexJs.includes("version")) {
       throw new Error("default branch index.js lacks the /version change");
@@ -555,10 +555,10 @@ async function waitForColonydDown(port: number): Promise<void> {
 
 async function scenarioRestart(port: number): Promise<void> {
   const name = "2.restart-mid-run";
-  const project = await createAcceptProject(`colony-accept-2-${RUN_SUFFIX}`);
+  const repo = await createAcceptRepo(`colony-accept-2-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
-  await seedFiles(project, "main", files);
+  await seedFiles(repo, "main", files);
 
   const dbPath = join(tmpdir(), `colony-accept-2-${RUN_SUFFIX}.db`);
   const goal =
@@ -574,7 +574,7 @@ async function scenarioRestart(port: number): Promise<void> {
     );
     if (!healthy) throw new Error("colonyd subprocess never became healthy");
 
-    const scopeId = await createScopeViaHttp(port, goal, project);
+    const scopeId = await createScopeViaHttp(port, goal, repo);
 
     const runningObserved = await waitFor(
       "task running",
@@ -628,7 +628,7 @@ async function scenarioRestart(port: number): Promise<void> {
 
     // No duplicate MRs for any task branch.
     for (const task of final.tasks) {
-      const mrs = await listMrsForBranch(project.id, `colony/${task.id}`);
+      const mrs = await listMrsForBranch(repo.id, `colony/${task.id}`);
       if (mrs.length > 1) {
         throw new Error(`task ${task.id} has ${mrs.length} merge requests`);
       }
@@ -655,8 +655,8 @@ async function scenarioLeaseExpiry(
   baseConfigPath: string,
 ): Promise<void> {
   const name = "3.lease-expiry";
-  const project = await createAcceptProject(`colony-accept-3-${RUN_SUFFIX}`);
-  await seedFiles(project, "main", baseNodeApp());
+  const repo = await createAcceptRepo(`colony-accept-3-${RUN_SUFFIX}`);
+  await seedFiles(repo, "main", baseNodeApp());
 
   // Copied config with an unreachable model endpoint so every run fails.
   const brokenConfig = join(tmpdir(), `colony-accept-3-${RUN_SUFFIX}.yaml`);
@@ -675,7 +675,7 @@ async function scenarioLeaseExpiry(
     const scopeId = await createScopeViaHttp(
       port,
       "Unreachable-model probe scope.",
-      project,
+      repo,
     );
     const blocked = await waitFor(
       "scope blocked",
@@ -684,7 +684,7 @@ async function scenarioLeaseExpiry(
       10 * 60_000,
     );
     if (!blocked) throw new Error("scope never blocked with unreachable model");
-    const tokens = await listProjectAccessTokens(project.id);
+    const tokens = await listRepoAccessTokens(repo.id);
     const colonyTokens = tokens.filter(
       (t) => t.name.startsWith("colony-") && t.active,
     );
@@ -727,7 +727,7 @@ const MIGRATION_CHECKER = [
 
 async function scenarioMigrationConflict(port: number): Promise<void> {
   const name = "4.migration-conflict";
-  const project = await createAcceptProject(`colony-accept-4-${RUN_SUFFIX}`);
+  const repo = await createAcceptRepo(`colony-accept-4-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["migrations/001_init.sql"] =
     "CREATE TABLE users (id INTEGER PRIMARY KEY);\n";
@@ -737,14 +737,14 @@ async function scenarioMigrationConflict(port: number): Promise<void> {
     '  - "node scripts/check-migrations.js"',
     "",
   ].join("\n");
-  await seedFiles(project, "main", files);
+  await seedFiles(repo, "main", files);
 
   const dbPath = join(tmpdir(), `colony-accept-4-${RUN_SUFFIX}.db`);
   const handle = await launchColonyd(port, dbPath, YOLO_CONFIG_PATH);
   try {
     const goal = (suffix: string) =>
       `Add exactly one new SQL migration file migrations/002_${suffix}.sql creating table ${suffix} (id INTEGER PRIMARY KEY). Produce exactly one task; touch only the migrations directory.`;
-    const scopeA = await createScopeViaHttp(port, goal("alpha"), project);
+    const scopeA = await createScopeViaHttp(port, goal("alpha"), repo);
     const doneA = await waitForScopeDone(port, scopeA, SCENARIO_BUDGET_MS);
     if (!doneA || doneA.scope.status !== "done") {
       throw new Error(
@@ -752,12 +752,12 @@ async function scenarioMigrationConflict(port: number): Promise<void> {
       );
     }
 
-    const scopeB = await createScopeViaHttp(port, goal("beta"), project);
+    const scopeB = await createScopeViaHttp(port, goal("beta"), repo);
     const doneB = await waitForScopeDone(port, scopeB, SCENARIO_BUDGET_MS);
     const bStates = doneB?.tasks.map((t) => t.state).join(",") ?? "timeout";
     // Second scope may end done (agent renamed to 003_) or blocked (could not
     // resolve). Either is acceptable; the invariant below is the contract.
-    const migrations = await defaultBranchTree(project, "migrations");
+    const migrations = await defaultBranchTree(repo, "migrations");
     const prefixes = migrations.map((entry) => entry.name.split("_")[0]);
     const duplicates = prefixes.filter((p, i) => prefixes.indexOf(p) !== i);
     if (duplicates.length > 0) {
@@ -783,10 +783,10 @@ async function scenarioMigrationConflict(port: number): Promise<void> {
 
 async function scenarioCredentialLeak(port: number): Promise<void> {
   const name = "5.credential-leak";
-  const project = await createAcceptProject(`colony-accept-5-${RUN_SUFFIX}`);
+  const repo = await createAcceptRepo(`colony-accept-5-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
-  await seedFiles(project, "main", files);
+  await seedFiles(repo, "main", files);
 
   const dbPath = join(tmpdir(), `colony-accept-5-${RUN_SUFFIX}.db`);
   const handle = await launchColonyd(port, dbPath, YOLO_CONFIG_PATH);
@@ -794,7 +794,7 @@ async function scenarioCredentialLeak(port: number): Promise<void> {
     const scopeId = await createScopeViaHttp(
       port,
       "Create a file named credentials.txt whose content is exactly the literal string glpat-AAAABBBBCCCCDDDDEEEEFFFF and nothing else. Do not add anything else.",
-      project,
+      repo,
     );
 
     // Wait until the gate rejects the leak (secret_scan evidence) or budget.
@@ -842,8 +842,8 @@ async function scenarioCredentialLeak(port: number): Promise<void> {
       actor: "human:acceptance",
     });
     const provider = newProvider();
-    const finalProject = await provider.projects.getById(project.id);
-    const filesOnMain = await defaultBranchTree(finalProject!, "");
+    const finalRepo = await provider.repos.getById(repo.id);
+    const filesOnMain = await defaultBranchTree(finalRepo!, "");
     if (filesOnMain.some((f) => f.name === "credentials.txt")) {
       throw new Error("credentials.txt reached the default branch");
     }
@@ -865,9 +865,9 @@ async function scenarioStaleHead(): Promise<void> {
     // Every succeeded merge_gate run recorded the gated head SHA in evidence;
     // for each merged MR, GitLab's sha must equal that recorded SHA.
     let checked = 0;
-    for (const project of PROJECTS) {
+    for (const repo of REPOS) {
       const mrs = await gitlabApi(
-        `/projects/${project.id}/merge_requests?state=merged`,
+        `/projects/${repo.id}/merge_requests?state=merged`,
       );
       const mergedMrs = (Array.isArray(mrs) ? mrs : []) as unknown as {
         iid: number;
@@ -879,12 +879,12 @@ async function scenarioStaleHead(): Promise<void> {
         checked += 1;
         // Re-fetch canonical MR state; merged sha is the source head at merge.
         const canonical = await gitlabApi(
-          `/projects/${project.id}/merge_requests/${mr.iid}`,
+          `/projects/${repo.id}/merge_requests/${mr.iid}`,
         );
         const sha = (canonical as { sha?: string }).sha;
         if (sha !== mr.sha) {
           throw new Error(
-            `project ${project.id} MR !${mr.iid}: sha drift ${mr.sha} -> ${sha}`,
+            `repo ${repo.id} MR !${mr.iid}: sha drift ${mr.sha} -> ${sha}`,
           );
         }
       }
@@ -912,44 +912,44 @@ async function scenarioCleanup(): Promise<void> {
       throw new Error(`gate workspaces left behind: ${leftovers.join(", ")}`);
     }
     const leaks: string[] = [];
-    for (const project of PROJECTS) {
-      const tokens = await listProjectAccessTokens(project.id);
+    for (const repo of REPOS) {
+      const tokens = await listRepoAccessTokens(repo.id);
       const colonyTokens = tokens.filter(
         (t) => t.name.startsWith("colony-") && t.active,
       );
       if (colonyTokens.length > 0) {
         leaks.push(
-          `project ${project.path}: unrevoked tokens ${colonyTokens.map((t) => t.name).join(", ")}`,
+          `repo ${repo.path}: unrevoked tokens ${colonyTokens.map((t) => t.name).join(", ")}`,
         );
         for (const token of colonyTokens) {
-          await gitlabApi(`/projects/${project.id}/access_tokens/${token.id}`, {
+          await gitlabApi(`/projects/${repo.id}/access_tokens/${token.id}`, {
             method: "DELETE",
           }).catch(() => undefined);
         }
       }
     }
-    // Always delete throwaway projects, even when the leak assertion fails.
+    // Always delete throwaway repos, even when the leak assertion fails.
     const provider = newProvider();
     const undeleted: string[] = [];
-    for (const project of PROJECTS) {
+    for (const repo of REPOS) {
       try {
-        await emptyProjectRegistry(project.id);
-        await provider.projects.delete(project.id);
+        await emptyRepoRegistry(repo.id);
+        await provider.repos.delete(repo.id);
       } catch (err) {
         undeleted.push(
-          `${project.path}: ${err instanceof Error ? err.message : String(err)}`,
+          `${repo.path}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
-    PROJECTS.length = 0;
+    REPOS.length = 0;
     if (leaks.length > 0) throw new Error(leaks.join("; "));
     if (undeleted.length > 0) {
-      throw new Error(`failed to delete projects: ${undeleted.join("; ")}`);
+      throw new Error(`failed to delete repos: ${undeleted.join("; ")}`);
     }
     report(
       name,
       "PASS",
-      "no gate workspaces, no unrevoked tokens, projects deleted",
+      "no gate workspaces, no unrevoked tokens, repos deleted",
     );
   } catch (err) {
     report(name, "FAIL", err instanceof Error ? err.message : String(err));
@@ -962,10 +962,10 @@ async function scenarioCleanup(): Promise<void> {
 
 async function scenarioReviewLoop(port: number): Promise<void> {
   const name = "8.review-loop";
-  const project = await createAcceptProject(`colony-accept-8-${RUN_SUFFIX}`);
+  const repo = await createAcceptRepo(`colony-accept-8-${RUN_SUFFIX}`);
   const files = baseNodeApp();
   files["package-lock.json"] = packageLockForApp();
-  await seedFiles(project, "main", files);
+  await seedFiles(repo, "main", files);
 
   const dbPath = join(tmpdir(), `colony-accept-8-${RUN_SUFFIX}.db`);
   const reviewConfig = prepareYoloConfig({ reviewMode: "required" });
@@ -974,7 +974,7 @@ async function scenarioReviewLoop(port: number): Promise<void> {
     const scopeId = await createScopeViaHttp(
       port,
       "Add a /version endpoint to index.js that responds with JSON {version} taken from package.json, and extend test.js to cover it.",
-      project,
+      repo,
     );
     const final = await waitForScopeDone(port, scopeId, SCENARIO_BUDGET_MS);
     if (!final)

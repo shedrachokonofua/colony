@@ -79,7 +79,7 @@ describe("GitLabProviderAdapter bootstrap", () => {
       environment: "dev",
       base_url: "https://gitlab.test",
       group: { name: "Colony", path: "colony" },
-      project: { name: "Dev", path: "dev" },
+      repo: { name: "Dev", path: "dev" },
       oauth_application: {
         name: "Colony Web",
         redirect_uris: ["https://colony.test/oauth/callback"],
@@ -92,12 +92,12 @@ describe("GitLabProviderAdapter bootstrap", () => {
     });
 
     expect(result.group.id).toBe("10");
-    expect(result.project.id).toBe("20");
+    expect(result.repo.id).toBe("20");
     expect(result.oauth_application.client_id).toBe("oauth-client-id");
     expect(result.webhook.id).toBe("50");
     expect(result.actions.map((a) => a.resource)).toEqual([
       "group",
-      "project",
+      "repo",
       "bot:engine",
       "bot:reviewer",
       "bot:architect",
@@ -119,8 +119,8 @@ describe("GitLabProviderAdapter bootstrap", () => {
   });
 });
 
-describe("GitLabProviderAdapter projects", () => {
-  it("creates a new project under a namespace using the bot PAT (no admin credential)", async () => {
+describe("GitLabProviderAdapter repos", () => {
+  it("creates a new repo under a namespace using the bot PAT (no admin credential)", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = [];
     const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
@@ -161,7 +161,7 @@ describe("GitLabProviderAdapter projects", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const created = await adapter.projects.create({
+    const created = await adapter.repos.create({
       name: "Frontend",
       path: "frontend",
       namespace: "colony",
@@ -175,7 +175,7 @@ describe("GitLabProviderAdapter projects", () => {
     expect(calls.every((c) => !c.url.includes("admin"))).toBe(true);
   });
 
-  it("returns the existing project when create is called against a path that already exists", async () => {
+  it("returns the existing repo when create is called against a path that already exists", async () => {
     const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
@@ -205,7 +205,7 @@ describe("GitLabProviderAdapter projects", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const result = await adapter.projects.create({
+    const result = await adapter.repos.create({
       name: "Backend",
       path: "backend",
       namespace: "g",
@@ -214,7 +214,7 @@ describe("GitLabProviderAdapter projects", () => {
     expect(result.visibility).toBe("internal");
   });
 
-  it("looks projects up by id and by path", async () => {
+  it("looks repos up by id and by path", async () => {
     const fetchMock = (url: string | URL | Request) => {
       const urlText =
         typeof url === "string"
@@ -244,18 +244,18 @@ describe("GitLabProviderAdapter projects", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const byId = await adapter.projects.getById("42");
+    const byId = await adapter.repos.getById("42");
     expect(byId).toMatchObject({
       id: "42",
       default_branch: "trunk",
       visibility: "public",
     });
-    expect(await adapter.projects.getByPath("g/missing")).toBeNull();
+    expect(await adapter.repos.getByPath("g/missing")).toBeNull();
   });
 });
 
 describe("GitLabProviderAdapter accessTokens", () => {
-  it("mints and revokes project access tokens", async () => {
+  it("mints and revokes repo access tokens", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = [];
     const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
@@ -293,9 +293,9 @@ describe("GitLabProviderAdapter accessTokens", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const project = { id: "20", path: "colony/dev" } as const;
+    const repo = { id: "20", path: "colony/dev" } as const;
 
-    const minted = await adapter.accessTokens.mint(project, {
+    const minted = await adapter.accessTokens.mint(repo, {
       name: "colony-task-col-demo.1",
       scopes: ["api", "write_repository"],
       access_level: 30,
@@ -308,7 +308,7 @@ describe("GitLabProviderAdapter accessTokens", () => {
       scopes: ["api", "write_repository"],
       expires_at: "2026-05-02",
     });
-    await expect(adapter.accessTokens.revoke(project, minted.id)).resolves.toBe(
+    await expect(adapter.accessTokens.revoke(repo, minted.id)).resolves.toBe(
       undefined,
     );
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
@@ -323,7 +323,7 @@ describe("GitLabProviderAdapter accessTokens", () => {
     });
   });
 
-  it("lists active project access tokens without requiring the secret", async () => {
+  it("lists active repo access tokens without requiring the secret", async () => {
     const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       const urlText =
@@ -505,9 +505,9 @@ describe("GitLabProviderAdapter issues", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const project = { id: "20", path: "colony/dev" } as const;
+    const repo = { id: "20", path: "colony/dev" } as const;
 
-    const created = await adapter.issues.create(project, {
+    const created = await adapter.issues.create(repo, {
       title: "Task",
       description: "Do work",
       labels: ["state:ready"],
@@ -519,7 +519,7 @@ describe("GitLabProviderAdapter issues", () => {
       "https://gitlab.test/colony/dev/-/issues/7",
     );
 
-    const updated = await adapter.issues.update(project, created.id, {
+    const updated = await adapter.issues.update(repo, created.id, {
       title: "Updated task",
       assignee_ids: ["91"],
     });
@@ -527,14 +527,14 @@ describe("GitLabProviderAdapter issues", () => {
     expect(updated.assignee_ids).toEqual(["91"]);
 
     await expect(
-      adapter.issues.addLabel(project, created.id, "agent:developer"),
+      adapter.issues.addLabel(repo, created.id, "agent:developer"),
     ).resolves.toMatchObject({ labels: ["state:ready", "agent:developer"] });
     await expect(
-      adapter.issues.removeLabel(project, created.id, "state:ready"),
+      adapter.issues.removeLabel(repo, created.id, "state:ready"),
     ).resolves.toMatchObject({ labels: ["agent:developer"] });
 
     const comment = await adapter.issues.comment(
-      project,
+      repo,
       created.id,
       "Looks good",
     );
@@ -544,11 +544,11 @@ describe("GitLabProviderAdapter issues", () => {
       author_id: "91",
     });
 
+    await expect(adapter.issues.close(repo, created.id)).resolves.toMatchObject(
+      { state: "closed" },
+    );
     await expect(
-      adapter.issues.close(project, created.id),
-    ).resolves.toMatchObject({ state: "closed" });
-    await expect(
-      adapter.issues.reopen(project, created.id),
+      adapter.issues.reopen(repo, created.id),
     ).resolves.toMatchObject({ state: "opened" });
 
     await expect(adapter.users.resolveById("91")).resolves.toMatchObject({
@@ -565,7 +565,7 @@ describe("GitLabProviderAdapter issues", () => {
     );
   });
 
-  it("routes the same iid to different projects when the project ref changes", async () => {
+  it("routes the same iid to different repos when the repo ref changes", async () => {
     const calls: Array<{ url: string; method: string }> = [];
     const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
       const method = init?.method ?? "GET";
@@ -577,14 +577,14 @@ describe("GitLabProviderAdapter issues", () => {
             : url.url;
       calls.push({ url: urlText, method });
       const path = urlText.replace("https://gitlab.test/api/v4", "");
-      const projectMatch = /^\/projects\/(\d+)\/issues$/.exec(path);
-      if (method === "POST" && projectMatch) {
-        const projectId = Number(projectMatch[1]);
+      const repoIdMatch = /^\/projects\/(\d+)\/issues$/.exec(path);
+      if (method === "POST" && repoIdMatch) {
+        const repoId = Number(repoIdMatch[1]);
         return Promise.resolve(
           json({
-            id: projectId * 10,
+            id: repoId * 10,
             iid: 1,
-            project_id: projectId,
+            project_id: repoId,
             title: "x",
             description: "",
             state: "opened",
@@ -721,9 +721,9 @@ describe("GitLabProviderAdapter mergeRequests", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const project = { id: "20", path: "colony/dev" } as const;
+    const repo = { id: "20", path: "colony/dev" } as const;
 
-    const opened = await adapter.mergeRequests.open(project, {
+    const opened = await adapter.mergeRequests.open(repo, {
       title: "Add CSV export",
       description: "draft",
       source_branch: "feature/csv",
@@ -733,39 +733,36 @@ describe("GitLabProviderAdapter mergeRequests", () => {
     expect(opened.iid).toBe(5);
     expect(opened.state).toBe("opened");
 
-    const updated = await adapter.mergeRequests.update(project, opened.id, {
+    const updated = await adapter.mergeRequests.update(repo, opened.id, {
       title: "Add CSV export (v2)",
     });
     expect(updated.title).toBe("Add CSV export (v2)");
 
-    const approved = await adapter.mergeRequests.approve(project, opened.id);
+    const approved = await adapter.mergeRequests.approve(repo, opened.id);
     expect(approved.id).toBe("20:5");
 
-    const unapproved = await adapter.mergeRequests.unapprove(
-      project,
-      opened.id,
-    );
+    const unapproved = await adapter.mergeRequests.unapprove(repo, opened.id);
     expect(unapproved.id).toBe("20:5");
 
     const note = await adapter.mergeRequests.comment(
-      project,
+      repo,
       opened.id,
       "looks good",
     );
     expect(note).toMatchObject({ id: "901", body: "looks good" });
 
     const thread = await adapter.mergeRequests.addReviewThread(
-      project,
+      repo,
       opened.id,
       "nit: rename helper",
     );
     expect(thread).toMatchObject({ id: "902", body: "nit: rename helper" });
 
-    const merged = await adapter.mergeRequests.merge(project, opened.id);
+    const merged = await adapter.mergeRequests.merge(repo, opened.id);
     expect(merged.state).toBe("merged");
 
     mr.state = "opened";
-    const closed = await adapter.mergeRequests.close(project, opened.id);
+    const closed = await adapter.mergeRequests.close(repo, opened.id);
     expect(closed.state).toBe("closed");
 
     expect(
@@ -775,7 +772,7 @@ describe("GitLabProviderAdapter mergeRequests", () => {
 });
 
 describe("GitLabProviderAdapter merge preflight and transport failures", () => {
-  const project = { id: "20", path: "colony/dev" } as const;
+  const repo = { id: "20", path: "colony/dev" } as const;
   const urlPath = (url: Parameters<typeof fetch>[0]): string =>
     (typeof url === "string"
       ? url
@@ -808,7 +805,7 @@ describe("GitLabProviderAdapter merge preflight and transport failures", () => {
       },
     });
 
-    const result = await adapter.mergeRequests.merge(project, "20:1");
+    const result = await adapter.mergeRequests.merge(repo, "20:1");
     expect(result.reason).toBe("conflicts");
     expect(calls.every((call) => !call.startsWith("PUT "))).toBe(true);
   });
@@ -842,7 +839,7 @@ describe("GitLabProviderAdapter merge preflight and transport failures", () => {
       },
     });
 
-    const result = await adapter.mergeRequests.merge(project, "20:1");
+    const result = await adapter.mergeRequests.merge(repo, "20:1");
     expect(checks).toBe(2);
     expect(result.state).toBe("merged");
   });
@@ -878,7 +875,7 @@ describe("GitLabProviderAdapter merge preflight and transport failures", () => {
       },
     });
 
-    const result = await adapter.mergeRequests.merge(project, "20:1");
+    const result = await adapter.mergeRequests.merge(repo, "20:1");
     expect(result).toMatchObject({
       reason: "not_approved",
       detailed_merge_status: "not_approved",
@@ -904,7 +901,7 @@ describe("GitLabProviderAdapter merge preflight and transport failures", () => {
       },
     });
 
-    await adapter.projects.getById("20");
+    await adapter.repos.getById("20");
     expect(attempts).toBe(2);
   });
 
@@ -916,7 +913,7 @@ describe("GitLabProviderAdapter merge preflight and transport failures", () => {
     });
 
     await expect(
-      adapter.mergeRequests.diff(project, "20:1"),
+      adapter.mergeRequests.diff(repo, "20:1"),
     ).rejects.toBeInstanceOf(GitLabProviderError);
   });
 });
@@ -977,20 +974,16 @@ describe("GitLabProviderAdapter branches", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const project = { id: "20" } as const;
+    const repo = { id: "20" } as const;
 
-    const branch = await adapter.branches.create(
-      project,
-      "feature/csv",
-      "main",
-    );
+    const branch = await adapter.branches.create(repo, "feature/csv", "main");
     expect(branch).toMatchObject({
       name: "feature/csv",
       commit_sha: "abc123",
       protected: false,
     });
 
-    await adapter.branches.delete(project, "feature/csv");
+    await adapter.branches.delete(repo, "feature/csv");
     expect(
       calls.some(
         (c) =>
@@ -999,9 +992,9 @@ describe("GitLabProviderAdapter branches", () => {
       ),
     ).toBe(true);
 
-    const first = await adapter.branches.protect(project, "main");
+    const first = await adapter.branches.protect(repo, "main");
     expect(first.protected).toBe(true);
-    const second = await adapter.branches.protect(project, "main");
+    const second = await adapter.branches.protect(repo, "main");
     // Second call hits the GET path and short-circuits — proves idempotency.
     expect(second.protected).toBe(true);
     expect(
@@ -1068,22 +1061,22 @@ describe("GitLabProviderAdapter commits and pipelines", () => {
       token: "bot-token",
       fetch: fetchMock,
     });
-    const project = { id: "20" } as const;
+    const repo = { id: "20" } as const;
 
-    const commit = await adapter.commits.get(project, "abc123");
+    const commit = await adapter.commits.get(repo, "abc123");
     expect(commit).toMatchObject({ sha: "abc123", title: "feat: csv export" });
 
-    const diff = await adapter.commits.diff(project, "abc123");
+    const diff = await adapter.commits.diff(repo, "abc123");
     expect(diff).toHaveLength(1);
 
-    const pipeline = await adapter.pipelines.getStatus(project, "77");
+    const pipeline = await adapter.pipelines.getStatus(repo, "77");
     expect(pipeline).toMatchObject({
       id: "77",
       status: "success",
       commit_sha: "abc123",
     });
 
-    const triggered = await adapter.pipelines.trigger(project, "main");
+    const triggered = await adapter.pipelines.trigger(repo, "main");
     expect(triggered.status).toBe("pending");
   });
 });
@@ -1101,18 +1094,18 @@ const describeLive =
  *
  *   1. discovers the bot's identity/default namespace,
  *   2. creates a throwaway top-level group `colony-it-<ts>`,
- *   3. provisions two sibling projects `a` and `b` under it,
+ *   3. provisions two sibling repos `a` and `b` under it,
  *   4. drives the full issue lifecycle on both, asserting that the same
- *      iid in the two projects produces *distinct* namespaced IDs (the
+ *      iid in the two repos produces *distinct* namespaced IDs (the
  *      acceptance check that the multi-repo target model holds), and
- *   5. cleans up by deleting the group (cascades to projects).
+ *   5. cleans up by deleting the group (cascades to its repos).
  *
  * Cleanup is best-effort. If the group delete is delayed/async (default on
  * GitLab), the resources tagged with the run timestamp will eventually be
  * removed; subsequent runs use a fresh timestamp.
  */
 describeLive("GitLabProviderAdapter live multi-repo integration", () => {
-  it("self-bootstraps a group, two projects, runs issue lifecycle on each, and cleans up", async () => {
+  it("self-bootstraps a group, two repos, runs issue lifecycle on each, and cleans up", async () => {
     const adapter = new GitLabProviderAdapter({
       baseUrl: process.env.GITLAB_BASE_URL!,
       token: process.env.GITLAB_TOKEN!,
@@ -1136,32 +1129,32 @@ describeLive("GitLabProviderAdapter live multi-repo integration", () => {
       groupId = group.id;
       expect(group.path).toBe(groupPath);
 
-      const projectA = await adapter.projects.create({
+      const repoA = await adapter.repos.create({
         name: "a",
         path: "a",
         namespace: group.id,
         visibility: "private",
       });
-      const projectB = await adapter.projects.create({
+      const repoB = await adapter.repos.create({
         name: "b",
         path: "b",
         namespace: group.id,
         visibility: "private",
       });
-      expect(projectA.id).not.toBe(projectB.id);
-      expect(projectA.path).toBe(`${groupPath}/a`);
-      expect(projectB.path).toBe(`${groupPath}/b`);
+      expect(repoA.id).not.toBe(repoB.id);
+      expect(repoA.path).toBe(`${groupPath}/a`);
+      expect(repoB.path).toBe(`${groupPath}/b`);
 
-      // Issue lifecycle on both projects in parallel — same workflow,
-      // different project context per call. The IDs returned must be
-      // namespaced by project so identical iids don't collide.
+      // Issue lifecycle on both repos in parallel — same workflow,
+      // different repo context per call. The IDs returned must be
+      // namespaced by repo so identical iids don't collide.
       const [issueA, issueB] = await Promise.all([
-        adapter.issues.create(projectA, {
+        adapter.issues.create(repoA, {
           title: "live-it: a",
           description: "Created by Colony integ test.",
           labels: ["colony:integration"],
         }),
-        adapter.issues.create(projectB, {
+        adapter.issues.create(repoB, {
           title: "live-it: b",
           description: "Created by Colony integ test.",
           labels: ["colony:integration"],
@@ -1170,35 +1163,35 @@ describeLive("GitLabProviderAdapter live multi-repo integration", () => {
       expect(issueA.id).toContain(":");
       expect(issueB.id).toContain(":");
       expect(issueA.id).not.toBe(issueB.id);
-      expect(issueA.id.startsWith(`${projectA.id}:`)).toBe(true);
-      expect(issueB.id.startsWith(`${projectB.id}:`)).toBe(true);
+      expect(issueA.id.startsWith(`${repoA.id}:`)).toBe(true);
+      expect(issueB.id.startsWith(`${repoB.id}:`)).toBe(true);
 
       const label = `colony:test:${stamp}`;
       const [labeledA, labeledB] = await Promise.all([
-        adapter.issues.addLabel(projectA, issueA.id, label),
-        adapter.issues.addLabel(projectB, issueB.id, label),
+        adapter.issues.addLabel(repoA, issueA.id, label),
+        adapter.issues.addLabel(repoB, issueB.id, label),
       ]);
       expect(labeledA.labels).toContain(label);
       expect(labeledB.labels).toContain(label);
 
       await Promise.all([
         adapter.issues
-          .comment(projectA, issueA.id, "from-a")
+          .comment(repoA, issueA.id, "from-a")
           .then((c) => expect(c.body).toBe("from-a")),
         adapter.issues
-          .comment(projectB, issueB.id, "from-b")
+          .comment(repoB, issueB.id, "from-b")
           .then((c) => expect(c.body).toBe("from-b")),
       ]);
 
       await Promise.all([
-        adapter.issues.close(projectA, issueA.id),
-        adapter.issues.close(projectB, issueB.id),
+        adapter.issues.close(repoA, issueA.id),
+        adapter.issues.close(repoB, issueB.id),
       ]);
 
-      // Sanity: getByPath round-trips, proving project context is what
+      // Sanity: getByPath round-trips, proving repo context is what
       // the registry would store for these mirrors.
-      const fetchedA = await adapter.projects.getByPath(`${groupPath}/a`);
-      expect(fetchedA?.id).toBe(projectA.id);
+      const fetchedA = await adapter.repos.getByPath(`${groupPath}/a`);
+      expect(fetchedA?.id).toBe(repoA.id);
     } finally {
       if (groupId) {
         // GitLab delete is async (returns 202); failure here is best-effort.
@@ -1211,7 +1204,7 @@ describeLive("GitLabProviderAdapter live multi-repo integration", () => {
 /**
  * Live end-to-end MR / branch / commit / pipeline lifecycle (COL-2.10).
  *
- * Provisions a throwaway group + project, seeds an initial commit on the
+ * Provisions a throwaway group + repo, seeds an initial commit on the
  * default branch via GitLab's repository-commits API, then exercises every
  * adapter method added in COL-2.10:
  *
@@ -1220,7 +1213,7 @@ describeLive("GitLabProviderAdapter live multi-repo integration", () => {
  *   - mergeRequests.open / update / comment / addReviewThread / approve /
  *     unapprove / close
  *   - pipelines.getStatus (best-effort: only asserted when a pipeline exists,
- *     which it won't on a project without a .gitlab-ci.yml).
+ *     which it won't on a repo without a .gitlab-ci.yml).
  *
  * Cleanup deletes the throwaway group at the end of the run.
  */
@@ -1242,11 +1235,11 @@ describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
       });
       groupId = group.id;
 
-      // Seed the project with an initial commit on `main` so we have a ref
-      // to branch from. `initialize_with_readme` on `projects.create` would
+      // Seed the repo with an initial commit on `main` so we have a ref
+      // to branch from. `initialize_with_readme` on `repos.create` would
       // also work but the adapter doesn't expose it; using a direct API
       // call here keeps the adapter surface clean and minimal.
-      const project = await adapter.projects.create({
+      const repo = await adapter.repos.create({
         name: "csv-export",
         path: "csv-export",
         namespace: group.id,
@@ -1257,7 +1250,7 @@ describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
       await rawCommit({
         baseUrl,
         token,
-        projectId: project.id,
+        projectId: repo.id,
         branch: "main",
         startBranch: undefined,
         message: "chore: initial commit",
@@ -1268,7 +1261,7 @@ describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
 
       const featureBranch = "feature/csv-export";
       const branch = await adapter.branches.create(
-        { id: project.id, path: project.path },
+        { id: repo.id, path: repo.path },
         featureBranch,
         "main",
       );
@@ -1280,7 +1273,7 @@ describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
       const headCommit = await rawCommit({
         baseUrl,
         token,
-        projectId: project.id,
+        projectId: repo.id,
         branch: featureBranch,
         startBranch: undefined,
         message: "feat: csv export",
@@ -1294,53 +1287,53 @@ describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
       });
       expect(headCommit.id).toMatch(/^[0-9a-f]{40}$/);
 
-      const projectRef = { id: project.id, path: project.path } as const;
+      const repoRef = { id: repo.id, path: repo.path } as const;
 
-      const commit = await adapter.commits.get(projectRef, headCommit.id);
+      const commit = await adapter.commits.get(repoRef, headCommit.id);
       expect(commit.sha).toBe(headCommit.id);
       expect(commit.title).toMatch(/csv export/);
 
-      const diff = await adapter.commits.diff(projectRef, headCommit.id);
+      const diff = await adapter.commits.diff(repoRef, headCommit.id);
       expect(diff.length).toBeGreaterThan(0);
 
-      const mr = await adapter.mergeRequests.open(projectRef, {
+      const mr = await adapter.mergeRequests.open(repoRef, {
         title: "Add CSV export",
         description: "Live integration test",
         source_branch: featureBranch,
         target_branch: "main",
       });
-      expect(mr.id).toBe(`${project.id}:${mr.iid}`);
+      expect(mr.id).toBe(`${repo.id}:${mr.iid}`);
       expect(mr.state).toBe("opened");
       expect(mr.source_branch).toBe(featureBranch);
 
-      const updated = await adapter.mergeRequests.update(projectRef, mr.id, {
+      const updated = await adapter.mergeRequests.update(repoRef, mr.id, {
         title: "Add CSV export (renamed)",
       });
       expect(updated.title).toBe("Add CSV export (renamed)");
 
       const note = await adapter.mergeRequests.comment(
-        projectRef,
+        repoRef,
         mr.id,
         "looks good from live IT",
       );
       expect(note.body).toBe("looks good from live IT");
 
       const thread = await adapter.mergeRequests.addReviewThread(
-        projectRef,
+        repoRef,
         mr.id,
         "thread: please rename helper",
       );
       expect(thread.body).toBe("thread: please rename helper");
 
       // Approve/unapprove. Self-approval works for a homelab admin PAT;
-      // managed instances may reject it (the project's MR approval rules
+      // managed instances may reject it (the repo's MR approval rules
       // can require non-author approval). If approval fails on the
       // instance under test, wrap with a soft-skip rather than failing.
       try {
-        const approved = await adapter.mergeRequests.approve(projectRef, mr.id);
+        const approved = await adapter.mergeRequests.approve(repoRef, mr.id);
         expect(approved.id).toBe(mr.id);
         const unapproved = await adapter.mergeRequests.unapprove(
-          projectRef,
+          repoRef,
           mr.id,
         );
         expect(unapproved.id).toBe(mr.id);
@@ -1353,26 +1346,26 @@ describeLive("GitLabProviderAdapter live MR/branch/commit lifecycle", () => {
         }
       }
 
-      // pipelines.getStatus only when one exists. The live project has
+      // pipelines.getStatus only when one exists. The live repo has
       // no .gitlab-ci.yml so we expect zero pipelines and skip — what we
       // care about is that the adapter call shape is right when called.
       const pipelinesList = await rawApi<readonly { id: number }[]>({
         baseUrl,
         token,
-        path: `/projects/${encodeURIComponent(project.id)}/pipelines?per_page=1`,
+        path: `/projects/${encodeURIComponent(repo.id)}/pipelines?per_page=1`,
       });
       if (pipelinesList[0]) {
         const pipeline = await adapter.pipelines.getStatus(
-          projectRef,
+          repoRef,
           String(pipelinesList[0].id),
         );
         expect(pipeline.id).toBe(String(pipelinesList[0].id));
       }
 
-      const closed = await adapter.mergeRequests.close(projectRef, mr.id);
+      const closed = await adapter.mergeRequests.close(repoRef, mr.id);
       expect(closed.state).toBe("closed");
 
-      await adapter.branches.delete(projectRef, featureBranch);
+      await adapter.branches.delete(repoRef, featureBranch);
     } finally {
       if (groupId) {
         await adapter.groups.delete(groupId).catch(() => {});

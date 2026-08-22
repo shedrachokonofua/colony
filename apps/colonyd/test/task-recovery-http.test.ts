@@ -57,8 +57,8 @@ function recoveryApp() {
   };
   const scope = store.createScope({
     goal: "exercise task recovery",
-    provider_project_id: "49",
-    provider_project_path: "so/colony",
+    provider_repo_id: "49",
+    provider_repo_path: "so/colony",
   });
   store.setScopeStatus(scope.id, "planning", "svc:colonyd");
   const [task] = store.materializePlan(scope.id, plan, "svc:colonyd");

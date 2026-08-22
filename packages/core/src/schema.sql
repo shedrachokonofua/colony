@@ -3,16 +3,23 @@ PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
+CREATE TABLE IF NOT EXISTS projects (
+  name TEXT PRIMARY KEY,
+  context_doc TEXT,                        -- operator-authored markdown (optional)
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
 CREATE TABLE IF NOT EXISTS scopes (
   id TEXT PRIMARY KEY,                       -- col-<8 hex>
   goal TEXT NOT NULL,
   title TEXT,                                -- short board label (optional)
-  "group" TEXT,                              -- board grouping label (optional)
+  project_name TEXT,                         -- owning project (see projects table)
   approvals TEXT NOT NULL DEFAULT 'auto',    -- 'auto' | 'manual'
   status TEXT NOT NULL DEFAULT 'draft'
     CHECK (status IN ('draft','planning','active','validating','blocked','done','abandoned')),
-  provider_project_id TEXT NOT NULL,         -- GitLab numeric project id as string
-  provider_project_path TEXT NOT NULL,
+  provider_repo_id TEXT NOT NULL,            -- GitLab numeric repo id as string
+  provider_repo_path TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
   plan_json TEXT,                            -- architect proposal awaiting approval (hitl gated)
   plan_feedback TEXT,                        -- operator replan feedback for the next architect run

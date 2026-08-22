@@ -82,7 +82,7 @@ async function createScopeViaApi(
     opts.title ??
     `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const goal = opts.goal;
-  const projectPath = opts.path ?? "so/console-e2e";
+  const repoPath = opts.path ?? "so/console-e2e";
   const res = await page.request.post("/scopes", {
     headers: {
       "X-Actor-Id": "human:op-1",
@@ -92,7 +92,7 @@ async function createScopeViaApi(
       title,
       goal,
       approvals: opts.approvals as unknown as "auto" | "manual" | undefined,
-      project: { path: projectPath },
+      repo: { path: repoPath },
     },
   });
   expect(res.ok(), `POST /scopes ${res.status()} ${await res.text()}`).toBe(

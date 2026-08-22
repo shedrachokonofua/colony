@@ -29,7 +29,7 @@ const SHA_B = "b".repeat(40);
 
 let dir: string;
 let provider: FakeProviderAdapter;
-let projectId: string;
+let repoId: string;
 let handle: ColonydHandle;
 let configPath: string;
 let reviewConfigPath: string;
@@ -125,7 +125,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
       const branch = `colony/${taskId}`;
       // The fake provider needs the branch to exist so envelope fact
       // verification (branch head == head_sha) passes.
-      void provider.branches.create({ id: projectId }, branch, headSha);
+      void provider.branches.create({ id: repoId }, branch, headSha);
       return {
         kind: "implementer_completion",
         status: "complete",
@@ -157,10 +157,10 @@ function gateExecutor(): (input: {
 
 function syncMrHead(adapter: FakeProviderAdapter): void {
   const origGet = adapter.mergeRequests.get.bind(adapter.mergeRequests);
-  adapter.mergeRequests.get = async (project, id) => {
-    const mr = await origGet(project, id);
+  adapter.mergeRequests.get = async (repo, id) => {
+    const mr = await origGet(repo, id);
     if (!mr.source_branch) return mr;
-    const head = await adapter.commits.get(project, mr.source_branch);
+    const head = await adapter.commits.get(repo, mr.source_branch);
     return { ...mr, head_commit_sha: head.sha };
   };
 }
@@ -326,11 +326,11 @@ beforeEach(async () => {
   script.singleTask = false;
   script.validateFail = false;
   provider = new FakeProviderAdapter();
-  const project = await provider.projects.create({
+  const repo = await provider.repos.create({
     name: "fake-e2e",
     path: "so/fake-e2e",
   });
-  projectId = project.id;
+  repoId = repo.id;
   handle = await bootHeadless(
     join(dir, `case-${Date.now()}-${Math.random().toString(36).slice(2)}.db`),
   );
@@ -339,8 +339,8 @@ beforeEach(async () => {
 async function createScope(goal: string): Promise<string> {
   const scope = handle.ctx.store.createScope({
     goal,
-    provider_project_id: projectId,
-    provider_project_path: "so/fake-e2e",
+    provider_repo_id: repoId,
+    provider_repo_path: "so/fake-e2e",
   });
   handle.ctx.store.audit(ACTOR, "scope.created", { scope_id: scope.id });
   return scope.id;
@@ -429,8 +429,8 @@ describe("colonyd fake end-to-end loop", () => {
     // Both MRs exist and are merged in the fake provider.
     for (const task of tasks) {
       const mr = await provider.mergeRequests.get(
-        { id: projectId },
-        `${projectId}:${task.mr_iid}`,
+        { id: repoId },
+        `${repoId}:${task.mr_iid}`,
       );
       expect(mr.state).toBe("merged");
     }
@@ -521,8 +521,8 @@ describe("colonyd fake end-to-end loop", () => {
     const originalMerge = provider.mergeRequests.merge.bind(
       provider.mergeRequests,
     );
-    provider.mergeRequests.merge = async (project, id, input) => {
-      await originalMerge(project, id, input);
+    provider.mergeRequests.merge = async (repo, id, input) => {
+      await originalMerge(repo, id, input);
       throw new Error(
         "GitLab PUT /projects/1/merge_requests/1/merge timed out",
       );
@@ -555,8 +555,8 @@ describe("colonyd fake end-to-end loop", () => {
       .listTasks(scopeId)
       .find((task) => task.id.endsWith(".1"))!;
     await provider.mergeRequests.merge(
-      { id: projectId },
-      `${projectId}:${taskA.mr_iid}`,
+      { id: repoId },
+      `${repoId}:${taskA.mr_iid}`,
       { sha: SHA_A },
     );
     const gate = handle.ctx.store.startRun({
@@ -634,7 +634,7 @@ describe("colonyd fake end-to-end loop", () => {
       lease_ttl_ms: 30 * 60_000,
     });
     const minted = await provider.accessTokens.mint(
-      { id: projectId, path: "so/fake-e2e" },
+      { id: repoId, path: "so/fake-e2e" },
       {
         name: `colony-task-${taskA.id}`,
         scopes: ["api", "write_repository"],

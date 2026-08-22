@@ -127,8 +127,8 @@ describe("run event sink persists pi_model_fallback", () => {
     const store = new Store(join(dbDir, "test.db"));
     const scope = store.createScope({
       goal: "fallback sink",
-      provider_project_id: "1",
-      provider_project_path: "so/fake",
+      provider_repo_id: "1",
+      provider_repo_path: "so/fake",
     });
     const run = store.startRun({
       scope_id: scope.id,

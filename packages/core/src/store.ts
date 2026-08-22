@@ -17,16 +17,23 @@ import {
   type TaskState,
 } from "./state-machine.js";
 
+export interface Project {
+  readonly name: string;
+  readonly context_doc: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
 export interface Scope {
   readonly id: ScopeId;
   readonly goal: string;
   readonly title: string | null;
-  readonly group: string | null;
+  readonly project_name: string | null;
   readonly approvals: ScopeApprovals;
   readonly plan_feedback: string | null;
   readonly status: ScopeStatus;
-  readonly provider_project_id: string;
-  readonly provider_project_path: string;
+  readonly provider_repo_id: string;
+  readonly provider_repo_path: string;
   readonly default_branch: string;
   readonly plan_json: string | null;
   readonly blocked_reason: string | null;
@@ -115,10 +122,11 @@ export type ScopeApprovals = "auto" | "manual";
 export interface CreateScopeInput {
   readonly goal: string;
   readonly title?: string;
-  readonly group?: string;
+  /** Name of the (created-on-demand) project this scope belongs to. */
+  readonly project?: string;
   readonly approvals?: ScopeApprovals;
-  readonly provider_project_id: string;
-  readonly provider_project_path: string;
+  readonly provider_repo_id: string;
+  readonly provider_repo_path: string;
   readonly default_branch?: string;
 }
 
@@ -164,26 +172,59 @@ export class Store {
 
   createScope(input: CreateScopeInput): Scope {
     const id = `col-${randomBytes(4).toString("hex")}` as ScopeId;
-    this.db
-      .prepare(
-        `INSERT INTO scopes (id, goal, title, "group", status, approvals, provider_project_id, provider_project_path, default_branch)
-         VALUES (@id, @goal, @title, @group, 'draft', @approvals, @provider_project_id, @provider_project_path, @default_branch)`,
-      )
-      .run(
-        named({
-          id,
-          goal: input.goal,
-          title: input.title ?? null,
-          group: input.group ?? null,
-          approvals: input.approvals ?? "auto",
-          provider_project_id: input.provider_project_id,
-          provider_project_path: input.provider_project_path,
-          default_branch: input.default_branch ?? "main",
-        }),
-      );
+    const apply = this.db.transaction(() => {
+      if (input.project !== undefined) this.ensureProject(input.project);
+      this.db
+        .prepare(
+          `INSERT INTO scopes (id, goal, title, project_name, status, approvals, provider_repo_id, provider_repo_path, default_branch)
+           VALUES (@id, @goal, @title, @project_name, 'draft', @approvals, @provider_repo_id, @provider_repo_path, @default_branch)`,
+        )
+        .run(
+          named({
+            id,
+            goal: input.goal,
+            title: input.title ?? null,
+            project_name: input.project ?? null,
+            approvals: input.approvals ?? "auto",
+            provider_repo_id: input.provider_repo_id,
+            provider_repo_path: input.provider_repo_path,
+            default_branch: input.default_branch ?? "main",
+          }),
+        );
+    });
+    apply();
     const scope = this.getScope(id);
     if (!scope) throw new Error(`scope insert lost: ${id}`);
     return scope;
+  }
+
+  // ---------------------------------------------------------------------
+  // Projects
+  // ---------------------------------------------------------------------
+
+  getProject(name: string): Project | undefined {
+    return this.db
+      .prepare(`SELECT * FROM projects WHERE name = ?`)
+      .get(name) as Project | undefined;
+  }
+
+  listProjects(): Project[] {
+    return this.db
+      .prepare(`SELECT * FROM projects ORDER BY created_at`)
+      .all() as Project[];
+  }
+
+  /**
+   * Idempotent insert-or-read. An existing row is never touched, so its
+   * `updated_at` stays the creation timestamp.
+   */
+  ensureProject(name: string): Project {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO projects (name) VALUES (@name)`)
+      .run(named({ name }));
+    const project = this.getProject(name);
+    if (!project) throw new Error(`project insert lost: ${name}`);
+    return project;
   }
 
   /**
@@ -216,21 +257,21 @@ export class Store {
 
   /**
    * One page of scopes, most recently touched first - the board's feed.
-   * Optional `group` filters and paginates within one group label; `counts`
-   * reports whole-table group sizes so page-local grouping can show honest
+   * Optional `project` filters and paginates within one project name; `counts`
+   * reports whole-table project sizes so page-local grouping can show honest
    * totals. `listScopes` stays unpaginated for internal full-table walks.
    */
   pageScopes(
     limit: number,
     offset: number,
-    group?: string,
+    project?: string,
   ): {
     scopes: Scope[];
     total: number;
-    groups: { group: string | null; n: number }[];
+    projects: { project: string | null; n: number }[];
   } {
-    const where = group === undefined ? "" : ` WHERE "group" = ?`;
-    const args: (string | number)[] = group === undefined ? [] : [group];
+    const where = project === undefined ? "" : ` WHERE project_name = ?`;
+    const args: (string | number)[] = project === undefined ? [] : [project];
     const scopes = this.db
       .prepare(
         `SELECT * FROM scopes${where} ORDER BY updated_at DESC, id LIMIT ? OFFSET ?`,
@@ -239,15 +280,15 @@ export class Store {
     const { n } = this.db
       .prepare(`SELECT COUNT(*) AS n FROM scopes${where}`)
       .get(...args) as { n: number };
-    const groups = this.db
+    const projects = this.db
       .prepare(
-        `SELECT "group" AS grp, COUNT(*) AS n FROM scopes GROUP BY "group" ORDER BY MAX(updated_at) DESC`,
+        `SELECT project_name AS proj, COUNT(*) AS n FROM scopes GROUP BY project_name ORDER BY MAX(updated_at) DESC`,
       )
-      .all() as { grp: string | null; n: number }[];
+      .all() as { proj: string | null; n: number }[];
     return {
       scopes,
       total: n,
-      groups: groups.map((g) => ({ group: g.grp, n: g.n })),
+      projects: projects.map((p) => ({ project: p.proj, n: p.n })),
     };
   }
 

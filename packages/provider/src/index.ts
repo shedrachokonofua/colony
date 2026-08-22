@@ -92,24 +92,23 @@ export interface ProviderAccessToken extends ProviderRef {
 }
 
 /**
- * Provider-side view of a project. Distinct from the Colony domain
- * `ProviderProject` (which adds DB-side timestamps); this is what an adapter
- * returns from `projects.create` / `projects.get*` so call sites can hand
- * the result to `ProviderProjectRepository.upsertProject`.
+ * Provider-side view of a git repository. This is what an adapter returns
+ * from `repos.create` / `repos.get*` so call sites can hand the result
+ * straight to the store's scope creation.
  */
-export interface ProviderProjectInfo extends ProviderRef {
+export interface ProviderRepoInfo extends ProviderRef {
   readonly path: string;
   readonly default_branch: string;
   readonly visibility: ProviderVisibility;
 }
 
-export interface CreateProviderProjectInput {
+export interface CreateProviderRepoInput {
   readonly name: string;
   readonly path: string;
   /**
-   * Opaque owner of the new project. Provider-resolved: a GitLab group
+   * Opaque owner of the new repo. Provider-resolved: a GitLab group
    * path or numeric group ID, a GitHub org/user login. Omit to put the
-   * project under the bot's own namespace (discovered via `identity()`).
+   * repo under the bot's own namespace (discovered via `identity()`).
    */
   readonly namespace?: string;
   readonly description?: string;
@@ -173,7 +172,7 @@ export interface BootstrapGroupSpec {
   readonly visibility?: ProviderVisibility;
 }
 
-export interface BootstrapProjectSpec {
+export interface BootstrapRepoSpec {
   readonly name: string;
   readonly path: string;
   readonly description?: string;
@@ -199,7 +198,7 @@ export interface ProviderBootstrapSpec {
   readonly environment: string;
   readonly base_url: string;
   readonly group: BootstrapGroupSpec;
-  readonly project: BootstrapProjectSpec;
+  readonly repo: BootstrapRepoSpec;
   readonly bots?: BootstrapBotSpecs;
   readonly oauth_application: BootstrapOAuthApplicationSpec;
   readonly webhook: BootstrapWebhookSpec;
@@ -223,7 +222,7 @@ export interface ProviderBootstrapResult {
   readonly environment: string;
   readonly base_url: string;
   readonly group: ProviderRef;
-  readonly project: ProviderRef;
+  readonly repo: ProviderRef;
   readonly bot_users: Readonly<Record<string, ProviderUser>>;
   readonly bot_tokens: Readonly<Record<string, string>>;
   readonly oauth_application: ProviderRef & {
@@ -253,14 +252,14 @@ export interface UpdateIssueInput {
 }
 
 /**
- * Per-operation provider project context (COL-1.2b).
+ * Per-operation provider repo context (COL-1.2b).
  *
- * Every issue/MR/branch/commit/pipeline call carries the project it acts on
- * so a single adapter instance can serve multiple GitLab projects under the
- * same scope. `id` is the provider project ID (the durable identifier);
+ * Every issue/MR/branch/commit/pipeline call carries the repo it acts on
+ * so a single adapter instance can serve multiple git repositories under
+ * the same scope. `id` is the provider repo ID (the durable identifier);
  * `path` is included for logging and for webhook lookups that match by path.
  */
-export interface ProviderProjectRef {
+export interface ProviderRepoRef {
   readonly id: ProviderId;
   readonly path?: string;
 }
@@ -284,7 +283,7 @@ export interface ProviderHealth {
 export interface ProviderAdapter {
   readonly provider: ProviderName;
   /**
-   * Provision groups, projects, bot users, OAuth applications, and webhooks
+   * Provision groups, repos, bot users, OAuth applications, and webhooks
    * using the adapter's configured bot credential. The credential's scope is
    * provider-shaped — GitLab admin PAT, GitHub App permissions, fine-grained
    * GitHub PAT — and operations succeed or fail at call time. Authorization
@@ -314,78 +313,75 @@ export interface ProviderAdapter {
     getByPath(path: string): Promise<ProviderGroup | null>;
   };
   /**
-   * Project lifecycle. The adapter uses its configured bot credential —
+   * Repo lifecycle. The adapter uses its configured bot credential —
    * homelab defaults run with broad scope; production setups will narrow
    * the credential and rely on call-time failure when scope is insufficient.
    * Authorization is gated upstream by capability + Tool Gateway.
    */
-  readonly projects: {
-    create(input: CreateProviderProjectInput): Promise<ProviderProjectInfo>;
+  readonly repos: {
+    create(input: CreateProviderRepoInput): Promise<ProviderRepoInfo>;
     delete(id: ProviderId): Promise<void>;
-    getById(id: ProviderId): Promise<ProviderProjectInfo | null>;
-    getByPath(path: string): Promise<ProviderProjectInfo | null>;
+    getById(id: ProviderId): Promise<ProviderRepoInfo | null>;
+    getByPath(path: string): Promise<ProviderRepoInfo | null>;
   };
   readonly accessTokens?: {
     mint(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       input: CreateProviderAccessTokenInput,
     ): Promise<ProviderAccessToken>;
-    revoke(project: ProviderProjectRef, id: ProviderId): Promise<void>;
-    list(project: ProviderProjectRef): Promise<readonly ProviderAccessToken[]>;
+    revoke(repo: ProviderRepoRef, id: ProviderId): Promise<void>;
+    list(repo: ProviderRepoRef): Promise<readonly ProviderAccessToken[]>;
   };
   readonly issues: {
-    get(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
+    get(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderIssue>;
     create(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       input: CreateIssueInput,
     ): Promise<ProviderIssue>;
     update(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       input: UpdateIssueInput,
     ): Promise<ProviderIssue>;
-    close(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
-    reopen(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
+    close(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderIssue>;
+    reopen(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderIssue>;
     addLabel(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       label: string,
     ): Promise<ProviderIssue>;
     removeLabel(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       label: string,
     ): Promise<ProviderIssue>;
     setAssignees(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       assigneeIds: readonly ProviderId[],
     ): Promise<ProviderIssue>;
     comment(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       body: string,
     ): Promise<ProviderComment>;
   };
   readonly epics: {
     create(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       input: CreateIssueInput,
     ): Promise<ProviderIssue>;
     update(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       input: UpdateIssueInput,
     ): Promise<ProviderIssue>;
-    close(project: ProviderProjectRef, id: ProviderId): Promise<ProviderIssue>;
+    close(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderIssue>;
   };
   readonly mergeRequests: {
-    get(
-      project: ProviderProjectRef,
-      id: ProviderId,
-    ): Promise<ProviderMergeRequest>;
+    get(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderMergeRequest>;
     open(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       input: {
         readonly title: string;
         readonly description: string;
@@ -394,55 +390,52 @@ export interface ProviderAdapter {
       },
     ): Promise<ProviderMergeRequest>;
     update(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       input: Partial<Pick<ProviderMergeRequest, "title" | "description">>,
     ): Promise<ProviderMergeRequest>;
     approve(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
     ): Promise<ProviderMergeRequest>;
     unapprove(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
     ): Promise<ProviderMergeRequest>;
     merge(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       input?: { readonly sha?: string },
     ): Promise<ProviderMergeRequest>;
-    close(
-      project: ProviderProjectRef,
-      id: ProviderId,
-    ): Promise<ProviderMergeRequest>;
+    close(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderMergeRequest>;
     comment(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       body: string,
     ): Promise<ProviderComment>;
     addReviewThread(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
       body: string,
     ): Promise<ProviderComment>;
     diff(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       id: ProviderId,
     ): Promise<readonly Readonly<Record<string, unknown>>[]>;
   };
   readonly branches: {
     create(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       name: string,
       ref: string,
     ): Promise<ProviderBranch>;
-    delete(project: ProviderProjectRef, name: string): Promise<void>;
-    protect(project: ProviderProjectRef, name: string): Promise<ProviderBranch>;
+    delete(repo: ProviderRepoRef, name: string): Promise<void>;
+    protect(repo: ProviderRepoRef, name: string): Promise<ProviderBranch>;
   };
   readonly commits: {
-    get(project: ProviderProjectRef, sha: string): Promise<ProviderCommit>;
+    get(repo: ProviderRepoRef, sha: string): Promise<ProviderCommit>;
     diff(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       sha: string,
     ): Promise<readonly Readonly<Record<string, unknown>>[]>;
     /**
@@ -453,7 +446,7 @@ export interface ProviderAdapter {
      * UX. `actions` follows GitLab's `repository/commits` shape.
      */
     create(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       input: {
         readonly branch: string;
         readonly message: string;
@@ -466,14 +459,8 @@ export interface ProviderAdapter {
     ): Promise<ProviderCommit>;
   };
   readonly pipelines: {
-    getStatus(
-      project: ProviderProjectRef,
-      id: ProviderId,
-    ): Promise<ProviderPipeline>;
-    trigger(
-      project: ProviderProjectRef,
-      ref: string,
-    ): Promise<ProviderPipeline>;
+    getStatus(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderPipeline>;
+    trigger(repo: ProviderRepoRef, ref: string): Promise<ProviderPipeline>;
   };
   readonly users: {
     create(input: CreateProviderUserInput): Promise<ProviderUser>;
@@ -482,14 +469,14 @@ export interface ProviderAdapter {
   };
   readonly webhooks: {
     register(
-      project: ProviderProjectRef,
+      repo: ProviderRepoRef,
       input: {
         readonly url: string;
         readonly secret: string;
         readonly events?: readonly string[];
       },
     ): Promise<ProviderWebhook>;
-    unregister(project: ProviderProjectRef, id: ProviderId): Promise<void>;
+    unregister(repo: ProviderRepoRef, id: ProviderId): Promise<void>;
     verifySignature(input: {
       readonly headers: Readonly<Record<string, string | undefined>>;
       readonly body: string;
@@ -551,7 +538,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   private issueSeq = 1;
   private commentSeq = 1;
   private mrSeq = 1;
-  private projectSeq = 1;
+  private repoSeq = 1;
   private accessTokenSeq = 1;
   private readonly issuesById = new Map<ProviderId, ProviderIssue>();
   private readonly usersById = new Map<ProviderId, ProviderUser>();
@@ -562,8 +549,8 @@ export class FakeProviderAdapter implements ProviderAdapter {
   >();
   private readonly branchesByName = new Map<string, ProviderBranch>();
   private readonly webhooksById = new Map<ProviderId, ProviderWebhook>();
-  private readonly projectsById = new Map<ProviderId, ProviderProjectInfo>();
-  private readonly projectsByPath = new Map<string, ProviderProjectInfo>();
+  private readonly reposById = new Map<ProviderId, ProviderRepoInfo>();
+  private readonly reposByPath = new Map<string, ProviderRepoInfo>();
   private readonly groupsById = new Map<ProviderId, ProviderGroup>();
   private readonly groupsByPath = new Map<string, ProviderGroup>();
   private readonly accessTokensById = new Map<
@@ -594,51 +581,51 @@ export class FakeProviderAdapter implements ProviderAdapter {
       const existing = this.groupsById.get(id);
       this.groupsById.delete(id);
       if (existing) this.groupsByPath.delete(existing.path);
-      // cascade: drop projects under this group (path-prefix match)
-      for (const [path, project] of this.projectsByPath) {
+      // cascade: drop repos under this group (path-prefix match)
+      for (const [path, repo] of this.reposByPath) {
         if (path.startsWith(`${existing?.path ?? id}/`)) {
-          this.projectsByPath.delete(path);
-          this.projectsById.delete(project.id);
+          this.reposByPath.delete(path);
+          this.reposById.delete(repo.id);
         }
       }
     },
     getByPath: async (path) => this.groupsByPath.get(path) ?? null,
   };
 
-  readonly projects: ProviderAdapter["projects"] = {
+  readonly repos: ProviderAdapter["repos"] = {
     create: async (input) => {
       const fullPath = input.namespace
         ? `${input.namespace}/${input.path}`
         : input.path;
-      const existing = this.projectsByPath.get(fullPath);
+      const existing = this.reposByPath.get(fullPath);
       if (existing) return existing;
-      const id = `fake-project-${this.projectSeq++}`;
-      const project: ProviderProjectInfo = {
+      const id = `fake-repo-${this.repoSeq++}`;
+      const repo: ProviderRepoInfo = {
         id,
         path: fullPath,
         default_branch: input.default_branch ?? "main",
         visibility: input.visibility ?? "private",
         metadata: this.meta(id),
       };
-      this.projectsById.set(id, project);
-      this.projectsByPath.set(fullPath, project);
-      return project;
+      this.reposById.set(id, repo);
+      this.reposByPath.set(fullPath, repo);
+      return repo;
     },
     delete: async (id) => {
-      const existing = this.projectsById.get(id);
-      this.projectsById.delete(id);
-      if (existing) this.projectsByPath.delete(existing.path);
+      const existing = this.reposById.get(id);
+      this.reposById.delete(id);
+      if (existing) this.reposByPath.delete(existing.path);
     },
-    getById: async (id) => this.projectsById.get(id) ?? null,
-    getByPath: async (path) => this.projectsByPath.get(path) ?? null,
+    getById: async (id) => this.reposById.get(id) ?? null,
+    getByPath: async (path) => this.reposByPath.get(path) ?? null,
   };
 
   readonly accessTokens: NonNullable<ProviderAdapter["accessTokens"]> = {
-    mint: async (project, input) => {
-      const id = `${project.id}:access-token-${this.accessTokenSeq++}`;
+    mint: async (repo, input) => {
+      const id = `${repo.id}:access-token-${this.accessTokenSeq++}`;
       const token: ProviderAccessToken = {
         id,
-        project_id: project.id,
+        project_id: repo.id,
         name: input.name,
         token: `fake-agent-token-${id}`,
         scopes: [...input.scopes],
@@ -648,12 +635,12 @@ export class FakeProviderAdapter implements ProviderAdapter {
       this.accessTokensById.set(id, token);
       return token;
     },
-    revoke: async (_project, id) => {
+    revoke: async (_repo, id) => {
       this.accessTokensById.delete(id);
     },
-    list: async (project) =>
+    list: async (repo) =>
       [...this.accessTokensById.values()].filter(
-        (token) => token.project_id === project.id,
+        (token) => token.project_id === repo.id,
       ),
   };
 
@@ -694,49 +681,49 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 
   readonly issues: ProviderAdapter["issues"] = {
-    get: async (project, id) => this.requireIssue(project, id),
-    create: async (project, input) => this.createIssue(project, "issue", input),
-    update: async (project, id, input) => this.updateIssue(project, id, input),
-    close: async (project, id) => this.setIssueState(project, id, "closed"),
-    reopen: async (project, id) => this.setIssueState(project, id, "opened"),
-    addLabel: async (project, id, label) => {
-      const issue = this.requireIssue(project, id);
-      return this.replaceIssue(project, id, {
+    get: async (repo, id) => this.requireIssue(repo, id),
+    create: async (repo, input) => this.createIssue(repo, "issue", input),
+    update: async (repo, id, input) => this.updateIssue(repo, id, input),
+    close: async (repo, id) => this.setIssueState(repo, id, "closed"),
+    reopen: async (repo, id) => this.setIssueState(repo, id, "opened"),
+    addLabel: async (repo, id, label) => {
+      const issue = this.requireIssue(repo, id);
+      return this.replaceIssue(repo, id, {
         ...issue,
         labels: [...new Set([...issue.labels, label])],
       });
     },
-    removeLabel: async (project, id, label) => {
-      const issue = this.requireIssue(project, id);
-      return this.replaceIssue(project, id, {
+    removeLabel: async (repo, id, label) => {
+      const issue = this.requireIssue(repo, id);
+      return this.replaceIssue(repo, id, {
         ...issue,
         labels: issue.labels.filter((x) => x !== label),
       });
     },
-    setAssignees: async (project, id, assigneeIds) => {
-      const issue = this.requireIssue(project, id);
-      return this.replaceIssue(project, id, {
+    setAssignees: async (repo, id, assigneeIds) => {
+      const issue = this.requireIssue(repo, id);
+      return this.replaceIssue(repo, id, {
         ...issue,
         assignee_ids: [...assigneeIds],
       });
     },
-    comment: async (_project, _id, body) =>
+    comment: async (_repo, _id, body) =>
       this.createComment("issue-comment", body),
   };
 
   readonly epics: ProviderAdapter["epics"] = {
-    create: async (project, input) => this.createIssue(project, "epic", input),
-    update: async (project, id, input) => this.updateIssue(project, id, input),
-    close: async (project, id) => this.setIssueState(project, id, "closed"),
+    create: async (repo, input) => this.createIssue(repo, "epic", input),
+    update: async (repo, id, input) => this.updateIssue(repo, id, input),
+    close: async (repo, id) => this.setIssueState(repo, id, "closed"),
   };
 
   readonly mergeRequests: ProviderAdapter["mergeRequests"] = {
-    get: async (_project, id) => this.requireMr(id),
-    open: async (project, input) => {
+    get: async (_repo, id) => this.requireMr(id),
+    open: async (repo, input) => {
       const iid = this.mrSeq++;
-      const id = `${project.id}:${iid}`;
+      const id = `${repo.id}:${iid}`;
       const sourceHead = this.branchesByName.get(
-        branchKey(project, input.source_branch),
+        branchKey(repo, input.source_branch),
       )?.commit_sha;
       const mr: ProviderMergeRequest = {
         id,
@@ -752,32 +739,31 @@ export class FakeProviderAdapter implements ProviderAdapter {
       this.mergeRequestsById.set(id, mr);
       return mr;
     },
-    update: async (_project, id, input) => {
+    update: async (_repo, id, input) => {
       const mr = this.requireMr(id);
       const next = { ...mr, ...input, metadata: this.meta(id) };
       this.mergeRequestsById.set(id, next);
       return next;
     },
-    approve: async (_project, id) => this.requireMr(id),
-    unapprove: async (_project, id) => this.requireMr(id),
-    merge: async (_project, id) =>
+    approve: async (_repo, id) => this.requireMr(id),
+    unapprove: async (_repo, id) => this.requireMr(id),
+    merge: async (_repo, id) =>
       this.replaceMr(id, {
         ...this.requireMr(id),
         state: "merged",
         merged: true,
       }),
-    close: async (_project, id) =>
+    close: async (_repo, id) =>
       this.replaceMr(id, { ...this.requireMr(id), state: "closed" }),
-    comment: async (_project, _id, body) =>
-      this.createComment("mr-comment", body),
-    addReviewThread: async (_project, _id, body) =>
+    comment: async (_repo, _id, body) => this.createComment("mr-comment", body),
+    addReviewThread: async (_repo, _id, body) =>
       this.createComment("review-thread", body),
     diff: async () => [],
   };
 
   readonly branches: ProviderAdapter["branches"] = {
-    create: async (project, name, ref) => {
-      const key = branchKey(project, name);
+    create: async (repo, name, ref) => {
+      const key = branchKey(repo, name);
       const branch = {
         id: key,
         name,
@@ -788,11 +774,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
       this.branchesByName.set(key, branch);
       return branch;
     },
-    delete: async (project, name) => {
-      this.branchesByName.delete(branchKey(project, name));
+    delete: async (repo, name) => {
+      this.branchesByName.delete(branchKey(repo, name));
     },
-    protect: async (project, name) => {
-      const key = branchKey(project, name);
+    protect: async (repo, name) => {
+      const key = branchKey(repo, name);
       const current =
         this.branchesByName.get(key) ??
         ({
@@ -809,43 +795,43 @@ export class FakeProviderAdapter implements ProviderAdapter {
   };
 
   readonly commits: ProviderAdapter["commits"] = {
-    get: async (project, ref) => {
+    get: async (repo, ref) => {
       // A branch name resolves to the branch head commit; any other ref is
       // echoed back (test-controlled SHAs).
-      const branch = this.branchesByName.get(branchKey(project, ref));
+      const branch = this.branchesByName.get(branchKey(repo, ref));
       const sha = branch ? branch.commit_sha : ref;
       return {
-        id: `${project.id}:${sha}`,
+        id: `${repo.id}:${sha}`,
         sha,
-        metadata: this.meta(`${project.id}:${sha}`),
+        metadata: this.meta(`${repo.id}:${sha}`),
       };
     },
     diff: async () => [],
-    create: async (project, input) => {
+    create: async (repo, input) => {
       const sha = `fake-sha-${Date.now()}-${input.branch.replace(/[^a-zA-Z0-9]/g, "-")}`;
-      const branch = this.branchesByName.get(branchKey(project, input.branch));
+      const branch = this.branchesByName.get(branchKey(repo, input.branch));
       if (branch) {
-        this.branchesByName.set(branchKey(project, input.branch), {
+        this.branchesByName.set(branchKey(repo, input.branch), {
           ...branch,
           commit_sha: sha,
         });
       }
       return {
-        id: `${project.id}:${sha}`,
+        id: `${repo.id}:${sha}`,
         sha,
-        metadata: this.meta(`${project.id}:${sha}`),
+        metadata: this.meta(`${repo.id}:${sha}`),
       };
     },
   };
 
   readonly pipelines: ProviderAdapter["pipelines"] = {
-    getStatus: async (_project, id) => ({
+    getStatus: async (_repo, id) => ({
       id,
       status: "success",
       metadata: this.meta(id),
     }),
-    trigger: async (project, ref) => ({
-      id: `pipeline-${project.id}-${ref}`,
+    trigger: async (repo, ref) => ({
+      id: `pipeline-${repo.id}-${ref}`,
       status: "pending",
       metadata: this.meta(ref),
     }),
@@ -873,7 +859,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   };
 
   readonly webhooks: ProviderAdapter["webhooks"] = {
-    register: async (_project, input) => {
+    register: async (_repo, input) => {
       const id = `webhook-${this.webhooksById.size + 1}`;
       const hook = {
         id,
@@ -889,7 +875,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
       this.webhooksById.set(id, hook);
       return hook;
     },
-    unregister: async (_project, id) => {
+    unregister: async (_repo, id) => {
       this.webhooksById.delete(id);
     },
     verifySignature: async (input) =>
@@ -904,9 +890,9 @@ export class FakeProviderAdapter implements ProviderAdapter {
       id: `fake-group-${spec.environment}`,
       metadata: this.meta(`fake-group-${spec.environment}`),
     };
-    const project = {
-      id: `fake-project-${spec.environment}`,
-      metadata: this.meta(`fake-project-${spec.environment}`),
+    const repo = {
+      id: `fake-repo-${spec.environment}`,
+      metadata: this.meta(`fake-repo-${spec.environment}`),
     };
     const botSpecs = normalizeBootstrapBots(spec.bots);
     const botUsers = Object.fromEntries(
@@ -925,7 +911,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
       spec.webhook.secret ?? `fake-webhook-secret-${spec.environment}`;
     const env = {
       GITLAB_BASE_URL: spec.base_url,
-      GITLAB_DEV_PROJECT_ID: project.id,
+      GITLAB_DEV_REPO_ID: repo.id,
       ...botTokenEnv(botTokens),
       // Back-compat aliases for current adapter constructor wiring.
       GITLAB_TOKEN: botTokens.engine ?? "",
@@ -939,7 +925,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
       environment: spec.environment,
       base_url: spec.base_url,
       group,
-      project,
+      repo,
       bot_users: botUsers,
       bot_tokens: botTokens,
       oauth_application: {
@@ -962,7 +948,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
       },
       actions: [
         { resource: "group", status: "existing", provider_id: group.id },
-        { resource: "project", status: "existing", provider_id: project.id },
+        { resource: "repo", status: "existing", provider_id: repo.id },
         ...Object.entries(botUsers).flatMap(([role, user]) => [
           {
             resource: `bot:${role}`,
@@ -992,11 +978,11 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 
   private createIssue(
-    project: ProviderProjectRef,
+    repo: ProviderRepoRef,
     kind: "issue" | "epic",
     input: CreateIssueInput,
   ): ProviderIssue {
-    const id = `${project.id}:${kind}-${this.issueSeq++}`;
+    const id = `${repo.id}:${kind}-${this.issueSeq++}`;
     const issue: ProviderIssue = {
       id,
       iid: this.issueSeq - 1,
@@ -1012,12 +998,12 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 
   private updateIssue(
-    project: ProviderProjectRef,
+    repo: ProviderRepoRef,
     id: ProviderId,
     input: UpdateIssueInput,
   ): ProviderIssue {
-    const current = this.requireIssue(project, id);
-    return this.replaceIssue(project, id, {
+    const current = this.requireIssue(repo, id);
+    return this.replaceIssue(repo, id, {
       ...current,
       ...input,
       labels: input.labels ? [...input.labels] : current.labels,
@@ -1029,12 +1015,12 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 
   private setIssueState(
-    project: ProviderProjectRef,
+    repo: ProviderRepoRef,
     id: ProviderId,
     state: ProviderIssueState,
   ): ProviderIssue {
-    const current = this.requireIssue(project, id);
-    return this.replaceIssue(project, id, {
+    const current = this.requireIssue(repo, id);
+    return this.replaceIssue(repo, id, {
       ...current,
       state,
       metadata: this.meta(id),
@@ -1042,7 +1028,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 
   private replaceIssue(
-    _project: ProviderProjectRef,
+    _repo: ProviderRepoRef,
     id: ProviderId,
     issue: ProviderIssue,
   ): ProviderIssue {
@@ -1050,10 +1036,7 @@ export class FakeProviderAdapter implements ProviderAdapter {
     return issue;
   }
 
-  private requireIssue(
-    _project: ProviderProjectRef,
-    id: ProviderId,
-  ): ProviderIssue {
+  private requireIssue(_repo: ProviderRepoRef, id: ProviderId): ProviderIssue {
     const issue = this.issuesById.get(id);
     if (!issue) throw new Error(`fake provider issue not found: ${id}`);
     return issue;
@@ -1104,8 +1087,8 @@ export class FakeProviderAdapter implements ProviderAdapter {
   }
 }
 
-function branchKey(project: ProviderProjectRef, name: string): string {
-  return `${project.id}:${name}`;
+function branchKey(repo: ProviderRepoRef, name: string): string {
+  return `${repo.id}:${name}`;
 }
 
 export function defaultEngineBot(): BootstrapBotSpec {

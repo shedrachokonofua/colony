@@ -44,9 +44,9 @@ const state = {
   boardFilter: "all",
   boardQuery: "",
   boardOffset: 0,
-  boardGroup: null,
+  boardProject: null,
   scopesTotal: 0,
-  scopeGroups: [],
+  scopeProjects: [],
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -314,20 +314,20 @@ function waitingOnYou(scope, tasks, detail) {
   return "";
 }
 
-function gitlabProjectUrl(path) {
+function gitlabRepoUrl(path) {
   const base = state.config.gitlab_base_url.replace(/\/$/, "");
   if (!base || !path) return "";
   return `${base}/${path}`;
 }
 
 function mrUrl(path, iid) {
-  const project = gitlabProjectUrl(path);
-  return project && iid ? `${project}/-/merge_requests/${iid}` : "";
+  const repo = gitlabRepoUrl(path);
+  return repo && iid ? `${repo}/-/merge_requests/${iid}` : "";
 }
 
 function commitUrl(path, sha) {
-  const project = gitlabProjectUrl(path);
-  return project && sha ? `${project}/-/commit/${sha}` : "";
+  const repo = gitlabRepoUrl(path);
+  return repo && sha ? `${repo}/-/commit/${sha}` : "";
 }
 
 async function api(path, options = {}) {
@@ -378,8 +378,9 @@ function demoWorld() {
     goal: "Add a /version endpoint that returns the running colonyd SHA",
     title: "Version endpoint",
     status: "validating",
-    provider_project_id: "49",
-    provider_project_path: "so/colony",
+    project_name: null,
+    provider_repo_id: "49",
+    provider_repo_path: "so/colony",
     default_branch: "main",
     plan_json: JSON.stringify({
       summary:
@@ -579,9 +580,9 @@ function demoWorld() {
         id: "col-0badc0de",
         goal: "Expose run token usage per scope on the console",
         title: "Usage panel",
-        group: "Operator console",
+        project_name: "Operator console",
         status: "active",
-        provider_project_path: "so/colony",
+        provider_repo_path: "so/colony",
         default_branch: "main",
         plan_json: null,
         blocked_reason: null,
@@ -592,9 +593,9 @@ function demoWorld() {
         id: "col-deadbeef",
         goal: "Retire the leftover colony-dev hostname",
         title: null,
-        group: "Aether cleanup",
+        project_name: "Aether cleanup",
         status: "done",
-        provider_project_path: "so/aether",
+        provider_repo_path: "so/aether",
         default_branch: "main",
         plan_json: null,
         blocked_reason: null,
@@ -704,7 +705,7 @@ async function submitOpenScope(event) {
   const path = String(data.get("path") || "").trim();
   const approvals = String(data.get("approvals") || "auto");
   if (!goal || !path) return;
-  const group = String(data.get("group") || "").trim();
+  const project = String(data.get("project") || "").trim();
   try {
     const scope = await api("/scopes", {
       method: "POST",
@@ -712,8 +713,8 @@ async function submitOpenScope(event) {
         goal,
         ...(title ? { title } : {}),
         approvals,
-        ...(group ? { group } : {}),
-        project: { path },
+        repo: { path },
+        ...(project ? { project } : {}),
       }),
     });
     location.hash = `#/${scope.id}`;
@@ -1248,8 +1249,8 @@ function scopeMatchesQuery(scope) {
     scope.title,
     scope.goal,
     scope.id,
-    scope.group,
-    scope.provider_project_path,
+    scope.project_name,
+    scope.provider_repo_path,
   ]
     .filter(Boolean)
     .some((field) => field.toLowerCase().includes(q));
@@ -1266,7 +1267,7 @@ function scopeCard(scope) {
     <span class="scope-goal">${scopeTitle(scope)}</span>
     <span class="scope-meta">
       <span class="mono">${scope.id}</span>
-      <span>${scope.provider_project_path}</span>
+      <span>${scope.provider_repo_path}</span>
     </span>
   </button>`;
 }
@@ -1299,8 +1300,8 @@ function renderBoardPager() {
   </nav>`;
 }
 
-function groupTotal(group) {
-  const row = state.scopeGroups.find((g) => g.group === group);
+function projectTotal(project) {
+  const row = state.scopeProjects.find((p) => p.project === project);
   return row ? row.n : null;
 }
 
@@ -1308,44 +1309,44 @@ function renderBoard() {
   const visible = state.scopes.filter(
     (scope) => scopeMatchesFilter(scope) && scopeMatchesQuery(scope),
   );
-  // Group scopes by their group label, in page order (most recent scope first),
-  // ungrouped scopes together at the end. All-ungrouped renders flat.
-  const groups = new Map();
+  // Group scopes by their project name, in page order (most recent scope
+  // first), ungrouped scopes together at the end. All-ungrouped renders flat.
+  const projects = new Map();
   for (const scope of visible) {
-    const key = scope.group || "";
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(scope);
+    const key = scope.project_name || "";
+    if (!projects.has(key)) projects.set(key, []);
+    projects.get(key).push(scope);
   }
-  if (groups.has("") && groups.size > 1) {
-    const loose = groups.get("");
-    groups.delete("");
-    groups.set("", loose);
+  if (projects.has("") && projects.size > 1) {
+    const loose = projects.get("");
+    projects.delete("");
+    projects.set("", loose);
   }
   const cards = visible.length
     ? repeat(
-        [...groups.entries()],
-        ([group]) => group,
-        ([group, scopes]) => html`
-          ${group
+        [...projects.entries()],
+        ([project]) => project,
+        ([project, scopes]) => html`
+          ${project
             ? html`<h2 class="rack-group">
                 <button
                   class="rack-group-link"
-                  title="Show only this group"
+                  title="Show only this project"
                   @click=${() => {
-                    state.boardGroup = group;
+                    state.boardProject = project;
                     state.boardOffset = 0;
                     void refresh();
                   }}
                 >
-                  ${group}
+                  ${project}
                 </button>
                 <span class="rack-count"
-                  >${groupTotal(group) ?? scopes.length}</span
+                  >${projectTotal(project) ?? scopes.length}</span
                 >
               </h2>`
-            : groups.size > 1
+            : projects.size > 1
               ? html`<h2 class="rack-group rack-group-loose">
-                  No group
+                  No project
                   <span class="rack-count">${scopes.length}</span>
                 </h2>`
               : nothing}
@@ -1387,17 +1388,17 @@ function renderBoard() {
                 ${f.label}
               </button>`,
           )}
-          ${state.boardGroup
+          ${state.boardProject
             ? html`<button
                 class="filter-chip is-active"
-                title="Clear group filter"
+                title="Clear project filter"
                 @click=${() => {
-                  state.boardGroup = null;
+                  state.boardProject = null;
                   state.boardOffset = 0;
                   void refresh();
                 }}
               >
-                ${state.boardGroup} ✕
+                ${state.boardProject} ✕
               </button>`
             : nothing}
           <input
@@ -1444,11 +1445,11 @@ function renderCreate() {
               />
             </label>
             <label class="field">
-              <span>Group <em>optional</em></span>
+              <span>Project <em>optional</em></span>
               <input
-                name="group"
+                name="project"
                 maxlength="120"
-                placeholder="Groups related scopes on the board"
+                placeholder="Project this scope belongs to"
                 autocomplete="off"
               />
             </label>
@@ -1462,11 +1463,11 @@ function renderCreate() {
               ></textarea>
             </label>
             <label class="field">
-              <span>GitLab project path</span>
+              <span>GitLab repo path</span>
               <input
                 name="path"
                 required
-                placeholder="so/my-project"
+                placeholder="so/my-repo"
                 autocomplete="off"
               />
             </label>
@@ -1500,7 +1501,7 @@ function renderSheet() {
   }
   const task = selectedTask(detail);
   const wait = waitingOnYou(scope, detail.tasks, detail);
-  const pathUrl = gitlabProjectUrl(scope.provider_project_path);
+  const pathUrl = gitlabRepoUrl(scope.provider_repo_path);
   const taskCount = detail.tasks.length;
   return html`
     <header class="sheet-head">
@@ -1509,8 +1510,8 @@ function renderSheet() {
         <p class="sheet-sub">
           <span class="mono">${scope.id}</span>
           ${pathUrl
-            ? html`<a href=${pathUrl}>${scope.provider_project_path}</a>`
-            : html`<span>${scope.provider_project_path}</span>`}
+            ? html`<a href=${pathUrl}>${scope.provider_repo_path}</a>`
+            : html`<span>${scope.provider_repo_path}</span>`}
           <span>updated ${rel(scope.updated_at)}</span>
         </p>
       </div>
@@ -1791,8 +1792,8 @@ function renderDrawer(scope, task) {
   const sha = [...(state.detail?.runs || [])]
     .reverse()
     .find((run) => run.task_id === task.id && run.head_sha)?.head_sha;
-  const mr = task.mr_iid ? mrUrl(scope.provider_project_path, task.mr_iid) : "";
-  const commit = sha ? commitUrl(scope.provider_project_path, sha) : "";
+  const mr = task.mr_iid ? mrUrl(scope.provider_repo_path, task.mr_iid) : "";
+  const commit = sha ? commitUrl(scope.provider_repo_path, sha) : "";
   const retryWait =
     task.next_retry_at && Date.parse(task.next_retry_at) > Date.now()
       ? ` · next attempt in ${Math.max(1, Math.round((Date.parse(task.next_retry_at) - Date.now()) / 60000))}m`
@@ -2121,7 +2122,7 @@ async function refresh() {
       state.config = world.config;
       state.scopes = world.scopes;
       state.scopesTotal = world.scopes.length;
-      state.scopeGroups = [];
+      state.scopeProjects = [];
       const id = routeScopeId();
       state.detail = id === world.detail.scope.id ? world.detail : null;
       state.audit = world.audit;
@@ -2147,12 +2148,14 @@ async function refresh() {
     }
     const page = await api(
       `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${state.boardOffset}${
-        state.boardGroup ? `&group=${encodeURIComponent(state.boardGroup)}` : ""
+        state.boardProject
+          ? `&project=${encodeURIComponent(state.boardProject)}`
+          : ""
       }`,
     );
     state.scopes = page.scopes;
     state.scopesTotal = page.total;
-    state.scopeGroups = page.groups ?? [];
+    state.scopeProjects = page.projects ?? [];
     const id = routeScopeId();
     if (id) {
       const [detail, audit] = await Promise.all([
