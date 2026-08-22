@@ -5,7 +5,12 @@ const HEADERS = { "X-Actor-Id": ACTOR };
 
 export async function createScopeViaApi(
   request: APIRequestContext,
-  opts: { title?: string; goal: string; approvals?: "manual" | "auto" },
+  opts: {
+    title?: string;
+    goal: string;
+    approvals?: "manual" | "auto";
+    project?: string;
+  },
 ): Promise<string> {
   const res = await request.post("/scopes", {
     headers: HEADERS,
@@ -14,6 +19,7 @@ export async function createScopeViaApi(
       ...(opts.title ? { title: opts.title } : {}),
       approvals: opts.approvals ?? "manual",
       repo: { path: "so/console-e2e" },
+      ...(opts.project ? { project: opts.project } : {}),
     },
   });
   expect(res.ok()).toBeTruthy();
