@@ -497,11 +497,15 @@ export class PiBaseAgentRunner implements PiRunner {
       if (timeoutTriggered) {
         void session.abort();
       }
+      let zeroOutputStalled = false;
       const unsubscribeGuards = installRunGuards(session.agent, runId, {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
         logger: this.options.logger,
         onFailure: (reason) => {
           failureReason ??= reason;
+        },
+        onZeroOutputStall: () => {
+          zeroOutputStalled = true;
         },
       });
       const previousBeforeToolCall = session.agent.beforeToolCall;
@@ -573,9 +577,12 @@ export class PiBaseAgentRunner implements PiRunner {
         };
       };
 
+      // Active model index survives past the prompt loop so the continuation
+      // loop can keep falling over to remaining candidates on stalls.
+      let index = 0;
       try {
         if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {
-          for (let index = 0; index < resolvedModels.length; index += 1) {
+          for (; index < resolvedModels.length; index += 1) {
             const candidate = resolvedModels[index]!;
             if (index > 0) {
               await session.setModel(candidate);
@@ -622,8 +629,11 @@ export class PiBaseAgentRunner implements PiRunner {
               // ends the run immediately.
               if (cancellationTriggered) throw err;
               if (timeoutTriggered) break;
+              const stalled = zeroOutputStalled;
+              zeroOutputStalled = false;
               const next = models[index + 1];
-              if (!next || failureReason !== undefined) {
+              if (!next || (failureReason !== undefined && !stalled)) {
+                if (stalled) failureReason ??= "zero_output_stall";
                 throw err;
               }
               this.options.logger?.warn?.(
@@ -675,6 +685,28 @@ export class PiBaseAgentRunner implements PiRunner {
             }
           } catch (err) {
             if (cancellationTriggered) throw err;
+            // A zero-output stall aborts the in-flight steer; if candidates
+            // remain, fall over to the next model and keep steering - the
+            // conversation and workspace carry over on the same session.
+            if (zeroOutputStalled && resolvedModels[index + 1]) {
+              zeroOutputStalled = false;
+              index += 1;
+              const next = resolvedModels[index]!;
+              await session.setModel(next);
+              this.options.logger?.warn?.(
+                {
+                  runId,
+                  to: next.id,
+                  error: "zero_output_stall",
+                },
+                "pi_model_fallback",
+              );
+              continue;
+            }
+            if (zeroOutputStalled) {
+              zeroOutputStalled = false;
+              failureReason ??= "zero_output_stall";
+            }
             this.options.logger?.warn?.(
               {
                 runId,

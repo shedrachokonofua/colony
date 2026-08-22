@@ -85,6 +85,15 @@ export type PiModelResolver = (
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
   /**
+   * Fired when the model returns `zeroOutputStallTurns` consecutive
+   * assistant messages with zero output tokens and no tool activity - a
+   * provider that rate-limits by going silent instead of erroring (observed
+   * live: ox-alpha's free upstream). The guard aborts the session after
+   * firing so the caller can fall over to the next model candidate.
+   */
+  readonly onZeroOutputStall?: () => void;
+  readonly zeroOutputStallTurns?: number;
+  /**
    * Max silence between agent events before the run is declared dead.
    * Liveness is judged from observed progress (message deltas, turn/tool
    * boundaries), the way Temporal's heartbeat_timeout polices activities:
@@ -496,8 +505,18 @@ export function installRunGuards(
   };
   armWatchdog();
 
+  // Zero-output stall: some providers rate-limit by returning empty
+  // completions instead of errors. Nothing throws, so model fallback never
+  // triggers and continuation steers retry the mute model until the wall.
+  // N consecutive empty assistant messages with no tool activity = stall.
+  const zeroOutputStallTurns = options.zeroOutputStallTurns ?? 3;
+  let zeroOutputTurns = 0;
+
   const unsubscribe = agent.subscribe((event) => {
-    if (event.type === "tool_execution_start") inFlightTools += 1;
+    if (event.type === "tool_execution_start") {
+      inFlightTools += 1;
+      zeroOutputTurns = 0;
+    }
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
     }
@@ -524,6 +543,21 @@ export function installRunGuards(
         "pi_usage",
       );
       previousMessageAt = messageCompletedAt;
+      if ((usage?.output ?? 0) === 0) {
+        zeroOutputTurns += 1;
+        if (zeroOutputTurns >= zeroOutputStallTurns) {
+          zeroOutputTurns = 0;
+          options.logger?.warn?.(
+            { runId, stallTurns: zeroOutputStallTurns },
+            "pi_zero_output_stall",
+          );
+          options.onZeroOutputStall?.();
+          agent.abort();
+          return;
+        }
+      } else {
+        zeroOutputTurns = 0;
+      }
     }
     const reason =
       turns >= maxTurns ? "max_turns_exhausted_without_envelope" : undefined;

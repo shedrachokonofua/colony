@@ -97,3 +97,56 @@ describe("liveness watchdog", () => {
     expect(agent.aborted).toBe(0);
   });
 });
+
+describe("zero-output stall", () => {
+  const msg = (agent: ReturnType<typeof fakeAgent>, output: number) =>
+    agent.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        usage: { output, input: 10, cost: { total: 0 } },
+      },
+    } as never);
+
+  it("fires after N consecutive empty assistant messages and aborts", () => {
+    const agent = fakeAgent();
+    let stalled = 0;
+    installRunGuards(agent as never, "run-zo", {
+      zeroOutputStallTurns: 3,
+      livenessTimeoutMs: 0,
+      onZeroOutputStall: () => {
+        stalled += 1;
+      },
+    });
+    msg(agent, 0);
+    msg(agent, 0);
+    expect(stalled).toBe(0);
+    msg(agent, 0);
+    expect(stalled).toBe(1);
+    expect(agent.aborted).toBe(1);
+  });
+
+  it("tool activity and real output reset the stall counter", () => {
+    const agent = fakeAgent();
+    let stalled = 0;
+    installRunGuards(agent as never, "run-zo2", {
+      zeroOutputStallTurns: 3,
+      livenessTimeoutMs: 0,
+      onZeroOutputStall: () => {
+        stalled += 1;
+      },
+    });
+    msg(agent, 0);
+    msg(agent, 0);
+    agent.emit({ type: "tool_execution_start" } as never);
+    agent.emit({ type: "tool_execution_end" } as never);
+    msg(agent, 0);
+    msg(agent, 0);
+    expect(stalled).toBe(0);
+    msg(agent, 50);
+    msg(agent, 0);
+    msg(agent, 0);
+    expect(stalled).toBe(0);
+    expect(agent.aborted).toBe(0);
+  });
+});
