@@ -829,6 +829,36 @@ body {
   align-self: flex-start;
 }
 
+.project-context textarea {
+  min-height: 8rem;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl);
+  resize: vertical;
+}
+
+.project-context .pc-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.project-context .pc-status {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.project-context .pc-status.is-saved {
+  color: var(--ok);
+}
+
 .spec-tall {
   max-height: 24rem;
 }

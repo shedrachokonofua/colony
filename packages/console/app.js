@@ -47,6 +47,7 @@ const state = {
   boardProject: null,
   scopesTotal: 0,
   scopeProjects: [],
+  projectContext: null,
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -720,6 +721,65 @@ async function submitOpenScope(event) {
     location.hash = `#/${scope.id}`;
   } catch (err) {
     state.error = err instanceof Error ? err.message : String(err);
+    paint();
+  }
+}
+
+function renderProjectContextCard() {
+  const detail = state.detail;
+  if (!detail?.project) return nothing;
+  const saved = state.projectContext;
+  return html`<aside class="card">
+    <p class="card-head">Project context</p>
+    <div class="card-body">
+      <form
+        class="project-context"
+        @submit=${(event) => {
+          event.preventDefault();
+          void saveProjectContext(
+            String(new FormData(event.target).get("project-context") ?? ""),
+          );
+        }}
+      >
+        <textarea
+          name="project-context"
+          class="mono"
+          placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
+          .value=${live(
+            saved === null
+              ? (state.detail.project.context_doc ?? "")
+              : saved.doc,
+          )}
+        ></textarea>
+        <div class="pc-actions">
+          <button class="btn" type="submit">Save context</button>
+          ${saved?.status === "saving"
+            ? html`<span class="pc-status">Saving…</span>`
+            : saved?.status === "saved"
+              ? html`<span class="pc-status is-saved">Saved.</span>`
+              : nothing}
+        </div>
+      </form>
+    </div>
+  </aside>`;
+}
+
+async function saveProjectContext(value) {
+  const detail = state.detail;
+  if (!detail?.project) return;
+  const doc = value.trim() ? value : null;
+  state.projectContext = { doc: value, status: "saving" };
+  paint();
+  try {
+    await api(`/projects/${encodeURIComponent(detail.project.name)}/context`, {
+      method: "PUT",
+      body: JSON.stringify({ context_doc: doc }),
+    });
+    state.projectContext = { doc: value, status: "saved" };
+    await refresh();
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : String(err);
+    state.projectContext = { doc: value, status: null };
     paint();
   }
 }
@@ -1534,7 +1594,10 @@ function renderSheet() {
       <div class="card-body">${renderDag(detail)}</div>
     </section>
     <div class="sheet-cols">
-      <div class="sheet-col">${renderGoalCard(scope)} ${renderActivity()}</div>
+      <div class="sheet-col">
+        ${renderGoalCard(scope)} ${renderActivity()}
+        ${renderProjectContextCard()}
+      </div>
       <div class="sheet-col">${renderPlanCard(scope, detail)}</div>
       <div class="sheet-col">${renderValidationCard(scope, detail)}</div>
     </div>
@@ -2165,6 +2228,16 @@ async function refresh() {
       state.detail = detail;
       state.audit = audit;
       if (
+        state.projectContext === null &&
+        detail.project &&
+        detail.project.context_doc !== undefined
+      ) {
+        state.projectContext = {
+          doc: detail.project.context_doc ?? "",
+          status: null,
+        };
+      }
+      if (
         state.selectedTaskId &&
         !taskSelectionExists(detail, state.selectedTaskId)
       ) {
@@ -2174,6 +2247,7 @@ async function refresh() {
       await refreshRunEvents(detail);
     } else {
       state.detail = null;
+      state.projectContext = null;
       state.audit = await api("/audit?limit=12");
     }
     state.error = "";
@@ -2245,6 +2319,7 @@ window.addEventListener("hashchange", () => {
   state.confirm = null;
   state.goalOpen = false;
   state.planOpen = false;
+  state.projectContext = null;
   void refresh();
 });
 
