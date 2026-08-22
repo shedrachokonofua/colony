@@ -640,26 +640,8 @@ export class PiBaseAgentRunner implements PiRunner {
               // ends the run immediately.
               if (cancellationTriggered) throw err;
               if (timeoutTriggered) break;
-              const stalled = zeroOutputStalled;
-              zeroOutputStalled = false;
-              if (stalled && jigglesUsed < ZERO_OUTPUT_JIGGLES) {
-                jigglesUsed += 1;
-                this.options.logger?.warn?.(
-                  {
-                    runId,
-                    model: candidate.id,
-                    jiggle: jigglesUsed,
-                    backoffMs: JIGGLE_BACKOFF_MS * jigglesUsed,
-                  },
-                  "pi_zero_output_jiggle",
-                );
-                await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
-                index -= 1; // loop increment restores the same candidate
-                continue;
-              }
               const next = models[index + 1];
-              if (!next || (failureReason !== undefined && !stalled)) {
-                if (stalled) failureReason ??= "zero_output_stall";
+              if (!next || failureReason !== undefined) {
                 throw err;
               }
               this.options.logger?.warn?.(
@@ -678,6 +660,11 @@ export class PiBaseAgentRunner implements PiRunner {
         // finalized on the spot: restate the objective, the clock, and whether
         // anything is pushed. The omp harness does the same on incomplete work,
         // and Colony's run data showed models idling out with the task unfinished.
+        // A mute model (consecutive zero-output turns; the guard only flags,
+        // never aborts - an empty turn resolves the prompt naturally) gets
+        // jiggled first: dedicated wake prompts with increasing backoff outside
+        // the drift-steer budget, then failover to the next candidate on the
+        // same session.
         while (
           (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) &&
           capturedEnvelope === undefined &&
@@ -685,17 +672,50 @@ export class PiBaseAgentRunner implements PiRunner {
           !cancellationTriggered &&
           failureReason === undefined
         ) {
-          const steer = steering.takeContinuationSteer(
-            packetObjective(request.packet),
-          );
-          if (!steer) break;
-          this.options.logger?.warn?.(
-            { runId, sandboxId },
-            "pi_run_continuation",
-          );
+          let prompt: string;
+          if (zeroOutputStalled) {
+            zeroOutputStalled = false;
+            if (jigglesUsed < ZERO_OUTPUT_JIGGLES) {
+              jigglesUsed += 1;
+              this.options.logger?.warn?.(
+                {
+                  runId,
+                  model: resolvedModels[index]?.id,
+                  jiggle: jigglesUsed,
+                  backoffMs: JIGGLE_BACKOFF_MS * jigglesUsed,
+                },
+                "pi_zero_output_jiggle",
+              );
+              await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
+            } else if (resolvedModels[index + 1]) {
+              index += 1;
+              jigglesUsed = 0;
+              const next = resolvedModels[index]!;
+              await session.setModel(next);
+              this.options.logger?.warn?.(
+                { runId, to: next.id, error: "zero_output_stall" },
+                "pi_model_fallback",
+              );
+            } else {
+              failureReason = "zero_output_stall";
+              break;
+            }
+            prompt =
+              "Your last several replies were empty. Continue the task from the current conversation and workspace state; if the work is already complete, submit the required envelope now.";
+          } else {
+            const steer = steering.takeContinuationSteer(
+              packetObjective(request.packet),
+            );
+            if (!steer) break;
+            this.options.logger?.warn?.(
+              { runId, sandboxId },
+              "pi_run_continuation",
+            );
+            prompt = steer;
+          }
           try {
             const steerPromise = session
-              .prompt(steer, {
+              .prompt(prompt, {
                 expandPromptTemplates: false,
               })
               .catch((err) => {
@@ -711,45 +731,6 @@ export class PiBaseAgentRunner implements PiRunner {
             }
           } catch (err) {
             if (cancellationTriggered) throw err;
-            // A zero-output stall aborts the in-flight steer. Jiggle the
-            // current model first (bounded, with backoff - mute providers
-            // often recover within a minute); then fall over to the next
-            // candidate. Conversation and workspace carry over either way.
-            if (zeroOutputStalled && jigglesUsed < ZERO_OUTPUT_JIGGLES) {
-              zeroOutputStalled = false;
-              jigglesUsed += 1;
-              this.options.logger?.warn?.(
-                {
-                  runId,
-                  model: resolvedModels[index]?.id,
-                  jiggle: jigglesUsed,
-                  backoffMs: JIGGLE_BACKOFF_MS * jigglesUsed,
-                },
-                "pi_zero_output_jiggle",
-              );
-              await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
-              continue;
-            }
-            if (zeroOutputStalled && resolvedModels[index + 1]) {
-              zeroOutputStalled = false;
-              index += 1;
-              jigglesUsed = 0;
-              const next = resolvedModels[index]!;
-              await session.setModel(next);
-              this.options.logger?.warn?.(
-                {
-                  runId,
-                  to: next.id,
-                  error: "zero_output_stall",
-                },
-                "pi_model_fallback",
-              );
-              continue;
-            }
-            if (zeroOutputStalled) {
-              zeroOutputStalled = false;
-              failureReason ??= "zero_output_stall";
-            }
             this.options.logger?.warn?.(
               {
                 runId,

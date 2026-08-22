@@ -108,7 +108,7 @@ describe("zero-output stall", () => {
       },
     } as never);
 
-  it("fires after N consecutive empty assistant messages and aborts", () => {
+  it("fires after N consecutive empty assistant messages without aborting", () => {
     const agent = fakeAgent();
     let stalled = 0;
     installRunGuards(agent as never, "run-zo", {
@@ -123,7 +123,8 @@ describe("zero-output stall", () => {
     expect(stalled).toBe(0);
     msg(agent, 0);
     expect(stalled).toBe(1);
-    expect(agent.aborted).toBe(1);
+    // Flag-only: aborting a live session poisons the replayed conversation.
+    expect(agent.aborted).toBe(0);
   });
 
   it("tool activity and real output reset the stall counter", () => {

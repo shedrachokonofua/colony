@@ -88,8 +88,9 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
    * Fired when the model returns `zeroOutputStallTurns` consecutive
    * assistant messages with zero output tokens and no tool activity - a
    * provider that rate-limits by going silent instead of erroring (observed
-   * live: ox-alpha's free upstream). The guard aborts the session after
-   * firing so the caller can fall over to the next model candidate.
+   * live: ox-alpha's free upstream). Flag-only: the guard never aborts; an
+   * empty turn resolves the prompt naturally and the caller owns the
+   * wake/backoff/failover decision.
    */
   readonly onZeroOutputStall?: () => void;
   readonly zeroOutputStallTurns?: number;
@@ -551,9 +552,11 @@ export function installRunGuards(
             { runId, stallTurns: zeroOutputStallTurns },
             "pi_zero_output_stall",
           );
+          // Flag only - never abort. An empty assistant turn ends naturally
+          // (the prompt resolves as idle), and aborting a live session has
+          // been observed to poison the replayed conversation for the next
+          // model. The runner decides between wake, backoff, and failover.
           options.onZeroOutputStall?.();
-          agent.abort();
-          return;
         }
       } else {
         zeroOutputTurns = 0;
