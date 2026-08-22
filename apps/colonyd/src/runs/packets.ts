@@ -179,7 +179,10 @@ function buildArchitectBody(scope: Scope): string {
   return lines.join("\n");
 }
 
-function buildImplementBody(task: Task, continuity: ImplementContinuity): string {
+function buildImplementBody(
+  task: Task,
+  continuity: ImplementContinuity,
+): string {
   const sections = [
     task.spec,
     "",
