@@ -498,6 +498,15 @@ export class PiBaseAgentRunner implements PiRunner {
         void session.abort();
       }
       let zeroOutputStalled = false;
+      // Jiggle before failover: a provider that rate-limits by going mute
+      // often recovers within a minute. Give the CURRENT model two wakes with
+      // increasing backoff before abandoning it; any real progress (a tool
+      // call) resets the budget.
+      const ZERO_OUTPUT_JIGGLES = 2;
+      const JIGGLE_BACKOFF_MS = 15_000;
+      let jigglesUsed = 0;
+      const sleep = (ms: number) =>
+        new Promise<void>((resolve) => setTimeout(resolve, ms));
       const unsubscribeGuards = installRunGuards(session.agent, runId, {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
         logger: this.options.logger,
@@ -544,6 +553,7 @@ export class PiBaseAgentRunner implements PiRunner {
         ) {
           repositoryInspected = true;
         }
+        jigglesUsed = 0;
         steering.observeToolCall(
           context.toolCall.name,
           context.args,
@@ -586,6 +596,7 @@ export class PiBaseAgentRunner implements PiRunner {
             const candidate = resolvedModels[index]!;
             if (index > 0) {
               await session.setModel(candidate);
+              jigglesUsed = 0;
             }
             const prompt =
               index === 0
@@ -631,6 +642,21 @@ export class PiBaseAgentRunner implements PiRunner {
               if (timeoutTriggered) break;
               const stalled = zeroOutputStalled;
               zeroOutputStalled = false;
+              if (stalled && jigglesUsed < ZERO_OUTPUT_JIGGLES) {
+                jigglesUsed += 1;
+                this.options.logger?.warn?.(
+                  {
+                    runId,
+                    model: candidate.id,
+                    jiggle: jigglesUsed,
+                    backoffMs: JIGGLE_BACKOFF_MS * jigglesUsed,
+                  },
+                  "pi_zero_output_jiggle",
+                );
+                await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
+                index -= 1; // loop increment restores the same candidate
+                continue;
+              }
               const next = models[index + 1];
               if (!next || (failureReason !== undefined && !stalled)) {
                 if (stalled) failureReason ??= "zero_output_stall";
@@ -685,12 +711,29 @@ export class PiBaseAgentRunner implements PiRunner {
             }
           } catch (err) {
             if (cancellationTriggered) throw err;
-            // A zero-output stall aborts the in-flight steer; if candidates
-            // remain, fall over to the next model and keep steering - the
-            // conversation and workspace carry over on the same session.
+            // A zero-output stall aborts the in-flight steer. Jiggle the
+            // current model first (bounded, with backoff - mute providers
+            // often recover within a minute); then fall over to the next
+            // candidate. Conversation and workspace carry over either way.
+            if (zeroOutputStalled && jigglesUsed < ZERO_OUTPUT_JIGGLES) {
+              zeroOutputStalled = false;
+              jigglesUsed += 1;
+              this.options.logger?.warn?.(
+                {
+                  runId,
+                  model: resolvedModels[index]?.id,
+                  jiggle: jigglesUsed,
+                  backoffMs: JIGGLE_BACKOFF_MS * jigglesUsed,
+                },
+                "pi_zero_output_jiggle",
+              );
+              await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
+              continue;
+            }
             if (zeroOutputStalled && resolvedModels[index + 1]) {
               zeroOutputStalled = false;
               index += 1;
+              jigglesUsed = 0;
               const next = resolvedModels[index]!;
               await session.setModel(next);
               this.options.logger?.warn?.(
