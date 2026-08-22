@@ -214,6 +214,35 @@ export class Store {
       .all() as Project[];
   }
 
+  /** One page of projects, oldest first; `total` counts the whole table. */
+  pageProjects(
+    limit: number,
+    offset: number,
+  ): { projects: Project[]; total: number } {
+    const projects = this.db
+      .prepare(`SELECT * FROM projects ORDER BY created_at LIMIT ? OFFSET ?`)
+      .all(limit, offset) as Project[];
+    const { n } = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM projects`)
+      .get() as { n: number };
+    return { projects, total: n };
+  }
+
+  /**
+   * Operator-authored background document for a project. Audited writes go
+   * through the colonyd API, never here — callers own the audit row.
+   */
+  setProjectContext(name: string, doc: string | null): Project {
+    this.db
+      .prepare(
+        `UPDATE projects SET context_doc = ?, updated_at = ? WHERE name = ?`,
+      )
+      .run(doc, nowIso(), name);
+    const project = this.getProject(name);
+    if (!project) throw new Error(`unknown project: ${name}`);
+    return project;
+  }
+
   /**
    * Idempotent insert-or-read. An existing row is never touched, so its
    * `updated_at` stays the creation timestamp.

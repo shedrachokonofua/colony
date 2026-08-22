@@ -75,6 +75,16 @@ const scopesQuery = z.object({
   project: z.string().min(1).max(120).optional(),
 });
 
+const projectsQuery = z.object({
+  limit: z.coerce.number().int().positive().max(100).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+
+/** Operator-authored background; `null` clears it. Strict: no extra keys. */
+const contextBody = z
+  .object({ context_doc: z.string().max(100_000).nullable() })
+  .strict();
+
 export function buildApp(ctx: ColonydContext): Hono<Env> {
   const app = new Hono<Env>();
 
@@ -227,11 +237,56 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json({ scopes, total, limit, offset, projects });
   });
 
+  app.get("/projects", (c) => {
+    const parsed = projectsQuery.safeParse(c.req.query());
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const limit = parsed.data.limit ?? 25;
+    const offset = parsed.data.offset ?? 0;
+    const { projects, total } = ctx.store.pageProjects(limit, offset);
+    return c.json({ projects, total, limit, offset });
+  });
+
+  app.get("/projects/:name", (c) => {
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+    return c.json({ project });
+  });
+
+  app.get("/projects/:name/context", (c) => {
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+    return c.json({ context_doc: project.context_doc });
+  });
+
+  // Writing context for an unknown project creates that project (same
+  // auto-create rule as scope creation), so operators can pre-seed
+  // background before opening scopes. Every write lands an audit row.
+  app.put("/projects/:name/context", async (c) => {
+    const name = c.req.param("name");
+    const parsed = contextBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    ctx.store.ensureProject(name);
+    const project = ctx.store.setProjectContext(name, parsed.data.context_doc);
+    ctx.store.audit(c.get("actor"), "project.context_updated", {
+      detail: {
+        name,
+        bytes:
+          project.context_doc === null
+            ? 0
+            : Buffer.byteLength(project.context_doc),
+      },
+    });
+    return c.json({ project });
+  });
+
   app.get("/scopes/:id", (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
     if (!scope) return notFound(c, "scope");
     return c.json({
       scope,
+      project: scope.project_name
+        ? (ctx.store.getProject(scope.project_name) ?? null)
+        : null,
       tasks: ctx.store.listTasks(scope.id),
       deps: ctx.store.scopeDeps(scope.id),
       runs: ctx.store.runsForScope(scope.id),

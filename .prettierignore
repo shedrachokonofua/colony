@@ -9,3 +9,6 @@ data/
 packages/console/vendor/
 PACKET.json
 .bun-cache/
+
+# Agent-harness working docs, injected per-workspace — not project source.
+.colony/

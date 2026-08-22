@@ -7,6 +7,7 @@ import type { ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
+import { buildImplementPacket, type ImplementContinuity } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -109,21 +110,31 @@ async function executeImplement(
     const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
       .sha;
     const branch = `colony/${task.id}`;
-    const packet = {
-      kind: "implement_task",
-      task_id: task.id,
-      scope_id: scope.id,
-      goal: task.title,
-      body: buildPacketBody(ctx, task),
+    const project = scope.project_name
+      ? (ctx.store.getProject(scope.project_name) ?? null)
+      : null;
+    const { repo: repoWithCredentials, ...packet } = buildImplementPacket(
+      task,
+      scope,
+      project,
+      repo,
+      branch,
+      baseSha,
+      {
+        interrupted: interruptedAttempt(ctx, task),
+        gateFailure: latestGateFailure(ctx, task),
+        reviewFindings: latestReviewFindings(ctx, task),
+      },
+    );
+    const full = {
+      ...packet,
       repo: {
-        url: scope.provider_repo_path,
+        ...repoWithCredentials,
         credentials: minted ? { token: minted.token } : undefined,
-        branch,
-        base_commit: baseSha,
       },
     };
 
-    const metadata = await ctx.agents.developer.startRun(packet, {
+    const metadata = await ctx.agents.developer.startRun(full, {
       role: "developer",
       runId,
     });
@@ -281,55 +292,6 @@ async function executeImplement(
       }
     }
   }
-}
-
-function buildPacketBody(ctx: ColonydContext, task: Task): string {
-  const sections = [
-    task.spec,
-    "",
-    "## Invariants",
-    "- Work on the branch provided in packet.repo; commit there and push.",
-    "- colonyd opens the merge request after your run — do NOT open an MR yourself.",
-    "- Never commit PACKET.json or credentials; keep the diff limited to this task.",
-    "- Submit implementer_completion with the exact branch and head SHA you pushed.",
-  ];
-  const interrupted = interruptedAttempt(ctx, task);
-  if (interrupted) {
-    sections.push(
-      "",
-      "## Previous attempt was interrupted — RESUME MODE",
-      interrupted,
-    );
-  }
-  const gateFailure = latestGateFailure(ctx, task);
-  if (gateFailure) {
-    sections.push(
-      "",
-      "## Previous gate failure — LANDING MODE",
-      gateFailure,
-      "",
-      "The task's implementation was already written and reviewed. Your job",
-      "now is to LAND it, not to re-derive or redesign it:",
-      "- Rebase the existing branch onto the latest target branch and resolve",
-      "  merge conflicts minimally, preserving the reviewed change.",
-      "- Fix failing tests/lint/typecheck with the smallest change that makes",
-      "  the suite green — if a test broke because main moved underneath you,",
-      "  reconcile with main's behavior rather than reverting main's changes.",
-      "- Keep the final diff against the target branch as close as possible",
-      "  to the previously reviewed diff. Review re-runs at your new head;",
-      "  gratuitous changes cost another full cycle.",
-      "- Run the full gate-relevant checks (install, typecheck, lint, tests)",
-      "  before submitting and include them as command evidence.",
-    );
-  }
-  const reviewFindings = latestReviewFindings(ctx, task);
-  if (reviewFindings) {
-    sections.push("", "## Previous review findings", reviewFindings);
-  }
-  if (task.human_feedback) {
-    sections.push("", "## Operator feedback", task.human_feedback);
-  }
-  return sections.join("\n");
 }
 
 /**

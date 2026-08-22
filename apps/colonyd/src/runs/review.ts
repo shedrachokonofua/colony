@@ -4,6 +4,7 @@ import type { ProviderRepoRef } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
+import { buildReviewPacket } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -114,24 +115,25 @@ async function executeReview(
       },
     });
 
-    const packet = {
-      kind: "review_task",
-      task_id: task.id,
-      scope_id: scope.id,
-      goal: task.title,
-      head_sha: headSha,
-      mr_iid: task.mr_iid,
-      target_branch: scope.default_branch,
-      body: buildReviewBody(task, scope.default_branch),
+    const project = scope.project_name
+      ? (ctx.store.getProject(scope.project_name) ?? null)
+      : null;
+    const { repo: repoWithCredentials, ...packet } = buildReviewPacket(
+      task,
+      scope,
+      project,
+      repo,
+      headSha,
+    );
+    const full = {
+      ...packet,
       repo: {
-        url: scope.provider_repo_path,
+        ...repoWithCredentials,
         credentials: minted ? { token: minted.token } : undefined,
-        branch: task.branch ?? `colony/${task.id}`,
-        base_commit: headSha,
       },
     };
 
-    const metadata = await reviewer.startRun(packet, {
+    const metadata = await reviewer.startRun(full, {
       role: "reviewer",
       runId,
     });
@@ -374,22 +376,4 @@ function parseReviewEvidence(evidenceJson: string | null): {
   } catch {
     return {};
   }
-}
-
-function buildReviewBody(task: Task, defaultBranch: string): string {
-  return [
-    task.spec,
-    "",
-    "## Review instructions",
-    `Diff against origin/${defaultBranch} (\`git diff origin/${defaultBranch}...HEAD\`) and inspect changed files.`,
-    "Judge spec compliance and defects. Do not edit files or push.",
-    "Sections titled 'Spec amendment (operator...)' are authoritative and supersede earlier spec text they contradict.",
-    "Review adversarially — actively look for a reason to reject:",
-    "- Trace EVERY input path (config file, env var, override parameter, API body) to its validation; an input accepted on one path but rejected on another is a finding.",
-    "- Verify claimed guarantees hold under the substrate: process trees vs single processes, pipe ordering, path resolution, lockfile/CI sync.",
-    "- For shared contracts (schemas, wire protocols, exported test suites): over-specification is as much a defect as under-specification — flag assertions no implementation can honestly guarantee.",
-    "- Check the change lands green alone: new workspace packages must be in the lockfile, new files in CI's reach.",
-    "Submit reviewer_verdict with the exact head SHA you inspected (`git rev-parse HEAD`).",
-    "request_changes requires at least one finding.",
-  ].join("\n");
 }
