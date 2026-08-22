@@ -63,7 +63,7 @@ const ACTOR = { headers: { "X-Actor-Id": "human:op-1" } };
 
 /** Structural view of the Hono app: tests only ever call `.request`. */
 interface TestApp {
-  request(path: string, init?: RequestInit): Promise<Response>;
+  request(path: string, init?: RequestInit): Response | Promise<Response>;
 }
 
 async function createScope(
@@ -137,9 +137,9 @@ describe("project context packets", () => {
     expect(projectContextSection(undefined)).toBe("");
     expect(projectContextSection({ name: "demo", context_doc: null })).toBe("");
     expect(projectContextSection({ name: "demo", context_doc: "" })).toBe("");
-    expect(
-      projectContextSection({ name: "demo", context_doc: "  \n\t" }),
-    ).toBe("");
+    expect(projectContextSection({ name: "demo", context_doc: "  \n\t" })).toBe(
+      "",
+    );
     const section = projectContextSection({ name: "demo", context_doc: DOC });
     expect(section.startsWith(`${HEADING}\n\n`)).toBe(true);
     expect(section.endsWith(`${DOC}\n`)).toBe(true);
@@ -176,7 +176,7 @@ describe("project context HTTP contract", () => {
       project: { name: "pre-seeded", context_doc: null },
     });
     await expect(
-      app.request("/projects/pre-seeded/context", ACTOR).then((r) => r.json()),
+      (await app.request("/projects/pre-seeded/context", ACTOR)).json(),
     ).resolves.toEqual({ context_doc: null });
 
     const auditRes = await app.request("/audit?limit=100", ACTOR);
@@ -254,9 +254,11 @@ describe("project context HTTP contract", () => {
     expect(body.offset).toBe(2);
     expect(body.projects.map((p) => p.name)).toEqual(["p2", "p3", "p4"]);
 
-    const defaults = (await (
-      await app.request("/projects", ACTOR)
-    ).json()) as { limit: number; offset: number; total: number };
+    const defaults = (await (await app.request("/projects", ACTOR)).json()) as {
+      limit: number;
+      offset: number;
+      total: number;
+    };
     expect(defaults.limit).toBe(25);
     expect(defaults.offset).toBe(0);
     expect(defaults.total).toBe(7);

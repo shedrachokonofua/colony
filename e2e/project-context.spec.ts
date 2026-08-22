@@ -80,9 +80,9 @@ test.describe("project context in the console", () => {
     const typed = `Architecture decision record ${stamp}: use bun workspaces.`;
     await textarea.fill(typed);
     await page.getByRole("button", { name: "Save context" }).click();
-    await expect(
-      page.locator(".pc-status", { hasText: "Saved." }),
-    ).toBeVisible({ timeout: 15000 });
+    await expect(page.locator(".pc-status", { hasText: "Saved." })).toBeVisible(
+      { timeout: 15000 },
+    );
 
     // The audited API holds exactly what the editor sent.
     const stored = await request.get(
@@ -101,9 +101,9 @@ test.describe("project context in the console", () => {
     // Clearing stores null.
     await textareaAfter.fill("");
     await page.getByRole("button", { name: "Save context" }).click();
-    await expect(
-      page.locator(".pc-status", { hasText: "Saved." }),
-    ).toBeVisible({ timeout: 15000 });
+    await expect(page.locator(".pc-status", { hasText: "Saved." })).toBeVisible(
+      { timeout: 15000 },
+    );
     const cleared = await request.get(
       `/projects/${encodeURIComponent(project)}/context`,
       { headers: { "X-Actor-Id": ACTOR } },
