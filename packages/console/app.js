@@ -1431,7 +1431,7 @@ function renderCreate() {
               <input
                 name="project"
                 maxlength="120"
-                placeholder="Groups related scopes on the board"
+                placeholder="Project this scope belongs to"
                 autocomplete="off"
               />
             </label>
