@@ -44,7 +44,10 @@ import {
 } from "./pi-runner-common.js";
 import {
   buildArchitectPhases,
+  buildRevisionPrompt,
+  type ArchitectCritiqueSpec,
   type ArchitectPhase,
+  type CritiqueReport,
 } from "./architect-phases.js";
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import { createSubagentTool } from "./subagent-tool.js";
@@ -137,6 +140,12 @@ export interface PiRoleProfile {
 export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
   readonly tools?: readonly string[];
   readonly logToolArgs?: boolean;
+  /**
+   * Opt-in bounded critique pass for phased roles: after the phase sequence
+   * produces a draft envelope, a fresh session reviews it adversarially and
+   * gets at most one revision cycle. Ignored on profiles without `phases`.
+   */
+  readonly critique?: ArchitectCritiqueSpec;
 }
 
 export { WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME, WEB_TOOL_NAMES };
@@ -210,13 +219,41 @@ export class PiBaseAgentRunner implements PiRunner {
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
       resolveCapturedEnvelope = resolve;
     });
+    // Critique mode: submissions before the revision cycle are DRAFTS. They
+    // must not satisfy the run's envelope waits, so they resolve a separate
+    // promise; only an accepted (post-critique or revised) envelope counts.
+    let draftEnvelope: unknown;
+    let resolveDraftEnvelope: (() => void) | undefined;
+    const draftEnvelopePromise = new Promise<void>((resolve) => {
+      resolveDraftEnvelope = resolve;
+    });
+    let critiqueCompleted = false;
     let session: AgentSession | undefined;
     let handle: SandboxHandle | undefined;
 
     const submitTool = this.profile.submitTool((value) => {
+      if (this.options.critique && this.profile.phases && !critiqueCompleted) {
+        draftEnvelope = value;
+        resolveDraftEnvelope?.();
+        return;
+      }
       capturedEnvelope = value;
       resolveCapturedEnvelope?.();
     });
+    /** True while submissions route to the draft slot pending critique. */
+    const critiqueEngaged = Boolean(
+      this.options.critique && this.profile.phases,
+    );
+    /** Whether a submission has landed: accepted, or a draft awaiting critique. */
+    const submissionCaptured = (): boolean =>
+      critiqueEngaged && !critiqueCompleted
+        ? draftEnvelope !== undefined
+        : capturedEnvelope !== undefined;
+    /** The wait promise that resolves once a submission lands. */
+    const submissionPromise = (): Promise<void> =>
+      critiqueEngaged && !critiqueCompleted
+        ? draftEnvelopePromise
+        : capturedEnvelopePromise;
 
     // The credential broker owns key resolution; the registry only needs a
     // provider record per model so `createAgentSession` can resolve selectors.
@@ -643,7 +680,7 @@ export class PiBaseAgentRunner implements PiRunner {
           id: string;
         }): Promise<boolean> => {
           for (const step of planSteps()) {
-            if (capturedEnvelope !== undefined) return true;
+            if (submissionCaptured()) return true;
             if (step.phase) {
               this.options.logger?.info?.(
                 { runId, sandboxId, phase: step.phase.name },
@@ -651,24 +688,25 @@ export class PiBaseAgentRunner implements PiRunner {
               );
             }
             try {
+              const waitPromise = submissionPromise();
               const promptPromise = activeSession
                 .prompt(step.prompt, {
                   expandPromptTemplates: false,
                 })
                 .catch((err) => {
-                  if (capturedEnvelope !== undefined) return;
+                  if (submissionCaptured()) return;
                   throw err;
                 });
-              await Promise.race([promptPromise, capturedEnvelopePromise]);
-              if (capturedEnvelope === undefined) {
+              await Promise.race([promptPromise, waitPromise]);
+              if (!submissionCaptured()) {
                 await waitForIdleOrCapturedEnvelope(
                   activeSession.agent,
-                  capturedEnvelopePromise,
+                  waitPromise,
                 );
               }
               const lastMessage = activeSession.agent.state.messages.at(-1);
               if (
-                capturedEnvelope === undefined &&
+                !submissionCaptured() &&
                 lastMessage?.role === "assistant" &&
                 lastMessage.stopReason === "error"
               ) {
@@ -726,7 +764,7 @@ export class PiBaseAgentRunner implements PiRunner {
         // same session.
         while (
           (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) &&
-          capturedEnvelope === undefined &&
+          !submissionCaptured() &&
           !timeoutTriggered &&
           !cancellationTriggered &&
           failureReason === undefined
@@ -773,20 +811,18 @@ export class PiBaseAgentRunner implements PiRunner {
             prompt = steer;
           }
           try {
+            const waitPromise = submissionPromise();
             const steerPromise = session
               .prompt(prompt, {
                 expandPromptTemplates: false,
               })
               .catch((err) => {
-                if (capturedEnvelope !== undefined) return;
+                if (submissionCaptured()) return;
                 throw err;
               });
-            await Promise.race([steerPromise, capturedEnvelopePromise]);
-            if (capturedEnvelope === undefined) {
-              await waitForIdleOrCapturedEnvelope(
-                session.agent,
-                capturedEnvelopePromise,
-              );
+            await Promise.race([steerPromise, waitPromise]);
+            if (!submissionCaptured()) {
+              await waitForIdleOrCapturedEnvelope(session.agent, waitPromise);
             }
           } catch (err) {
             if (cancellationTriggered) throw err;
@@ -802,6 +838,122 @@ export class PiBaseAgentRunner implements PiRunner {
         }
       } finally {
         unsubscribeGuards();
+      }
+
+      // The bounded adversarial critique pass. Runs only when the option is
+      // set AND the role is phased; one critique session and at most one
+      // revision prompt per run, all under the run deadline already armed.
+      if (
+        this.options.critique &&
+        (this.profile.phases?.(request.packet)?.length ?? 0) > 0 &&
+        draftEnvelope !== undefined &&
+        !critiqueCompleted &&
+        !timeoutTriggered &&
+        !cancellationTriggered &&
+        failureReason === undefined
+      ) {
+        try {
+          const critique = this.options.critique;
+          const critic = await createAgentSession(
+            buildSessionOptions({
+              systemPrompt: critique.systemPrompt,
+              customTools: [],
+              toolNames: [],
+              prewalk: false,
+            }),
+          );
+          let reportText = "";
+          const unsubscribeReport = critic.session.agent.subscribe((event) => {
+            if (
+              event.type === "message_end" &&
+              event.message.role === "assistant"
+            ) {
+              const text = event.message.content
+                .filter(
+                  (block): block is { type: "text"; text: string } =>
+                    block.type === "text" && typeof block.text === "string",
+                )
+                .map((block) => block.text)
+                .join("\n");
+              if (text.trim()) reportText = text;
+            }
+          });
+          let report: CritiqueReport;
+          try {
+            await critic.session.prompt(
+              critique.buildPrompt({
+                goal: packetObjective(request.packet),
+                projectContext:
+                  typeof
+                    (request.packet as { project?: { context_doc?: unknown } })
+                      .project?.context_doc === "string"
+                    ? ((request.packet as { project: { context_doc: string } })
+                        .project.context_doc)
+                    : null,
+                envelope: draftEnvelope,
+              }),
+              { expandPromptTemplates: false },
+            );
+            await critic.session.agent.waitForIdle();
+          } finally {
+            unsubscribeReport();
+            critic.session.dispose();
+          }
+          report = critique.parseReport(reportText);
+          this.options.logger?.info?.(
+            {
+              runId,
+              sandboxId,
+              verdict: report.verdict,
+              findings: report.findings.length,
+            },
+            "architect_critique",
+          );
+          if (report.verdict === "approve" || report.findings.length === 0) {
+            capturedEnvelope = draftEnvelope;
+            resolveCapturedEnvelope?.();
+          } else {
+            critiqueCompleted = true;
+            const revisionPromise = session!
+              .prompt(buildRevisionPrompt(report.findings), {
+                expandPromptTemplates: false,
+              })
+              .catch((err) => {
+                if (capturedEnvelope !== undefined) return;
+                throw err;
+              });
+            await Promise.race([revisionPromise, capturedEnvelopePromise]);
+            if (!submissionCaptured()) {
+              await waitForIdleOrCapturedEnvelope(
+                session!.agent,
+                capturedEnvelopePromise,
+              );
+            }
+            if (capturedEnvelope === undefined) {
+              const lastMessage = session!.agent.state.messages.at(-1);
+              if (
+                lastMessage?.role === "assistant" &&
+                lastMessage.stopReason === "error"
+              ) {
+                failureReason ??= lastMessage.errorMessage ?? "critique_revision_failed";
+              }
+            }
+          }
+        } catch (err) {
+          if (cancellationTriggered || timeoutTriggered) {
+            // Cancellation/timeouts are handled by their own guards; keep
+            // their classified reasons instead of masking them.
+          } else {
+            failureReason ??= "critique_failed";
+            this.options.logger?.warn?.(
+              {
+                runId,
+                error: err instanceof Error ? err.message : String(err),
+              },
+              "architect_critique_failed",
+            );
+          }
+        }
       }
 
       if (

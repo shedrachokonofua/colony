@@ -124,7 +124,7 @@ export async function createAgentWiring(
   const broker = createConfigCredentialBroker(agentsToCheck);
   const engine = await createEngine(config.sandbox.engine, config);
   const webTools = resolveWebToolsConfig(env().COLONY_SEARXNG_URL);
-  const { PiArchitectRunner } =
+  const { PiArchitectRunner, ARCHITECT_CRITIQUE } =
     await import("@colony/agent-runtime/pi-architect-runner");
   const { PiCodingAgentRunner } =
     await import("@colony/agent-runtime/pi-coding-agent-runner");
@@ -168,6 +168,7 @@ export async function createAgentWiring(
         thinkingLevel: architectConfig.thinkingLevel,
         logger: architectLogger,
         engine,
+        critique: ARCHITECT_CRITIQUE,
         ...(webTools ? { webTools } : {}),
       }),
       {

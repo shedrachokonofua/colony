@@ -16,6 +16,147 @@ export interface ArchitectPhase {
   readonly prompt: string;
 }
 
+/** Adversarial critique outcome for a draft decomposition envelope. */
+export interface CritiqueReport {
+  readonly verdict: "approve" | "request_changes";
+  readonly findings: readonly string[];
+}
+
+/**
+ * The bounded adversarial critique pass between a draft envelope and
+ * acceptance: a fresh-context session gets ONLY the scope goal, the project
+ * context, and the draft envelope, and its report either accepts the draft or
+ * sends concrete findings back to the architect session for one revision.
+ */
+export interface ArchitectCritiqueSpec {
+  readonly systemPrompt: string;
+  readonly buildPrompt: (input: {
+    readonly goal: string;
+    readonly projectContext: string | null;
+    readonly envelope: unknown;
+  }) => string;
+  readonly parseReport: (report: string) => CritiqueReport;
+}
+
+const CRITIQUE_RESPONSE_FORMAT = [
+  "Answer with STRICT JSON only — no prose before or after:",
+  '{ "verdict": "approve" | "request_changes", "findings": string[] }',
+  'Use "request_changes" when any walk finds a defect; each finding must name',
+  "the defect precisely and be actionable — the architect will fix exactly",
+  "what you write and nothing more. Approve only when every walk comes back clean.",
+].join("\n");
+
+/**
+ * Parse a critique session's final text into a report. Tolerates a leading
+ * ```json fence; anything unparseable becomes a request_changes whose single
+ * finding is the raw text (truncated), so a broken critic can never silently
+ * approve a plan.
+ */
+export function parseCritiqueReport(report: string): CritiqueReport {
+  const normalize = (
+    verdict: unknown,
+    findings: unknown,
+  ): CritiqueReport | null => {
+    if (verdict !== "approve" && verdict !== "request_changes") return null;
+    if (!Array.isArray(findings)) return null;
+    const texts = findings.filter(
+      (finding): finding is string => typeof finding === "string",
+    );
+    if (texts.length !== findings.length) return null;
+    // A rejection with no findings carries no actionable information; treat it
+    // as approval rather than burning the revision cycle on an empty list.
+    if (verdict === "request_changes" && texts.length === 0) {
+      return { verdict: "approve", findings: [] };
+    }
+    return { verdict, findings: texts };
+  };
+  const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```/.exec(report.trim());
+  const candidates = [fenced?.[1], report];
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      // try the next candidate shape
+      continue;
+    }
+    const normalized =
+      typeof parsed === "object" && parsed !== null
+        ? normalize(
+            (parsed as { verdict?: unknown }).verdict,
+            (parsed as { findings?: unknown }).findings,
+          )
+        : null;
+    if (normalized) return normalized;
+  }
+  return {
+    verdict: "request_changes",
+    findings: [report.slice(0, 2000) || "critique returned no parseable report"],
+  };
+}
+
+/**
+ * The revision turn sent to the MAIN architect session after a request_changes
+ * report: the numbered findings plus the one-revision budget, so the model
+ * knows this is its final submission.
+ */
+export function buildRevisionPrompt(findings: readonly string[]): string {
+  return [
+    "## Revision",
+    "An independent adversarial critique of your draft decomposition found these defects:",
+    ...findings.map((finding, index) => `${index + 1}. ${finding}`),
+    "",
+    "Correct the decomposition so every finding is resolved — restate consumed",
+    "contracts verbatim in both specs, fix depends_on edges, close coverage gaps —",
+    "then call `submit_architect_decomposition` exactly once more with the full",
+    "corrected envelope. This is the only revision cycle: the next valid",
+    "submission is accepted as-is.",
+  ].join("\n");
+}
+
+/**
+ * Colony's architect critique pass: same walks the consolidation phase applies
+ * to itself, applied adversarially by a session that owes the draft nothing.
+ */
+export const ARCHITECT_CRITIQUE: ArchitectCritiqueSpec = {
+  systemPrompt: [
+    "# Role",
+    "You are the Colony Decomposition Critic: an adversarial reviewer between an architect's draft task DAG and its acceptance. You review to REJECT — approve only when you fail to find a defect.",
+    "",
+    "# Inputs",
+    "You receive exactly three things in one prompt: the scope goal, the operator-authored project context (or `(none)`), and the draft decomposition envelope as JSON. You have no conversation history, no repository access, and no tools — judge the envelope on what is written in front of you, nothing else.",
+    "",
+    "# Walks",
+    "Apply all three walks adversarially; actively look for a reason to reject at each:",
+    "1. Coverage: enumerate every requirement in the scope goal and point to the task that implements it. A requirement with no task, or a task whose deliverable no requirement needs, is a finding.",
+    "2. Consistency: collect every file path, exported symbol, schema shape, and type name that appears in more than one spec and verify they match EXACTLY character for character. `clearLayers` in one task and `clearFullLayers` in another is a finding — implementers never see sibling specs, so a drifted contract produces an unbuildable task.",
+    "3. Fresh-checkout: for every task with empty `depends_on`, ask whether its spec is executable against the default branch alone. A spec that references files, symbols, or packages no task creates and the default branch cannot be assumed to contain is a finding.",
+    "",
+    "# Verdict discipline",
+    `- Every finding must be concrete and actionable: name the task, the defect, and the correction. \"Task 2's spec says src/utils/hash.ts but task 1 creates src/utils/digest.ts — align both on one path\" qualifies; \"specs could be clearer\" does not.`,
+    "- Do not reject for taste, style, or decomposition philosophy. Reject for defects that would make a task unbuildable, a requirement uncovered, or a contract broken.",
+    "- Verify each finding against the envelope text before including it: half of false positives collapse at restatement. You are biased toward over-reporting real defects, not inventing them.",
+    "",
+    CRITIQUE_RESPONSE_FORMAT,
+  ].join("\n"),
+  buildPrompt: ({ goal, projectContext, envelope }) =>
+    [
+      "## Critique",
+      "Scope goal:",
+      goal,
+      "",
+      "Project context:",
+      projectContext ?? "(none)",
+      "",
+      "Draft decomposition envelope:",
+      JSON.stringify(envelope, null, 2),
+      "",
+      "Apply the three walks and answer with STRICT JSON per the format above.",
+    ].join("\n"),
+  parseReport: parseCritiqueReport,
+};
+
 /**
  * Build the deterministic phase prompts for one architect run. Each prompt is
  * a full user turn: it carries everything the model must do in that phase,
