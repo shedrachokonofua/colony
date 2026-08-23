@@ -455,7 +455,7 @@ describe("Store", () => {
     expect(solo.scope_count).toBe(0);
     expect(solo.status_counts).toEqual(zeroCounts());
 
-    // Rows outside the window never change total or another row's tallies.
+    // Narrow windows return one row while total still counts both projects.
     const firstPage = store.pageProjects(1, 0);
     const secondPage = store.pageProjects(1, 1);
     expect(firstPage.total).toBe(2);

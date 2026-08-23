@@ -774,7 +774,7 @@ describe("projects pagination with scope tallies", () => {
     const listed = await app.request("/projects?limit=100", ACTOR);
     const list = (await listed.json()) as { projects: ProjectRow[] };
     const waveFromList = list.projects.find((p) => p.name === "Wave one")!;
-    expect({ ...body.project }).toEqual({ ...waveFromList });
+    expect(body.project).toEqual(waveFromList);
 
     const missing = await app.request("/projects/nope", ACTOR);
     expect(missing.status).toBe(404);
