@@ -139,4 +139,21 @@ test.describe("project context in the console", () => {
 
     expect(errors).toEqual([]);
   });
+
+  test("unknown project renders an honest empty state, not a crash", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (err) => errors.push(String(err)));
+
+    await page.goto(`/#/project/does-not-exist-${Date.now()}`);
+    await expect(page.locator(".project-page .rack-empty")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator(".project-page")).toContainText(
+      "No project named",
+    );
+
+    expect(errors).toEqual([]);
+  });
 });
