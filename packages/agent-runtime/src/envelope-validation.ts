@@ -34,7 +34,11 @@ function checkDependsOnRange(
   const taskCount = envelope.tasks.length;
   for (const [taskIndex, task] of envelope.tasks.entries()) {
     for (const dependency of task.depends_on) {
-      if (!Number.isInteger(dependency) || dependency < 0 || dependency >= taskCount) {
+      if (
+        !Number.isInteger(dependency) ||
+        dependency < 0 ||
+        dependency >= taskCount
+      ) {
         errors.push({
           taskIndex,
           rule: "depends_on_range",
@@ -60,7 +64,10 @@ function checkDependsOnCycle(
   for (const [taskIndex, task] of envelope.tasks.entries()) {
     for (const prerequisite of task.depends_on) {
       if (!remaining.has(prerequisite)) continue;
-      pendingEdgeCounts.set(prerequisite, (pendingEdgeCounts.get(prerequisite) ?? 0) + 1);
+      pendingEdgeCounts.set(
+        prerequisite,
+        (pendingEdgeCounts.get(prerequisite) ?? 0) + 1,
+      );
       if (!dependentTasks.has(taskIndex)) dependentTasks.set(taskIndex, []);
       dependentTasks.get(taskIndex)!.push(prerequisite);
     }
@@ -73,7 +80,10 @@ function checkDependsOnCycle(
     for (const index of ready) remaining.delete(index);
     for (const index of ready) {
       for (const dependent of dependentTasks.get(index) ?? []) {
-        pendingEdgeCounts.set(dependent, (pendingEdgeCounts.get(dependent) ?? 1) - 1);
+        pendingEdgeCounts.set(
+          dependent,
+          (pendingEdgeCounts.get(dependent) ?? 1) - 1,
+        );
       }
     }
   }
@@ -121,11 +131,16 @@ function checkPhantomDependencies(
 function extractFilePaths(spec: string): string[] {
   const matches = spec.match(FILE_PATH_PATTERN) ?? [];
   return [
-    ...new Set(matches.map((path) => (path.startsWith("./") ? path.slice(2) : path))),
+    ...new Set(
+      matches.map((path) => (path.startsWith("./") ? path.slice(2) : path)),
+    ),
   ];
 }
 
-function reachableFrom(start: number, deps: ReadonlyArray<readonly number[]>): Set<number> {
+function reachableFrom(
+  start: number,
+  deps: ReadonlyArray<readonly number[]>,
+): Set<number> {
   const reached = new Set<number>();
   const queue = [start];
   while (queue.length > 0) {
@@ -146,12 +161,18 @@ function checkSharedFilesWithoutEdge(
   const errors: DecompositionValidationError[] = [];
   const pathsByTask = envelope.tasks.map((task) => extractFilePaths(task.spec));
   const reachable = envelope.tasks.map((_task, index) =>
-    reachableFrom(index, envelope.tasks.map((t) => t.depends_on)),
+    reachableFrom(
+      index,
+      envelope.tasks.map((t) => t.depends_on),
+    ),
   );
   for (let first = 0; first < envelope.tasks.length; first++) {
     for (let second = first + 1; second < envelope.tasks.length; second++) {
-      const shared = pathsByTask[first].filter((p) => pathsByTask[second].includes(p));
-      const connected = reachable[first].has(second) || reachable[second].has(first);
+      const shared = pathsByTask[first].filter((p) =>
+        pathsByTask[second].includes(p),
+      );
+      const connected =
+        reachable[first].has(second) || reachable[second].has(first);
       if (shared.length === 0 || connected) continue;
       errors.push({
         taskIndex: first,

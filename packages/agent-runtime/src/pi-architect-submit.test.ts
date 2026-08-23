@@ -31,8 +31,7 @@ describe("architect submission", () => {
       producer,
       {
         title: "Consumer",
-        spec:
-          "Consume the store contract produced by a sibling task; stop and report if it is missing.",
+        spec: "Consume the store contract produced by a sibling task; stop and report if it is missing.",
       },
     ]);
     await expect(
@@ -59,12 +58,17 @@ describe("architect submission", () => {
       producer,
       {
         title: "Consumer",
-        spec:
-          "Consume the store contract exported from packages/core/src/store.ts.",
+        spec: "Consume the store contract exported from packages/core/src/store.ts.",
         depends_on: [0],
       },
     ]);
-    await tool.execute("submit-2", corrected, undefined, undefined, undefined as never);
+    await tool.execute(
+      "submit-2",
+      corrected,
+      undefined,
+      undefined,
+      undefined as never,
+    );
     expect(captured).toEqual(corrected);
   });
 

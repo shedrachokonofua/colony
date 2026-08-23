@@ -5,7 +5,12 @@ import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { validateDecompositionEnvelope } from "./envelope-validation.js";
 
 function envelopeWithTasks(
-  tasks: Array<Partial<ArchitectDecompositionV2["tasks"][number]> & { title: string; spec: string }>,
+  tasks: Array<
+    Partial<ArchitectDecompositionV2["tasks"][number]> & {
+      title: string;
+      spec: string;
+    }
+  >,
 ): ArchitectDecompositionV2 {
   // The zod schema defaults depends_on to []; mirror that here so test
   // envelopes match post-parse shape.
@@ -43,9 +48,9 @@ describe("validateDecompositionEnvelope", () => {
     ]);
     const errors = validateDecompositionEnvelope(cyclic);
     expect(errors.filter((e) => e.rule === "depends_on_cycle")).toHaveLength(1);
-    expect(errors.find((e) => e.rule === "depends_on_cycle")?.message).toContain(
-      "0, 1, 2",
-    );
+    expect(
+      errors.find((e) => e.rule === "depends_on_cycle")?.message,
+    ).toContain("0, 1, 2");
   });
 
   it("flags phantom-dependency phrasing only when depends_on is empty", () => {
@@ -96,7 +101,10 @@ describe("validateDecompositionEnvelope", () => {
   it("returns no errors for a fully valid envelope", () => {
     const errors = validateDecompositionEnvelope(
       envelopeWithTasks([
-        { title: "Schema", spec: "Add packages/core/src/types.ts with the DTO." },
+        {
+          title: "Schema",
+          spec: "Add packages/core/src/types.ts with the DTO.",
+        },
         {
           title: "API",
           spec: "Add apps/colonyd/src/routes/api.ts serving the DTO.",
