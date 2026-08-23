@@ -2388,7 +2388,7 @@ async function refresh() {
       ]);
       state.projectPage = {
         name: projectName,
-        project,
+        project: project === null ? null : project.project,
         scopes: scopesPage.scopes,
         total: scopesPage.total,
         offset,
