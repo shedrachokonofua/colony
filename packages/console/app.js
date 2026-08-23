@@ -18,6 +18,8 @@ import {
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
 const DEMO = new URLSearchParams(location.search).has("demo");
+// Demo-safe read paths: project detail, its context, and its scope page only.
+const DEMO_READS = /^\/projects\/[^/?]+(?:\/context)?(?:\?.*)?$|^\/scopes\?/;
 
 const KIND_LABEL = {
   architect: "plan",
@@ -355,7 +357,11 @@ function commitUrl(path, sha) {
 }
 
 async function api(path, options = {}) {
-  if (DEMO) throw new Error("demo");
+  if (DEMO) {
+    // The project route reads through the demo world so #/project/… stays
+    // fully offline; every other path keeps its demo guard.
+    if (!DEMO_READS.test(path)) throw new Error("demo");
+  }
   const headers = {
     ...(state.oidc && state.auth
       ? { Authorization: `Bearer ${state.auth.token}` }
@@ -2329,9 +2335,14 @@ async function refresh() {
           total: pageScopes.length,
           offset: start,
         };
+        // Same seeding path as live refresh(): read the stored doc through
+        // the demo-served GET so the editor prefills offline.
         if (state.projectContext === null) {
+          const stored = await api(
+            `/projects/${encodeURIComponent(demoName)}/context`,
+          );
           state.projectContext = {
-            doc: world.project.context_doc ?? "",
+            doc: stored.context_doc ?? "",
             status: null,
           };
         }
@@ -2377,15 +2388,13 @@ async function refresh() {
         total: scopesPage.total,
         offset,
       };
-      if (
-        state.projectContext === null &&
-        projectRes.project &&
-        projectRes.project.context_doc !== undefined
-      ) {
-        state.projectContext = {
-          doc: projectRes.project.context_doc ?? "",
-          status: null,
-        };
+      // Seed the editor from the same read the save round-trips through, so
+      // prefill cannot drift from what PUT will persist.
+      if (state.projectContext === null) {
+        const stored = await api(
+          `/projects/${encodeURIComponent(projectName)}/context`,
+        );
+        state.projectContext = { doc: stored.context_doc ?? "", status: null };
       }
       state.error = "";
       paint();
