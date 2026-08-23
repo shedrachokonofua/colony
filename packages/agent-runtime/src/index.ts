@@ -24,3 +24,5 @@ export {
   provisionRepoWorkspace,
 } from "./pi-runner-common.js";
 export type { PiModelSpec, PiRunnerLogger } from "./pi-runner-common.js";
+export { validateDecompositionEnvelope } from "./envelope-validation.js";
+export type { DecompositionValidationError } from "./envelope-validation.js";

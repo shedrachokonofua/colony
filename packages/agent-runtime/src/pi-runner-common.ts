@@ -23,6 +23,7 @@ import {
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
 } from "@colony/schemas";
 import type { z } from "zod";
+import { validateDecompositionEnvelope } from "./envelope-validation.js";
 import type { AgentRunEnvironment, AgentRuntimePacket } from "./adapter.js";
 import type { CredentialBroker } from "./credential-broker.js";
 import { permissiveCredentialBroker } from "./credential-broker.js";
@@ -683,6 +684,13 @@ export function buildArchitectSystemPrompt(): string {
     "- Pure verify/QA tasks with no diff cannot pass a merge gate — fold verification into the producing task as required evidence.",
     "- Tasks creating shared contracts (schemas, wire protocols, exported test suites) must say so in their spec; contract mistakes are permanent and get the strictest review.",
     "",
+    "# Mechanical validation on submit",
+    "submit_architect_decomposition mechanically rejects plans that violate any of these — fix them before submitting:",
+    "- Every depends_on index must be within the tasks array (0 <= i < tasks.length).",
+    "- The depends_on graph must be acyclic (a self-edge is a cycle).",
+    "- A task with empty depends_on whose spec phrases a precondition as produced/created/defined by another task, or tells the implementer to verify it exists or stop and report if missing, is rejected — declare the edge instead.",
+    "- Two tasks with no dependency path between them (in either direction) must not reference the same repository file path — add an edge or confine the path to one spec.",
+    "",
     "# Task spec format",
     "Each spec is outcome-oriented markdown containing: the goal, the user-observable behavior, the invariants that must hold, and the required evidence — the exact commands/tests whose success proves completion. Reference real paths and symbols you saw during exploration. Required evidence must be falsifiable: a command that would fail today and passes when the task is done — never 'verify it works'.",
     "Banned spec content — each of these is a plan failure, not a shortcut: 'TBD', 'add appropriate error handling', 'handle edge cases', 'and similar', 'as needed', or referencing a sibling task ('like task 2 does'). If two specs need the same detail, repeat it in both. Never reference a file, symbol, or type that no task defines and the repository does not contain.",
@@ -1025,13 +1033,20 @@ export function createArchitectSubmitTool(
     name: "submit_architect_decomposition",
     label: "Submit architect decomposition",
     description:
-      "Final action. Submit exactly one schema-valid architect_decomposition envelope with outcome-oriented tasks and an acyclic depends_on graph.",
+      "Final action. Submit exactly one schema-valid architect_decomposition envelope with outcome-oriented tasks and an acyclic depends_on graph. Rejected: phantom-dependency phrasing with empty depends_on, file paths shared between unrelated tasks, and out-of-range or cyclic depends_on indexes — a rejected submission keeps the session open so you can correct and resubmit.",
     parameters: architectDecompositionEnvelopeTypeBox,
     execute: async (_toolCallId, rawParams) => {
       const params = parseEnvelopeArguments(
         architectDecompositionV2Schema,
         rawParams,
       );
+      const errors = validateDecompositionEnvelope(params);
+      if (errors.length > 0) {
+        throw new Error(
+          "Submission rejected: decomposition failed mechanical validation:\n" +
+            errors.map((e) => "  - " + e.message).join("\n"),
+        );
+      }
       capture(params);
       return Promise.resolve({
         content: [{ type: "text", text: "architect envelope captured" }],
