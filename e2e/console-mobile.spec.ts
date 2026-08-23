@@ -257,6 +257,37 @@ test.describe("console mobile", () => {
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
 
+  test("demo project page at 390x844: single column, no overflow", async ({
+    page,
+    browserName,
+  }, testInfo) => {
+    test.skip(mobileOnly({ browserName }, testInfo), "mobile only");
+    const errors: string[] = [];
+    page.on("pageerror", (err) => errors.push(String(err)));
+
+    await page.goto("/?demo=1#/project/Operator%20console");
+    await assertMobileViewport(page);
+
+    // Renders fully offline: editor prefilled, scope list present.
+    await expect(page.locator('textarea[name="project-context"]')).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator(".scope-card").first()).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.getByRole("link", { name: "New scope" })).toBeVisible();
+
+    const cols = await page.evaluate(() => {
+      const el = document.querySelector(".rack-single") as HTMLElement | null;
+      return el ? getComputedStyle(el).gridTemplateColumns : "";
+    });
+    const tracks = cols.trim().split(/\s+/).filter(Boolean);
+    expect(tracks.length, `rack gridTemplateColumns: ${cols}`).toBe(1);
+    await assertNoHorizontalOverflow(page);
+
+    expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
+  });
+
   test("touch navigation: New scope, create, card, DAG drawer", async ({
     page,
     browserName,
