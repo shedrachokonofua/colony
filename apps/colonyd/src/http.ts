@@ -5,6 +5,11 @@ import { createRequire } from "node:module";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { DomainStateError } from "@colony/domain";
+import {
+  isTracingEnabled,
+  startHttpServerSpan,
+  startWebhookSpan,
+} from "@colony/observability";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
@@ -88,6 +93,31 @@ const contextBody = z
 export function buildApp(ctx: ColonydContext): Hono<Env> {
   const app = new Hono<Env>();
 
+  // Control-plane tracing: one server span per request. /health and static
+  // /ui/* assets are the only exclusions — everything else, including /
+  // (console shell) and /ui/config, is traced.
+  app.use(async (c, next) => {
+    const path = c.req.path;
+    if (!isTracingEnabled() || isUntracedPath(path)) return next();
+    if (path === "/ui" || path.startsWith("/ui/")) {
+      if (staticUiAsset(decodeURIComponent(path.replace(/^\/ui\/?/, "")))) {
+        return next();
+      }
+    }
+    if (path === "/ui" || path.startsWith("/ui/")) {
+      const rel = decodeURIComponent(path.replace(/^\/ui\/?/, ""));
+      if (staticUiAsset(rel) !== null) return next();
+    }
+    const endSpan = startHttpServerSpan(c.req.method, normalizeRoute(path));
+    try {
+      await next();
+      endSpan?.(c.res.status);
+    } catch (err) {
+      endSpan?.(500);
+      throw err;
+    }
+  });
+
   app.get("/health", (c) => c.json({ ok: true, service: "colonyd" }));
 
   // Webhook intake — no actor required; secret-checked.
@@ -99,11 +129,13 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!safeEqual(provided, secret)) {
       return c.json({ error: { code: "BAD_SIGNATURE" } }, 401);
     }
+    const endWebhookSpan = startWebhookSpan(c.req.header("X-Gitlab-Event") ?? "");
     const dedupKey =
       c.req.header("X-Gitlab-Event-UUID") ??
       `sha256:${createHash("sha256").update(body).digest("hex")}`;
     const fresh = ctx.store.recordObservation("webhook", dedupKey, body);
     if (fresh) ctx.requestTick();
+    endWebhookSpan();
     return c.json(fresh ? { accepted: true } : { duplicate: true });
   });
 
@@ -116,6 +148,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       oidc: ctx.env.oidcIssuer
         ? { issuer: ctx.env.oidcIssuer, client_id: ctx.env.oidcClientId }
         : null,
+      trace_ui_base_url: ctx.env.traceUiBaseUrl || null,
     }),
   );
 
@@ -882,13 +915,8 @@ function conflict(c: Context<Env>, err: unknown) {
 
 function uiResponse(relPath: string): Response | null {
   const rel = decodeURIComponent(relPath).replace(/^\/+/, "");
-  if (!rel || rel.includes("\0") || rel.split(/[\\/]/).includes("..")) {
-    return null;
-  }
-  const full = normalize(join(UI_DIR, rel));
-  const root = normalize(join(UI_DIR, "."));
-  if (full !== root && !full.startsWith(root + sep)) return null;
-  if (!existsSync(full) || !statSync(full).isFile()) return null;
+  const full = resolveStaticUiPath(rel);
+  if (!full) return null;
   const mime = UI_MIME[extname(full)] ?? "application/octet-stream";
   const cache =
     extname(full) === ".woff2"
@@ -903,9 +931,44 @@ function uiResponse(relPath: string): Response | null {
   });
 }
 
+/** Resolves a /ui/* relative path to an existing file, or null. */
+function staticUiAsset(rel: string): string | null {
+  return resolveStaticUiPath(rel.replace(/^\/+/, ""));
+}
+
+function resolveStaticUiPath(rel: string): string | null {
+  if (!rel || rel.includes("\0") || rel.split(/[\\/]/).includes("..")) {
+    return null;
+  }
+  const full = normalize(join(UI_DIR, rel));
+  const root = normalize(join(UI_DIR, "."));
+  if (full !== root && !full.startsWith(root + sep)) return null;
+  if (!existsSync(full) || !statSync(full).isFile()) return null;
+  return full;
+}
+
 function safeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) return false;
   return timingSafeEqual(bufA, bufB);
+}
+
+/** Collapses concrete path segments into route templates for span labels. */
+function normalizeRoute(pathname: string): string {
+  return pathname
+    .split("/")
+    .map((segment) => {
+      if (!segment) return segment;
+      if (/^\d+$/.test(segment)) return ":id";
+      if (/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segment)) return ":id";
+      if (/^col-[a-z0-9.-]+$/i.test(segment)) return ":scope_id";
+      return segment.length > 80 ? ":value" : segment;
+    })
+    .join("/");
+}
+
+/** Requests that never produce an HTTP server span. */
+function isUntracedPath(path: string): boolean {
+  return path === "/health" || path === "/ui" || path.startsWith("/ui/");
 }

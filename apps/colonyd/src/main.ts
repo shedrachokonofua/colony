@@ -128,6 +128,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       oidcIssuer: environment.COLONY_OIDC_ISSUER,
       oidcClientId: environment.COLONY_OIDC_CLIENT_ID,
       oidcRequiredRole: environment.COLONY_OIDC_REQUIRED_ROLE,
+      traceUiBaseUrl: environment.COLONY_TRACE_UI_BASE_URL ?? "",
     },
     requestTick: () => {
       void runTick();
