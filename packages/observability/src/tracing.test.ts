@@ -181,9 +181,9 @@ describe("tracing seam", () => {
     expect(
       startedSpans("colony.http.server")[0].attributes["http.request.method"],
     ).toBe("GET");
-    expect(
-      startedSpans("colony.http.server")[0].attributes["http.route"],
-    ).toBe("/projects");
+    expect(startedSpans("colony.http.server")[0].attributes["http.route"]).toBe(
+      "/projects",
+    );
     expect(
       startedSpans("colony.http.server")[0].attributes[
         "http.response.status_code"
