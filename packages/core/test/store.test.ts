@@ -7,10 +7,12 @@ import { DomainStateError } from "@colony/domain";
 import { LATEST_SCHEMA_VERSION } from "../src/migrations.js";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
+  SCOPE_STATUSES,
   Store,
   assertScopeTransition,
   assertTaskTransition,
   retryBackoffMs,
+  type ScopeStatus,
   type Task,
 } from "../src/index.js";
 
@@ -395,6 +397,71 @@ describe("Store", () => {
     expect(store.activeRunCount()).toBe(2);
     expect(store.activeRunCount("implement")).toBe(1);
     expect(store.activeRunCount("merge_gate")).toBe(1);
+  });
+
+  it("reports whole-table scope tallies on project reads", () => {
+    store.ensureProject("Solo");
+    for (const status of [
+      "active",
+      "active",
+      "done",
+      "blocked",
+      "draft",
+    ] as const) {
+      const id = store.createScope({
+        goal: `scope ${status}`,
+        provider_repo_id: "1",
+        provider_repo_path: "so/x",
+        project: "Wave one",
+      }).id;
+      if (status === "done") {
+        store.setScopeStatus(id, "planning", "svc:colonyd");
+        store.setScopeStatus(id, "active", "svc:colonyd");
+        store.setScopeStatus(id, status, "svc:colonyd");
+      } else if (status !== "draft") {
+        store.setScopeStatus(id, "planning", "svc:colonyd");
+        store.setScopeStatus(id, status, "svc:colonyd");
+      }
+    }
+
+    const zeroCounts = () =>
+      Object.fromEntries(SCOPE_STATUSES.map((s) => [s, 0])) as Record<
+        ScopeStatus,
+        number
+      >;
+    const expected = {
+      ...zeroCounts(),
+      draft: 1,
+      active: 2,
+      done: 1,
+      blocked: 1,
+    };
+    expect(store.getProject("Wave one")!.status_counts).toEqual(expected);
+    expect(store.getProject("Wave one")!.scope_count).toBe(5);
+    expect(store.getProject("Solo")!.scope_count).toBe(0);
+    expect(store.getProject("Solo")!.status_counts).toEqual(zeroCounts());
+
+    // Pagination stays honest: total counts the whole table, not the page.
+    const all = store.pageProjects(100, 0);
+    expect(all.total).toBe(2);
+    expect(all.projects.map((p) => p.name).sort()).toEqual([
+      "Solo",
+      "Wave one",
+    ]);
+    const wave = all.projects.find((p) => p.name === "Wave one")!;
+    expect(wave.scope_count).toBe(5);
+    expect(wave.status_counts).toEqual(expected);
+    const solo = all.projects.find((p) => p.name === "Solo")!;
+    expect(solo.scope_count).toBe(0);
+    expect(solo.status_counts).toEqual(zeroCounts());
+
+    // Narrow windows return one row while total still counts both projects.
+    const firstPage = store.pageProjects(1, 0);
+    const secondPage = store.pageProjects(1, 1);
+    expect(firstPage.total).toBe(2);
+    expect(secondPage.total).toBe(2);
+    expect(firstPage.projects).toHaveLength(1);
+    expect(secondPage.projects).toHaveLength(1);
   });
 });
 

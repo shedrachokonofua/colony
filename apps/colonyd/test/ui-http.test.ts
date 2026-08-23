@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
-import { Store } from "@colony/core";
+import { SCOPE_STATUSES, type ScopeStatus, Store } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import { isInfraError } from "../src/tick.js";
@@ -45,6 +45,17 @@ function appWithStore(): ReturnType<typeof buildApp> {
   const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
   dirs.push(dir);
   return buildApp(fakeCtx(new Store(join(dir, "test.db"))));
+}
+
+/** App plus its backing store, so tests can seed domain rows directly. */
+function appAndStore(): {
+  app: ReturnType<typeof buildApp>;
+  store: Store;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+  dirs.push(dir);
+  const store = new Store(join(dir, "test.db"));
+  return { app: buildApp(fakeCtx(store)), store };
 }
 
 describe("operator console", () => {
@@ -644,5 +655,131 @@ describe("scope pagination and grouping", () => {
       scope: { project_name: string };
     };
     expect(body.scope.project_name).toBe("Operator console");
+  });
+});
+
+describe("projects pagination with scope tallies", () => {
+  const ACTOR = { headers: { "X-Actor-Id": "human:op-1" } };
+  const zeroCounts = () =>
+    Object.fromEntries(SCOPE_STATUSES.map((s) => [s, 0])) as Record<
+      ScopeStatus,
+      number
+    >;
+
+  interface ProjectRow {
+    name: string;
+    context_doc: string | null;
+    created_at: string;
+    updated_at: string;
+    scope_count: number;
+    status_counts: Record<ScopeStatus, number>;
+  }
+
+  /** Seed "Wave one" with scopes in several statuses; leave "Solo" empty. */
+  function seedProjects(store: Store): void {
+    store.ensureProject("Solo");
+    const statuses = ["active", "active", "done", "blocked"] as const;
+    for (const status of statuses) {
+      const id = store.createScope({
+        goal: `scope ${status}`,
+        provider_repo_id: "1",
+        provider_repo_path: "so/x",
+        project: "Wave one",
+      }).id;
+      if (status === "done") {
+        store.setScopeStatus(id, "planning", "svc:test");
+        store.setScopeStatus(id, "active", "svc:test");
+        store.setScopeStatus(id, status, "svc:test");
+      } else {
+        store.setScopeStatus(id, "planning", "svc:test");
+        store.setScopeStatus(id, status, "svc:test");
+      }
+    }
+  }
+
+  it("pages projects with honest totals and per-status scope counts", async () => {
+    const { app, store } = appAndStore();
+    seedProjects(store);
+
+    const res = await app.request("/projects?limit=1&offset=0", ACTOR);
+    expect(res.status).toBe(200);
+    const page = (await res.json()) as {
+      projects: ProjectRow[];
+      total: number;
+      limit: number;
+      offset: number;
+    };
+    // total is the whole-table project count, not the page length.
+    expect(page.total).toBe(2);
+    expect(page.limit).toBe(1);
+    expect(page.offset).toBe(0);
+    expect(page.projects).toHaveLength(1);
+
+    const rest = await app.request("/projects?limit=100&offset=1", ACTOR);
+    const tail = (await rest.json()) as {
+      projects: ProjectRow[];
+      total: number;
+    };
+    expect(tail.total).toBe(2);
+    const rows = [...page.projects, ...tail.projects];
+    expect(rows.map((p) => p.name).sort()).toEqual(["Solo", "Wave one"]);
+
+    const wave = rows.find((p) => p.name === "Wave one")!;
+    expect(wave.scope_count).toBe(4);
+    expect(wave.status_counts).toEqual({
+      ...zeroCounts(),
+      active: 2,
+      done: 1,
+      blocked: 1,
+    });
+    expect(Object.keys(wave.status_counts).sort()).toEqual(
+      [...SCOPE_STATUSES].sort(),
+    );
+    expect(wave.scope_count).toBe(
+      Object.values(wave.status_counts).reduce((a, b) => a + b, 0),
+    );
+
+    const solo = rows.find((p) => p.name === "Solo")!;
+    expect(solo.scope_count).toBe(0);
+    expect(solo.status_counts).toEqual(zeroCounts());
+  });
+
+  it("rejects bad pagination params unchanged", async () => {
+    const { app } = appAndStore();
+    for (const query of ["limit=0", "limit=101", "offset=-1", "limit=abc"]) {
+      const res = await app.request(`/projects?${query}`, ACTOR);
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("returns the same row shape from /projects/:name and 404s unknowns", async () => {
+    const { app, store } = appAndStore();
+    seedProjects(store);
+
+    const res = await app.request("/projects/Wave%20one", ACTOR);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { project: ProjectRow };
+    expect(body.project.name).toBe("Wave one");
+    expect(body.project.context_doc).toBeNull();
+    expect(typeof body.project.created_at).toBe("string");
+    expect(typeof body.project.updated_at).toBe("string");
+    expect(body.project.scope_count).toBe(4);
+    expect(body.project.status_counts).toEqual({
+      ...zeroCounts(),
+      active: 2,
+      done: 1,
+      blocked: 1,
+    });
+
+    const listed = await app.request("/projects?limit=100", ACTOR);
+    const list = (await listed.json()) as { projects: ProjectRow[] };
+    const waveFromList = list.projects.find((p) => p.name === "Wave one")!;
+    expect(body.project).toEqual(waveFromList);
+
+    const missing = await app.request("/projects/nope", ACTOR);
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({
+      error: { code: "NOT_FOUND", message: "project not found" },
+    });
   });
 });
