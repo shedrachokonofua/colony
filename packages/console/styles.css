@@ -408,12 +408,12 @@ body {
   all: unset;
   cursor: pointer;
   letter-spacing: inherit;
+  text-decoration: underline;
 }
 
 .rack-group-link:hover,
 .rack-group-link:focus-visible {
   color: var(--brand, #2761e6);
-  text-decoration: underline;
 }
 
 .rack-count {
@@ -502,6 +502,56 @@ body {
   gap: 0.7rem;
   font-size: 0.76rem;
   color: var(--muted);
+}
+
+.scope-project {
+  color: var(--link);
+  text-decoration: none;
+  overflow: hidden;
+  max-width: 12rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.scope-project:hover,
+.scope-project:focus-visible {
+  text-decoration: underline;
+}
+
+/* ---------- Project page ---------- */
+
+.project-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.project-page .board-head {
+  margin-bottom: 0;
+}
+
+.project-meta {
+  margin: -0.4rem 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.project-counts {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.project-scopes .card-head {
+  margin: 0.4rem 0 0.55rem;
+}
+
+.rack-single {
+  grid-template-columns: 1fr;
 }
 
 /* ---------- Composer ---------- */
@@ -1495,6 +1545,10 @@ pre.runlog {
 
   .crumbs {
     display: none;
+  }
+
+  .scope-project {
+    max-width: 100%;
   }
 }
 
