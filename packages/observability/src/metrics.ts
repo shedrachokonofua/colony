@@ -15,12 +15,14 @@ import {
   MeterProvider,
   PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
+import type { SpanExporter } from "@opentelemetry/sdk-trace-base";
 import {
   ATTR_DEPLOYMENT_ENVIRONMENT_NAME,
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
 import { performance } from "node:perf_hooks";
+import { configureTracing, shutdownTracing } from "./tracing.js";
 
 const METER_NAME = "@colony/observability";
 const METRIC_PREFIX = "colony";
@@ -38,6 +40,12 @@ export interface TelemetryOptions {
   readonly metricsPort?: number;
   readonly otlpMetricsEndpoint?: string;
   readonly exportIntervalMs?: number;
+  /** Enables OTLP trace export; without it (and spanExporter) tracing stays off. */
+  readonly otlpTracesEndpoint?: string;
+  /** Overrides COLONY_TRACE_HTTP_RATIO for this provider's lifetime. */
+  readonly traceHttpSampleRatio?: number;
+  /** TEST ONLY: swap the OTLP exporter for e.g. an in-memory one. */
+  readonly spanExporter?: SpanExporter;
 }
 
 export interface AgentMetricAttributes {
@@ -60,6 +68,8 @@ export function startTelemetryFromEnv(
     exportIntervalMs: positiveInteger(
       environment["OTEL_METRIC_EXPORT_INTERVAL"],
     ),
+    otlpTracesEndpoint: traceEndpointFromEnv(environment),
+    traceHttpSampleRatio: ratioFromEnv(environment["COLONY_TRACE_HTTP_RATIO"]),
   });
 }
 
@@ -139,11 +149,13 @@ export function startTelemetry(options: TelemetryOptions): () => Promise<void> {
   metrics.setGlobalMeterProvider(provider);
   initializeInstruments();
   registerProcessMetrics(options.serviceName);
+  configureTracing(options);
 
   return async () => {
     const current = provider;
     provider = undefined;
     initializedService = undefined;
+    await shutdownTracing();
     if (current) await current.shutdown();
     metrics.disable();
   };
@@ -456,4 +468,22 @@ function positiveInteger(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function traceEndpointFromEnv(
+  environment: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const dedicated = environment["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"];
+  if (dedicated) return dedicated;
+  const base = environment["OTEL_EXPORTER_OTLP_ENDPOINT"];
+  return base ? `${base.replace(/\/+$/, "")}/v1/traces` : undefined;
+}
+
+function ratioFromEnv(value: string | undefined): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`invalid COLONY_TRACE_HTTP_RATIO: ${value}`);
+  }
+  return parsed;
 }
