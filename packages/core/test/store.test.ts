@@ -12,6 +12,7 @@ import {
   assertScopeTransition,
   assertTaskTransition,
   retryBackoffMs,
+  type ScopeStatus,
   type Task,
 } from "../src/index.js";
 
@@ -423,21 +424,22 @@ describe("Store", () => {
       }
     }
 
+    const zeroCounts = () =>
+      Object.fromEntries(SCOPE_STATUSES.map((s) => [s, 0])) as Record<
+        ScopeStatus,
+        number
+      >;
     const expected = {
-      ...SCOPE_STATUSES.reduce(
-        (acc, s) => ({
-          ...acc,
-          [s]: { draft: 1, active: 2, done: 1, blocked: 1 }[s] ?? 0,
-        }),
-        {},
-      ),
+      ...zeroCounts(),
+      draft: 1,
+      active: 2,
+      done: 1,
+      blocked: 1,
     };
     expect(store.getProject("Wave one")!.status_counts).toEqual(expected);
     expect(store.getProject("Wave one")!.scope_count).toBe(5);
     expect(store.getProject("Solo")!.scope_count).toBe(0);
-    expect(store.getProject("Solo")!.status_counts).toEqual(
-      Object.fromEntries(SCOPE_STATUSES.map((s) => [s, 0])),
-    );
+    expect(store.getProject("Solo")!.status_counts).toEqual(zeroCounts());
 
     // Pagination stays honest: total counts the whole table, not the page.
     const all = store.pageProjects(100, 0);
@@ -451,9 +453,7 @@ describe("Store", () => {
     expect(wave.status_counts).toEqual(expected);
     const solo = all.projects.find((p) => p.name === "Solo")!;
     expect(solo.scope_count).toBe(0);
-    expect(solo.status_counts).toEqual(
-      Object.fromEntries(SCOPE_STATUSES.map((s) => [s, 0])),
-    );
+    expect(solo.status_counts).toEqual(zeroCounts());
 
     // Rows outside the window never change total or another row's tallies.
     const firstPage = store.pageProjects(1, 0);
