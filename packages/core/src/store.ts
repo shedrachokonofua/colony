@@ -11,6 +11,7 @@ import {
 } from "@colony/domain";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
+  SCOPE_STATUSES,
   assertScopeTransition,
   assertTaskTransition,
   type ScopeStatus,
@@ -22,6 +23,13 @@ export interface Project {
   readonly context_doc: string | null;
   readonly created_at: string;
   readonly updated_at: string;
+}
+
+/** A project row plus honest whole-table scope tallies. */
+export interface ProjectWithCounts extends Project {
+  readonly scope_count: number;
+  /** Every SCOPE_STATUSES key is present; statuses with no scopes are 0. */
+  readonly status_counts: Record<ScopeStatus, number>;
 }
 
 export interface Scope {
@@ -202,10 +210,12 @@ export class Store {
   // Projects
   // ---------------------------------------------------------------------
 
-  getProject(name: string): Project | undefined {
-    return this.db
+  getProject(name: string): ProjectWithCounts | undefined {
+    const project = this.db
       .prepare(`SELECT * FROM projects WHERE name = ?`)
       .get(name) as Project | undefined;
+    if (!project) return undefined;
+    return this.withScopeCounts([project])[0];
   }
 
   listProjects(): Project[] {
@@ -214,18 +224,53 @@ export class Store {
       .all() as Project[];
   }
 
-  /** One page of projects, oldest first; `total` counts the whole table. */
+  /**
+   * One page of projects, oldest first; `total` counts the whole table.
+   * Every row carries its whole-table scope tallies from a single GROUP BY.
+   */
   pageProjects(
     limit: number,
     offset: number,
-  ): { projects: Project[]; total: number } {
-    const projects = this.db
+  ): { projects: ProjectWithCounts[]; total: number } {
+    const rows = this.db
       .prepare(`SELECT * FROM projects ORDER BY created_at LIMIT ? OFFSET ?`)
       .all(limit, offset) as Project[];
     const { n } = this.db
       .prepare(`SELECT COUNT(*) AS n FROM projects`)
       .get() as { n: number };
-    return { projects, total: n };
+    return { projects: this.withScopeCounts(rows), total: n };
+  }
+
+  /**
+   * Attach whole-table scope tallies to project rows: one GROUP BY over
+   * scopes serves every row, never N+1 queries or JS-side scope filtering.
+   * status_counts is zero-filled so consumers never probe for missing keys,
+   * and scope_count is its sum.
+   */
+  private withScopeCounts(projects: readonly Project[]): ProjectWithCounts[] {
+    const rows = this.db
+      .prepare(
+        `SELECT project_name, status, COUNT(*) AS n FROM scopes
+         WHERE project_name IS NOT NULL GROUP BY project_name, status`,
+      )
+      .all() as { project_name: string; status: ScopeStatus; n: number }[];
+    const byName = new Map<string, Map<ScopeStatus, number>>();
+    for (const { project_name, status, n } of rows) {
+      const perStatus = byName.get(project_name);
+      if (perStatus) perStatus.set(status, n);
+      else byName.set(project_name, new Map([[status, n]]));
+    }
+    return projects.map((project) => {
+      const perStatus = byName.get(project.name);
+      const status_counts = Object.fromEntries(
+        SCOPE_STATUSES.map((status) => [status, perStatus?.get(status) ?? 0]),
+      ) as Record<ScopeStatus, number>;
+      return {
+        ...project,
+        scope_count: Object.values(status_counts).reduce((a, b) => a + b, 0),
+        status_counts,
+      };
+    });
   }
 
   /**
