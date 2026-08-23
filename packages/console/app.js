@@ -207,15 +207,17 @@ function rel(iso) {
 
 function routeScopeId() {
   const hash = location.hash.replace(/^#\/?/, "");
-  if (!hash || hash === "new") return null;
+  if (!hash || NEW_ROUTE.test(hash) || PROJECT_ROUTE.test(hash)) return null;
   return hash;
 }
 
-function routeIsNew() {
-  return location.hash.replace(/^#\/?/, "") === "new";
-}
-
 const PROJECT_ROUTE = /^project\/([^/]+)/;
+// Create route, optionally carrying a query (e.g. #/new?project=X).
+const NEW_ROUTE = /^new(?:$|\?)/;
+
+function routeIsNew() {
+  return NEW_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
 
 /** Decoded project name from `#/project/<name>`, or null on any other route. */
 function routeProjectName() {
@@ -225,6 +227,13 @@ function routeProjectName() {
 
 function projectHref(name) {
   return `#/project/${encodeURIComponent(name)}`;
+}
+
+/** The `?project=` query of the current hash route, or null when absent. */
+function hashQueryProject() {
+  const q = location.hash.split("?")[1];
+  if (!q) return null;
+  return new URLSearchParams(q).get("project");
 }
 
 const BRAND_MARK = html`<svg
@@ -1625,9 +1634,7 @@ function renderCreate() {
                 maxlength="120"
                 placeholder="Project this scope belongs to"
                 autocomplete="off"
-                .value=${live(
-                  new URLSearchParams(location.search).get("project") ?? "",
-                )}
+                .value=${live(hashQueryProject() ?? "")}
               />
             </label>
             <label class="field">
@@ -2354,6 +2361,8 @@ async function refresh() {
     }
     const projectName = routeProjectName();
     if (projectName) {
+      // The project route owns this refresh: it must not touch board or sheet
+      // state, and it must preserve an in-flight editor status ("Saved.").
       const offset = state.projectOffset;
       const [projectRes, scopesPage] = await Promise.all([
         api(`/projects/${encodeURIComponent(projectName)}`),

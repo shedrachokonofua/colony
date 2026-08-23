@@ -26,7 +26,7 @@ test.describe("project context in the console", () => {
     await controlReset();
   });
 
-  test("scope sheet edits and persists the project context document", async ({
+  test("project page edits, persists, and lists the project's scopes", async ({
     page,
     request,
   }) => {
@@ -35,10 +35,9 @@ test.describe("project context in the console", () => {
 
     const stamp = Date.now();
     const project = `e2e-context-${stamp}`;
-    const goal = `Project context editing ${stamp}`;
     await createScopeViaApi(request, {
       title: `ctx-${stamp}`,
-      goal,
+      goal: `Project context editing ${stamp}`,
       approvals: "manual",
       project,
     });
@@ -53,38 +52,36 @@ test.describe("project context in the console", () => {
       "Prefer bun over npm. Postgres runs on :5433.",
     );
 
-    await page.goto("/#/");
-    await expect(page.locator(".board").first()).toBeVisible({
+    await page.goto(`/#/project/${encodeURIComponent(project)}`);
+    await expect(
+      page.locator(".board-title", { hasText: project }),
+    ).toBeVisible({
       timeout: 15000,
     });
-    const card = page
-      .locator(".scope-card", { hasText: `ctx-${stamp}` })
-      .first();
-    await expect(card).toBeVisible({ timeout: 15000 });
-    await card.click();
-    await expect.poll(() => page.url(), { timeout: 15000 }).toMatch(/#\/col-/);
 
-    const sheet = page.locator(".sheet-head").first();
-    await expect(sheet).toBeVisible({ timeout: 15000 });
-    const cardHead = page
-      .locator(".card-head", { hasText: "Project context" })
-      .first();
-    await expect(cardHead).toBeVisible({ timeout: 15000 });
-
+    // The moved editor prefills from the stored document.
     const textarea = page.locator('textarea[name="project-context"]');
-    await expect(textarea).toBeVisible();
+    await expect(textarea).toBeVisible({ timeout: 15000 });
     await expect(textarea).toHaveValue(
       "Prefer bun over npm. Postgres runs on :5433.",
     );
 
+    // The scope created above shows up as a board-identical card with a chip.
+    const card = page
+      .locator(".scope-card", { hasText: `ctx-${stamp}` })
+      .first();
+    await expect(card).toBeVisible({ timeout: 15000 });
+    await expect(card.locator(".chip").first()).toContainText("planning");
+
+    // Typing and saving persists through PUT /projects/:name/context.
     const typed = `Architecture decision record ${stamp}: use bun workspaces.`;
     await textarea.fill(typed);
     await page.getByRole("button", { name: "Save context" }).click();
     await expect(page.locator(".pc-status", { hasText: "Saved." })).toBeVisible(
-      { timeout: 15000 },
+      {
+        timeout: 15000,
+      },
     );
-
-    // The audited API holds exactly what the editor sent.
     const stored = await request.get(
       `/projects/${encodeURIComponent(project)}/context`,
       { headers: { "X-Actor-Id": ACTOR } },
@@ -92,24 +89,53 @@ test.describe("project context in the console", () => {
     expect(stored.ok()).toBeTruthy();
     await expect(stored.json()).resolves.toEqual({ context_doc: typed });
 
-    // A reload re-reads through GET /scopes/:id -> persisted text shows.
+    // A reload re-reads the persisted text through GET /projects/:name.
     await page.reload();
     const textareaAfter = page.locator('textarea[name="project-context"]');
-    await expect(textareaAfter).toBeVisible({ timeout: 15000 });
-    await expect(textareaAfter).toHaveValue(typed);
+    await expect(textareaAfter).toHaveValue(typed, { timeout: 15000 });
 
-    // Clearing stores null.
-    await textareaAfter.fill("");
-    await page.getByRole("button", { name: "Save context" }).click();
-    await expect(page.locator(".pc-status", { hasText: "Saved." })).toBeVisible(
-      { timeout: 15000 },
-    );
-    const cleared = await request.get(
-      `/projects/${encodeURIComponent(project)}/context`,
-      { headers: { "X-Actor-Id": ACTOR } },
-    );
-    expect(cleared.ok()).toBeTruthy();
-    await expect(cleared.json()).resolves.toEqual({ context_doc: null });
+    // Cards on the project page navigate to the scope sheet like the board's do.
+    await card.click();
+    await expect.poll(() => page.url(), { timeout: 15000 }).toMatch(/#\/col-/);
+    await expect(page.locator(".sheet-head").first()).toBeVisible({
+      timeout: 15000,
+    });
+
+    expect(errors).toEqual([]);
+  });
+
+  test("New scope from a project pre-fills the create form's project input", async ({
+    page,
+    request,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (err) => errors.push(String(err)));
+
+    const stamp = Date.now();
+    const project = `e2e-new-${stamp}`;
+    await createScopeViaApi(request, {
+      title: `new-${stamp}`,
+      goal: `New scope prefill ${stamp}`,
+      approvals: "manual",
+      project,
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem("colony.actor", "human:op-1");
+    });
+
+    await page.goto(`/#/project/${encodeURIComponent(project)}`);
+    await expect(
+      page.locator(".board-title", { hasText: project }),
+    ).toBeVisible({
+      timeout: 15000,
+    });
+
+    await page.locator('a[href^="#/new?project="]').first().click();
+    await expect
+      .poll(() => page.url(), { timeout: 15000 })
+      .toMatch(/#\/new\?project=/);
+    const input = page.locator('input[name="project"]');
+    await expect(input).toHaveValue(project, { timeout: 15000 });
 
     expect(errors).toEqual([]);
   });
