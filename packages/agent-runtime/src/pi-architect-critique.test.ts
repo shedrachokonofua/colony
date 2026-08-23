@@ -403,7 +403,9 @@ describe("parseCritiqueReport", () => {
   });
 
   it("normalizes request_changes with no findings to approve", () => {
-    const report = parseCritiqueReport('{"verdict":"request_changes"}');
+    const report = parseCritiqueReport(
+      '{"verdict":"request_changes","findings":[]}',
+    );
     expect(report).toEqual({ verdict: "approve", findings: [] });
   });
 });

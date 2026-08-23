@@ -235,6 +235,12 @@ export class PiBaseAgentRunner implements PiRunner {
       if (this.options.critique && this.profile.phases && !critiqueCompleted) {
         draftEnvelope = value;
         resolveDraftEnvelope?.();
+        // A draft closes this candidate's phase pipeline. The SDK ignores the
+        // submit tool's terminate hint, so the in-flight generation would keep
+        // issuing provider calls against the stale conversation and could
+        // interleave with the critique/revision turns below - abort it the way
+        // acceptance ends the run in non-critique mode.
+        void session?.abort();
         return;
       }
       capturedEnvelope = value;
