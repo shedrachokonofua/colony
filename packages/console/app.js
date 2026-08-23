@@ -385,6 +385,9 @@ async function api(path, options = {}) {
     throw new Error("Signed out — session expired.");
   }
   if (!res.ok) {
+    // A missing resource is a renderable state, not a crash: callers that
+    // pass notFound: "null" get null back and paint an honest empty page.
+    if (options.notFound === "null" && res.status === 404) return null;
     const message =
       data?.error?.message ||
       data?.error?.code ||
@@ -2375,22 +2378,25 @@ async function refresh() {
       // The project route owns this refresh: it must not touch board or sheet
       // state, and it must preserve an in-flight editor status ("Saved.").
       const offset = state.projectOffset;
-      const [projectRes, scopesPage] = await Promise.all([
-        api(`/projects/${encodeURIComponent(projectName)}`),
+      const [project, scopesPage] = await Promise.all([
+        api(`/projects/${encodeURIComponent(projectName)}`, {
+          notFound: "null",
+        }),
         api(
           `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
         ),
       ]);
       state.projectPage = {
         name: projectName,
-        project: projectRes.project,
+        project,
         scopes: scopesPage.scopes,
         total: scopesPage.total,
         offset,
       };
       // Seed the editor from the same read the save round-trips through, so
-      // prefill cannot drift from what PUT will persist.
-      if (state.projectContext === null) {
+      // prefill cannot drift from what Save will persist. An unknown project
+      // has no document to read.
+      if (state.projectContext === null && project) {
         const stored = await api(
           `/projects/${encodeURIComponent(projectName)}/context`,
         );
