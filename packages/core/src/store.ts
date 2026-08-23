@@ -87,6 +87,8 @@ export interface Run {
   readonly evidence_json: string | null;
   readonly token_id: string | null;
   readonly model_id: string | null;
+  /** Run root span's trace id; links spans recorded elsewhere to this run. */
+  readonly trace_id: string | null;
   readonly error: string | null;
   readonly started_at: string;
   readonly finished_at: string | null;
@@ -707,13 +709,14 @@ export class Store {
     base_sha?: string;
     workspace_path?: string;
     model_id?: string;
+    trace_id?: string | null;
   }): Run {
     const id = crypto.randomUUID();
     const lease = new Date(Date.now() + input.lease_ttl_ms).toISOString();
     this.db
       .prepare(
-        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id)
-         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id)`,
+        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id, trace_id)
+         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id, @trace_id)`,
       )
       .run(
         named({
@@ -725,6 +728,7 @@ export class Store {
           base_sha: input.base_sha ?? null,
           workspace_path: input.workspace_path ?? null,
           model_id: input.model_id ?? null,
+          trace_id: input.trace_id ?? null,
         }),
       );
     const run = this.getRun(id);
