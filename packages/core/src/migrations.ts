@@ -37,9 +37,9 @@ export interface Migration {
 /** Idempotent ADD COLUMN for databases created before a column (or its
  *  table) existed. */
 function addColumn(db: Db, table: string, name: string, type: string): void {
-  const info = db
-    .prepare(`PRAGMA table_info(${table})`)
-    .all() as { name: string }[];
+  const info = db.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
   // PRAGMA table_info returns no rows for a missing table: nothing to alter.
   if (info.length === 0) return;
   if (info.some((column) => column.name === name)) return;
