@@ -629,11 +629,17 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
+        expect(LATEST_SCHEMA_VERSION).toBe(3);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
           );
         }
+        // The run root span's trace_id persists on every generation of the
+        // runs table: fresh DDL and migration 3's ALTER TABLE agree.
+        expect(tableColumns(store.db, "runs")).toContain("trace_id");
+        expect(tableColumns(migrated.db, "runs")).toContain("trace_id");
+        expect(tableColumns(fresh.db, "runs")).toContain("trace_id");
         // A short-lived `initiative` column is renamed, not duplicated.
         const renamed = new Database(join(dir, "renamed.db"));
         renamed.exec(

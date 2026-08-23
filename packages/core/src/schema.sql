@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS runs (
   evidence_json TEXT,                        -- commands, exit codes, gate results, artifacts
   token_id TEXT,                             -- provider access-token id; crash-reap revoke
   model_id TEXT,                             -- LLM model the run started with (nullable)
+  trace_id TEXT,                             -- run root span's trace id; links spans to the run
   error TEXT,
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT

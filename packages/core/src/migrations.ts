@@ -34,12 +34,15 @@ export interface Migration {
   readonly apply: (db: Db) => void;
 }
 
-/** Idempotent ADD COLUMN for databases created before a column existed. */
+/** Idempotent ADD COLUMN for databases created before a column (or its
+ *  table) existed. */
 function addColumn(db: Db, table: string, name: string, type: string): void {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as {
-    name: string;
-  }[];
-  if (columns.some((column) => column.name === name)) return;
+  const info = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as { name: string }[];
+  // PRAGMA table_info returns no rows for a missing table: nothing to alter.
+  if (info.length === 0) return;
+  if (info.some((column) => column.name === name)) return;
   db.exec(`ALTER TABLE ${table} ADD COLUMN "${name}" ${type}`);
 }
 
@@ -206,6 +209,16 @@ function migrateProjectsAndRename(db: Db): void {
   })();
 }
 
+/**
+ * Migration 3: runs persist the run root span's trace id so spans recorded
+ * outside the daemon can be joined back to the run that produced them.
+ * Guarded because migration 1's schema.sql replay already adds the column
+ * on databases that pass through legacy-reconcile.
+ */
+function migrateRunsTraceId(db: Db): void {
+  addColumn(db, "runs", "trace_id", "TEXT");
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -213,6 +226,7 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "projects-and-repo-rename",
     apply: migrateProjectsAndRename,
   },
+  { version: 3, name: "runs-trace-id", apply: migrateRunsTraceId },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
