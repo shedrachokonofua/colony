@@ -42,6 +42,10 @@ import {
   waitForIdleOrCapturedEnvelope,
   withRunTimeout,
 } from "./pi-runner-common.js";
+import {
+  buildArchitectPhases,
+  type ArchitectPhase,
+} from "./architect-phases.js";
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import { createSubagentTool } from "./subagent-tool.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
@@ -123,6 +127,11 @@ export interface PiRoleProfile {
   readonly workspaceMode: PiWorkspaceMode;
   readonly skipPromptWithoutWorkTools?: boolean;
   readonly requireRepositoryInspection?: boolean;
+  /**
+   * When set, run() drives this deterministic phase pipeline instead of one
+   * initial packet prompt. Roles without it keep single-prompt behavior.
+   */
+  readonly phases?: (packet: AgentRuntimePacket) => readonly ArchitectPhase[];
 }
 
 export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
@@ -591,20 +600,59 @@ export class PiBaseAgentRunner implements PiRunner {
       // loop can keep falling over to remaining candidates on stalls.
       let index = 0;
       try {
-        if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {
-          for (; index < resolvedModels.length; index += 1) {
-            const candidate = resolvedModels[index]!;
-            if (index > 0) {
-              await session.setModel(candidate);
-              jigglesUsed = 0;
+        const phases = this.profile.phases?.(request.packet) ?? [];
+        const isPhased = phases.length > 0;
+        const MODEL_FAILED_PROMPT =
+          "The previous model failed. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
+        /** One prompt turn of a candidate's plan, tagged with its phase when phased. */
+        interface PlanStep {
+          readonly prompt: string;
+          readonly phase?: (typeof phases)[number];
+        }
+        /** A candidate's full prompt plan: fallback roles restart from survey. */
+        const planSteps = (): readonly PlanStep[] => {
+          // Non-phased roles keep today's single-prompt shape exactly: the
+          // packet prompt once, or just the failure prompt on a later
+          // candidate - the packet is already in the continued conversation.
+          if (!isPhased) {
+            return [
+              index > 0
+                ? { prompt: MODEL_FAILED_PROMPT }
+                : { prompt: buildPacketPrompt(request.packet) },
+            ];
+          }
+          const lead: PlanStep[] =
+            index > 0 ? [{ prompt: MODEL_FAILED_PROMPT }] : [];
+          return [
+            ...lead,
+            ...phases.map((phase) => ({ prompt: phase.prompt, phase })),
+          ];
+        };
+        const activeSession = session;
+        if (!activeSession) throw new Error("run session missing");
+        /**
+         * Drive one model candidate through its whole prompt plan: either the
+         * role's phase pipeline or the single packet prompt. Resolves true
+         * when the plan ran to completion (the model loop stops); resolves
+         * false after a mid-sequence provider error so the caller can fall
+         * over to the next candidate; throws fatal errors (last candidate,
+         * classified failure, operator cancellation).
+         */
+        const runPromptPlan = async (candidate: {
+          provider: string;
+          id: string;
+        }): Promise<boolean> => {
+          for (const step of planSteps()) {
+            if (capturedEnvelope !== undefined) return true;
+            if (step.phase) {
+              this.options.logger?.info?.(
+                { runId, sandboxId, phase: step.phase.name },
+                "architect_phase",
+              );
             }
-            const prompt =
-              index === 0
-                ? buildPacketPrompt(request.packet)
-                : "The previous model failed. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
             try {
-              const promptPromise = session
-                .prompt(prompt, {
+              const promptPromise = activeSession
+                .prompt(step.prompt, {
                   expandPromptTemplates: false,
                 })
                 .catch((err) => {
@@ -614,11 +662,11 @@ export class PiBaseAgentRunner implements PiRunner {
               await Promise.race([promptPromise, capturedEnvelopePromise]);
               if (capturedEnvelope === undefined) {
                 await waitForIdleOrCapturedEnvelope(
-                  session.agent,
+                  activeSession.agent,
                   capturedEnvelopePromise,
                 );
               }
-              const lastMessage = session.agent.state.messages.at(-1);
+              const lastMessage = activeSession.agent.state.messages.at(-1);
               if (
                 capturedEnvelope === undefined &&
                 lastMessage?.role === "assistant" &&
@@ -629,7 +677,6 @@ export class PiBaseAgentRunner implements PiRunner {
                     `model ${candidate.provider}/${candidate.id} failed`,
                 );
               }
-              break;
             } catch (err) {
               // The run-timeout guard aborts the session, which rejects the
               // in-flight prompt with the SDK's opaque "This operation was
@@ -639,7 +686,7 @@ export class PiBaseAgentRunner implements PiRunner {
               // finalization salvage a submission. Operator cancellation still
               // ends the run immediately.
               if (cancellationTriggered) throw err;
-              if (timeoutTriggered) break;
+              if (timeoutTriggered) return true;
               const next = models[index + 1];
               if (!next || failureReason !== undefined) {
                 throw err;
@@ -653,7 +700,19 @@ export class PiBaseAgentRunner implements PiRunner {
                 },
                 "pi_model_fallback",
               );
+              return false;
             }
+          }
+          return true;
+        };
+        if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {
+          for (; index < resolvedModels.length; index += 1) {
+            const candidate = resolvedModels[index]!;
+            if (index > 0) {
+              await session.setModel(candidate);
+              jigglesUsed = 0;
+            }
+            if (await runPromptPlan(candidate)) break;
           }
         }
         // A model that stops without submitting gets re-steered instead of
@@ -853,6 +912,7 @@ export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
 };
 
 export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
+  phases: buildArchitectPhases,
   role: "architect",
   kind: "pi-architect",
   sandboxPrefix: "pi-architect",
