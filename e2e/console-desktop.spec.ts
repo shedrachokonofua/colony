@@ -1328,4 +1328,23 @@ test.describe("desktop console", () => {
 
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
+
+  test("demo project page renders offline", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+
+    await page.goto("/?demo=1#/project/Operator%20console");
+    await expect(
+      page.locator(".board-title", { hasText: "Operator console" }),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('textarea[name="project-context"]')).toHaveValue(
+      /no-build lit-html/,
+      { timeout: 15000 },
+    );
+    await expect(page.locator(".scope-card").first()).toBeVisible({
+      timeout: 15000,
+    });
+
+    expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
+  });
 });
