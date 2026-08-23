@@ -17,7 +17,7 @@ import {
   type SamplingResult,
   type SpanExporter,
 } from "@opentelemetry/sdk-trace-base";
-import { BasicTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   ATTR_DEPLOYMENT_ENVIRONMENT_NAME,
@@ -55,7 +55,7 @@ export interface ColonyRunSpan {
   end(status: string, reason?: string): void;
 }
 
-let tracerProvider: BasicTracerProvider | undefined;
+let tracerProvider: NodeTracerProvider | undefined;
 let initializedTraceService: string | undefined;
 
 export function isTracingEnabled(): boolean {
@@ -190,14 +190,14 @@ export function configureTracing(
 function buildTracerProvider(
   options: TraceConfig,
   ratio: number,
-): BasicTracerProvider {
+): NodeTracerProvider {
   const exporter =
     options.spanExporter ??
     (options.otlpTracesEndpoint
       ? new OTLPTraceExporter({ url: options.otlpTracesEndpoint })
       : undefined);
   if (!exporter) throw new Error("no span exporter configured for tracing");
-  return new BasicTracerProvider({
+  const provider = new NodeTracerProvider({
     resource: resourceFromAttributes({
       [ATTR_SERVICE_NAME]: options.serviceName,
       [ATTR_SERVICE_VERSION]: options.serviceVersion ?? "unknown",
@@ -210,6 +210,10 @@ function buildTracerProvider(
         : new BatchSpanProcessor(exporter),
     ],
   });
+  // Registers the global context manager + propagator alongside the tracer,
+  // so spans created inside context.with(...) nest under their parent.
+  provider.register();
+  return provider;
 }
 
 async function resetTracing(): Promise<void> {
