@@ -775,13 +775,11 @@ function renderProjectContextCard() {
         ></textarea>
         <div class="pc-actions">
           <button class="btn" type="submit">Save context</button>
-          ${
-            saved?.status === "saving"
-              ? html`<span class="pc-status">Saving…</span>`
-              : saved?.status === "saved"
-                ? html`<span class="pc-status is-saved">Saved.</span>`
-                : nothing
-          }
+          ${saved?.status === "saving"
+            ? html`<span class="pc-status">Saving…</span>`
+            : saved?.status === "saved"
+              ? html`<span class="pc-status is-saved">Saved.</span>`
+              : nothing}
         </div>
       </form>
     </div>
@@ -924,11 +922,9 @@ function renderDag(detail) {
       (run) => run.kind === "architect" && run.status === "running",
     );
     return html`<p class="note">
-      ${
-        runningPlan
-          ? "Architect is drawing the plan."
-          : "No tasks on this sheet yet."
-      }
+      ${runningPlan
+        ? "Architect is drawing the plan."
+        : "No tasks on this sheet yet."}
     </p>`;
   }
   const { pos, width, height } = layoutDag(nodes, edges);
@@ -1273,18 +1269,14 @@ function renderTopbar() {
     <a class="brand" href="#/">${BRAND_MARK}<span>COLONY</span></a>
     <nav class="crumbs" aria-label="Breadcrumb">
       <a href="#/">Board</a>
-      ${
-        routeIsNew()
-          ? html`<span class="crumb-sep">/</span>
-              <span class="crumb">new scope</span>`
-          : nothing
-      }
-      ${
-        id
-          ? html`<span class="crumb-sep">/</span>
-              <span class="crumb mono">${id}</span>`
-          : nothing
-      }
+      ${routeIsNew()
+        ? html`<span class="crumb-sep">/</span>
+            <span class="crumb">new scope</span>`
+        : nothing}
+      ${id
+        ? html`<span class="crumb-sep">/</span>
+            <span class="crumb mono">${id}</span>`
+        : nothing}
     </nav>
     ${account}
   </header>`;
@@ -1297,13 +1289,11 @@ function renderSignin() {
       <p class="note">
         Sign in with your aether account to operate the factory.
       </p>
-      ${
-        state.error
-          ? html`<div class="banner banner-error" role="alert">
-              ${state.error}
-            </div>`
-          : nothing
-      }
+      ${state.error
+        ? html`<div class="banner banner-error" role="alert">
+            ${state.error}
+          </div>`
+        : nothing}
       <button class="btn btn-solid" @click=${() => void beginLogin()}>
         Sign in
       </button>
@@ -1363,16 +1353,14 @@ function scopeCard(scope) {
     <span class="scope-meta">
       <span class="mono">${scope.id}</span>
       <span>${scope.provider_repo_path}</span>
-      ${
-        scope.project_name
-          ? html`<a
-              class="scope-project"
-              href=${projectHref(scope.project_name)}
-              @click=${(event) => event.stopPropagation()}
-              >${scope.project_name}</a
-            >`
-          : nothing
-      }
+      ${scope.project_name
+        ? html`<a
+            class="scope-project"
+            href=${projectHref(scope.project_name)}
+            @click=${(event) => event.stopPropagation()}
+            >${scope.project_name}</a
+          >`
+        : nothing}
     </span>
   </button>`;
 }
@@ -1432,49 +1420,41 @@ function renderBoard() {
         [...projects.entries()],
         ([project]) => project,
         ([project, scopes]) => html`
-          ${
-            project
-              ? html`<h2 class="rack-group">
-                  <a
-                    class="rack-group-link"
-                    href=${projectHref(project)}
-                    title="Open this project"
-                  >
-                    ${project}
-                  </a>
-                  <span class="rack-count"
-                    >${projectTotal(project) ?? scopes.length}</span
-                  >
+          ${project
+            ? html`<h2 class="rack-group">
+                <a
+                  class="rack-group-link"
+                  href=${projectHref(project)}
+                  title="Open this project"
+                >
+                  ${project}
+                </a>
+                <span class="rack-count"
+                  >${projectTotal(project) ?? scopes.length}</span
+                >
+              </h2>`
+            : projects.size > 1
+              ? html`<h2 class="rack-group rack-group-loose">
+                  No project
+                  <span class="rack-count">${scopes.length}</span>
                 </h2>`
-              : projects.size > 1
-                ? html`<h2 class="rack-group rack-group-loose">
-                    No project
-                    <span class="rack-count">${scopes.length}</span>
-                  </h2>`
-                : nothing
-          }
+              : nothing}
           <div class="rack">
             ${repeat(scopes, (scope) => scope.id, scopeCard)}
           </div>
         `,
       )
     : html`<p class="rack-empty">
-        ${
-          state.scopes.length
-            ? "No scopes match this filter."
-            : state.boardOffset > 0
-              ? "Past the last page."
-              : "No scopes yet — open the first one."
-        }
+        ${state.scopes.length
+          ? "No scopes match this filter."
+          : state.boardOffset > 0
+            ? "Past the last page."
+            : "No scopes yet — open the first one."}
       </p>`;
   return html`
-    ${
-      state.error
-        ? html`<div class="banner banner-error" role="alert">
-            ${state.error}
-          </div>`
-        : nothing
-    }
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
     <div class="board" id="draw">
       <section class="board-main">
         <div class="board-head">
@@ -1497,21 +1477,19 @@ function renderBoard() {
                 ${f.label}
               </button>`,
           )}
-          ${
-            state.boardProject
-              ? html`<button
-                  class="filter-chip is-active"
-                  title="Clear project filter"
-                  @click=${() => {
-                    state.boardProject = null;
-                    state.boardOffset = 0;
-                    void refresh();
-                  }}
-                >
-                  ${state.boardProject} ✕
-                </button>`
-              : nothing
-          }
+          ${state.boardProject
+            ? html`<button
+                class="filter-chip is-active"
+                title="Clear project filter"
+                @click=${() => {
+                  state.boardProject = null;
+                  state.boardOffset = 0;
+                  void refresh();
+                }}
+              >
+                ${state.boardProject} ✕
+              </button>`
+            : nothing}
           <input
             class="board-search"
             type="search"
@@ -1545,13 +1523,9 @@ function renderProjectPage() {
   const counts = page.project.status_counts ?? {};
   const chips = Object.entries(counts).filter(([, n]) => n > 0);
   return html`
-    ${
-      state.error
-        ? html`<div class="banner banner-error" role="alert">
-            ${state.error}
-          </div>`
-        : nothing
-    }
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
     <div class="project-page" id="draw">
       <header class="board-head">
         <h1 class="board-title">${page.project.name}</h1>
@@ -1568,28 +1542,24 @@ function renderProjectPage() {
         >
         updated ${rel(page.project.updated_at)}
       </p>
-      ${
-        chips.length
-          ? html`<p class="project-counts">
-              ${chips.map(
-                ([status, count]) =>
-                  html`<span class="chip" data-kind=${status}
-                    >${status} ${count}</span
-                  >`,
-              )}
-            </p>`
-          : nothing
-      }
+      ${chips.length
+        ? html`<p class="project-counts">
+            ${chips.map(
+              ([status, count]) =>
+                html`<span class="chip" data-kind=${status}
+                  >${status} ${count}</span
+                >`,
+            )}
+          </p>`
+        : nothing}
       ${renderProjectContextCard()}
       <section class="project-scopes">
         <p class="card-head">Scopes</p>
-        ${
-          page.scopes.length
-            ? html`<div class="rack rack-single">
-                ${repeat(page.scopes, (scope) => scope.id, scopeCard)}
-              </div>`
-            : html`<p class="rack-empty">No scopes in this project yet.</p>`
-        }
+        ${page.scopes.length
+          ? html`<div class="rack rack-single">
+              ${repeat(page.scopes, (scope) => scope.id, scopeCard)}
+            </div>`
+          : html`<p class="rack-empty">No scopes in this project yet.</p>`}
         ${renderProjectPager()}
       </section>
     </div>
@@ -1626,13 +1596,9 @@ function renderProjectPager() {
 
 function renderCreate() {
   return html`
-    ${
-      state.error
-        ? html`<div class="banner banner-error" role="alert">
-            ${state.error}
-          </div>`
-        : nothing
-    }
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
     <div class="create" id="draw">
       <aside class="card create-card">
         <p class="card-head">Open a scope</p>
@@ -1659,7 +1625,9 @@ function renderCreate() {
                 maxlength="120"
                 placeholder="Project this scope belongs to"
                 autocomplete="off"
-                .value=${live(new URLSearchParams(location.search).get("project") ?? "")}
+                .value=${live(
+                  new URLSearchParams(location.search).get("project") ?? "",
+                )}
               />
             </label>
             <label class="field">
@@ -1718,38 +1686,28 @@ function renderSheet() {
         <h1 class="goal">${scopeTitle(scope)}</h1>
         <p class="sheet-sub">
           <span class="mono">${scope.id}</span>
-          ${
-            pathUrl
-              ? html`<a href=${pathUrl}>${scope.provider_repo_path}</a>`
-              : html`<span>${scope.provider_repo_path}</span>`
-          }
-          ${
-            scope.project_name
-              ? html`<a href=${projectHref(scope.project_name)}
-                  >${scope.project_name}</a
-                >`
-              : nothing
-          }
+          ${pathUrl
+            ? html`<a href=${pathUrl}>${scope.provider_repo_path}</a>`
+            : html`<span>${scope.provider_repo_path}</span>`}
+          ${scope.project_name
+            ? html`<a href=${projectHref(scope.project_name)}
+                >${scope.project_name}</a
+              >`
+            : nothing}
           <span>updated ${rel(scope.updated_at)}</span>
         </p>
       </div>
       <div class="sheet-head-side">
         <span class="chip" data-kind=${scope.status}>${scope.status}</span>
-        ${
-          scope.approvals === "manual"
-            ? html`<span class="chip">manual approvals</span>`
-            : nothing
-        }
+        ${scope.approvals === "manual"
+          ? html`<span class="chip">manual approvals</span>`
+          : nothing}
         ${abandonButton(scope)}
       </div>
     </header>
-    ${
-      state.error
-        ? html`<div class="banner banner-error" role="alert">
-            ${state.error}
-          </div>`
-        : nothing
-    }
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
     ${wait ? html`<div class="banner banner-wait">${wait}</div>` : nothing}
     <section class="card dag-card" id="draw">
       <p class="card-head">
@@ -1762,15 +1720,13 @@ function renderSheet() {
       <div class="sheet-col">${renderPlanCard(scope, detail)}</div>
       <div class="sheet-col">${renderValidationCard(scope, detail)}</div>
     </div>
-    ${
-      state.drawerOpen
-        ? task
-          ? renderDrawer(scope, task)
-          : state.selectedTaskId?.startsWith("plan:")
-            ? renderPlanTaskDrawer(scope, Number(state.selectedTaskId.slice(5)))
-            : nothing
-        : nothing
-    }
+    ${state.drawerOpen
+      ? task
+        ? renderDrawer(scope, task)
+        : state.selectedTaskId?.startsWith("plan:")
+          ? renderPlanTaskDrawer(scope, Number(state.selectedTaskId.slice(5)))
+          : nothing
+      : nothing}
   `;
 }
 
@@ -1787,13 +1743,11 @@ function renderGoalCard(scope) {
       >
         ${scope.goal}
       </p>
-      ${
-        long
-          ? html`<button class="goal-toggle" @click=${() => toggle("goalOpen")}>
-              ${state.goalOpen ? "Show less" : "Show more"}
-            </button>`
-          : nothing
-      }
+      ${long
+        ? html`<button class="goal-toggle" @click=${() => toggle("goalOpen")}>
+            ${state.goalOpen ? "Show less" : "Show more"}
+          </button>`
+        : nothing}
     </div>
   </aside>`;
 }
@@ -1820,96 +1774,83 @@ function renderPlanCard(scope, detail) {
   return html`<aside class="card">
     <p class="card-head">Plan</p>
     <div class="card-body">
-      ${
-        summary
-          ? html`<p
-              class=${classMap({
-                "plan-summary": true,
-                "is-open": state.planOpen,
-              })}
-            >
-              ${summary}
-            </p>`
-          : nothing
-      }
-      ${
-        plan
-          ? html`<button
-              class="goal-toggle"
-              @click=${() => openReader("Plan", planMarkdown(scope, plan))}
-            >
-              Expand plan
+      ${summary
+        ? html`<p
+            class=${classMap({
+              "plan-summary": true,
+              "is-open": state.planOpen,
+            })}
+          >
+            ${summary}
+          </p>`
+        : nothing}
+      ${plan
+        ? html`<button
+            class="goal-toggle"
+            @click=${() => openReader("Plan", planMarkdown(scope, plan))}
+          >
+            Expand plan
+          </button>`
+        : summary.length > 360
+          ? html`<button class="goal-toggle" @click=${() => toggle("planOpen")}>
+              ${state.planOpen ? "Show less" : "Show more"}
             </button>`
-          : summary.length > 360
-            ? html`<button
-                class="goal-toggle"
-                @click=${() => toggle("planOpen")}
-              >
-                ${state.planOpen ? "Show less" : "Show more"}
-              </button>`
-            : nothing
-      }
-      ${
-        replanRequests.length
-          ? html`<section
-              class="plan-history"
-              aria-label="Replan request history"
-            >
-              <p class="plan-history-title">
-                Replan requests <span>${replanRequests.length}</span>
-              </p>
-              <ol>
-                ${repeat(
-                  replanRequests,
-                  (row) => row.id,
-                  (row) =>
-                    html`<li>
-                      <p class="plan-history-meta">
-                        <span>${rel(row.at)}</span><span>${row.actor}</span>
-                      </p>
-                      <p>${row.feedback}</p>
-                    </li>`,
-                )}
-              </ol>
-            </section>`
-          : nothing
-      }
-      ${
-        approvable
-          ? html`<div class="plan-actions">
-                <button
-                  class="btn btn-solid"
-                  @click=${() => mutate(`/scopes/${scope.id}/approve-plan`)}
-                >
-                  Approve plan
-                </button>
-              </div>
-              <form
-                class="feedback"
-                @submit=${(event) =>
-                  submitFeedback(event, `/scopes/${scope.id}/replan`)}
-              >
-                <textarea
-                  name="feedback"
-                  required
-                  placeholder="What should the architect change? Rejecting re-plans with this feedback."
-                ></textarea>
-                <button class="btn" type="submit">Request replan</button>
-              </form>`
-          : nothing
-      }
-      ${
-        architectRuns.length
-          ? html`<div class="runs runs-inline">
-              ${architectRuns.map(
-                (run) =>
-                  html`${runLine(run)}${
-                    run.status === "running" ? renderScopeRunLog(run) : nothing
-                  }`,
+          : nothing}
+      ${replanRequests.length
+        ? html`<section
+            class="plan-history"
+            aria-label="Replan request history"
+          >
+            <p class="plan-history-title">
+              Replan requests <span>${replanRequests.length}</span>
+            </p>
+            <ol>
+              ${repeat(
+                replanRequests,
+                (row) => row.id,
+                (row) =>
+                  html`<li>
+                    <p class="plan-history-meta">
+                      <span>${rel(row.at)}</span><span>${row.actor}</span>
+                    </p>
+                    <p>${row.feedback}</p>
+                  </li>`,
               )}
-            </div>`
-          : nothing
-      }
+            </ol>
+          </section>`
+        : nothing}
+      ${approvable
+        ? html`<div class="plan-actions">
+              <button
+                class="btn btn-solid"
+                @click=${() => mutate(`/scopes/${scope.id}/approve-plan`)}
+              >
+                Approve plan
+              </button>
+            </div>
+            <form
+              class="feedback"
+              @submit=${(event) =>
+                submitFeedback(event, `/scopes/${scope.id}/replan`)}
+            >
+              <textarea
+                name="feedback"
+                required
+                placeholder="What should the architect change? Rejecting re-plans with this feedback."
+              ></textarea>
+              <button class="btn" type="submit">Request replan</button>
+            </form>`
+        : nothing}
+      ${architectRuns.length
+        ? html`<div class="runs runs-inline">
+            ${architectRuns.map(
+              (run) =>
+                html`${runLine(run)}${run.status === "running"
+                  ? renderScopeRunLog(run)
+                  : nothing}`,
+            )}
+          </div>`
+        : nothing}
     </div>
   </aside>`;
 }
@@ -1950,41 +1891,37 @@ function renderValidationCard(scope, detail) {
   return html`<aside class="card">
     <p class="card-head">Validation</p>
     <div class="card-body">
-      ${
-        summary
-          ? html`<p
-              class=${classMap({
-                "validation-summary": true,
-                "is-passed": Boolean(evidence?.passed),
-                "is-failed": Boolean(evidence && !evidence.passed),
-              })}
-            >
-              ${summary}${(() => {
-                if (!latest) return nothing;
-                const ms = runDurationMs(latest, Date.now());
-                if (ms === null) return nothing;
-                return html` ·
-                  <time
-                    class="dur"
-                    datetime=${isoDuration(ms)}
-                    title=${`started ${latest.started_at}${latest.finished_at ? `, finished ${latest.finished_at}` : ""}`}
-                    aria-label=${durationAriaLabel(latest, Date.now())}
-                    >${formatDuration(ms)}</time
-                  >`;
-              })()}
-            </p>`
-          : nothing
-      }
-      ${
-        scope.status === "validating" && failed
-          ? html`<button
-              class="btn btn-solid validation-retry"
-              @click=${() => mutate(`/scopes/${scope.id}/revalidate`)}
-            >
-              Run validation again
-            </button>`
-          : nothing
-      }
+      ${summary
+        ? html`<p
+            class=${classMap({
+              "validation-summary": true,
+              "is-passed": Boolean(evidence?.passed),
+              "is-failed": Boolean(evidence && !evidence.passed),
+            })}
+          >
+            ${summary}${(() => {
+              if (!latest) return nothing;
+              const ms = runDurationMs(latest, Date.now());
+              if (ms === null) return nothing;
+              return html` ·
+                <time
+                  class="dur"
+                  datetime=${isoDuration(ms)}
+                  title=${`started ${latest.started_at}${latest.finished_at ? `, finished ${latest.finished_at}` : ""}`}
+                  aria-label=${durationAriaLabel(latest, Date.now())}
+                  >${formatDuration(ms)}</time
+                >`;
+            })()}
+          </p>`
+        : nothing}
+      ${scope.status === "validating" && failed
+        ? html`<button
+            class="btn btn-solid validation-retry"
+            @click=${() => mutate(`/scopes/${scope.id}/revalidate`)}
+          >
+            Run validation again
+          </button>`
+        : nothing}
       <ul class="validation-list">
         ${repeat(
           acceptance || [],
@@ -2008,13 +1945,11 @@ function renderValidationCard(scope, detail) {
                 <p class="validation-desc">
                   ${item?.description || `Criterion ${i + 1}`}
                 </p>
-                ${
-                  item?.command
-                    ? html`<code class="mono validation-cmd"
-                        >${item.command}</code
-                      >`
-                    : nothing
-                }
+                ${item?.command
+                  ? html`<code class="mono validation-cmd"
+                      >${item.command}</code
+                    >`
+                  : nothing}
                 ${(() => {
                   // Acceptance commands often discard their own output
                   // (>/dev/null 2>&1); a tail of blank lines must not render
@@ -2060,21 +1995,19 @@ function renderDrawer(scope, task) {
     <div class="drawer-body">
       <p class="task-title">${task.title}</p>
       <p class="task-meta">
-        ${
-          task.attempt ? `attempt ${task.attempt}` : "first attempt"
-        }${retryWait}
+        ${task.attempt
+          ? `attempt ${task.attempt}`
+          : "first attempt"}${retryWait}
       </p>
-      ${
-        task.blocked_reason
-          ? html`<p class="wait-inline">${task.blocked_reason}</p>`
-          : nothing
-      }
+      ${task.blocked_reason
+        ? html`<p class="wait-inline">${task.blocked_reason}</p>`
+        : nothing}
       <div class="links">
         ${mr ? html`<a href=${mr}>Merge request !${task.mr_iid}</a>` : nothing}
         ${commit ? html`<a href=${commit}>${shortSha(sha)}</a>` : nothing}
-        ${
-          task.branch ? html`<span class="mono">${task.branch}</span>` : nothing
-        }
+        ${task.branch
+          ? html`<span class="mono">${task.branch}</span>`
+          : nothing}
       </div>
       <button
         class="goal-toggle"
@@ -2083,38 +2016,34 @@ function renderDrawer(scope, task) {
         Expand spec
       </button>
       <pre class="spec">${task.spec}</pre>
-      ${
-        task.state === "mr_open"
-          ? html`<form
-              class="feedback"
-              @submit=${(event) =>
-                submitFeedback(event, `/tasks/${task.id}/request-changes`)}
-            >
-              <textarea
-                name="feedback"
-                required
-                placeholder="Feedback for the agent — requeues the task with your notes."
-              ></textarea>
-              <button class="btn" type="submit">Request changes</button>
-            </form>`
-          : nothing
-      }
-      ${
-        !["merged", "canceled"].includes(task.state)
-          ? html`<form
-              class="feedback"
-              @submit=${(event) =>
-                submitFeedback(event, `/tasks/${task.id}/amend-spec`)}
-            >
-              <textarea
-                name="feedback"
-                required
-                placeholder="Amend the spec — authoritative for the implementer AND the reviewer."
-              ></textarea>
-              <button class="btn" type="submit">Amend spec</button>
-            </form>`
-          : nothing
-      }
+      ${task.state === "mr_open"
+        ? html`<form
+            class="feedback"
+            @submit=${(event) =>
+              submitFeedback(event, `/tasks/${task.id}/request-changes`)}
+          >
+            <textarea
+              name="feedback"
+              required
+              placeholder="Feedback for the agent — requeues the task with your notes."
+            ></textarea>
+            <button class="btn" type="submit">Request changes</button>
+          </form>`
+        : nothing}
+      ${!["merged", "canceled"].includes(task.state)
+        ? html`<form
+            class="feedback"
+            @submit=${(event) =>
+              submitFeedback(event, `/tasks/${task.id}/amend-spec`)}
+          >
+            <textarea
+              name="feedback"
+              required
+              placeholder="Amend the spec — authoritative for the implementer AND the reviewer."
+            ></textarea>
+            <button class="btn" type="submit">Amend spec</button>
+          </form>`
+        : nothing}
       ${taskActionButtons(task)}
       <p class="card-head drawer-runs-head">Runs</p>
       <div class="runs">${renderRuns(state.detail, task)}</div>
@@ -2141,11 +2070,9 @@ function renderPlanTaskDrawer(scope, index) {
     <div class="drawer-body">
       <p class="task-title">${planTask.title}</p>
       <p class="task-meta">
-        ${
-          (planTask.depends_on || []).length
-            ? `depends on ${(planTask.depends_on || []).map((d) => `#${d}`).join(", ")}`
-            : "no dependencies"
-        }
+        ${(planTask.depends_on || []).length
+          ? `depends on ${(planTask.depends_on || []).map((d) => `#${d}`).join(", ")}`
+          : "no dependencies"}
       </p>
       <pre class="spec spec-tall">${planTask.spec}</pre>
       <p class="note">
@@ -2161,22 +2088,20 @@ function renderActivity() {
     <p class="card-head">Activity</p>
     <div class="card-body">
       <ul class="activity">
-        ${
-          rows.length
-            ? repeat(
-                rows,
-                (row) => row.id,
-                (row) =>
-                  html`<li>
-                    <span class="when">${rel(row.at)}</span>
-                    <span>
-                      <span class="what">${row.action}</span>
-                      <span class="who">${row.actor}</span>
-                    </span>
-                  </li>`,
-              )
-            : html`<li><span class="note">Nothing yet.</span></li>`
-        }
+        ${rows.length
+          ? repeat(
+              rows,
+              (row) => row.id,
+              (row) =>
+                html`<li>
+                  <span class="when">${rel(row.at)}</span>
+                  <span>
+                    <span class="what">${row.action}</span>
+                    <span class="who">${row.actor}</span>
+                  </span>
+                </li>`,
+            )
+          : html`<li><span class="note">Nothing yet.</span></li>`}
       </ul>
     </div>
   </aside>`;
