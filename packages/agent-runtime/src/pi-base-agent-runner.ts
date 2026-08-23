@@ -600,8 +600,7 @@ export class PiBaseAgentRunner implements PiRunner {
       // loop can keep falling over to remaining candidates on stalls.
       let index = 0;
       try {
-        const phases =
-          this.profile.phases?.(request.packet) ?? [];
+        const phases = this.profile.phases?.(request.packet) ?? [];
         const isPhased = phases.length > 0;
         const MODEL_FAILED_PROMPT =
           "The previous model failed. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
@@ -612,14 +611,22 @@ export class PiBaseAgentRunner implements PiRunner {
         }
         /** A candidate's full prompt plan: fallback roles restart from survey. */
         const planSteps = (): readonly PlanStep[] => {
+          // Non-phased roles keep today's single-prompt shape exactly: the
+          // packet prompt once, or just the failure prompt on a later
+          // candidate - the packet is already in the continued conversation.
+          if (!isPhased) {
+            return [
+              index > 0
+                ? { prompt: MODEL_FAILED_PROMPT }
+                : { prompt: buildPacketPrompt(request.packet) },
+            ];
+          }
           const lead: PlanStep[] =
             index > 0 ? [{ prompt: MODEL_FAILED_PROMPT }] : [];
-          return isPhased
-            ? [...lead, ...phases.map((phase) => ({ prompt: phase.prompt, phase }))]
-            : [
-                ...lead,
-                { prompt: buildPacketPrompt(request.packet) },
-              ];
+          return [
+            ...lead,
+            ...phases.map((phase) => ({ prompt: phase.prompt, phase })),
+          ];
         };
         const activeSession = session;
         if (!activeSession) throw new Error("run session missing");

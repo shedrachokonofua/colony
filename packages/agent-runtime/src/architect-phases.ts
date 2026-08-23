@@ -71,7 +71,7 @@ export function buildArchitectPhases(
         "1. Write the final specs. When task B consumes anything task A produces, restate that contract VERBATIM in both specs (exact paths, exported symbols, schema shapes) — implementers never see sibling specs.",
         "2. Wire depends_on EXPLICITLY as indexes into the tasks array: B touching anything A creates means B depends on A; empty depends_on asserts the task lands green on a bare fresh checkout.",
         "3. Self-review walks: coverage (every requirement has a task), consistency (identical names across specs), fresh-checkout (each empty-depends_on task is executable on the default branch alone).",
-        "4. Call `submit_architect_decomposition` exactly once with the full envelope (kind \"architect_decomposition\", summary, acceptance entries with objective commands runnable in a minimal Node sandbox, tasks). Your run does not exist until that call.",
+        '4. Call `submit_architect_decomposition` exactly once with the full envelope (kind "architect_decomposition", summary, acceptance entries with objective commands runnable in a minimal Node sandbox, tasks). Your run does not exist until that call.',
       ].join("\n"),
     },
   ];

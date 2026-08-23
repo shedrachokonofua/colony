@@ -1049,6 +1049,8 @@ function renderFeedLog(feed, run) {
         const d = JSON.parse(row.detail_json);
         if (row.event === "pi_model_fallback" && d.from && d.to) {
           detail = `${d.from} → ${d.to}`;
+        } else if (typeof d.phase === "string" && d.phase) {
+          detail = d.phase;
         } else {
           detail = [d.tool, d.isError ? "error" : ""]
             .filter(Boolean)
