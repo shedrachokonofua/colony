@@ -92,7 +92,9 @@ export function parseCritiqueReport(report: string): CritiqueReport {
   }
   return {
     verdict: "request_changes",
-    findings: [report.slice(0, 2000) || "critique returned no parseable report"],
+    findings: [
+      report.slice(0, 2000) || "critique returned no parseable report",
+    ],
   };
 }
 

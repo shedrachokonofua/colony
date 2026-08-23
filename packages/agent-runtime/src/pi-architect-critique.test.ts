@@ -78,9 +78,7 @@ interface Harness {
  * phase markers get phase turns (consolidate submits E1), `## Critique` gets
  * the critic's JSON report, `## Revision` gets a fresh submit carrying E2.
  */
-async function runCritiqueScenario(
-  critiqueResponse: string,
-): Promise<Harness> {
+async function runCritiqueScenario(critiqueResponse: string): Promise<Harness> {
   const infoLogs: LogEntry[] = [];
   const finalUserMessages: string[] = [];
 
@@ -175,8 +173,7 @@ async function runCritiqueScenario(
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("missing port");
+  if (!address || typeof address === "string") throw new Error("missing port");
   const baseUrl = `http://127.0.0.1:${address.port}/v1`;
   const model = (id: string): PiModelSpec => ({
     id,
@@ -245,7 +242,9 @@ describe("Pi architect critique", () => {
 
     expect(result.reason).toBeUndefined();
     expect(result.envelope).toEqual(envelope("Revised plan after critique."));
-    expect(result.envelope).not.toEqual(envelope("Draft plan from consolidate."));
+    expect(result.envelope).not.toEqual(
+      envelope("Draft plan from consolidate."),
+    );
 
     const critiqueEvents = infoLogs.filter(
       (entry) => entry.message === "architect_critique",

@@ -890,11 +890,11 @@ export class PiBaseAgentRunner implements PiRunner {
               critique.buildPrompt({
                 goal: packetObjective(request.packet),
                 projectContext:
-                  typeof
-                    (request.packet as { project?: { context_doc?: unknown } })
-                      .project?.context_doc === "string"
-                    ? ((request.packet as { project: { context_doc: string } })
-                        .project.context_doc)
+                  typeof (
+                    request.packet as { project?: { context_doc?: unknown } }
+                  ).project?.context_doc === "string"
+                    ? (request.packet as { project: { context_doc: string } })
+                        .project.context_doc
                     : null,
                 envelope: draftEnvelope,
               }),
@@ -941,7 +941,8 @@ export class PiBaseAgentRunner implements PiRunner {
                 lastMessage?.role === "assistant" &&
                 lastMessage.stopReason === "error"
               ) {
-                failureReason ??= lastMessage.errorMessage ?? "critique_revision_failed";
+                failureReason ??=
+                  lastMessage.errorMessage ?? "critique_revision_failed";
               }
             }
           }
