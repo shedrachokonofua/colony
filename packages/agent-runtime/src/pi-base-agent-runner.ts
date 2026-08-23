@@ -596,6 +596,34 @@ export class PiBaseAgentRunner implements PiRunner {
         return undefined;
       };
 
+      // Per-phase wall-clock enforcement for phased roles. The runner cannot
+      // interrupt a live prompt without poisoning the session, so an
+      // over-budget phase is closed the way drift is handled: a reminder
+      // folded into every tool result (rate-limited) until the model stops
+      // exploring and emits the phase deliverable. Run 1 of the phased
+      // architect spent 44 of 45 minutes in survey; budgets exist so every
+      // phase gets its turn.
+      let activePhase: {
+        name: string;
+        budgetMs: number;
+        startedAt: number;
+      } | null = null;
+      let lastPhaseNudgeAt = 0;
+      const takePhaseBudgetNudge = (): string | null => {
+        if (!activePhase) return null;
+        const now = performance.now();
+        if (now - activePhase.startedAt <= activePhase.budgetMs) return null;
+        if (now - lastPhaseNudgeAt < 45_000) return null;
+        lastPhaseNudgeAt = now;
+        const overMin = Math.round(
+          (now - activePhase.startedAt - activePhase.budgetMs) / 60_000,
+        );
+        return [
+          "<system-reminder>",
+          `Phase "${activePhase.name}" is over its wall-clock budget${overMin > 0 ? ` by ~${overMin} min` : ""}. Stop exploring NOW. Produce this phase's deliverable in your next message from what you already have - no further tool calls in this phase. Remaining depth belongs to the later phases.`,
+          "</system-reminder>",
+        ].join("\n");
+      };
       const previousAfterToolCall = session.agent.afterToolCall;
       session.agent.afterToolCall = async (context, signal) => {
         const base = await previousAfterToolCall?.(context, signal);
@@ -621,14 +649,21 @@ export class PiBaseAgentRunner implements PiRunner {
           },
           "pi_tool_call",
         );
-        const repeatNudge = steering.takeRepeatFailureNudge();
-        const nudge = repeatNudge ?? steering.takeDriftNudge();
+        const phaseNudge = takePhaseBudgetNudge();
+        const repeatNudge = phaseNudge
+          ? null
+          : steering.takeRepeatFailureNudge();
+        const nudge = phaseNudge ?? repeatNudge ?? steering.takeDriftNudge();
         if (!nudge) return base;
         // Fold the reminder in ahead of the tool's own output, the way the omp
         // harness delivers non-interrupting rule reminders.
         this.options.logger?.warn?.(
-          { runId, sandboxId },
-          repeatNudge ? "pi_repeat_failure_nudge" : "pi_drift_nudge",
+          { runId, sandboxId, phase: activePhase?.name },
+          phaseNudge
+            ? "pi_phase_budget_nudge"
+            : repeatNudge
+              ? "pi_repeat_failure_nudge"
+              : "pi_drift_nudge",
         );
         return {
           ...base,
@@ -688,10 +723,18 @@ export class PiBaseAgentRunner implements PiRunner {
           for (const step of planSteps()) {
             if (submissionCaptured()) return true;
             if (step.phase) {
+              activePhase = {
+                name: step.phase.name,
+                budgetMs: step.phase.budgetMs,
+                startedAt: performance.now(),
+              };
+              lastPhaseNudgeAt = 0;
               this.options.logger?.info?.(
                 { runId, sandboxId, phase: step.phase.name },
                 "architect_phase",
               );
+            } else {
+              activePhase = null;
             }
             try {
               const waitPromise = submissionPromise();
@@ -747,6 +790,7 @@ export class PiBaseAgentRunner implements PiRunner {
               return false;
             }
           }
+          activePhase = null;
           return true;
         };
         if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {

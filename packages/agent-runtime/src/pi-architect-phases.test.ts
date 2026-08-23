@@ -1,4 +1,5 @@
 import type { PiModelSpec } from "./pi-runner-common.js";
+import { buildArchitectPhases } from "./architect-phases.js";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,5 +214,19 @@ describe("Pi architect phases", () => {
   it("keeps developer and reviewer profiles single-prompt", () => {
     expect(DEVELOPER_ROLE_PROFILE.phases).toBeUndefined();
     expect(REVIEWER_ROLE_PROFILE.phases).toBeUndefined();
+  });
+});
+
+describe("phase budgets", () => {
+  it("every phase carries a budget and they sum under the architect run timeout", () => {
+    const phases = buildArchitectPhases({ goal: "g", body: "b" } as never);
+    let total = 0;
+    for (const phase of phases) {
+      expect(phase.budgetMs).toBeGreaterThan(0);
+      expect(phase.prompt).toMatch(/minutes of wall clock/);
+      total += phase.budgetMs;
+    }
+    // Architect timeout is 45 min in config; budgets must leave headroom.
+    expect(total).toBeLessThanOrEqual(40 * 60_000);
   });
 });

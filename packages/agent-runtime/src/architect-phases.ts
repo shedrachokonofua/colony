@@ -14,6 +14,29 @@ export type ArchitectPhaseName = (typeof ARCHITECT_PHASES)[number];
 export interface ArchitectPhase {
   readonly name: ArchitectPhaseName;
   readonly prompt: string;
+  /**
+   * Wall-clock budget for this phase. Enforced by the runner through
+   * non-abortive nudges folded into tool results (aborting a live session
+   * poisons the conversation): past the budget the model is told to close
+   * the phase with what it has. Budgets sum below the architect run timeout
+   * so every phase gets a turn - run 1 of the phased architect spent 44 of
+   * 45 minutes in survey and starved the other three phases.
+   */
+  readonly budgetMs: number;
+}
+
+const MINUTE_MS = 60_000;
+
+export const ARCHITECT_PHASE_BUDGETS_MS: Record<ArchitectPhaseName, number> = {
+  survey: 10 * MINUTE_MS,
+  decompose: 6 * MINUTE_MS,
+  deep_dive: 15 * MINUTE_MS,
+  consolidate: 8 * MINUTE_MS,
+};
+
+function budgetLine(name: ArchitectPhaseName): string {
+  const minutes = Math.round(ARCHITECT_PHASE_BUDGETS_MS[name] / MINUTE_MS);
+  return `You have about ${minutes} minutes of wall clock for this phase. When the budget is spent you will be told to close the phase - produce the phase deliverable from what you have by then; depth you cannot afford here belongs to a later phase.`;
 }
 
 /** Adversarial critique outcome for a draft decomposition envelope. */
@@ -170,7 +193,9 @@ export function buildArchitectPhases(
   return [
     {
       name: "survey",
+      budgetMs: ARCHITECT_PHASE_BUDGETS_MS.survey,
       prompt: [
+        budgetLine("survey"),
         buildPacketPrompt(packet),
         "",
         "## Phase: survey",
@@ -184,7 +209,9 @@ export function buildArchitectPhases(
     },
     {
       name: "decompose",
+      budgetMs: ARCHITECT_PHASE_BUDGETS_MS.decompose,
       prompt: [
+        budgetLine("decompose"),
         "## Phase: decompose",
         "From your survey memo, produce TWO materially different candidate decompositions of the scope goal — they must differ in slicing or dependency shape (e.g. coarse vertical slices vs. contract-first layering), not cosmetic naming.",
         "For each candidate list every task with a title and a one-line intent. Then STATE YOUR CHOICE explicitly and justify it against the decomposition rules: smallest viable plan, every task lands green alone on the default branch, explicit acyclic depends_on, independent tasks never touch the same files.",
@@ -193,7 +220,9 @@ export function buildArchitectPhases(
     },
     {
       name: "deep_dive",
+      budgetMs: ARCHITECT_PHASE_BUDGETS_MS.deep_dive,
       prompt: [
+        budgetLine("deep_dive"),
         "## Phase: deep_dive",
         "For EACH task of your chosen decomposition, issue exactly one `task` subagent call. Issue all independent calls together in one turn so they run concurrently (the tool caps concurrency itself).",
         "Each subagent prompt is self-contained — the child sees none of this conversation — and must include: the scope goal, the project context from your survey memo (real commands, conventions, paths), and the candidate task's title plus intent.",
@@ -208,7 +237,9 @@ export function buildArchitectPhases(
     },
     {
       name: "consolidate",
+      budgetMs: ARCHITECT_PHASE_BUDGETS_MS.consolidate,
       prompt: [
+        budgetLine("consolidate"),
         "## Phase: consolidate",
         "From your survey memo and the deep-dive material, finalize the plan and submit:",
         "1. Write the final specs. When task B consumes anything task A produces, restate that contract VERBATIM in both specs (exact paths, exported symbols, schema shapes) — implementers never see sibling specs.",
