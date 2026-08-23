@@ -18,6 +18,8 @@ import {
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
 const DEMO = new URLSearchParams(location.search).has("demo");
+// Demo-safe read paths: project detail, its context, and its scope page only.
+const DEMO_READS = /^\/projects\/[^/?]+(?:\/context)?(?:\?.*)?$|^\/scopes\?/;
 
 const KIND_LABEL = {
   architect: "plan",
@@ -48,6 +50,8 @@ const state = {
   scopesTotal: 0,
   scopeProjects: [],
   projectContext: null,
+  projectPage: null,
+  projectOffset: 0,
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -205,12 +209,33 @@ function rel(iso) {
 
 function routeScopeId() {
   const hash = location.hash.replace(/^#\/?/, "");
-  if (!hash || hash === "new") return null;
+  if (!hash || NEW_ROUTE.test(hash) || PROJECT_ROUTE.test(hash)) return null;
   return hash;
 }
 
+const PROJECT_ROUTE = /^project\/([^/]+)/;
+// Create route, optionally carrying a query (e.g. #/new?project=X).
+const NEW_ROUTE = /^new(?:$|\?)/;
+
 function routeIsNew() {
-  return location.hash.replace(/^#\/?/, "") === "new";
+  return NEW_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+/** Decoded project name from `#/project/<name>`, or null on any other route. */
+function routeProjectName() {
+  const match = location.hash.replace(/^#\/?/, "").match(PROJECT_ROUTE);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function projectHref(name) {
+  return `#/project/${encodeURIComponent(name)}`;
+}
+
+/** The `?project=` query of the current hash route, or null when absent. */
+function hashQueryProject() {
+  const q = location.hash.split("?")[1];
+  if (!q) return null;
+  return new URLSearchParams(q).get("project");
 }
 
 const BRAND_MARK = html`<svg
@@ -332,7 +357,11 @@ function commitUrl(path, sha) {
 }
 
 async function api(path, options = {}) {
-  if (DEMO) throw new Error("demo");
+  if (DEMO) {
+    // The project route reads through the demo world so #/project/… stays
+    // fully offline; every other path keeps its demo guard.
+    if (!DEMO_READS.test(path)) throw new Error("demo");
+  }
   const headers = {
     ...(state.oidc && state.auth
       ? { Authorization: `Bearer ${state.auth.token}` }
@@ -356,6 +385,9 @@ async function api(path, options = {}) {
     throw new Error("Signed out — session expired.");
   }
   if (!res.ok) {
+    // A missing resource is a renderable state, not a crash: callers that
+    // pass notFound: "null" get null back and paint an honest empty page.
+    if (options.notFound === "null" && res.status === 404) return null;
     const message =
       data?.error?.message ||
       data?.error?.code ||
@@ -374,6 +406,16 @@ const DEMO_SHA_B = "b9c0d1e2f30415263748a9b0c1d2e3f401234567";
 const DEMO_GATE_STARTED = new Date(Date.now() - 12 * 1000).toISOString();
 
 function demoWorld() {
+  const demoProject = {
+    name: "Operator console",
+    context_doc:
+      "Console is no-build lit-html served straight from packages/console. " +
+      "Light theme, white and deep blues, no external CDNs.",
+    created_at: new Date(Date.now() - 30 * 86400 * 1000).toISOString(),
+    updated_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
+    scope_count: 2,
+    status_counts: { active: 1, validating: 1 },
+  };
   const scope = {
     id: "col-a1b2c3d4",
     goal: "Add a /version endpoint that returns the running colonyd SHA",
@@ -575,6 +617,7 @@ function demoWorld() {
       review_mode: "required",
       hitl_mode: "yolo",
     },
+    project: demoProject,
     scopes: [
       scope,
       {
@@ -726,9 +769,10 @@ async function submitOpenScope(event) {
 }
 
 function renderProjectContextCard() {
-  const detail = state.detail;
-  if (!detail?.project) return nothing;
+  const page = state.projectPage;
+  if (!page?.project) return nothing;
   const saved = state.projectContext;
+  const storedDoc = page.project.context_doc ?? "";
   return html`<aside class="card">
     <p class="card-head">Project context</p>
     <div class="card-body">
@@ -745,11 +789,7 @@ function renderProjectContextCard() {
           name="project-context"
           class="mono"
           placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
-          .value=${live(
-            saved === null
-              ? (state.detail.project.context_doc ?? "")
-              : saved.doc,
-          )}
+          .value=${live(saved === null ? storedDoc : saved.doc)}
         ></textarea>
         <div class="pc-actions">
           <button class="btn" type="submit">Save context</button>
@@ -765,16 +805,17 @@ function renderProjectContextCard() {
 }
 
 async function saveProjectContext(value) {
-  const detail = state.detail;
-  if (!detail?.project) return;
+  const page = state.projectPage;
+  if (!page?.project) return;
   const doc = value.trim() ? value : null;
   state.projectContext = { doc: value, status: "saving" };
   paint();
   try {
-    await api(`/projects/${encodeURIComponent(detail.project.name)}/context`, {
+    await api(`/projects/${encodeURIComponent(page.project.name)}/context`, {
       method: "PUT",
       body: JSON.stringify({ context_doc: doc }),
     });
+    // Keep the editor text through refresh(); status flips to "saved".
     state.projectContext = { doc: value, status: "saved" };
     await refresh();
   } catch (err) {
@@ -1330,6 +1371,14 @@ function scopeCard(scope) {
     <span class="scope-meta">
       <span class="mono">${scope.id}</span>
       <span>${scope.provider_repo_path}</span>
+      ${scope.project_name
+        ? html`<a
+            class="scope-project"
+            href=${projectHref(scope.project_name)}
+            @click=${(event) => event.stopPropagation()}
+            >${scope.project_name}</a
+          >`
+        : nothing}
     </span>
   </button>`;
 }
@@ -1391,17 +1440,13 @@ function renderBoard() {
         ([project, scopes]) => html`
           ${project
             ? html`<h2 class="rack-group">
-                <button
+                <a
                   class="rack-group-link"
-                  title="Show only this project"
-                  @click=${() => {
-                    state.boardProject = project;
-                    state.boardOffset = 0;
-                    void refresh();
-                  }}
+                  href=${projectHref(project)}
+                  title="Open this project"
                 >
                   ${project}
-                </button>
+                </a>
                 <span class="rack-count"
                   >${projectTotal(project) ?? scopes.length}</span
                 >
@@ -1482,6 +1527,91 @@ function renderBoard() {
   `;
 }
 
+function renderProjectPage() {
+  const page = state.projectPage;
+  if (!page?.name) return renderBoard();
+  if (!page.project) {
+    return html`<div class="project-page" id="draw">
+      <p class="rack-empty">
+        No project named “${page.name}” — scopes group under a project once one
+        of them names it.
+      </p>
+    </div>`;
+  }
+  const counts = page.project.status_counts ?? {};
+  const chips = Object.entries(counts).filter(([, n]) => n > 0);
+  return html`
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
+    <div class="project-page" id="draw">
+      <header class="board-head">
+        <h1 class="board-title">${page.project.name}</h1>
+        <a
+          class="btn btn-solid"
+          href=${`#/new?project=${encodeURIComponent(page.project.name)}`}
+          >New scope</a
+        >
+      </header>
+      <p class="project-meta mono">
+        <span
+          >${page.project.scope_count}
+          scope${page.project.scope_count === 1 ? "" : "s"}</span
+        >
+        updated ${rel(page.project.updated_at)}
+      </p>
+      ${chips.length
+        ? html`<p class="project-counts">
+            ${chips.map(
+              ([status, count]) =>
+                html`<span class="chip" data-kind=${status}
+                  >${status} ${count}</span
+                >`,
+            )}
+          </p>`
+        : nothing}
+      ${renderProjectContextCard()}
+      <section class="project-scopes">
+        <p class="card-head">Scopes</p>
+        ${page.scopes.length
+          ? html`<div class="rack rack-single">
+              ${repeat(page.scopes, (scope) => scope.id, scopeCard)}
+            </div>`
+          : html`<p class="rack-empty">No scopes in this project yet.</p>`}
+        ${renderProjectPager()}
+      </section>
+    </div>
+  `;
+}
+
+function renderProjectPager() {
+  const page = state.projectPage;
+  if (!page || page.total <= BOARD_PAGE_SIZE) return nothing;
+  const from = state.projectOffset + 1;
+  const to = Math.min(state.projectOffset + page.scopes.length, page.total);
+  const turn = (offset) => {
+    state.projectOffset = Math.max(0, offset);
+    void refresh();
+  };
+  return html`<nav class="board-pager" aria-label="Project scope pages">
+    <button
+      class="btn btn-quiet"
+      ?disabled=${state.projectOffset === 0}
+      @click=${() => turn(state.projectOffset - BOARD_PAGE_SIZE)}
+    >
+      Newer
+    </button>
+    <span class="pager-range mono">${from}–${to} of ${page.total}</span>
+    <button
+      class="btn btn-quiet"
+      ?disabled=${to >= page.total}
+      @click=${() => turn(state.projectOffset + BOARD_PAGE_SIZE)}
+    >
+      Older
+    </button>
+  </nav>`;
+}
+
 function renderCreate() {
   return html`
     ${state.error
@@ -1513,6 +1643,7 @@ function renderCreate() {
                 maxlength="120"
                 placeholder="Project this scope belongs to"
                 autocomplete="off"
+                .value=${live(hashQueryProject() ?? "")}
               />
             </label>
             <label class="field">
@@ -1574,6 +1705,11 @@ function renderSheet() {
           ${pathUrl
             ? html`<a href=${pathUrl}>${scope.provider_repo_path}</a>`
             : html`<span>${scope.provider_repo_path}</span>`}
+          ${scope.project_name
+            ? html`<a href=${projectHref(scope.project_name)}
+                >${scope.project_name}</a
+              >`
+            : nothing}
           <span>updated ${rel(scope.updated_at)}</span>
         </p>
       </div>
@@ -1596,10 +1732,7 @@ function renderSheet() {
       <div class="card-body">${renderDag(detail)}</div>
     </section>
     <div class="sheet-cols">
-      <div class="sheet-col">
-        ${renderGoalCard(scope)} ${renderActivity()}
-        ${renderProjectContextCard()}
-      </div>
+      <div class="sheet-col">${renderGoalCard(scope)} ${renderActivity()}</div>
       <div class="sheet-col">${renderPlanCard(scope, detail)}</div>
       <div class="sheet-col">${renderValidationCard(scope, detail)}</div>
     </div>
@@ -2163,7 +2296,9 @@ function paint() {
           ? renderCreate()
           : routeScopeId()
             ? renderSheet()
-            : renderBoard();
+            : routeProjectName()
+              ? renderProjectPage()
+              : renderBoard();
     litRender(
       html`${renderTopbar()}
         <main class="view">${view}</main>
@@ -2190,6 +2325,33 @@ async function refresh() {
       state.scopeProjects = [];
       const id = routeScopeId();
       state.detail = id === world.detail.scope.id ? world.detail : null;
+      const demoName = routeProjectName();
+      if (demoName === world.project.name) {
+        const start = state.projectOffset;
+        const pageScopes = world.scopes.filter(
+          (scope) => scope.project_name === demoName,
+        );
+        state.projectPage = {
+          name: demoName,
+          project: world.project,
+          scopes: pageScopes.slice(start, start + BOARD_PAGE_SIZE),
+          total: pageScopes.length,
+          offset: start,
+        };
+        // Same seeding path as live refresh(): read the stored doc through
+        // the demo-served GET so the editor prefills offline.
+        if (state.projectContext === null) {
+          const stored = await api(
+            `/projects/${encodeURIComponent(demoName)}/context`,
+          );
+          state.projectContext = {
+            doc: stored.context_doc ?? "",
+            status: null,
+          };
+        }
+      } else {
+        state.projectPage = null;
+      }
       state.audit = world.audit;
       if (state.drawerOpen && state.selectedTaskId === "col-a1b2c3d4.1") {
         state.runEvents = { runId: "run-gate-1", rows: world.runEvents };
@@ -2211,6 +2373,40 @@ async function refresh() {
         return;
       }
     }
+    const projectName = routeProjectName();
+    if (projectName) {
+      // The project route owns this refresh: it must not touch board or sheet
+      // state, and it must preserve an in-flight editor status ("Saved.").
+      const offset = state.projectOffset;
+      const [project, scopesPage] = await Promise.all([
+        api(`/projects/${encodeURIComponent(projectName)}`, {
+          notFound: "null",
+        }),
+        api(
+          `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
+        ),
+      ]);
+      state.projectPage = {
+        name: projectName,
+        project: project === null ? null : project.project,
+        scopes: scopesPage.scopes,
+        total: scopesPage.total,
+        offset,
+      };
+      // Seed the editor from the same read the save round-trips through, so
+      // prefill cannot drift from what Save will persist. An unknown project
+      // has no document to read.
+      if (state.projectContext === null && project) {
+        const stored = await api(
+          `/projects/${encodeURIComponent(projectName)}/context`,
+        );
+        state.projectContext = { doc: stored.context_doc ?? "", status: null };
+      }
+      state.error = "";
+      paint();
+      return;
+    }
+    state.projectPage = null;
     const page = await api(
       `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${state.boardOffset}${
         state.boardProject
@@ -2322,6 +2518,8 @@ window.addEventListener("hashchange", () => {
   state.goalOpen = false;
   state.planOpen = false;
   state.projectContext = null;
+  state.projectPage = null;
+  state.projectOffset = 0;
   void refresh();
 });
 

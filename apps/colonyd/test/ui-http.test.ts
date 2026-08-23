@@ -782,4 +782,42 @@ describe("projects pagination with scope tallies", () => {
       error: { code: "NOT_FOUND", message: "project not found" },
     });
   });
+
+  it("serves the context doc round-trip on /projects/:name/context", async () => {
+    const { app } = appAndStore();
+
+    const put = await app.request("/projects/Wave%20one/context", {
+      ...ACTOR,
+      method: "PUT",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ context_doc: "Use bun workspaces." }),
+    });
+    expect(put.status).toBe(200);
+
+    // The editor's prefill read matches exactly what the save persisted.
+    const get = await app.request("/projects/Wave%20one/context", ACTOR);
+    expect(get.status).toBe(200);
+    expect(await get.json()).toEqual({ context_doc: "Use bun workspaces." });
+
+    // Clearing stores null.
+    await app.request("/projects/Wave%20one/context", {
+      ...ACTOR,
+      method: "PUT",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ context_doc: null }),
+    });
+    const cleared = await app.request("/projects/Wave%20one/context", ACTOR);
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toEqual({ context_doc: null });
+
+    // Unknown projects have nothing to read.
+    const missing = await app.request("/projects/nope/context", ACTOR);
+    expect(missing.status).toBe(404);
+  });
 });
