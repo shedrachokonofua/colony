@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   blocked_reason TEXT,
   merge_approved_sha TEXT,                   -- operator-approved MR head (manual approvals)
   human_feedback TEXT,                       -- operator review feedback for the next attempt
+  cost_prediction_json TEXT,                 -- TaskCostPrediction v1 blob from offline runs-history heuristic
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

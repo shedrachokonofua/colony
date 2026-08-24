@@ -59,10 +59,26 @@ export interface GateFailure {
  * Deterministic prospective-merge check. Test seam: colonyd accepts an
  * injected `gateExecutor`; the real implementation lives in
  * `defaultGateExecutor`.
+ *
+ * On success the executor reports the incoming diff's file list (`null`
+ * also remains a valid success for injected executors). It cannot be
+ * recomputed later: after the prospective `--no-ff` merge,
+ * `git diff target...headSha` is empty because headSha became an ancestor.
  */
 export type GateExecutor = (
   input: GateExecutionInput,
-) => Promise<GateFailure | null>;
+) => Promise<GateFailure | GateSuccess | null>;
+
+/** Files in the incoming diff (target...head), captured pre-merge. */
+export interface GateSuccess {
+  readonly files_changed: readonly string[];
+}
+
+function isGateFailure(
+  result: GateFailure | GateSuccess,
+): result is GateFailure {
+  return "reason" in result;
+}
 
 interface GateOutcome {
   readonly kind:
@@ -146,7 +162,7 @@ async function executeMergeGate(
   const clone = buildCloneUrl(ctx, repoPath);
   try {
     const executor = ctx.gateExecutor ?? defaultGateExecutor;
-    const failure = await executor({
+    const result = await executor({
       workspace,
       cloneUrl: clone.cloneUrl,
       displayUrl: clone.displayUrl,
@@ -154,8 +170,8 @@ async function executeMergeGate(
       taskBranch: task.branch ?? `colony/${task.id}`,
       headSha,
     });
-
-    if (failure) {
+    if (result && isGateFailure(result)) {
+      const failure: GateFailure = result;
       const evidence = { ...failure, head_sha: headSha };
       ctx.store.finishRun(runId, "failed", {
         evidence_json: JSON.stringify(evidence),
@@ -272,11 +288,16 @@ async function executeMergeGate(
       return;
     }
 
+    // The executor captured the incoming diff's file list pre-merge; after
+    // the prospective merge the same three-dot diff is empty because
+    // headSha became an ancestor of target, so this cannot be recomputed.
+    // The list feeds the offline task-cost heuristic (no new telemetry).
     ctx.store.finishRun(runId, "succeeded", {
       head_sha: headSha,
       evidence_json: JSON.stringify({
         reason: "merge_accepted",
         head_sha: headSha,
+        files_changed: result ? [...result.files_changed] : [],
       }),
     });
     runSpan?.end("succeeded");
@@ -449,7 +470,9 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   // Scan the incoming diff BEFORE the prospective merge. After merging
   // headSha into target, `git diff target...headSha` is empty because
   // headSha is an ancestor of target — that previously let secrets merge.
-  const scan = secretScan(input);
+  // The same list is the gate's success payload: post-merge it is empty.
+  const changedFiles = changedDiffFiles(input);
+  const scan = secretScan(input, changedFiles);
   if (scan) return scan;
 
   try {
@@ -465,8 +488,8 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   }
 
   const gateConfig = readGateConfig(input.workspace);
-  if (!gateConfig) return null; // missing colony.gate.yaml -> no commands, audit handled by caller
-  if (gateConfig.commands.length === 0) return null;
+  if (!gateConfig) return { files_changed: changedFiles }; // missing colony.gate.yaml -> no commands, audit handled by caller
+  if (gateConfig.commands.length === 0) return { files_changed: changedFiles };
 
   const results: GateCommandResult[] = [];
   for (const cmd of gateConfig.commands) {
@@ -480,7 +503,7 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
       return { reason: "command_failed", commands: results };
     }
   }
-  return null;
+  return { files_changed: changedFiles };
 };
 
 function conflictedFiles(workspace: string): string[] {
@@ -510,8 +533,9 @@ const SECRET_PATTERNS = [
   /PRIVATE-TOKEN/,
 ];
 
-function secretScan(input: GateExecutionInput): GateFailure | null {
-  const changed = git(
+/** Incoming-diff file list (target...head), split/trimmed like secretScan. */
+function changedDiffFiles(input: GateExecutionInput): string[] {
+  return git(
     ["diff", `${input.targetBranch}...${input.headSha}`, "--name-only"],
     input.workspace,
     input,
@@ -519,7 +543,12 @@ function secretScan(input: GateExecutionInput): GateFailure | null {
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
+}
 
+function secretScan(
+  input: GateExecutionInput,
+  changed: readonly string[],
+): GateFailure | null {
   for (const file of changed) {
     const name = file.split("/").pop() ?? file;
     if (name === "PACKET.json" || name === ".env") {

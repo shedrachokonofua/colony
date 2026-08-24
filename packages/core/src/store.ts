@@ -9,7 +9,10 @@ import {
   type ScopeId,
   type TaskId,
 } from "@colony/domain";
-import type { ArchitectDecompositionV2 } from "@colony/schemas";
+import type {
+  ArchitectDecompositionV2,
+  TaskCostModelV1,
+} from "@colony/schemas";
 import {
   SCOPE_STATUSES,
   assertScopeTransition,
@@ -17,6 +20,11 @@ import {
   type ScopeStatus,
   type TaskState,
 } from "./state-machine.js";
+import {
+  DEFAULT_IMPLEMENTER_BUDGET_MS,
+  buildTaskCostModel,
+  predictTaskCost,
+} from "./task-cost.js";
 
 export interface Project {
   readonly name: string;
@@ -66,6 +74,8 @@ export interface Task {
   readonly updated_at: string;
   readonly merge_approved_sha: string | null;
   readonly human_feedback: string | null;
+  /** TaskCostPrediction v1 blob; written when a plan is materialized. */
+  readonly cost_prediction_json: string | null;
 }
 
 export interface Run {
@@ -490,6 +500,7 @@ export class Store {
     scopeId: ScopeId | string,
     plan: ArchitectDecompositionV2,
     actor: string,
+    budgetMs: number = DEFAULT_IMPLEMENTER_BUDGET_MS,
   ): Task[] {
     const scope = this.getScope(scopeId);
     if (!scope) {
@@ -514,15 +525,34 @@ export class Store {
     }
     assertAcyclic(plan.tasks.map((task) => task.depends_on));
 
+    // Offline heuristic over landed history only — never blocks planning:
+    // an empty runs table yields a zero model and unflagged predictions.
+    const costModel: TaskCostModelV1 = buildTaskCostModel(
+      this.db
+        .prepare(
+          `SELECT * FROM runs WHERE status = 'succeeded' AND kind IN ('implement','merge_gate')`,
+        )
+        .all() as Run[],
+    );
+
     const insertTask = this.db.prepare(
-      `INSERT INTO tasks (id, scope_id, title, spec, state) VALUES (?, ?, ?, ?, 'queued')`,
+      `INSERT INTO tasks (id, scope_id, title, spec, state, cost_prediction_json)
+       VALUES (?, ?, ?, ?, 'queued', ?)`,
     );
     const insertDep = this.db.prepare(
       `INSERT INTO task_deps (task_id, depends_on_task_id) VALUES (?, ?)`,
     );
     const apply = this.db.transaction(() => {
       for (const [index, task] of plan.tasks.entries()) {
-        insertTask.run(ids[index], scope.id, task.title, task.spec);
+        insertTask.run(
+          ids[index],
+          scope.id,
+          task.title,
+          task.spec,
+          JSON.stringify(
+            predictTaskCost(costModel, extractSpecPaths(task.spec), budgetMs),
+          ),
+        );
         for (const dep of task.depends_on) {
           insertDep.run(ids[index], ids[dep]);
         }
@@ -999,4 +1029,16 @@ function assertAcyclic(deps: ReadonlyArray<readonly number[]>): void {
   if (visited !== deps.length) {
     throw new Error("plan dependency graph is cyclic");
   }
+}
+
+/**
+ * File paths mentioned in a task spec, for the cost heuristic's touched-file
+ * count. Same shape as FILE_PATH_PATTERN in @colony/agent-runtime; core does
+ * not depend on @colony/agent-runtime.
+ */
+const SPEC_FILE_PATH_PATTERN =
+  /[A-Za-z0-9_.\-]+(\/[A-Za-z0-9_.\-]+)+\.[A-Za-z0-9]{1,8}/g;
+
+function extractSpecPaths(spec: string): string[] {
+  return spec.match(SPEC_FILE_PATH_PATTERN) ?? [];
 }

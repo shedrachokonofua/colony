@@ -11,6 +11,11 @@ export type SQLQueryBindings =
   | null
   | undefined;
 
+/** Open options: `readOnly` refuses to create or mutate the database file. */
+export interface DatabaseOptions {
+  readonly readOnly?: boolean;
+}
+
 // Resolve Database implementation at runtime: bun:sqlite when running under
 // Bun (e.g. `bun test`), node:sqlite when running under Node+tsx (Playwright
 // webServer: `npx tsx apps/colonyd/e2e/fake-colonyd.ts`).
@@ -18,7 +23,17 @@ let DatabaseImpl: unknown;
 
 try {
   const bunSqlite = createRequire(import.meta.url)("bun:sqlite");
-  DatabaseImpl = bunSqlite.Database;
+  const BunSqliteDatabase = bunSqlite.Database as new (
+    path: string,
+    options?: { readonly?: boolean },
+  ) => unknown;
+  // `new Fn(...)` returning an object passes the instance through, keeping
+  // the full bun:sqlite surface while normalizing the open options.
+  DatabaseImpl = function bunDatabase(path: string, options?: DatabaseOptions) {
+    return options?.readOnly
+      ? new BunSqliteDatabase(path, { readonly: true })
+      : new BunSqliteDatabase(path);
+  };
 } catch {
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
     DatabaseSync: new (
@@ -91,7 +106,14 @@ try {
   class NodeDatabase {
     private readonly inner: InstanceType<typeof DatabaseSync>;
 
-    constructor(path: string) {
+    constructor(path: string, options: DatabaseOptions = {}) {
+      if (options.readOnly) {
+        // Read-only opens must never create the file.
+        this.inner = new DatabaseSync(path, {
+          readOnly: true,
+        }) as InstanceType<typeof DatabaseSync>;
+        return;
+      }
       // Store constructor already ensures the parent dir exists; be defensive.
       try {
         mkdirSync(dirname(path), { recursive: true });
@@ -183,7 +205,10 @@ try {
   DatabaseImpl = NodeDatabase;
 }
 
-export const Database = DatabaseImpl as new (path: string) => {
+export const Database = DatabaseImpl as new (
+  path: string,
+  options?: DatabaseOptions,
+) => {
   exec(sql: string): void;
   prepare(sql: string): {
     run(...args: unknown[]): { changes: number; lastInsertRowid: unknown };

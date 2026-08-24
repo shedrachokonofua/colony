@@ -26,6 +26,7 @@
     "apps/**/*.ts",
     "packages/**/*.ts",
     "scripts/acceptance.ts",
+    "scripts/task-cost-report.ts",
     "e2e/**/*.ts",
     "playwright.config.ts"
   ],

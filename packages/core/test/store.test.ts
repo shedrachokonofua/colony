@@ -178,6 +178,45 @@ describe("Store", () => {
     );
   });
 
+  it("writes a non-null cost_prediction_json for every materialized task", () => {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const p = plan({
+      tasks: [
+        {
+          title: "A",
+          spec: "touch packages/core/src/store.ts and apps/x/y.ts",
+          depends_on: [],
+        },
+        { title: "B", spec: "no paths here", depends_on: [0] },
+      ],
+    });
+    const tasks = store.materializePlan(scopeId, p, "svc:colonyd");
+    expect(tasks).toHaveLength(2);
+    // Zero-history database: nothing is predicted or flagged, but the
+    // spec-derived file list still rides along.
+    expect(JSON.parse(tasks[0]!.cost_prediction_json!)).toMatchObject({
+      predicted_ms: 0,
+      budget_ms: 900_000,
+      files_touched: 2,
+      model_version: "v1",
+      flagged: false,
+      sample_size: 0,
+      inputs: { files: ["packages/core/src/store.ts", "apps/x/y.ts"] },
+    });
+    expect(JSON.parse(tasks[1]!.cost_prediction_json!)).toMatchObject({
+      predicted_ms: 0,
+      files_touched: 0,
+      flagged: false,
+      inputs: { files: [] },
+    });
+    // GET /tasks/:id reads through SELECT *: the blob round-trips.
+    const reloaded = store.listTasks(scopeId);
+    expect(reloaded[0]!.cost_prediction_json).toBe(
+      tasks[0]!.cost_prediction_json,
+    );
+  });
+
   it("rejects a cyclic plan", () => {
     const scopeId = seededScope();
     store.setScopeStatus(scopeId, "planning", "svc:colonyd");
@@ -629,7 +668,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(3);
+        expect(LATEST_SCHEMA_VERSION).toBe(4);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -640,6 +679,17 @@ describe("versioned migrations", () => {
         expect(tableColumns(store.db, "runs")).toContain("trace_id");
         expect(tableColumns(migrated.db, "runs")).toContain("trace_id");
         expect(tableColumns(fresh.db, "runs")).toContain("trace_id");
+        // The task cost-prediction blob column exists on every generation:
+        // fresh DDL and migration 4's ALTER TABLE agree.
+        expect(tableColumns(store.db, "tasks")).toContain(
+          "cost_prediction_json",
+        );
+        expect(tableColumns(migrated.db, "tasks")).toContain(
+          "cost_prediction_json",
+        );
+        expect(tableColumns(fresh.db, "tasks")).toContain(
+          "cost_prediction_json",
+        );
         // A short-lived `initiative` column is renamed, not duplicated.
         const renamed = new Database(join(dir, "renamed.db"));
         renamed.exec(
