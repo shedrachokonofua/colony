@@ -215,6 +215,16 @@ describe("Pi architect phases", () => {
     expect(DEVELOPER_ROLE_PROFILE.phases).toBeUndefined();
     expect(REVIEWER_ROLE_PROFILE.phases).toBeUndefined();
   });
+
+  it("tells the architect in consolidate how the size gate judges a task", () => {
+    const consolidate = buildArchitectPhases({ goal: "g" } as never).find(
+      (phase) => phase.name === "consolidate",
+    );
+    expect(consolidate).toBeDefined();
+    expect(consolidate!.prompt).toContain("task_over_budget");
+    expect(consolidate!.prompt).toMatch(/file paths in its spec/);
+    expect(consolidate!.prompt).toMatch(/re-planned into smaller outcome-oriented tasks/);
+  });
 });
 
 describe("phase budgets", () => {
