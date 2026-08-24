@@ -18,6 +18,7 @@ import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import {
   type ArchitectDecompositionV2,
   type ImplementerCompletionV2,
+  type TaskCostModelV1,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
@@ -690,6 +691,7 @@ export function buildArchitectSystemPrompt(): string {
     "- The depends_on graph must be acyclic (a self-edge is a cycle).",
     "- A task with empty depends_on whose spec phrases a precondition as produced/created/defined by another task, or tells the implementer to verify it exists or stop and report if missing, is rejected — declare the edge instead.",
     "- Two tasks with no dependency path between them (in either direction) must not reference the same repository file path — add an edge or confine the path to one spec.",
+    "- A task whose predicted session cost — file paths referenced in its spec times the observed ms-per-file from landed history — exceeds the implementer budget is rejected (`task_over_budget`): re-plan it into smaller outcome-oriented tasks; the machine never splits it for you.",
     "",
     "# Task spec format",
     "Each spec is outcome-oriented markdown containing: the goal, the user-observable behavior, the invariants that must hold, and the required evidence — the exact commands/tests whose success proves completion. Reference real paths and symbols you saw during exploration. Required evidence must be falsifiable: a command that would fail today and passes when the task is done — never 'verify it works'.",
@@ -1026,8 +1028,20 @@ export function createReviewerSubmitTool(
   };
 }
 
+/**
+ * Per-session inputs for the architect size gate: the offline session-cost
+ * model built by colonyd from its runs history, plus the implementer budget
+ * (the developer ceiling `timeoutMs`). Built and supplied by colonyd — this
+ * package never imports @colony/core to compute it.
+ */
+export interface ArchitectSizeGate {
+  readonly model: TaskCostModelV1;
+  readonly budget_ms: number;
+}
+
 export function createArchitectSubmitTool(
   capture: (value: unknown) => void,
+  sizeGate?: ArchitectSizeGate,
 ): ToolDefinition {
   return {
     name: "submit_architect_decomposition",
@@ -1040,11 +1054,11 @@ export function createArchitectSubmitTool(
         architectDecompositionV2Schema,
         rawParams,
       );
-      const errors = validateDecompositionEnvelope(params);
+      const errors = validateDecompositionEnvelope(params, sizeGate);
       if (errors.length > 0) {
         throw new Error(
           "Submission rejected: decomposition failed mechanical validation:\n" +
-            errors.map((e) => "  - " + e.message).join("\n"),
+            errors.map((e) => `  - [${e.rule}] ${e.message}`).join("\n"),
         );
       }
       capture(params);
