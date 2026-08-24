@@ -2,7 +2,10 @@ import { describe, expect, it } from "bun:test";
 
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 
-import { validateDecompositionEnvelope } from "./envelope-validation.js";
+import {
+  validateDecompositionEnvelope,
+  type DecompositionValidationError,
+} from "./envelope-validation.js";
 
 function envelopeWithTasks(
   tasks: Array<
@@ -116,6 +119,73 @@ describe("validateDecompositionEnvelope", () => {
           depends_on: [1],
         },
       ]),
+    );
+    expect(errors).toEqual([]);
+  });
+});
+
+describe("validateDecompositionEnvelope size gate", () => {
+  const fivePathSpec = [
+    "Touch packages/core/src/store.ts, packages/core/src/cache.ts,",
+    "apps/colonyd/src/tick.ts, apps/colonyd/src/http.ts and",
+    "packages/console/app.js to ship the feature.",
+  ].join(" ");
+
+  it("flags a task whose predicted cost exceeds the budget", () => {
+    const errors = validateDecompositionEnvelope(
+      envelopeWithTasks([{ title: "Too big", spec: fivePathSpec }]),
+      { model: { version: "v1", sample_size: 4, ms_per_file: 100_000 }, budget_ms: 250_000 },
+    );
+    expect(errors).toHaveLength(1);
+    const error = errors[0] as DecompositionValidationError;
+    expect(error.rule).toBe("task_over_budget");
+    expect(error.taskIndex).toBe(0);
+    expect(error.message).toContain('task 0 ("Too big")');
+    expect(error.message).toContain("predicted 500000 ms");
+    expect(error.message).toContain("5 spec file paths");
+    expect(error.message).toContain("(model v1, 4 samples)");
+    expect(error.message).toContain("exceeds the 250000 ms implementer budget");
+    expect(error.message).toContain("Re-plan this task into smaller outcome-oriented tasks.");
+  });
+
+  it("flags only the offending tasks when several exceed the budget", () => {
+    const errors = validateDecompositionEnvelope(
+      envelopeWithTasks([
+        { title: "Big", spec: fivePathSpec },
+        { title: "Small", spec: quietSpec },
+      ]),
+      { model: { version: "v1", sample_size: 2, ms_per_file: 200_000 }, budget_ms: 300_000 },
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0].rule).toBe("task_over_budget");
+    expect(errors[0].taskIndex).toBe(0);
+  });
+
+  it("deduplicates repeated paths before counting files", () => {
+    const errors = validateDecompositionEnvelope(
+      envelopeWithTasks([
+        {
+          title: "Repeat",
+          spec: "Edit packages/core/src/store.ts twice: packages/core/src/store.ts again.",
+        },
+      ]),
+      { model: { version: "v1", sample_size: 1, ms_per_file: 400_000 }, budget_ms: 400_000 },
+    );
+    // One distinct path * 400k == exactly the budget: not over it.
+    expect(errors).toEqual([]);
+  });
+
+  it("a zero-ms-per-file model never flags", () => {
+    const errors = validateDecompositionEnvelope(
+      envelopeWithTasks([{ title: "Anything", spec: fivePathSpec }]),
+      { model: { version: "v1", sample_size: 0, ms_per_file: 0 }, budget_ms: 1 },
+    );
+    expect(errors).toEqual([]);
+  });
+
+  it("no gate means no size check (behavior unchanged)", () => {
+    const errors = validateDecompositionEnvelope(
+      envelopeWithTasks([{ title: "Anything", spec: fivePathSpec }]),
     );
     expect(errors).toEqual([]);
   });
