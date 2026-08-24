@@ -99,21 +99,26 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   // (console shell), /ui/config, the webhook route and all API routes, is
   // traced. Registered first so no handler runs outside a span.
   app.use(async (c, next) => {
-    if (isTracingEnabled() && !isExcludedFromHttpSpans(c.req.path)) {
-      const endSpan = startHttpServerSpan(
-        c.req.method,
-        normalizeRoute(c.req.path),
-      );
-      try {
-        await next();
-        endSpan(c.res.status);
-      } catch (err) {
-        endSpan(500);
-        throw err;
-      }
+    if (!isTracingEnabled() || isExcludedFromHttpSpans(c.req.path)) {
+      await next();
       return;
     }
-    await next();
+    const endSpan = startHttpServerSpan(
+      c.req.method,
+      normalizeRoute(c.req.path),
+    );
+    if (!endSpan) {
+      // Unreachable while isTracingEnabled() holds; keeps narrowing honest.
+      await next();
+      return;
+    }
+    try {
+      await next();
+      endSpan(c.res.status);
+    } catch (err) {
+      endSpan(500);
+      throw err;
+    }
   });
 
   app.get("/health", (c) => c.json({ ok: true, service: "colonyd" }));
@@ -142,7 +147,6 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     } finally {
       endWebhookSpan();
     }
-    return c.json(fresh ? { accepted: true } : { duplicate: true });
   });
 
   app.get("/ui/config", (c) =>
