@@ -1390,6 +1390,19 @@ body {
   overflow-wrap: anywhere;
 }
 
+.run-trace {
+  display: inline-block;
+  margin: 0.15rem 0 0;
+  font-size: 0.72rem;
+  color: var(--link);
+  text-decoration: none;
+}
+
+.run-trace:hover,
+.run-trace:focus-visible {
+  text-decoration: underline;
+}
+
 .findings {
   margin: 0.3rem 0 0;
   padding-left: 1rem;
