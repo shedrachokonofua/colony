@@ -14,6 +14,7 @@ import {
   isoDuration,
   runDurationMs,
 } from "./duration.js";
+import { costPredictionLines, parseCostPrediction } from "./cost-prediction.js";
 import { traceHref } from "./trace-link.js";
 
 const ACTOR_KEY = "colony.actor";
@@ -2004,6 +2005,23 @@ function renderValidationCard(scope, detail) {
   </aside>`;
 }
 
+function renderCostPrediction(task) {
+  const prediction = parseCostPrediction(task);
+  if (!prediction) return nothing;
+  const lines = costPredictionLines(prediction);
+  return html`<div class="cost-prediction">
+    <p class="card-head cost-prediction-head">
+      Size prediction
+      ${prediction.flagged
+        ? html`<span class="chip" data-kind="blocked">over budget</span>`
+        : html`<span class="cost-prediction-ok">within budget</span>`}
+    </p>
+    <div class="cost-prediction-body">
+      ${lines.map((line) => html`<p class="task-meta">${line}</p>`)}
+    </div>
+  </div>`;
+}
+
 function renderDrawer(scope, task) {
   const sha = [...(state.detail?.runs || [])]
     .reverse()
@@ -2036,6 +2054,7 @@ function renderDrawer(scope, task) {
       ${task.blocked_reason
         ? html`<p class="wait-inline">${task.blocked_reason}</p>`
         : nothing}
+      ${renderCostPrediction(task)}
       <div class="links">
         ${mr ? html`<a href=${mr}>Merge request !${task.mr_iid}</a>` : nothing}
         ${commit ? html`<a href=${commit}>${shortSha(sha)}</a>` : nothing}
