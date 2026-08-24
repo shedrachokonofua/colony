@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
+import { context } from "@opentelemetry/api";
 import type { ProviderMergeRequest, ProviderRepoRef } from "@colony/provider";
+import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -14,6 +16,18 @@ const GATE_LEASE_MS = 30 * 60_000;
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 600;
 const MAX_CONSECUTIVE_GATE_FAILURES = 3;
 const MAX_CONSECUTIVE_MERGE_REFUSALS = 3;
+
+/**
+ * Run `fn` inside the run root's span context so SDK GenAI spans nest under
+ * it. With no span (tracing disabled) this stays on the ambient context —
+ * no tracing code path activates.
+ */
+function inRunSpanContext<T>(
+  runSpan: ColonyRunSpan | undefined,
+  fn: () => T,
+): T {
+  return runSpan ? context.with(runSpan.spanContext, fn) : fn();
+}
 
 export interface GateExecutionInput {
   readonly workspace: string;
@@ -74,23 +88,48 @@ export async function runMergeGate(
     id: scope.provider_repo_id,
     path: scope.provider_repo_path,
   };
+  // The span must exist first so its trace id can ride on the run row.
+  // Its run_id is a pre-row correlation id: the store mints the row below.
+  const runSpan = startColonyRunSpan({
+    scope_id: scope.id,
+    task_id: task.id,
+    run_id: crypto.randomUUID(),
+    kind: "merge_gate",
+    model_id: null,
+  });
   const run = ctx.store.startRun({
     scope_id: scope.id,
     task_id: task.id,
     kind: "merge_gate",
     lease_ttl_ms: GATE_LEASE_MS,
     base_sha: headSha,
+    trace_id: runSpan?.traceId ?? null,
   });
+  const runId = run.id;
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
     task_id: task.id,
-    run_id: run.id,
+    run_id: runId,
     detail: { kind: "merge_gate", head_sha: headSha },
   });
 
-  const execution = executeMergeGate(ctx, repo, scope, task, run.id, headSha);
-  trackRun(run.id, execution, () => Promise.resolve());
-  await execution;
+  const execution = executeMergeGate(
+    ctx,
+    repo,
+    scope,
+    task,
+    runId,
+    headSha,
+    runSpan,
+  );
+  trackRun(runId, execution, () => Promise.resolve());
+  try {
+    await execution;
+  } finally {
+    // Safety net only: every terminal branch inside ends the span with its
+    // own status; this catches paths that bypass finishRun entirely.
+    runSpan?.end("canceled", "aborted");
+  }
 }
 
 async function executeMergeGate(
@@ -100,6 +139,7 @@ async function executeMergeGate(
   task: Task,
   runId: string,
   headSha: string,
+  runSpan: ColonyRunSpan | undefined,
 ): Promise<void> {
   const workspace = join(tmpdir(), "colonyd-gate", runId);
   const repoPath = scope.provider_repo_path;
@@ -120,6 +160,7 @@ async function executeMergeGate(
       ctx.store.finishRun(runId, "failed", {
         evidence_json: JSON.stringify(evidence),
       });
+      runSpan?.end("failed", String(evidence.reason));
       ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
         scope_id: scope.id,
         task_id: task.id,
@@ -139,10 +180,12 @@ async function executeMergeGate(
         mrRef(repo.id, task.mr_iid!),
       );
     } catch (err) {
+      const reason = `mr refetch failed: ${err instanceof Error ? err.message : String(err)}`;
       ctx.store.finishRun(runId, "failed", {
-        error: `mr refetch failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: reason,
         evidence_json: JSON.stringify({ head_sha: headSha }),
       });
+      runSpan?.end("failed", reason);
       requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, {
         reason: "head_moved",
         head_sha: headSha,
@@ -159,6 +202,7 @@ async function executeMergeGate(
       ctx.store.finishRun(runId, "failed", {
         evidence_json: JSON.stringify(evidence),
       });
+      runSpan?.end("failed", "head_moved");
       ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
         scope_id: scope.id,
         task_id: task.id,
@@ -197,6 +241,7 @@ async function executeMergeGate(
           head_sha: headSha,
           evidence_json: JSON.stringify(evidence),
         });
+        runSpan?.end("succeeded");
         ctx.store.audit(SERVICE_ACTOR, "gate.pass", {
           scope_id: scope.id,
           task_id: task.id,
@@ -208,13 +253,15 @@ async function executeMergeGate(
       throw mergeError;
     }
     if (mergeResult.merged === false) {
+      const reason = `merge_refused:${mergeResult.reason ?? "unknown"}`;
       const evidence = {
-        reason: `merge_refused:${mergeResult.reason ?? "unknown"}`,
+        reason,
         head_sha: headSha,
       };
       ctx.store.finishRun(runId, "failed", {
         evidence_json: JSON.stringify(evidence),
       });
+      runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
         scope_id: scope.id,
         task_id: task.id,
@@ -232,6 +279,7 @@ async function executeMergeGate(
         head_sha: headSha,
       }),
     });
+    runSpan?.end("succeeded");
     ctx.store.audit(SERVICE_ACTOR, "gate.pass", {
       scope_id: scope.id,
       task_id: task.id,
@@ -241,14 +289,16 @@ async function executeMergeGate(
     // The mr_open -> merged transition happens when the tick's provider poll
     // observes state='merged' — facts, not the merge API response.
   } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
     const evidence = {
       reason: "workspace_failed",
-      error: err instanceof Error ? err.message : String(err),
+      error,
       head_sha: headSha,
     };
     ctx.store.finishRun(runId, "failed", {
       evidence_json: JSON.stringify(evidence),
     });
+    runSpan?.end("failed", error);
     ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
       scope_id: scope.id,
       task_id: task.id,

@@ -13,7 +13,9 @@ import {
 } from "@colony/sandbox";
 import { inProcessEngine } from "@colony/sandbox-in-process";
 import type { Scope } from "@colony/core";
+import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
+import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -107,6 +109,18 @@ export async function runValidation(
   }
 }
 
+/**
+ * Run `fn` inside the run root's span context so SDK GenAI spans nest under
+ * it. With no span (tracing disabled) this stays on the ambient context —
+ * no tracing code path activates.
+ */
+function inRunSpanContext<T>(
+  runSpan: ColonyRunSpan | undefined,
+  fn: () => T,
+): T {
+  return runSpan ? context.with(runSpan.spanContext, fn) : fn();
+}
+
 async function dispatchValidation(
   ctx: ColonydContext,
   scope: Scope,
@@ -114,12 +128,22 @@ async function dispatchValidation(
   // Materialized scopes always carry acceptance criteria; if one is missing
   // record a failed run so the guard prevents re-dispatch every tick.
   if (scope.acceptance_json === null) {
+    // The span must exist first so its trace id can ride on the run row.
+    // Its run_id is a pre-row correlation id: the store mints the row below.
+    const runSpan = startColonyRunSpan({
+      scope_id: scope.id,
+      task_id: null,
+      run_id: crypto.randomUUID(),
+      kind: "validate",
+      model_id: null,
+    });
     const run = ctx.store.startRun({
       scope_id: scope.id,
       task_id: null,
       kind: "validate",
       lease_ttl_ms: VALIDATE_LEASE_MS,
       base_sha: "unknown",
+      trace_id: runSpan?.traceId ?? null,
     });
     ctx.store.finishRun(run.id, "failed", {
       error: "no acceptance criteria",
@@ -130,6 +154,7 @@ async function dispatchValidation(
         error: "no acceptance criteria",
       }),
     });
+    runSpan?.end("failed", "no acceptance criteria");
     ctx.store.audit(SERVICE_ACTOR, "scope.validation_failed", {
       scope_id: scope.id,
       run_id: run.id,
@@ -145,13 +170,24 @@ async function dispatchValidation(
     path: scope.provider_repo_path,
   };
   let baseSha = "unknown";
+  // The span must exist first so its trace id can ride on the run row.
+  // Its run_id is a pre-row correlation id: the store mints the row below.
+  const runSpan = startColonyRunSpan({
+    scope_id: scope.id,
+    task_id: null,
+    run_id: crypto.randomUUID(),
+    kind: "validate",
+    model_id: null,
+  });
   const run = ctx.store.startRun({
     scope_id: scope.id,
     task_id: null,
     kind: "validate",
     lease_ttl_ms: VALIDATE_LEASE_MS,
     base_sha: baseSha,
+    trace_id: runSpan?.traceId ?? null,
   });
+  const runId = run.id;
 
   try {
     baseSha = (await ctx.provider.commits.get(repo, scope.default_branch)).sha;
@@ -160,13 +196,20 @@ async function dispatchValidation(
     ctx.store.audit(SERVICE_ACTOR, "run.start", {
       scope_id: scope.id,
       task_id: null,
-      run_id: run.id,
+      run_id: runId,
       detail: { kind: "validate", head_sha: baseSha },
     });
 
-    const execution = executeValidate(ctx, scope, repo, run.id, baseSha);
-    trackRun(run.id, execution, () => Promise.resolve());
-    await execution;
+    const execution = executeValidate(
+      ctx,
+      scope,
+      repo,
+      runId,
+      baseSha,
+      runSpan,
+    );
+    trackRun(runId, execution, () => Promise.resolve());
+    await inRunSpanContext(runSpan, () => execution);
   } catch (err) {
     // Provider or dispatch failure: finish the run failed and audit.
     const error = err instanceof Error ? err.message : String(err);
@@ -180,11 +223,16 @@ async function dispatchValidation(
         error,
       }),
     });
+    runSpan?.end("failed", error);
     ctx.store.audit(SERVICE_ACTOR, "scope.validation_failed", {
       scope_id: scope.id,
-      run_id: run.id,
+      run_id: runId,
       detail: { error, head_sha: baseSha },
     });
+  } finally {
+    // Safety net only: every terminal branch inside ends the span with its
+    // own status; this catches paths that bypass finishRun entirely.
+    runSpan?.end("canceled", "aborted");
   }
 }
 
@@ -194,6 +242,7 @@ async function executeValidate(
   repo: ProviderRepoRef,
   runId: string,
   baseSha: string,
+  runSpan: ColonyRunSpan | undefined,
 ): Promise<void> {
   let result: ValidateResult;
   try {
@@ -248,6 +297,7 @@ async function executeValidate(
       head_sha: baseSha,
       evidence_json: evidenceJson,
     });
+    runSpan?.end("succeeded");
     ctx.store.audit(SERVICE_ACTOR, "scope.validated", {
       scope_id: scope.id,
       run_id: runId,
@@ -269,6 +319,7 @@ async function executeValidate(
     head_sha: baseSha,
     evidence_json: evidenceJson,
   });
+  runSpan?.end("failed", result.error ?? "validation failed");
   const failing = result.results.find((r) => r.exit_code !== 0);
   ctx.store.audit(SERVICE_ACTOR, "scope.validation_failed", {
     scope_id: scope.id,

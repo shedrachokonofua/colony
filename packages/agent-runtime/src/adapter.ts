@@ -6,6 +6,7 @@ import {
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
 } from "@colony/schemas";
+import type { Context } from "@opentelemetry/api";
 import { sha256Json } from "./hashing.js";
 
 /**
@@ -36,6 +37,11 @@ export interface AgentRunEnvironment {
   readonly role: AgentRuntimeRole;
   /** Caller-supplied run id; adapters use it so cancelRun(runId) addresses the same run. */
   readonly runId?: string;
+  /**
+   * Caller-bound span context (the colony.run root span). When set, runners
+   * activate it around prompts so the SDK's GenAI spans nest under it.
+   */
+  readonly traceContext?: Context;
 }
 
 export interface AgentRunMetadata {

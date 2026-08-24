@@ -3,7 +3,9 @@ import {
   ImplementerCompletionV2 as implementerCompletionV2Schema,
 } from "@colony/schemas";
 import type { Scope, Store, Task } from "@colony/core";
+import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
+import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -14,6 +16,18 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 /** Run errors that mean "killed before it could submit", not "did the wrong thing". */
 const INTERRUPTED_RUN_ERROR =
   /timeout_without_envelope|process_restart|operation was aborted/i;
+
+/**
+ * Run `fn` inside the run root's span context so SDK GenAI spans nest under
+ * it. With no span (tracing disabled) this stays on the ambient context —
+ * no tracing code path activates.
+ */
+function inRunSpanContext<T>(
+  runSpan: ColonyRunSpan | undefined,
+  fn: () => T,
+): T {
+  return runSpan ? context.with(runSpan.spanContext, fn) : fn();
+}
 
 export interface ImplementRunOptions {
   readonly leaseTtlMs?: number;
@@ -40,23 +54,34 @@ export async function runImplement(
   const leaseTtlMs =
     options.leaseTtlMs ?? developer.ceilings.timeoutMs + 5 * 60_000;
 
+  // The span must exist first so its trace id can ride on the run row.
+  // Its run_id is a pre-row correlation id: the store mints the row below.
+  const runSpan = startColonyRunSpan({
+    scope_id: scope.id,
+    task_id: task.id,
+    run_id: crypto.randomUUID(),
+    kind: "implement",
+    model_id: developer.model.id,
+  });
   const run = ctx.store.startRun({
     scope_id: scope.id,
     task_id: task.id,
     kind: "implement",
     lease_ttl_ms: leaseTtlMs,
     model_id: developer.model.id,
+    trace_id: runSpan?.traceId ?? null,
   });
+  const runId = run.id;
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
     task_id: task.id,
-    run_id: run.id,
+    run_id: runId,
   });
 
   const abortController = new AbortController();
   const heartbeat = setInterval(() => {
     if (abortController.signal.aborted) return;
-    ctx.store.heartbeatRun(run.id, leaseTtlMs);
+    ctx.store.heartbeatRun(runId, leaseTtlMs);
   }, HEARTBEAT_INTERVAL_MS);
 
   const execution = executeImplement(
@@ -64,18 +89,22 @@ export async function runImplement(
     repo,
     scope,
     task,
-    run.id,
+    runId,
     leaseTtlMs,
     abortController,
+    runSpan,
   );
-  trackRun(run.id, execution, () => {
+  trackRun(runId, execution, () => {
     abortController.abort();
-    return ctx.agents.developer.cancelRun(run.id).then(() => undefined);
+    return ctx.agents.developer.cancelRun(runId).then(() => undefined);
   });
   try {
     await execution;
   } finally {
     clearInterval(heartbeat);
+    // Safety net only: every terminal branch inside ends the span with its
+    // own status; this catches paths that bypass finishRun entirely.
+    runSpan?.end("canceled", "aborted");
   }
 }
 
@@ -87,6 +116,7 @@ async function executeImplement(
   runId: string,
   leaseTtlMs: number,
   abortController: AbortController,
+  runSpan: ColonyRunSpan | undefined,
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {
@@ -134,24 +164,30 @@ async function executeImplement(
       },
     };
 
-    const metadata = await ctx.agents.developer.startRun(full, {
-      role: "developer",
-      runId,
-    });
+    const metadata = await inRunSpanContext(runSpan, () =>
+      ctx.agents.developer.startRun(full, {
+        role: "developer",
+        runId,
+        traceContext: runSpan?.spanContext,
+      }),
+    );
     if (abortController.signal.aborted) {
       ctx.store.finishRun(runId, "canceled", { error: "aborted" });
+      runSpan?.end("canceled", "aborted");
       return;
     }
 
     if (metadata.status !== "succeeded") {
+      const reason = metadata.rejectionReason ?? metadata.status;
       ctx.store.finishRun(runId, "failed", {
-        error: metadata.rejectionReason ?? metadata.status,
+        error: reason,
       });
+      runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
         scope_id: scope.id,
         task_id: task.id,
         run_id: runId,
-        detail: { reason: metadata.rejectionReason ?? metadata.status },
+        detail: { reason },
       });
       return;
     }
@@ -165,6 +201,7 @@ async function executeImplement(
         error: "envelope invalid",
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
       });
+      runSpan?.end("failed", "envelope invalid");
       return;
     }
     const envelope = parsed.data;
@@ -173,6 +210,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "succeeded", {
         envelope_json: JSON.stringify(envelope),
       });
+      runSpan?.end("succeeded");
       const current = ctx.store.getTask(task.id)!;
       ctx.store.transitionTask(
         current.id,
@@ -193,16 +231,19 @@ async function executeImplement(
         error: "envelope has no command evidence",
         envelope_json: JSON.stringify(envelope),
       });
+      runSpan?.end("failed", "envelope has no command evidence");
       return;
     }
 
     // Verify envelope facts against the provider before any transition.
     const verified = await verifyEnvelopeFacts(ctx, repo, envelope, branch);
     if (!verified.ok) {
+      const reason = `envelope facts unverified: ${verified.reason}`;
       ctx.store.finishRun(runId, "failed", {
-        error: `envelope facts unverified: ${verified.reason}`,
+        error: reason,
         envelope_json: JSON.stringify(envelope),
       });
+      runSpan?.end("failed", reason);
       return;
     }
 
@@ -236,6 +277,7 @@ async function executeImplement(
           error: "merge request opened without iid",
           envelope_json: JSON.stringify(envelope),
         });
+        runSpan?.end("failed", "merge request opened without iid");
         return;
       }
       mrIid = mr.iid;
@@ -246,6 +288,7 @@ async function executeImplement(
       envelope_json: JSON.stringify(envelope),
       evidence_json: JSON.stringify({ commands: envelope.commands }),
     });
+    runSpan?.end("succeeded");
     ctx.store.audit(SERVICE_ACTOR, mrReused ? "mr.reused" : "mr.opened", {
       scope_id: scope.id,
       task_id: task.id,
@@ -264,14 +307,16 @@ async function executeImplement(
       },
     );
   } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
     ctx.store.finishRun(runId, "failed", {
-      error: err instanceof Error ? err.message : String(err),
+      error: reason,
     });
+    runSpan?.end("failed", reason);
     ctx.store.audit(SERVICE_ACTOR, "run.failed", {
       scope_id: scope.id,
       task_id: task.id,
       run_id: runId,
-      detail: { reason: err instanceof Error ? err.message : String(err) },
+      detail: { reason },
     });
   } finally {
     if (minted) {
