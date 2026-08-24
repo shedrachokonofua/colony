@@ -14,6 +14,7 @@ import {
   isoDuration,
   runDurationMs,
 } from "./duration.js";
+import { traceHref } from "./trace-link.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
@@ -30,7 +31,12 @@ const KIND_LABEL = {
 };
 
 const state = {
-  config: { gitlab_base_url: "", review_mode: "off", hitl_mode: "yolo" },
+  config: {
+    gitlab_base_url: "",
+    review_mode: "off",
+    hitl_mode: "yolo",
+    trace_ui_base_url: null,
+  },
   oidc: null,
   actor: localStorage.getItem(ACTOR_KEY) || "human:op-1",
   scopes: [],
@@ -579,6 +585,7 @@ function demoWorld() {
       model_id: "deepseek-v4-flash",
       head_sha: DEMO_SHA_B,
       error: null,
+      trace_id: "demo-trace-run-impl-1",
       started_at: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
       finished_at: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
     },
@@ -616,6 +623,7 @@ function demoWorld() {
       gitlab_base_url: "https://gitlab.home.shdr.ch",
       review_mode: "required",
       hitl_mode: "yolo",
+      trace_ui_base_url: "https://traces.home.shdr.ch",
     },
     project: demoProject,
     scopes: [
@@ -1113,6 +1121,7 @@ function renderFeedLog(feed, run) {
 }
 
 function runLine(run) {
+  const traceUrl = traceHref(state.config, run);
   const evidence = parseEvidence(run.evidence_json);
   const findings = Array.isArray(evidence?.findings)
     ? html`<ul class="findings">
@@ -1148,6 +1157,15 @@ function runLine(run) {
         ${rel(run.finished_at || run.started_at)} ·
         ${dur}${run.error ? ` · ${run.error}` : ""}
       </p>
+      ${traceUrl
+        ? html`<a
+            class="run-trace"
+            href=${traceUrl}
+            target="_blank"
+            rel="noopener"
+            >Trace</a
+          >`
+        : nothing}
       ${findings}
     </div>
   </div>`;
