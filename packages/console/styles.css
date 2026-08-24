@@ -777,6 +777,34 @@ body {
   border-bottom: none;
 }
 
+.cost-prediction {
+  margin: 0.6rem 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  overflow: hidden;
+}
+
+.cost-prediction-head {
+  border-bottom: none;
+  padding: 0.5rem 0.8rem;
+  background: var(--wash);
+}
+
+.cost-prediction-body {
+  padding: 0.35rem 0.8rem 0.55rem;
+}
+
+.cost-prediction-body .task-meta {
+  margin: 0.15rem 0;
+}
+
+.cost-prediction-ok {
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ok);
+}
+
 .runs-inline {
   margin-top: 0.7rem;
   padding-top: 0.7rem;
