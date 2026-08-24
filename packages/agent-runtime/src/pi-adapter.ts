@@ -24,6 +24,7 @@ import {
 export interface PiRunRequest {
   readonly runId: string;
   readonly packet: AgentRuntimePacket;
+  /** environment.traceContext carries the run root span context when set. */
   readonly environment: AgentRunEnvironment;
 }
 

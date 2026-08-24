@@ -11,8 +11,9 @@ import {
   ThinkingLevel,
   type ThinkingLevel as SdkThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
+import { context } from "@opentelemetry/api";
 import type { z } from "zod";
-import type { AgentRuntimePacket, AgentRuntimeRole } from "./adapter.js";
+import type { AgentRunEnvironment, AgentRuntimePacket, AgentRuntimeRole } from "./adapter.js";
 import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
@@ -76,6 +77,20 @@ export type PiWorkspaceMode = "repo-required" | "scratch";
 
 /** Binding name reported to the credential broker for colonyd runs. */
 export const PI_RUNTIME_BINDING_NAME = "colonyd";
+
+/**
+ * Run `fn` inside the run root's span context when one was bound, so SDK
+ * GenAI spans (invoke_agent/chat/execute_tool) nest under it. Without a
+ * traceContext this is a plain call — no tracing code path activates.
+ */
+function inTraceContext<T>(
+  environment: AgentRunEnvironment,
+  fn: () => T,
+): T {
+  return environment.traceContext
+    ? context.with(environment.traceContext, fn)
+    : fn();
+}
 
 /** Colony's configured levels as they appear in colony.yaml. */
 type ColonyThinkingLevel =
@@ -432,6 +447,13 @@ export class PiBaseAgentRunner implements PiRunner {
         enableMCP: false,
         enableLsp: false,
         disableExtensionDiscovery: true,
+        // GenAI spans only when the caller bound a run root span context:
+        // without it no tracing code path may activate. The SDK parents its
+        // spans on whatever OTEL context is active at prompt time, which the
+        // prompt wrappers below bind to environment.traceContext.
+        ...(request.environment.traceContext !== undefined
+          ? { telemetry: {} }
+          : {}),
       });
 
       // Subagents: Colony's own task tool. The SDK's native one is unusable
@@ -481,7 +503,9 @@ export class PiBaseAgentRunner implements PiRunner {
           },
         );
         try {
-          await child.session.prompt(prompt, { expandPromptTemplates: false });
+          await inTraceContext(request.environment, () =>
+            child.session.prompt(prompt, { expandPromptTemplates: false }),
+          );
           await child.session.agent.waitForIdle();
           return report;
         } finally {
@@ -738,14 +762,14 @@ export class PiBaseAgentRunner implements PiRunner {
             }
             try {
               const waitPromise = submissionPromise();
-              const promptPromise = activeSession
-                .prompt(step.prompt, {
+              const promptPromise = inTraceContext(request.environment, () =>
+                activeSession.prompt(step.prompt, {
                   expandPromptTemplates: false,
-                })
-                .catch((err) => {
-                  if (submissionCaptured()) return;
-                  throw err;
-                });
+                }),
+              ).catch((err) => {
+                if (submissionCaptured()) return;
+                throw err;
+              });
               await Promise.race([promptPromise, waitPromise]);
               if (!submissionCaptured()) {
                 await waitForIdleOrCapturedEnvelope(
@@ -862,14 +886,14 @@ export class PiBaseAgentRunner implements PiRunner {
           }
           try {
             const waitPromise = submissionPromise();
-            const steerPromise = session
-              .prompt(prompt, {
+            const steerPromise = inTraceContext(request.environment, () =>
+              activeSession.prompt(prompt, {
                 expandPromptTemplates: false,
-              })
-              .catch((err) => {
-                if (submissionCaptured()) return;
-                throw err;
-              });
+              }),
+            ).catch((err) => {
+              if (submissionCaptured()) return;
+              throw err;
+            });
             await Promise.race([steerPromise, waitPromise]);
             if (!submissionCaptured()) {
               await waitForIdleOrCapturedEnvelope(session.agent, waitPromise);
@@ -930,19 +954,21 @@ export class PiBaseAgentRunner implements PiRunner {
           });
           let report: CritiqueReport;
           try {
-            await critic.session.prompt(
-              critique.buildPrompt({
-                goal: packetObjective(request.packet),
-                projectContext:
-                  typeof (
-                    request.packet as { project?: { context_doc?: unknown } }
-                  ).project?.context_doc === "string"
-                    ? (request.packet as { project: { context_doc: string } })
-                        .project.context_doc
-                    : null,
-                envelope: draftEnvelope,
-              }),
-              { expandPromptTemplates: false },
+            await inTraceContext(request.environment, () =>
+              critic.session.prompt(
+                critique.buildPrompt({
+                  goal: packetObjective(request.packet),
+                  projectContext:
+                    typeof (
+                      request.packet as { project?: { context_doc?: unknown } }
+                    ).project?.context_doc === "string"
+                      ? (request.packet as { project: { context_doc: string } })
+                          .project.context_doc
+                      : null,
+                  envelope: draftEnvelope,
+                }),
+                { expandPromptTemplates: false },
+              ),
             );
             await critic.session.agent.waitForIdle();
           } finally {
@@ -964,14 +990,14 @@ export class PiBaseAgentRunner implements PiRunner {
             resolveCapturedEnvelope?.();
           } else {
             critiqueCompleted = true;
-            const revisionPromise = session!
-              .prompt(buildRevisionPrompt(report.findings), {
+            const revisionPromise = inTraceContext(request.environment, () =>
+              session!.prompt(buildRevisionPrompt(report.findings), {
                 expandPromptTemplates: false,
-              })
-              .catch((err) => {
-                if (capturedEnvelope !== undefined) return;
-                throw err;
-              });
+              }),
+            ).catch((err) => {
+              if (capturedEnvelope !== undefined) return;
+              throw err;
+            });
             await Promise.race([revisionPromise, capturedEnvelopePromise]);
             if (!submissionCaptured()) {
               await waitForIdleOrCapturedEnvelope(
