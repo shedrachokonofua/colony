@@ -968,7 +968,6 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-
 /** Requests that never produce an HTTP server span. */
 function isExcludedFromHttpSpans(path: string): boolean {
   return path === "/health" || staticUiAsset(path) !== null;

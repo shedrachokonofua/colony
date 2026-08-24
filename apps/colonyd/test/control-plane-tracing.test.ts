@@ -50,7 +50,9 @@ afterAll(async () => {
 });
 
 function spans(name: string) {
-  return exporter?.getFinishedSpans().filter((span) => span.name === name) ?? [];
+  return (
+    exporter?.getFinishedSpans().filter((span) => span.name === name) ?? []
+  );
 }
 
 /** Registers the test exporter against the fixed ratio; tracing must be off. */

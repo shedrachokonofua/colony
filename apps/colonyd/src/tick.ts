@@ -34,12 +34,14 @@ export async function tick(ctx: ColonydContext): Promise<void> {
   try {
     await phase(ctx, "expire_leases", () => expireLeases(ctx, now));
     await phase(ctx, "poll_provider", () => pollProviderFacts(ctx, now));
-    await phase(ctx, "advance_mr_open", () => advanceMrOpenTasks(ctx, dispatch));
-    await phase(ctx, "scope_planning", () => advanceScopePlanning(ctx, dispatch));
-    await phase(
-      ctx,
-      "dispatch_implementers",
-      () => dispatchImplementers(ctx, dispatch),
+    await phase(ctx, "advance_mr_open", () =>
+      advanceMrOpenTasks(ctx, dispatch),
+    );
+    await phase(ctx, "scope_planning", () =>
+      advanceScopePlanning(ctx, dispatch),
+    );
+    await phase(ctx, "dispatch_implementers", () =>
+      dispatchImplementers(ctx, dispatch),
     );
     await phase(ctx, "scope_closure", () => closeScopes(ctx));
     await phase(ctx, "validate_scopes", () => validateScopes(ctx, dispatch));
