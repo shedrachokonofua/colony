@@ -55,11 +55,11 @@ export async function runImplement(
     options.leaseTtlMs ?? developer.ceilings.timeoutMs + 5 * 60_000;
 
   // The span must exist first so its trace id can ride on the run row.
-  const runId = crypto.randomUUID();
+  // Its run_id is a pre-row correlation id: the store mints the row below.
   const runSpan = startColonyRunSpan({
     scope_id: scope.id,
     task_id: task.id,
-    run_id: runId,
+    run_id: crypto.randomUUID(),
     kind: "implement",
     model_id: developer.model.id,
   });
@@ -71,6 +71,7 @@ export async function runImplement(
     model_id: developer.model.id,
     trace_id: runSpan?.traceId ?? null,
   });
+  const runId = run.id;
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
     task_id: task.id,

@@ -129,11 +129,11 @@ async function dispatchValidation(
   // record a failed run so the guard prevents re-dispatch every tick.
   if (scope.acceptance_json === null) {
     // The span must exist first so its trace id can ride on the run row.
-    const runId = crypto.randomUUID();
+    // Its run_id is a pre-row correlation id: the store mints the row below.
     const runSpan = startColonyRunSpan({
       scope_id: scope.id,
       task_id: null,
-      run_id: runId,
+      run_id: crypto.randomUUID(),
       kind: "validate",
       model_id: null,
     });
@@ -171,11 +171,11 @@ async function dispatchValidation(
   };
   let baseSha = "unknown";
   // The span must exist first so its trace id can ride on the run row.
-  const runId = crypto.randomUUID();
+  // Its run_id is a pre-row correlation id: the store mints the row below.
   const runSpan = startColonyRunSpan({
     scope_id: scope.id,
     task_id: null,
-    run_id: runId,
+    run_id: crypto.randomUUID(),
     kind: "validate",
     model_id: null,
   });
@@ -187,6 +187,7 @@ async function dispatchValidation(
     base_sha: baseSha,
     trace_id: runSpan?.traceId ?? null,
   });
+  const runId = run.id;
 
   try {
     baseSha = (await ctx.provider.commits.get(repo, scope.default_branch)).sha;
