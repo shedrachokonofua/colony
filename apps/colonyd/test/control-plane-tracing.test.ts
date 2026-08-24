@@ -102,7 +102,7 @@ function appWith(traceUiBaseUrl = "") {
 }
 
 /** Writes the fake-runtime fixture config and boots a headless colonyd. */
-async function bootHeadless(dbPath: string): Promise<ColonydHandle> {
+async function bootHeadless(dbName: string): Promise<ColonydHandle> {
   dir ??= mkdtempSync(join(tmpdir(), "colonyd-tracing-boot-"));
   writeFileSync(
     join(dir, "colony.yaml"),
@@ -135,7 +135,7 @@ async function bootHeadless(dbPath: string): Promise<ColonydHandle> {
   process.env["COLONY_CONFIG_PATH"] = join(dir, "colony.yaml");
   process.env["NODE_ENV"] ||= "test";
   process.env["AGENT_RUNTIME"] ||= "fake";
-  process.env["COLONYD_DB_PATH"] = dbPath;
+  process.env["COLONYD_DB_PATH"] = join(dir, dbName);
   resetEnvCache();
   return boot({ headless: true });
 }
@@ -193,7 +193,7 @@ describe("control-plane tracing", () => {
 
   it("drops ratio-sampled GET spans at ratio 0 but keeps POST spans", async () => {
     await unregisterExporter();
-    delete process.env[RATIO_ENV];
+    process.env[RATIO_ENV] = "0";
     try {
       registerExporter();
 
@@ -211,7 +211,7 @@ describe("control-plane tracing", () => {
   });
 
   it("records the X-Gitlab-Event header on webhook intake spans", async () => {
-    const handle = await bootHeadless(join(dir ?? "", "webhook.db"));
+    const handle = await bootHeadless("webhook.db");
     try {
       registerExporter();
 
@@ -252,7 +252,7 @@ describe("control-plane tracing", () => {
   it("returns COLONY_TRACE_UI_BASE_URL on /ui/config through the real env path", async () => {
     process.env["COLONY_TRACE_UI_BASE_URL"] = "https://traces.example.com";
     resetEnvCache();
-    const booted = await bootHeadless(join(dir ?? "", "config.db"));
+    const booted = await bootHeadless("config.db");
     try {
       const res = await buildApp(booted.ctx).request("/ui/config");
       expect(await res.json()).toMatchObject({
@@ -266,7 +266,7 @@ describe("control-plane tracing", () => {
   });
 
   it("produces a colony.tick span only for ticks that dispatch runs", async () => {
-    const handle = await bootHeadless(join(dir ?? "", "tick.db"));
+    const handle = await bootHeadless("tick.db");
     try {
       registerExporter();
       const store = handle.ctx.store;
