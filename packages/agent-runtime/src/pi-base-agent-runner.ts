@@ -22,6 +22,7 @@ import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
+  type ArchitectSizeGate,
   DEFAULT_PI_RUN_TIMEOUT_MS,
   architectDecompositionEnvelopeTypeBox,
   buildArchitectFinalizerPrompt,
@@ -130,7 +131,10 @@ export interface PiRoleProfile {
     | "architect_decomposition"
     | "reviewer_verdict";
   readonly typeboxSchema: unknown;
-  readonly submitTool: (capture: (value: unknown) => void) => ToolDefinition;
+  readonly submitTool: (
+    capture: (value: unknown) => void,
+    sizeGate?: ArchitectSizeGate,
+  ) => ToolDefinition;
   readonly validate: (value: unknown) => string[] | null;
   readonly defaultTools: readonly string[];
   readonly defaultThinkingLevel:
@@ -162,6 +166,12 @@ export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
    * gets at most one revision cycle. Ignored on profiles without `phases`.
    */
   readonly critique?: ArchitectCritiqueSpec;
+  /**
+   * Lazy architect size gate: called per session, not per runner, so each
+   * session reads fresh runs history. `undefined` means no gate — the
+   * submit tool accepts any decomposition shape.
+   */
+  readonly architectSizeGate?: () => ArchitectSizeGate | undefined;
 }
 
 export { WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME, WEB_TOOL_NAMES };
@@ -173,8 +183,7 @@ export function buildRunTools(
   const workTools = options.tools ?? profile.defaultTools;
   // capture helper for submit tool — caller replaces it with real capture when wiring session
   const dummyCapture = () => {};
-  const submitTool = profile.submitTool(dummyCapture);
-  const baseCustomTools: ToolDefinition[] = [submitTool];
+  const submitTool = profile.submitTool(dummyCapture);  const baseCustomTools: ToolDefinition[] = [submitTool];
   const baseToolNames = [...workTools, submitTool.name];
   if (!options.webTools) {
     return { customTools: baseCustomTools, toolNames: baseToolNames };
@@ -247,21 +256,28 @@ export class PiBaseAgentRunner implements PiRunner {
     let session: AgentSession | undefined;
     let handle: SandboxHandle | undefined;
 
-    const submitTool = this.profile.submitTool((value) => {
-      if (this.options.critique && this.profile.phases && !critiqueCompleted) {
-        draftEnvelope = value;
-        resolveDraftEnvelope?.();
-        // A draft closes this candidate's phase pipeline. The SDK ignores the
-        // submit tool's terminate hint, so the in-flight generation would keep
-        // issuing provider calls against the stale conversation and could
-        // interleave with the critique/revision turns below - abort it the way
-        // acceptance ends the run in non-critique mode.
-        void session?.abort();
-        return;
-      }
-      capturedEnvelope = value;
-      resolveCapturedEnvelope?.();
-    });
+    const submitTool = this.profile.submitTool(
+      (value) => {
+        if (
+          this.options.critique &&
+          this.profile.phases &&
+          !critiqueCompleted
+        ) {
+          draftEnvelope = value;
+          resolveDraftEnvelope?.();
+          // A draft closes this candidate's phase pipeline. The SDK ignores the
+          // submit tool's terminate hint, so the in-flight generation would keep
+          // issuing provider calls against the stale conversation and could
+          // interleave with the critique/revision turns below - abort it the way
+          // acceptance ends the run in non-critique mode.
+          void session?.abort();
+          return;
+        }
+        capturedEnvelope = value;
+        resolveCapturedEnvelope?.();
+      },
+      this.options.architectSizeGate?.(),
+    );
     /** True while submissions route to the draft slot pending critique. */
     const critiqueEngaged = Boolean(
       this.options.critique && this.profile.phases,

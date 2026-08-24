@@ -12,7 +12,19 @@ import type {
   SandboxEngine as SandboxEngineName,
 } from "@colony/config";
 import type { Store } from "@colony/core";
+import type { TaskCostModelV1 } from "@colony/schemas";
 import type { SandboxEngine } from "@colony/sandbox";
+
+/**
+ * Per-session architect size gate source: colonyd rebuilds the offline cost
+ * model from its runs table for each architect session and pairs it with the
+ * developer budget. `undefined` disables the gate.
+ */
+export interface AgentTaskCostSource {
+  readonly provider: () =>
+    | { readonly model: TaskCostModelV1; readonly budget_ms: number }
+    | undefined;
+}
 
 type WebToolsConfig = { searxngUrl?: string };
 
@@ -95,6 +107,7 @@ export async function createEngine(
 export async function createAgentWiring(
   config: ColonyConfig,
   onRunEvent?: RunEventSink,
+  taskCost?: AgentTaskCostSource,
 ): Promise<AgentWiring> {
   if (config.agentRuntime === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
@@ -169,6 +182,7 @@ export async function createAgentWiring(
         logger: architectLogger,
         engine,
         critique: ARCHITECT_CRITIQUE,
+        ...(taskCost ? { architectSizeGate: taskCost.provider } : {}),
         ...(webTools ? { webTools } : {}),
       }),
       {

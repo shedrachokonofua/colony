@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { serve } from "@hono/node-server";
 import { env, loadColonyConfig } from "@colony/config";
-import { Store } from "@colony/core";
+import { buildTaskCostModel, Store, type Run } from "@colony/core";
 import { startTelemetryFromEnv } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
@@ -77,7 +77,20 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
 
   const agents =
     options.agents ??
-    (await createAgentWiring(config, createRunEventSink(store)));
+    (await createAgentWiring(config, createRunEventSink(store), {
+      // Fresh history per architect session: landed-attempt cost model from
+      // the runs table, paired with the developer session budget.
+      provider: () => ({
+        model: buildTaskCostModel(
+          store.db
+            .prepare(
+              "SELECT * FROM runs WHERE status = 'succeeded' AND kind IN ('implement','merge_gate')",
+            )
+            .all() as Run[],
+        ),
+        budget_ms: config.forAgent("developer").ceilings.timeoutMs,
+      }),
+    }));
   if (config.reviewMode === "required" && !agents.reviewer) {
     throw new Error(
       "review.mode is 'required' but no reviewer agent is configured",

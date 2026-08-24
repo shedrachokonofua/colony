@@ -1,10 +1,15 @@
-import type { ArchitectDecompositionV2 } from "@colony/schemas";
+import type {
+  ArchitectDecompositionV2,
+  TaskCostModelV1,
+} from "@colony/schemas";
+import type { ArchitectSizeGate } from "./pi-runner-common.js";
 
 export type DecompositionValidationRule =
   | "depends_on_range"
   | "depends_on_cycle"
   | "phantom_dependency"
-  | "shared_file_without_edge";
+  | "shared_file_without_edge"
+  | "task_over_budget";
 
 export interface DecompositionValidationError {
   readonly taskIndex: number | null;
@@ -188,13 +193,61 @@ function checkSharedFilesWithoutEdge(
   return errors;
 }
 
+/**
+ * Per-task session-cost arithmetic mirroring `predictTaskCost` (@colony/core).
+ * That module lives behind a dependency this package must not take — colonyd
+ * builds the model and supplies it precomputed — so only the linear cost
+ * line is replicated here, against the same deduped path list.
+ */
+function predictTaskCost(
+  model: TaskCostModelV1,
+  filePaths: readonly string[],
+  budgetMs: number,
+): { predicted_ms: number; budget_ms: number; files_touched: number } {
+  const files = [...new Set(filePaths)];
+  const predicted_ms = model.ms_per_file * files.length;
+  return { predicted_ms, budget_ms: budgetMs, files_touched: files.length };
+}
+
+/**
+ * Predicted per-task session cost from the offline model must fit the
+ * implementer budget. Oversized tasks get the same replan treatment as DAG
+ * defects: a named mechanical error and an open session — the machine never
+ * splits a task automatically.
+ */
+function checkTaskOverBudget(
+  envelope: ArchitectDecompositionV2,
+  gate: ArchitectSizeGate,
+): DecompositionValidationError[] {
+  const errors: DecompositionValidationError[] = [];
+  for (const [taskIndex, task] of envelope.tasks.entries()) {
+    const prediction = predictTaskCost(
+      gate.model,
+      extractFilePaths(task.spec),
+      gate.budget_ms,
+    );
+    if (prediction.predicted_ms <= prediction.budget_ms) continue;
+    errors.push({
+      taskIndex,
+      rule: "task_over_budget",
+      message:
+        `task ${taskIndex} ("${task.title}") predicted ${prediction.predicted_ms} ms ` +
+        `from ${prediction.files_touched} spec file paths (model v1, ${gate.model.sample_size} samples) ` +
+        `which exceeds the ${prediction.budget_ms} ms implementer budget. Re-plan this task into smaller outcome-oriented tasks.`,
+    });
+  }
+  return errors;
+}
+
 export function validateDecompositionEnvelope(
   envelope: ArchitectDecompositionV2,
+  gate?: ArchitectSizeGate,
 ): DecompositionValidationError[] {
   return [
     ...checkDependsOnRange(envelope),
     ...checkDependsOnCycle(envelope),
     ...checkPhantomDependencies(envelope),
     ...checkSharedFilesWithoutEdge(envelope),
+    ...(gate ? checkTaskOverBudget(envelope, gate) : []),
   ];
 }
