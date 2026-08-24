@@ -219,6 +219,16 @@ function migrateRunsTraceId(db: Db): void {
   addColumn(db, "runs", "trace_id", "TEXT");
 }
 
+/**
+ * Migration 4: persist a per-task implementer session-cost prediction.
+ * `Store.materializePlan` derives the blob offline from the runs table
+ * (implement-session wall clock joined to merge-gate evidence file lists);
+ * existing rows keep NULL until their scope is re-planned.
+ */
+function migrateTasksCostPrediction(db: Db): void {
+  addColumn(db, "tasks", "cost_prediction_json", "TEXT");
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -227,6 +237,11 @@ export const MIGRATIONS: readonly Migration[] = [
     apply: migrateProjectsAndRename,
   },
   { version: 3, name: "runs-trace-id", apply: migrateRunsTraceId },
+  {
+    version: 4,
+    name: "tasks-cost-prediction",
+    apply: migrateTasksCostPrediction,
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
