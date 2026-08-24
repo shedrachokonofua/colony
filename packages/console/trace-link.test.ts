@@ -22,8 +22,9 @@ describe("traceHref", () => {
   });
 
   it("returns null when trace_id is empty or missing", () => {
-    expect(traceHref({ trace_ui_base_url: "https://t.io/" }, { trace_id: "" }))
-      .toBe(null);
+    expect(
+      traceHref({ trace_ui_base_url: "https://t.io/" }, { trace_id: "" }),
+    ).toBe(null);
     expect(
       traceHref({ trace_ui_base_url: "https://t.io/" }, { trace_id: null }),
     ).toBe(null);
