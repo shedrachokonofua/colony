@@ -212,7 +212,9 @@ describe("Store", () => {
     });
     // GET /tasks/:id reads through SELECT *: the blob round-trips.
     const reloaded = store.listTasks(scopeId);
-    expect(reloaded[0]!.cost_prediction_json).toBe(tasks[0]!.cost_prediction_json);
+    expect(reloaded[0]!.cost_prediction_json).toBe(
+      tasks[0]!.cost_prediction_json,
+    );
   });
 
   it("rejects a cyclic plan", () => {

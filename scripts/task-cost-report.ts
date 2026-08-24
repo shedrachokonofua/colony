@@ -9,11 +9,11 @@
  * attempts, and the file-count threshold implied by the implementer budget.
  * Exits non-zero when COLONYD_DB_PATH is unset.
  */
-import { Database } from "../packages/core/src/sqlite-compat.js";
 import {
   DEFAULT_IMPLEMENTER_BUDGET_MS,
   buildTaskCostModel,
 } from "../packages/core/src/index.js";
+import { Database } from "../packages/core/src/sqlite-compat.js";
 import type { Run } from "../packages/core/src/store.js";
 
 const dbPath = process.env.COLONYD_DB_PATH;
@@ -39,7 +39,9 @@ try {
       : null;
 
   console.log(`database: ${dbPath}`);
-  console.log(`samples (succeeded implement x merge-gate evidence): ${model.sample_size}`);
+  console.log(
+    `samples (succeeded implement x merge-gate evidence): ${model.sample_size}`,
+  );
   console.log(`median ms per touched file: ${model.ms_per_file.toFixed(0)}`);
   if (thresholdFiles === null) {
     console.log(

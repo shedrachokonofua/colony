@@ -9,7 +9,10 @@ import {
   type ScopeId,
   type TaskId,
 } from "@colony/domain";
-import type { ArchitectDecompositionV2, TaskCostModelV1 } from "@colony/schemas";
+import type {
+  ArchitectDecompositionV2,
+  TaskCostModelV1,
+} from "@colony/schemas";
 import {
   SCOPE_STATUSES,
   assertScopeTransition,

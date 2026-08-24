@@ -83,8 +83,7 @@ export function buildTaskCostModel(runs: readonly Run[]): TaskCostModelV1 {
     if (run.task_id === null || run.finished_at === null) continue;
     const files = filesByTask.get(run.task_id);
     if (files === undefined) continue;
-    const durationMs =
-      Date.parse(run.finished_at) - Date.parse(run.started_at);
+    const durationMs = Date.parse(run.finished_at) - Date.parse(run.started_at);
     if (!Number.isFinite(durationMs) || durationMs <= 0) continue;
     ratios.push(durationMs / Math.max(1, files));
   }

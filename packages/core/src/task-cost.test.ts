@@ -39,7 +39,11 @@ const TASK_ID = "col-00000001.1" as TaskId;
 const HEAD_SHA = "a".repeat(40);
 
 /** Succeeded gate row whose evidence lists `n` changed files. */
-function gateRow(taskId: TaskId | null, nFiles: number, reason = "merge_accepted"): Run {
+function gateRow(
+  taskId: TaskId | null,
+  nFiles: number,
+  reason = "merge_accepted",
+): Run {
   return runFixture({
     kind: "merge_gate",
     status: "succeeded",
@@ -48,7 +52,9 @@ function gateRow(taskId: TaskId | null, nFiles: number, reason = "merge_accepted
       reason,
       head_sha: HEAD_SHA,
       ...(reason === "merge_accepted"
-        ? { files_changed: Array.from({ length: nFiles }, (_, i) => `f${i}.ts`) }
+        ? {
+            files_changed: Array.from({ length: nFiles }, (_, i) => `f${i}.ts`),
+          }
         : {}),
     }),
   });
@@ -64,7 +70,9 @@ function implementRow(
     kind: "implement",
     status: "succeeded",
     task_id: taskId,
-    started_at: new Date(Date.parse(finishedAt) - minutes * 60_000).toISOString(),
+    started_at: new Date(
+      Date.parse(finishedAt) - minutes * 60_000,
+    ).toISOString(),
     finished_at: finishedAt,
   });
 }
@@ -151,7 +159,10 @@ describe("predictTaskCost", () => {
   });
 
   it("is monotonic: more files never predicts less", () => {
-    const model = buildTaskCostModel([implementRow(TASK_ID, 30), gateRow(TASK_ID, 3)]);
+    const model = buildTaskCostModel([
+      implementRow(TASK_ID, 30),
+      gateRow(TASK_ID, 3),
+    ]);
     let previous = -1;
     for (let n = 0; n <= 10; n += 1) {
       const prediction = predictTaskCost(
@@ -169,7 +180,10 @@ describe("predictTaskCost", () => {
     // Model: 300_000 ms per file (15 min across 3 files). Three files
     // predict exactly the developer-ceiling budget — equal, never flags;
     // the strict inequality only trips past it.
-    const model = buildTaskCostModel([implementRow(TASK_ID, 15), gateRow(TASK_ID, 3)]);
+    const model = buildTaskCostModel([
+      implementRow(TASK_ID, 15),
+      gateRow(TASK_ID, 3),
+    ]);
     expect(model.ms_per_file).toBe(300_000);
     const at = predictTaskCost(
       model,

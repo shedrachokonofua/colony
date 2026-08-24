@@ -7,10 +7,7 @@ import type { ColonydContext } from "../src/context.js";
 import type { Scope, Store, Task } from "@colony/core";
 import { Store as ColonyStore } from "@colony/core";
 import { FakeProviderAdapter } from "@colony/provider";
-import {
-  defaultGateExecutor,
-  runMergeGate,
-} from "../src/runs/merge-gate.js";
+import { defaultGateExecutor, runMergeGate } from "../src/runs/merge-gate.js";
 
 const dirs: string[] = [];
 
@@ -86,7 +83,11 @@ describe("defaultGateExecutor secret scan", () => {
       taskBranch: "leak",
       headSha: leakSha,
     });
-    expect(result?.reason).toBe("secret_scan");
+    if (result && "reason" in result) {
+      expect(result.reason).toBe("secret_scan");
+    } else {
+      expect.unreachable("leaked token must fail the gate");
+    }
   });
 
   it("reports the incoming diff's files on success", async () => {
@@ -105,10 +106,11 @@ describe("defaultGateExecutor secret scan", () => {
     // Success payload carries the pre-merge diff (target...head); after the
     // prospective merge the same three-dot diff is empty, so this cannot be
     // recomputed later by the caller.
-    expect(result).not.toHaveProperty("reason");
-    expect(result && "files_changed" in result ? result.files_changed : []).toEqual([
-      "note.txt",
-    ]);
+    if (result && !("reason" in result)) {
+      expect(result.files_changed).toEqual(["note.txt"]);
+    } else {
+      expect.unreachable("gate should have succeeded");
+    }
   });
 });
 
@@ -153,7 +155,10 @@ describe("runMergeGate success evidence", () => {
     const dbDir = tempDir("colony-gate-db-");
     const store = new ColonyStore(join(dbDir, "test.db"));
     const provider = new FakeProviderAdapter();
-    const repoInfo = await provider.repos.create({ path: "so/proj" });
+    const repoInfo = await provider.repos.create({
+      name: "proj",
+      path: "so/proj",
+    });
     const repoRef = { id: repoInfo.id, path: repoInfo.path };
     await provider.branches.create(repoRef, "clean", headSha);
     const mr = await provider.mergeRequests.open(repoRef, {
@@ -170,15 +175,24 @@ describe("runMergeGate success evidence", () => {
       default_branch: "main",
     });
     store.setScopeStatus(scope.id, "planning", "svc:test");
-    const [task] = store.materializePlan(scope.id, {
-      kind: "architect_decomposition",
-      summary: "one task",
-      acceptance: [{ description: "holds", command: "true" }],
-      tasks: [{ title: "t", spec: "touch note.txt", depends_on: [] }],
-    }, "svc:test");
+    const [task] = store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "one task",
+        acceptance: [{ description: "holds", command: "true" }],
+        tasks: [{ title: "t", spec: "touch note.txt", depends_on: [] }],
+      },
+      "svc:test",
+    );
     store.transitionTask(task!.id, task!.state_version, "running", "svc:test");
-    const opened = store.transitionTask(task!.id, store.getTask(task!.id)!
-      .state_version, "mr_open", "svc:test", { branch: "clean", mr_iid: mr.iid });
+    const opened = store.transitionTask(
+      task!.id,
+      store.getTask(task!.id)!.state_version,
+      "mr_open",
+      "svc:test",
+      { branch: "clean", mr_iid: mr.iid },
+    );
 
     const ctx = {
       ...(testCtx(store, repoParent) as unknown as Record<string, unknown>),
