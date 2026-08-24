@@ -13,7 +13,11 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import { context } from "@opentelemetry/api";
 import type { z } from "zod";
-import type { AgentRunEnvironment, AgentRuntimePacket, AgentRuntimeRole } from "./adapter.js";
+import type {
+  AgentRunEnvironment,
+  AgentRuntimePacket,
+  AgentRuntimeRole,
+} from "./adapter.js";
 import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
@@ -83,10 +87,7 @@ export const PI_RUNTIME_BINDING_NAME = "colonyd";
  * GenAI spans (invoke_agent/chat/execute_tool) nest under it. Without a
  * traceContext this is a plain call — no tracing code path activates.
  */
-function inTraceContext<T>(
-  environment: AgentRunEnvironment,
-  fn: () => T,
-): T {
+function inTraceContext<T>(environment: AgentRunEnvironment, fn: () => T): T {
   return environment.traceContext
     ? context.with(environment.traceContext, fn)
     : fn();
