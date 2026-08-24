@@ -2,8 +2,10 @@ import {
   type ArchitectDecompositionV2,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
 } from "@colony/schemas";
+import { context } from "@opentelemetry/api";
 import type { Scope, Store } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
+import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -34,39 +36,52 @@ export async function runArchitect(
   const leaseTtlMs =
     options.leaseTtlMs ?? architect.ceilings.timeoutMs + 5 * 60_000;
 
+  // The span must exist first so its trace id can ride on the run row.
+  const runId = crypto.randomUUID();
+  const runSpan = startColonyRunSpan({
+    scope_id: scope.id,
+    task_id: null,
+    run_id: runId,
+    kind: "architect",
+    model_id: architect.model.id,
+  });
   const run = ctx.store.startRun({
     scope_id: scope.id,
     kind: "architect",
     lease_ttl_ms: leaseTtlMs,
     model_id: architect.model.id,
+    trace_id: runSpan?.traceId ?? null,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
-    run_id: run.id,
+    run_id: runId,
   });
 
   const abortController = new AbortController();
   const heartbeat = setInterval(() => {
     if (abortController.signal.aborted) return;
-    ctx.store.heartbeatRun(run.id, leaseTtlMs);
+    ctx.store.heartbeatRun(runId, leaseTtlMs);
   }, HEARTBEAT_INTERVAL_MS);
 
   const execution = executeArchitect(
     ctx,
     repo,
     scope,
-    run.id,
-    leaseTtlMs,
+    runId,
     abortController,
+    runSpan,
   );
-  trackRun(run.id, execution, () => {
+  trackRun(runId, execution, () => {
     abortController.abort();
-    return ctx.agents.architect.cancelRun(run.id).then(() => undefined);
+    return ctx.agents.architect.cancelRun(runId).then(() => undefined);
   });
   try {
     await execution;
   } finally {
     clearInterval(heartbeat);
+    // Safety net only: every terminal branch inside ends the span with its
+    // own status; this catches paths that bypass finishRun entirely.
+    runSpan?.end("canceled", "aborted");
   }
 }
 
@@ -75,8 +90,8 @@ async function executeArchitect(
   repo: ProviderRepoRef,
   scope: Scope,
   runId: string,
-  leaseTtlMs: number,
   abortController: AbortController,
+  runSpan: ColonyRunSpan | undefined,
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {
@@ -115,12 +130,18 @@ async function executeArchitect(
       },
     };
 
-    const metadata = await ctx.agents.architect.startRun(full, {
-      role: "architect",
-      runId,
-    });
+    // Binding the dispatch to the span context is what makes the SDK's
+    // invoke_agent/chat/execute_tool spans children of this run's trace.
+    const metadata = await inRunSpanContext(runSpan, () =>
+      ctx.agents.architect.startRun(full, {
+        role: "architect",
+        runId,
+        traceContext: runSpan?.spanContext,
+      }),
+    );
     if (abortController.signal.aborted) {
       ctx.store.finishRun(runId, "canceled", { error: "aborted" });
+      runSpan?.end("canceled", "aborted");
       return;
     }
 
@@ -128,6 +149,7 @@ async function executeArchitect(
       ctx.store.finishRun(runId, "failed", {
         error: metadata.rejectionReason ?? metadata.status,
       });
+      runSpan?.end("failed", metadata.rejectionReason ?? metadata.status);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
         scope_id: scope.id,
         run_id: runId,
@@ -145,6 +167,7 @@ async function executeArchitect(
         error: "envelope invalid",
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
       });
+      runSpan?.end("failed", "envelope invalid");
       return;
     }
     const envelope = parsed.data;
@@ -154,12 +177,14 @@ async function executeArchitect(
         error: "decomposition dependency graph is cyclic",
         envelope_json: JSON.stringify(envelope),
       });
+      runSpan?.end("failed", "decomposition dependency graph is cyclic");
       return;
     }
 
     ctx.store.finishRun(runId, "succeeded", {
       envelope_json: JSON.stringify(envelope),
     });
+    runSpan?.end("succeeded");
     ctx.store.setScopePlan(scope.id, JSON.stringify(envelope));
     ctx.store.audit(SERVICE_ACTOR, "scope.plan_proposed", {
       scope_id: scope.id,
@@ -167,13 +192,15 @@ async function executeArchitect(
       detail: { task_count: envelope.tasks.length },
     });
   } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
     ctx.store.finishRun(runId, "failed", {
-      error: err instanceof Error ? err.message : String(err),
+      error: reason,
     });
+    runSpan?.end("failed", reason);
     ctx.store.audit(SERVICE_ACTOR, "run.failed", {
       scope_id: scope.id,
       run_id: runId,
-      detail: { reason: err instanceof Error ? err.message : String(err) },
+      detail: { reason },
     });
   } finally {
     if (minted) {
@@ -187,6 +214,18 @@ async function executeArchitect(
       }
     }
   }
+}
+
+/**
+ * Run `fn` inside the run root's span context so SDK GenAI spans nest under
+ * it. With no span (tracing disabled) this stays on the ambient context —
+ * no tracing code path activates.
+ */
+function inRunSpanContext<T>(
+  runSpan: ColonyRunSpan | undefined,
+  fn: () => T,
+): T {
+  return runSpan ? context.with(runSpan.spanContext, fn) : fn();
 }
 
 function isAcyclic(deps: ReadonlyArray<readonly number[]>): boolean {
