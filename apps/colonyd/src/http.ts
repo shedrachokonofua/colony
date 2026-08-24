@@ -7,6 +7,7 @@ import { z } from "zod";
 import { DomainStateError } from "@colony/domain";
 import {
   isTracingEnabled,
+  normalizeRoute,
   startHttpServerSpan,
   startWebhookSpan,
 } from "@colony/observability";
@@ -95,27 +96,24 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
 
   // Control-plane tracing: one server span per request. /health and static
   // /ui/* assets are the only exclusions — everything else, including /
-  // (console shell) and /ui/config, is traced.
+  // (console shell), /ui/config, the webhook route and all API routes, is
+  // traced. Registered first so no handler runs outside a span.
   app.use(async (c, next) => {
-    const path = c.req.path;
-    if (!isTracingEnabled() || isUntracedPath(path)) return next();
-    if (path === "/ui" || path.startsWith("/ui/")) {
-      if (staticUiAsset(decodeURIComponent(path.replace(/^\/ui\/?/, "")))) {
-        return next();
+    if (isTracingEnabled() && !isExcludedFromHttpSpans(c.req.path)) {
+      const endSpan = startHttpServerSpan(
+        c.req.method,
+        normalizeRoute(c.req.path),
+      );
+      try {
+        await next();
+        endSpan(c.res.status);
+      } catch (err) {
+        endSpan(500);
+        throw err;
       }
+      return;
     }
-    if (path === "/ui" || path.startsWith("/ui/")) {
-      const rel = decodeURIComponent(path.replace(/^\/ui\/?/, ""));
-      if (staticUiAsset(rel) !== null) return next();
-    }
-    const endSpan = startHttpServerSpan(c.req.method, normalizeRoute(path));
-    try {
-      await next();
-      endSpan?.(c.res.status);
-    } catch (err) {
-      endSpan?.(500);
-      throw err;
-    }
+    await next();
   });
 
   app.get("/health", (c) => c.json({ ok: true, service: "colonyd" }));
@@ -129,13 +127,21 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!safeEqual(provided, secret)) {
       return c.json({ error: { code: "BAD_SIGNATURE" } }, 401);
     }
-    const endWebhookSpan = startWebhookSpan(c.req.header("X-Gitlab-Event") ?? "");
-    const dedupKey =
-      c.req.header("X-Gitlab-Event-UUID") ??
-      `sha256:${createHash("sha256").update(body).digest("hex")}`;
-    const fresh = ctx.store.recordObservation("webhook", dedupKey, body);
-    if (fresh) ctx.requestTick();
-    endWebhookSpan();
+    // Always sampled by the observability sampler; ended even on duplicate
+    // intake so every webhook delivery is recorded.
+    const endWebhookSpan = startWebhookSpan(
+      c.req.header("X-Gitlab-Event") ?? "",
+    );
+    try {
+      const dedupKey =
+        c.req.header("X-Gitlab-Event-UUID") ??
+        `sha256:${createHash("sha256").update(body).digest("hex")}`;
+      const fresh = ctx.store.recordObservation("webhook", dedupKey, body);
+      if (fresh) ctx.requestTick();
+      return c.json(fresh ? { accepted: true } : { duplicate: true });
+    } finally {
+      endWebhookSpan();
+    }
     return c.json(fresh ? { accepted: true } : { duplicate: true });
   });
 
@@ -931,9 +937,13 @@ function uiResponse(relPath: string): Response | null {
   });
 }
 
-/** Resolves a /ui/* relative path to an existing file, or null. */
-function staticUiAsset(rel: string): string | null {
-  return resolveStaticUiPath(rel.replace(/^\/+/, ""));
+function staticUiAsset(requestPath: string): string | null {
+  if (requestPath !== "/ui" && !requestPath.startsWith("/ui/")) return null;
+  const rel = decodeURIComponent(requestPath.replace(/^\/ui\/?/, "")).replace(
+    /^\/+/,
+    "",
+  );
+  return resolveStaticUiPath(rel);
 }
 
 function resolveStaticUiPath(rel: string): string | null {
@@ -954,21 +964,8 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-/** Collapses concrete path segments into route templates for span labels. */
-function normalizeRoute(pathname: string): string {
-  return pathname
-    .split("/")
-    .map((segment) => {
-      if (!segment) return segment;
-      if (/^\d+$/.test(segment)) return ":id";
-      if (/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segment)) return ":id";
-      if (/^col-[a-z0-9.-]+$/i.test(segment)) return ":scope_id";
-      return segment.length > 80 ? ":value" : segment;
-    })
-    .join("/");
-}
 
 /** Requests that never produce an HTTP server span. */
-function isUntracedPath(path: string): boolean {
-  return path === "/health" || path === "/ui" || path.startsWith("/ui/");
+function isExcludedFromHttpSpans(path: string): boolean {
+  return path === "/health" || staticUiAsset(path) !== null;
 }
