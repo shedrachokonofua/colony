@@ -11,7 +11,7 @@ import {
 } from "@colony/agent-runtime/pi-base-agent-runner";
 import { FakeProviderAdapter } from "@colony/provider";
 import { registerInMemorySpanExporter } from "@colony/observability";
-import type { Span } from "@opentelemetry/api";
+import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { boot, type ColonydHandle } from "../src/main.js";
 import { buildApp } from "../src/http.js";
 import { runArchitect } from "../src/runs/architect.js";
@@ -181,7 +181,7 @@ describe("run tracing with the pi runtime and an in-memory exporter", () => {
   let provider: FakeProviderAdapter;
   let handle: ColonydHandle | undefined;
   let seam: {
-    exporter: { getFinishedSpans(): readonly Span[] };
+    exporter: { getFinishedSpans(): readonly ReadableSpan[] };
     shutdown: () => Promise<void>;
   };
 
@@ -306,9 +306,9 @@ describe("run tracing with the pi runtime and an in-memory exporter", () => {
 });
 
 function findRunSpan(
-  spans: readonly Span[],
+  spans: readonly ReadableSpan[],
   scopeId: string,
-): Span | undefined {
+): ReadableSpan | undefined {
   return spans.find(
     (span) =>
       span.name === "colony.run" &&
