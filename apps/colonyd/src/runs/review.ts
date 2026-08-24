@@ -1,6 +1,8 @@
 import { ReviewerVerdictV2 as reviewerVerdictV2Schema } from "@colony/schemas";
 import { retryBackoffMs, type Scope, type Task } from "@colony/core";
+import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
+import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -10,6 +12,18 @@ import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const MAX_CONSECUTIVE_REVIEW_REJECTIONS = 3;
 const MAX_CONSECUTIVE_REVIEW_FAILURES = 3;
+
+/**
+ * Run `fn` inside the run root's span context so SDK GenAI spans nest under
+ * it. With no span (tracing disabled) this stays on the ambient context —
+ * no tracing code path activates.
+ */
+function inRunSpanContext<T>(
+  runSpan: ColonyRunSpan | undefined,
+  fn: () => T,
+): T {
+  return runSpan ? context.with(runSpan.spanContext, fn) : fn();
+}
 
 export interface ReviewRunOptions {
   readonly leaseTtlMs?: number;
@@ -41,6 +55,15 @@ export async function runReview(
   const leaseTtlMs =
     options.leaseTtlMs ?? reviewerConfig.ceilings.timeoutMs + 5 * 60_000;
 
+  // The span must exist first so its trace id can ride on the run row.
+  const runId = crypto.randomUUID();
+  const runSpan = startColonyRunSpan({
+    scope_id: scope.id,
+    task_id: task.id,
+    run_id: runId,
+    kind: "review",
+    model_id: reviewerConfig.model.id,
+  });
   const run = ctx.store.startRun({
     scope_id: scope.id,
     task_id: task.id,
@@ -48,18 +71,19 @@ export async function runReview(
     lease_ttl_ms: leaseTtlMs,
     base_sha: headSha,
     model_id: reviewerConfig.model.id,
+    trace_id: runSpan?.traceId ?? null,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
     task_id: task.id,
-    run_id: run.id,
+    run_id: runId,
     detail: { kind: "review", head_sha: headSha },
   });
 
   const abortController = new AbortController();
   const heartbeat = setInterval(() => {
     if (abortController.signal.aborted) return;
-    ctx.store.heartbeatRun(run.id, leaseTtlMs);
+    ctx.store.heartbeatRun(runId, leaseTtlMs);
   }, HEARTBEAT_INTERVAL_MS);
 
   const execution = executeReview(
@@ -67,18 +91,22 @@ export async function runReview(
     repo,
     scope,
     task,
-    run.id,
+    runId,
     headSha,
     abortController,
+    runSpan,
   );
-  trackRun(run.id, execution, () => {
+  trackRun(runId, execution, () => {
     abortController.abort();
-    return reviewer.cancelRun(run.id).then(() => undefined);
+    return reviewer.cancelRun(runId).then(() => undefined);
   });
   try {
     await execution;
   } finally {
     clearInterval(heartbeat);
+    // Safety net only: every terminal branch inside ends the span with its
+    // own status; this catches paths that bypass finishRun entirely.
+    runSpan?.end("canceled", "aborted");
   }
 }
 
@@ -90,10 +118,13 @@ async function executeReview(
   runId: string,
   headSha: string,
   abortController: AbortController,
+  runSpan: ColonyRunSpan | undefined,
 ): Promise<void> {
   const reviewer = ctx.agents.reviewer;
   if (!reviewer) {
-    failReview(ctx, scope, task, runId, headSha, "reviewer agent missing");
+    failReview(ctx, scope, task, runId, headSha, "reviewer agent missing", {
+      runSpan,
+    });
     return;
   }
   let minted: MintedToken | null = null;
@@ -133,15 +164,19 @@ async function executeReview(
       },
     };
 
-    const metadata = await reviewer.startRun(full, {
-      role: "reviewer",
-      runId,
-    });
+    const metadata = await inRunSpanContext(runSpan, () =>
+      reviewer.startRun(full, {
+        role: "reviewer",
+        runId,
+        traceContext: runSpan?.spanContext,
+      }),
+    );
     if (abortController.signal.aborted) {
       ctx.store.finishRun(runId, "canceled", {
         error: "aborted",
         evidence_json: JSON.stringify({ head_sha: headSha }),
       });
+      runSpan?.end("canceled", "aborted");
       return;
     }
 
@@ -153,6 +188,7 @@ async function executeReview(
         runId,
         headSha,
         metadata.rejectionReason ?? metadata.status,
+        { runSpan },
       );
       return;
     }
@@ -162,15 +198,10 @@ async function executeReview(
       ? reviewerVerdictV2Schema.safeParse(output.envelope)
       : null;
     if (!parsed || !parsed.success) {
-      failReview(
-        ctx,
-        scope,
-        task,
-        runId,
-        headSha,
-        "envelope invalid",
-        output ? JSON.stringify(output.envelope) : undefined,
-      );
+      failReview(ctx, scope, task, runId, headSha, "envelope invalid", {
+        runSpan,
+        envelopeJson: output ? JSON.stringify(output.envelope) : undefined,
+      });
       return;
     }
     const envelope = parsed.data;
@@ -183,7 +214,7 @@ async function executeReview(
         runId,
         headSha,
         "envelope facts unverified: reviewed head_sha mismatch",
-        JSON.stringify(envelope),
+        { runSpan, envelopeJson: JSON.stringify(envelope) },
       );
       return;
     }
@@ -197,6 +228,7 @@ async function executeReview(
           head_sha: headSha,
         }),
       });
+      runSpan?.end("succeeded");
       ctx.store.audit(SERVICE_ACTOR, "review.approved", {
         scope_id: scope.id,
         task_id: task.id,
@@ -215,6 +247,7 @@ async function executeReview(
         findings: envelope.findings,
       }),
     });
+    runSpan?.end("succeeded");
     ctx.store.audit(SERVICE_ACTOR, "review.changes_requested", {
       scope_id: scope.id,
       task_id: task.id,
@@ -230,6 +263,7 @@ async function executeReview(
       runId,
       headSha,
       err instanceof Error ? err.message : String(err),
+      { runSpan },
     );
   } finally {
     if (minted) {
@@ -253,13 +287,14 @@ function failReview(
   runId: string,
   headSha: string,
   error: string,
-  envelopeJson?: string,
+  options: { runSpan?: ColonyRunSpan; envelopeJson?: string } = {},
 ): void {
   ctx.store.finishRun(runId, "failed", {
     error,
-    envelope_json: envelopeJson,
+    envelope_json: options.envelopeJson,
     evidence_json: JSON.stringify({ head_sha: headSha }),
   });
+  options.runSpan?.end("failed", error);
   ctx.store.audit(SERVICE_ACTOR, "run.failed", {
     scope_id: scope.id,
     task_id: task.id,
