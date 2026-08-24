@@ -134,7 +134,10 @@ describe("validateDecompositionEnvelope size gate", () => {
   it("flags a task whose predicted cost exceeds the budget", () => {
     const errors = validateDecompositionEnvelope(
       envelopeWithTasks([{ title: "Too big", spec: fivePathSpec }]),
-      { model: { version: "v1", sample_size: 4, ms_per_file: 100_000 }, budget_ms: 250_000 },
+      {
+        model: { version: "v1", sample_size: 4, ms_per_file: 100_000 },
+        budget_ms: 250_000,
+      },
     );
     expect(errors).toHaveLength(1);
     const error = errors[0] as DecompositionValidationError;
@@ -145,7 +148,9 @@ describe("validateDecompositionEnvelope size gate", () => {
     expect(error.message).toContain("5 spec file paths");
     expect(error.message).toContain("(model v1, 4 samples)");
     expect(error.message).toContain("exceeds the 250000 ms implementer budget");
-    expect(error.message).toContain("Re-plan this task into smaller outcome-oriented tasks.");
+    expect(error.message).toContain(
+      "Re-plan this task into smaller outcome-oriented tasks.",
+    );
   });
 
   it("flags only the offending tasks when several exceed the budget", () => {
@@ -154,7 +159,10 @@ describe("validateDecompositionEnvelope size gate", () => {
         { title: "Big", spec: fivePathSpec },
         { title: "Small", spec: quietSpec },
       ]),
-      { model: { version: "v1", sample_size: 2, ms_per_file: 200_000 }, budget_ms: 300_000 },
+      {
+        model: { version: "v1", sample_size: 2, ms_per_file: 200_000 },
+        budget_ms: 300_000,
+      },
     );
     expect(errors).toHaveLength(1);
     expect(errors[0].rule).toBe("task_over_budget");
@@ -169,7 +177,10 @@ describe("validateDecompositionEnvelope size gate", () => {
           spec: "Edit packages/core/src/store.ts twice: packages/core/src/store.ts again.",
         },
       ]),
-      { model: { version: "v1", sample_size: 1, ms_per_file: 400_000 }, budget_ms: 400_000 },
+      {
+        model: { version: "v1", sample_size: 1, ms_per_file: 400_000 },
+        budget_ms: 400_000,
+      },
     );
     // One distinct path * 400k == exactly the budget: not over it.
     expect(errors).toEqual([]);
@@ -178,7 +189,10 @@ describe("validateDecompositionEnvelope size gate", () => {
   it("a zero-ms-per-file model never flags", () => {
     const errors = validateDecompositionEnvelope(
       envelopeWithTasks([{ title: "Anything", spec: fivePathSpec }]),
-      { model: { version: "v1", sample_size: 0, ms_per_file: 0 }, budget_ms: 1 },
+      {
+        model: { version: "v1", sample_size: 0, ms_per_file: 0 },
+        budget_ms: 1,
+      },
     );
     expect(errors).toEqual([]);
   });

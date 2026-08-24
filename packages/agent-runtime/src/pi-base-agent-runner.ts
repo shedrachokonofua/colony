@@ -183,7 +183,8 @@ export function buildRunTools(
   const workTools = options.tools ?? profile.defaultTools;
   // capture helper for submit tool — caller replaces it with real capture when wiring session
   const dummyCapture = () => {};
-  const submitTool = profile.submitTool(dummyCapture);  const baseCustomTools: ToolDefinition[] = [submitTool];
+  const submitTool = profile.submitTool(dummyCapture);
+  const baseCustomTools: ToolDefinition[] = [submitTool];
   const baseToolNames = [...workTools, submitTool.name];
   if (!options.webTools) {
     return { customTools: baseCustomTools, toolNames: baseToolNames };
@@ -256,28 +257,21 @@ export class PiBaseAgentRunner implements PiRunner {
     let session: AgentSession | undefined;
     let handle: SandboxHandle | undefined;
 
-    const submitTool = this.profile.submitTool(
-      (value) => {
-        if (
-          this.options.critique &&
-          this.profile.phases &&
-          !critiqueCompleted
-        ) {
-          draftEnvelope = value;
-          resolveDraftEnvelope?.();
-          // A draft closes this candidate's phase pipeline. The SDK ignores the
-          // submit tool's terminate hint, so the in-flight generation would keep
-          // issuing provider calls against the stale conversation and could
-          // interleave with the critique/revision turns below - abort it the way
-          // acceptance ends the run in non-critique mode.
-          void session?.abort();
-          return;
-        }
-        capturedEnvelope = value;
-        resolveCapturedEnvelope?.();
-      },
-      this.options.architectSizeGate?.(),
-    );
+    const submitTool = this.profile.submitTool((value) => {
+      if (this.options.critique && this.profile.phases && !critiqueCompleted) {
+        draftEnvelope = value;
+        resolveDraftEnvelope?.();
+        // A draft closes this candidate's phase pipeline. The SDK ignores the
+        // submit tool's terminate hint, so the in-flight generation would keep
+        // issuing provider calls against the stale conversation and could
+        // interleave with the critique/revision turns below - abort it the way
+        // acceptance ends the run in non-critique mode.
+        void session?.abort();
+        return;
+      }
+      capturedEnvelope = value;
+      resolveCapturedEnvelope?.();
+    }, this.options.architectSizeGate?.());
     /** True while submissions route to the draft slot pending critique. */
     const critiqueEngaged = Boolean(
       this.options.critique && this.profile.phases,

@@ -149,14 +149,13 @@ describe("architect submission", () => {
 
     it("rejects an oversized task naming rule, prediction and budget, then accepts the re-planned envelope under a generous gate", async () => {
       let captured: unknown;
-      const tool = createArchitectSubmitTool(
-        (value) => {
-          captured = value;
-        },
-        tightGate,
-      );
+      const tool = createArchitectSubmitTool((value) => {
+        captured = value;
+      }, tightGate);
 
-      const oversized = decomposition([{ title: "Monster", spec: oversizedSpec }]);
+      const oversized = decomposition([
+        { title: "Monster", spec: oversizedSpec },
+      ]);
       const rejection = tool.execute(
         "submit-gate",
         oversized,
@@ -165,8 +164,12 @@ describe("architect submission", () => {
         undefined as never,
       );
       await expect(rejection).rejects.toThrow("task_over_budget");
-      await expect(rejection).rejects.toThrow("predicted 1800000 ms from 3 spec file paths (model v1, 3 samples)");
-      await expect(rejection).rejects.toThrow("exceeds the 900000 ms implementer budget");
+      await expect(rejection).rejects.toThrow(
+        "predicted 1800000 ms from 3 spec file paths (model v1, 3 samples)",
+      );
+      await expect(rejection).rejects.toThrow(
+        "exceeds the 900000 ms implementer budget",
+      );
       expect(captured).toBeUndefined();
 
       // Same envelope shape, generous budget: accepted and captured.
@@ -189,12 +192,9 @@ describe("architect submission", () => {
 
     it("keeps DAG-defect rejections on the same replan path alongside size errors", async () => {
       let captured: unknown;
-      const tool = createArchitectSubmitTool(
-        (value) => {
-          captured = value;
-        },
-        tightGate,
-      );
+      const tool = createArchitectSubmitTool((value) => {
+        captured = value;
+      }, tightGate);
 
       const defective = decomposition([
         producer,

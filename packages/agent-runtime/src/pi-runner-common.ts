@@ -1058,9 +1058,7 @@ export function createArchitectSubmitTool(
       if (errors.length > 0) {
         throw new Error(
           "Submission rejected: decomposition failed mechanical validation:\n" +
-            errors
-              .map((e) => `  - [${e.rule}] ${e.message}`)
-              .join("\n"),
+            errors.map((e) => `  - [${e.rule}] ${e.message}`).join("\n"),
         );
       }
       capture(params);

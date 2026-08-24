@@ -223,7 +223,9 @@ describe("Pi architect phases", () => {
     expect(consolidate).toBeDefined();
     expect(consolidate!.prompt).toContain("task_over_budget");
     expect(consolidate!.prompt).toMatch(/file paths in its spec/);
-    expect(consolidate!.prompt).toMatch(/re-planned into smaller outcome-oriented tasks/);
+    expect(consolidate!.prompt).toMatch(
+      /re-planned into smaller outcome-oriented tasks/,
+    );
   });
 });
 
