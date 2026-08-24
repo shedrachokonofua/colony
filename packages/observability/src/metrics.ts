@@ -383,7 +383,8 @@ function agentLabels(attributes: AgentMetricAttributes): Attributes {
   };
 }
 
-function normalizeRoute(pathname: string): string {
+/** Collapses concrete path segments into route templates for span labels. */
+export function normalizeRoute(pathname: string): string {
   return pathname
     .split("/")
     .map((segment) => {

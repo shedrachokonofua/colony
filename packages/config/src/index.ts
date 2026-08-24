@@ -52,6 +52,9 @@ const envSchema = z.object({
   COLONY_OIDC_REQUIRED_ROLE: z.string().default(""),
 
   COLONY_SEARXNG_URL: optionalNonEmptyString,
+
+  /** Base URL of the trace UI the console deep-links to (e.g. Grafana). */
+  COLONY_TRACE_UI_BASE_URL: optionalNonEmptyString,
 });
 
 export type Env = z.infer<typeof envSchema>;

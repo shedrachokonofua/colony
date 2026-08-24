@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Run, Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
+import { startTickSpan } from "@colony/observability";
 import type { ColonydContext } from "./context.js";
 import { SERVICE_ACTOR } from "./context.js";
 import { runArchitect } from "./runs/architect.js";
@@ -11,6 +12,9 @@ import { reconcileRejectedReview, runReview } from "./runs/review.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
 import { runValidation } from "./runs/validate.js";
 
+/** Fire-and-forget run dispatch; records that this tick dispatched work. */
+type RunDispatcher = (run: Promise<void>) => void;
+
 /**
  * One reconciliation pass. Each phase is fail-isolated: a phase error is
  * logged + audited and the tick continues with the next phase.
@@ -18,13 +22,32 @@ import { runValidation } from "./runs/validate.js";
 export async function tick(ctx: ColonydContext): Promise<void> {
   const now = new Date();
 
-  await phase(ctx, "expire_leases", () => expireLeases(ctx, now));
-  await phase(ctx, "poll_provider", () => pollProviderFacts(ctx, now));
-  await phase(ctx, "advance_mr_open", () => advanceMrOpenTasks(ctx));
-  await phase(ctx, "scope_planning", () => advanceScopePlanning(ctx));
-  await phase(ctx, "dispatch_implementers", () => dispatchImplementers(ctx));
-  await phase(ctx, "scope_closure", () => closeScopes(ctx));
-  await phase(ctx, "validate_scopes", () => validateScopes(ctx));
+  // The tick span exists only when the tick actually dispatched work: quiet
+  // ticks are noise, not observability signal. It is ended when the pass
+  // returns — the dispatched runs themselves outlive it (task 3 owns those).
+  let tickSpan: { end(): void } | undefined;
+  const dispatch: RunDispatcher = (run) => {
+    tickSpan ??= startTickSpan();
+    void run;
+  };
+
+  try {
+    await phase(ctx, "expire_leases", () => expireLeases(ctx, now));
+    await phase(ctx, "poll_provider", () => pollProviderFacts(ctx, now));
+    await phase(ctx, "advance_mr_open", () =>
+      advanceMrOpenTasks(ctx, dispatch),
+    );
+    await phase(ctx, "scope_planning", () =>
+      advanceScopePlanning(ctx, dispatch),
+    );
+    await phase(ctx, "dispatch_implementers", () =>
+      dispatchImplementers(ctx, dispatch),
+    );
+    await phase(ctx, "scope_closure", () => closeScopes(ctx));
+    await phase(ctx, "validate_scopes", () => validateScopes(ctx, dispatch));
+  } finally {
+    tickSpan?.end();
+  }
 }
 
 async function phase(
@@ -238,7 +261,10 @@ async function pollProviderFacts(
 // Phase 3 — advance mr_open tasks from provider facts; dispatch gates.
 // ---------------------------------------------------------------------------
 
-async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
+async function advanceMrOpenTasks(
+  ctx: ColonydContext,
+  dispatch: RunDispatcher,
+): Promise<void> {
   const candidates = ctx.store
     .listScopes()
     .filter((s) => s.status === "active")
@@ -365,7 +391,7 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
         ) {
           continue;
         }
-        void runReview(ctx, scope, task, headSha);
+        dispatch(runReview(ctx, scope, task, headSha));
         continue;
       }
     }
@@ -388,7 +414,7 @@ async function advanceMrOpenTasks(ctx: ColonydContext): Promise<void> {
     ) {
       continue;
     }
-    void runMergeGate(ctx, scope, task, headSha);
+    dispatch(runMergeGate(ctx, scope, task, headSha));
   }
 }
 
@@ -454,7 +480,10 @@ async function pipelineGate(
 // Phase 4 — scope planning: dispatch architect runs, materialize plans.
 // ---------------------------------------------------------------------------
 
-async function advanceScopePlanning(ctx: ColonydContext): Promise<void> {
+async function advanceScopePlanning(
+  ctx: ColonydContext,
+  dispatch: RunDispatcher,
+): Promise<void> {
   for (const scope of ctx.store.listScopes()) {
     if (scope.status === "draft") {
       const activeArchitect = ctx.store
@@ -462,7 +491,7 @@ async function advanceScopePlanning(ctx: ColonydContext): Promise<void> {
         .some((r) => r.kind === "architect" && r.status === "running");
       if (activeArchitect) continue;
       ctx.store.setScopeStatus(scope.id, "planning", SERVICE_ACTOR);
-      void runArchitect(ctx, ctx.store.getScope(scope.id)!);
+      dispatch(runArchitect(ctx, ctx.store.getScope(scope.id)!));
       continue;
     }
 
@@ -479,7 +508,7 @@ async function advanceScopePlanning(ctx: ColonydContext): Promise<void> {
 
       if (lastArchitect?.status === "succeeded" && !scope.plan_json) {
         // Replan requested: the operator rejected the plan with feedback.
-        void runArchitect(ctx, scope);
+        dispatch(runArchitect(ctx, scope));
         continue;
       }
 
@@ -512,7 +541,7 @@ async function advanceScopePlanning(ctx: ColonydContext): Promise<void> {
           });
           continue;
         }
-        void runArchitect(ctx, scope);
+        dispatch(runArchitect(ctx, scope));
       }
     }
   }
@@ -522,7 +551,10 @@ async function advanceScopePlanning(ctx: ColonydContext): Promise<void> {
 // Phase 5 — dispatch implementers for ready tasks.
 // ---------------------------------------------------------------------------
 
-async function dispatchImplementers(ctx: ColonydContext): Promise<void> {
+async function dispatchImplementers(
+  ctx: ColonydContext,
+  dispatch: RunDispatcher,
+): Promise<void> {
   const ready = ctx.store.readyTasks();
   for (const task of ready) {
     if (ctx.store.activeRunCount("implement") >= ctx.env.maxConcurrent) break;
@@ -536,7 +568,7 @@ async function dispatchImplementers(ctx: ColonydContext): Promise<void> {
       "running",
       SERVICE_ACTOR,
     );
-    void runImplement(ctx, scope, ctx.store.getTask(current.id)!);
+    dispatch(runImplement(ctx, scope, ctx.store.getTask(current.id)!));
   }
 }
 
@@ -586,7 +618,10 @@ async function closeScopes(ctx: ColonydContext): Promise<void> {
 // Phase 7 — validation: run acceptance commands on validating scopes.
 // ---------------------------------------------------------------------------
 
-async function validateScopes(ctx: ColonydContext): Promise<void> {
+async function validateScopes(
+  ctx: ColonydContext,
+  dispatch: RunDispatcher,
+): Promise<void> {
   for (const scope of ctx.store.listScopes()) {
     if (scope.status !== "validating") continue;
     // Re-fetch fresh before dispatch (scope may have moved since list).
@@ -602,7 +637,7 @@ async function validateScopes(ctx: ColonydContext): Promise<void> {
       .activeRuns("validate")
       .some((r) => r.scope_id === scope.id);
     if (running) continue;
-    void runValidation(ctx, fresh);
+    dispatch(runValidation(ctx, fresh));
   }
 }
 

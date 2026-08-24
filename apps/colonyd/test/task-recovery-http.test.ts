@@ -50,6 +50,7 @@ function recoveryApp() {
       oidcIssuer: "",
       oidcClientId: "colony",
       oidcRequiredRole: "",
+      traceUiBaseUrl: "",
     },
     requestTick() {
       ticks += 1;

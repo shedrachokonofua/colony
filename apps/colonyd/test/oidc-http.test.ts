@@ -128,6 +128,7 @@ function oidcApp() {
       oidcIssuer: ISSUER,
       oidcClientId: CLIENT,
       oidcRequiredRole: "admin",
+      traceUiBaseUrl: "",
     },
     requestTick() {},
   };

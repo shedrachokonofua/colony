@@ -5,6 +5,12 @@ import { createRequire } from "node:module";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { DomainStateError } from "@colony/domain";
+import {
+  isTracingEnabled,
+  normalizeRoute,
+  startHttpServerSpan,
+  startWebhookSpan,
+} from "@colony/observability";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
@@ -88,6 +94,33 @@ const contextBody = z
 export function buildApp(ctx: ColonydContext): Hono<Env> {
   const app = new Hono<Env>();
 
+  // Control-plane tracing: one server span per request. /health and static
+  // /ui/* assets are the only exclusions — everything else, including /
+  // (console shell), /ui/config, the webhook route and all API routes, is
+  // traced. Registered first so no handler runs outside a span.
+  app.use(async (c, next) => {
+    if (!isTracingEnabled() || isExcludedFromHttpSpans(c.req.path)) {
+      await next();
+      return;
+    }
+    const endSpan = startHttpServerSpan(
+      c.req.method,
+      normalizeRoute(c.req.path),
+    );
+    if (!endSpan) {
+      // Unreachable while isTracingEnabled() holds; keeps narrowing honest.
+      await next();
+      return;
+    }
+    try {
+      await next();
+      endSpan(c.res.status);
+    } catch (err) {
+      endSpan(500);
+      throw err;
+    }
+  });
+
   app.get("/health", (c) => c.json({ ok: true, service: "colonyd" }));
 
   // Webhook intake — no actor required; secret-checked.
@@ -99,12 +132,21 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!safeEqual(provided, secret)) {
       return c.json({ error: { code: "BAD_SIGNATURE" } }, 401);
     }
-    const dedupKey =
-      c.req.header("X-Gitlab-Event-UUID") ??
-      `sha256:${createHash("sha256").update(body).digest("hex")}`;
-    const fresh = ctx.store.recordObservation("webhook", dedupKey, body);
-    if (fresh) ctx.requestTick();
-    return c.json(fresh ? { accepted: true } : { duplicate: true });
+    // Always sampled by the observability sampler; ended even on duplicate
+    // intake so every webhook delivery is recorded.
+    const endWebhookSpan = startWebhookSpan(
+      c.req.header("X-Gitlab-Event") ?? "",
+    );
+    try {
+      const dedupKey =
+        c.req.header("X-Gitlab-Event-UUID") ??
+        `sha256:${createHash("sha256").update(body).digest("hex")}`;
+      const fresh = ctx.store.recordObservation("webhook", dedupKey, body);
+      if (fresh) ctx.requestTick();
+      return c.json(fresh ? { accepted: true } : { duplicate: true });
+    } finally {
+      endWebhookSpan();
+    }
   });
 
   app.get("/ui/config", (c) =>
@@ -116,6 +158,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       oidc: ctx.env.oidcIssuer
         ? { issuer: ctx.env.oidcIssuer, client_id: ctx.env.oidcClientId }
         : null,
+      trace_ui_base_url: ctx.env.traceUiBaseUrl || null,
     }),
   );
 
@@ -882,13 +925,8 @@ function conflict(c: Context<Env>, err: unknown) {
 
 function uiResponse(relPath: string): Response | null {
   const rel = decodeURIComponent(relPath).replace(/^\/+/, "");
-  if (!rel || rel.includes("\0") || rel.split(/[\\/]/).includes("..")) {
-    return null;
-  }
-  const full = normalize(join(UI_DIR, rel));
-  const root = normalize(join(UI_DIR, "."));
-  if (full !== root && !full.startsWith(root + sep)) return null;
-  if (!existsSync(full) || !statSync(full).isFile()) return null;
+  const full = resolveStaticUiPath(rel);
+  if (!full) return null;
   const mime = UI_MIME[extname(full)] ?? "application/octet-stream";
   const cache =
     extname(full) === ".woff2"
@@ -903,9 +941,34 @@ function uiResponse(relPath: string): Response | null {
   });
 }
 
+function staticUiAsset(requestPath: string): string | null {
+  if (requestPath !== "/ui" && !requestPath.startsWith("/ui/")) return null;
+  const rel = decodeURIComponent(requestPath.replace(/^\/ui\/?/, "")).replace(
+    /^\/+/,
+    "",
+  );
+  return resolveStaticUiPath(rel);
+}
+
+function resolveStaticUiPath(rel: string): string | null {
+  if (!rel || rel.includes("\0") || rel.split(/[\\/]/).includes("..")) {
+    return null;
+  }
+  const full = normalize(join(UI_DIR, rel));
+  const root = normalize(join(UI_DIR, "."));
+  if (full !== root && !full.startsWith(root + sep)) return null;
+  if (!existsSync(full) || !statSync(full).isFile()) return null;
+  return full;
+}
+
 function safeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) return false;
   return timingSafeEqual(bufA, bufB);
+}
+
+/** Requests that never produce an HTTP server span. */
+function isExcludedFromHttpSpans(path: string): boolean {
+  return path === "/health" || staticUiAsset(path) !== null;
 }

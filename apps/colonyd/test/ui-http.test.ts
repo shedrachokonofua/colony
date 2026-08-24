@@ -16,7 +16,7 @@ afterEach(() => {
   }
 });
 
-function fakeCtx(store: Store): ColonydContext {
+function fakeCtx(store: Store, traceUiBaseUrl = ""): ColonydContext {
   return {
     store,
     provider: {} as ColonydContext["provider"],
@@ -36,9 +36,19 @@ function fakeCtx(store: Store): ColonydContext {
       oidcIssuer: "",
       oidcClientId: "colony",
       oidcRequiredRole: "",
+      traceUiBaseUrl,
     },
     requestTick() {},
   };
+}
+
+/** App whose env carries a configured trace UI base URL. */
+function appWithTraceUi(): ReturnType<typeof buildApp> {
+  const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+  dirs.push(dir);
+  return buildApp(
+    fakeCtx(new Store(join(dir, "test.db")), "https://traces.example.com"),
+  );
 }
 
 function appWithStore(): ReturnType<typeof buildApp> {
@@ -109,8 +119,7 @@ describe("operator console", () => {
   });
 
   it("exposes public console config without secrets", async () => {
-    const app = appWithStore();
-    const res = await app.request("/ui/config");
+    const res = await appWithStore().request("/ui/config");
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({
       service: "colonyd",
@@ -118,6 +127,14 @@ describe("operator console", () => {
       review_mode: "required",
       hitl_mode: "yolo",
       oidc: null,
+      trace_ui_base_url: null,
+    });
+
+    // A configured trace UI base is surfaced verbatim; nothing else leaks.
+    const traced = await appWithTraceUi().request("/ui/config");
+    expect(traced.status).toBe(200);
+    await expect(traced.json()).resolves.toMatchObject({
+      trace_ui_base_url: "https://traces.example.com",
     });
   });
 
