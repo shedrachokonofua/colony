@@ -229,6 +229,29 @@ function migrateTasksCostPrediction(db: Db): void {
   addColumn(db, "tasks", "cost_prediction_json", "TEXT");
 }
 
+const PROJECT_FILES_DDL = `CREATE TABLE IF NOT EXISTS project_files (
+  id TEXT PRIMARY KEY,
+  project_name TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  media_type TEXT NOT NULL CHECK (media_type IN ('text/plain','text/markdown')),
+  content TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (project_name, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_project_files_project ON project_files(project_name, filename);`;
+
+/**
+ * Migration 5: curated project reference files as first-class rows. The
+ * migration just executes the current DDL for existing databases; fresh
+ * databases get it from schema.sql.
+ */
+function migrateProjectFiles(db: Db): void {
+  db.exec(PROJECT_FILES_DDL);
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -242,6 +265,7 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "tasks-cost-prediction",
     apply: migrateTasksCostPrediction,
   },
+  { version: 5, name: "project-files", apply: migrateProjectFiles },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

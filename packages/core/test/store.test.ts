@@ -847,7 +847,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(4);
+        expect(LATEST_SCHEMA_VERSION).toBe(5);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -979,5 +979,219 @@ describe("versioned migrations", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("project files", () => {
+  it("createProject rejects a duplicate name with DomainStateError", () => {
+    store.createProject({ name: "alpha", context_doc: null });
+    expect(() =>
+      store.createProject({ name: "alpha", context_doc: "doc" }),
+    ).toThrow(DomainStateError);
+  });
+
+  it("createProjectFile enforces (project_name, filename) uniqueness", () => {
+    store.createProject({ name: "p", context_doc: null });
+    store.createProjectFile({
+      project_name: "p",
+      filename: "notes.md",
+      media_type: "text/markdown",
+      content: "hello",
+    });
+    expect(() =>
+      store.createProjectFile({
+        project_name: "p",
+        filename: "notes.md",
+        media_type: "text/markdown",
+        content: "again",
+      }),
+    ).toThrow(/file exists: notes\.md/);
+    // Same filename under a different project is allowed.
+    store.createProject({ name: "q", context_doc: null });
+    expect(() =>
+      store.createProjectFile({
+        project_name: "q",
+        filename: "notes.md",
+        media_type: "text/markdown",
+        content: "other",
+      }),
+    ).not.toThrow();
+  });
+
+  it("createProjectFile on an unknown project throws DomainStateError", () => {
+    expect(() =>
+      store.createProjectFile({
+        project_name: "nope",
+        filename: "a.txt",
+        media_type: "text/plain",
+        content: "x",
+      }),
+    ).toThrow(DomainStateError);
+  });
+
+  it("deleting a project cascades to its files", () => {
+    store.createProject({ name: "p", context_doc: null });
+    store.createProjectFile({
+      project_name: "p",
+      filename: "a.txt",
+      media_type: "text/plain",
+      content: "x",
+    });
+    store.createProjectFile({
+      project_name: "p",
+      filename: "b.md",
+      media_type: "text/markdown",
+      content: "y",
+    });
+    expect(store.listProjectFiles("p")).toHaveLength(2);
+    store.db.prepare(`DELETE FROM projects WHERE name = ?`).run("p");
+    expect(store.listProjectFiles("p")).toEqual([]);
+    const { n } = store.db
+      .prepare(`SELECT COUNT(*) AS n FROM project_files`)
+      .get() as { n: number };
+    expect(n).toBe(0);
+  });
+
+  it("listProjectFiles returns [] for an unknown project and orders by filename", () => {
+    expect(store.listProjectFiles("missing")).toEqual([]);
+    store.createProject({ name: "p", context_doc: null });
+    store.createProjectFile({
+      project_name: "p",
+      filename: "b.md",
+      media_type: "text/markdown",
+      content: "b",
+    });
+    store.createProjectFile({
+      project_name: "p",
+      filename: "a.txt",
+      media_type: "text/plain",
+      content: "a",
+    });
+    expect(store.listProjectFiles("p").map((f) => f.filename)).toEqual([
+      "a.txt",
+      "b.md",
+    ]);
+  });
+
+  it("pageProjectFiles returns metadata without content and honest totals", () => {
+    store.createProject({ name: "p", context_doc: null });
+    for (let i = 0; i < 5; i += 1) {
+      store.createProjectFile({
+        project_name: "p",
+        filename: `f${i}.txt`,
+        media_type: "text/plain",
+        content: `content ${i}`,
+      });
+    }
+    const page = store.pageProjectFiles("p", 2, 1);
+    expect(page.total).toBe(5);
+    expect(page.files).toHaveLength(2);
+    expect(page.files.map((f) => f.filename)).toEqual(["f1.txt", "f2.txt"]);
+    expect(page.files[0]).not.toHaveProperty("content");
+    expect(page.files[0]).not.toHaveProperty("project_name");
+    expect(page.files[0]).toHaveProperty("sha256");
+    expect(page.files[0]).toHaveProperty("byte_size");
+  });
+
+  it("replaceProjectFile updates content and metadata; unknown returns undefined", () => {
+    store.createProject({ name: "p", context_doc: null });
+    const created = store.createProjectFile({
+      project_name: "p",
+      filename: "a.txt",
+      media_type: "text/plain",
+      content: "old",
+    });
+    const replaced = store.replaceProjectFile("p", created.id, {
+      media_type: "text/markdown",
+      content: "new content",
+    })!;
+    expect(replaced.content).toBe("new content");
+    expect(replaced.media_type).toBe("text/markdown");
+    expect(replaced.byte_size).toBe(Buffer.byteLength("new content"));
+    expect(replaced.sha256).not.toBe(created.sha256);
+    expect(store.replaceProjectFile("p", "pf-000000000000", {
+      media_type: "text/plain",
+      content: "x",
+    })).toBeUndefined();
+  });
+
+  it("deleteProjectFile removes a row and reports not-found", () => {
+    store.createProject({ name: "p", context_doc: null });
+    const created = store.createProjectFile({
+      project_name: "p",
+      filename: "a.txt",
+      media_type: "text/plain",
+      content: "x",
+    });
+    expect(store.deleteProjectFile("p", created.id)).toBe(true);
+    expect(store.deleteProjectFile("p", created.id)).toBe(false);
+    expect(store.listProjectFiles("p")).toEqual([]);
+  });
+
+  it("projectRepositories returns distinct repos ordered by path", () => {
+    store.createProject({ name: "p", context_doc: null });
+    store.createScope({
+      goal: "g1",
+      provider_repo_id: "1",
+      provider_repo_path: "so/z",
+      project: "p",
+    });
+    store.createScope({
+      goal: "g2",
+      provider_repo_id: "2",
+      provider_repo_path: "so/a",
+      project: "p",
+    });
+    // Identical (id, path) pair from a second scope collapses to one row.
+    store.createScope({
+      goal: "g3",
+      provider_repo_id: "2",
+      provider_repo_path: "so/a",
+      project: "p",
+    });
+    expect(store.projectRepositories("p")).toEqual([
+      { repo_id: "2", repo_path: "so/a" },
+      { repo_id: "1", repo_path: "so/z" },
+    ]);
+    expect(store.projectRepositories("missing")).toEqual([]);
+  });
+
+  it("getProject and pageProjects expose file_count, file_bytes, repositories", () => {
+    store.createProject({ name: "p", context_doc: null });
+    store.createProjectFile({
+      project_name: "p",
+      filename: "a.txt",
+      media_type: "text/plain",
+      content: "hello",
+    });
+    store.createProjectFile({
+      project_name: "p",
+      filename: "b.md",
+      media_type: "text/markdown",
+      content: "world",
+    });
+    store.createScope({
+      goal: "g",
+      provider_repo_id: "1",
+      provider_repo_path: "so/p",
+      project: "p",
+    });
+    const detail = store.getProject("p")!;
+    expect(detail.file_count).toBe(2);
+    expect(detail.file_bytes).toBe(
+      Buffer.byteLength("hello") + Buffer.byteLength("world"),
+    );
+    expect(detail.repositories).toEqual([{ repo_id: "1", repo_path: "so/p" }]);
+    const page = store.pageProjects(10, 0);
+    const row = page.projects.find((x) => x.name === "p")!;
+    expect(row.file_count).toBe(2);
+    expect(row.file_bytes).toBe(detail.file_bytes);
+    expect(row.repositories).toEqual([{ repo_id: "1", repo_path: "so/p" }]);
+    // A project with no files reports zeros and empty repos.
+    store.createProject({ name: "empty", context_doc: null });
+    const empty = store.getProject("empty")!;
+    expect(empty.file_count).toBe(0);
+    expect(empty.file_bytes).toBe(0);
+    expect(empty.repositories).toEqual([]);
   });
 });

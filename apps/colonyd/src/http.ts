@@ -12,6 +12,7 @@ import {
   startWebhookSpan,
 } from "@colony/observability";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
+import type { Store } from "@colony/core";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
@@ -90,6 +91,70 @@ const projectsQuery = z.object({
 const contextBody = z
   .object({ context_doc: z.string().max(100_000).nullable() })
   .strict();
+
+// ---------------------------------------------------------------------------
+// Project file validation constants
+// ---------------------------------------------------------------------------
+
+const FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,119}$/;
+const RESERVED_NAMES = ["packet.json", ".colony", ".git", ".env"];
+const MAX_FILE_BYTES = 262144;
+const MAX_PROJECT_FILE_BYTES = 2097152;
+
+/** Validate a file name against path-name and reserved-name rules. Returns an error message or null. */
+function validateFilename(name: string): string | null {
+  if (!FILENAME_RE.test(name)) return `filename invalid: ${name}`;
+  if (name.includes("/") || name.includes("\\") || name.includes("\0")) {
+    return `filename invalid: ${name}`;
+  }
+  if (name === "." || name === "..") return `filename invalid: ${name}`;
+  const lower = name.toLowerCase();
+  if (RESERVED_NAMES.some((r) => r === lower)) {
+    return `filename invalid: ${name}`;
+  }
+  return null;
+}
+
+/** Validate UTF-8: reject content that round-trips to a different string. */
+function isValidUtf8(content: string): boolean {
+  const decoded = Buffer.from(content, "utf8").toString("utf8");
+  if (decoded !== content) return false;
+  // Lone surrogates survive the Buffer round-trip but not TextEncoder's
+  // replacement policy; reject any content whose encoded length differs.
+  const encoded = new TextEncoder().encode(content);
+  return Buffer.byteLength(content, "utf8") === encoded.length;
+}
+
+/** Total bytes of a project's reference files (0 when none). */
+function totalProjectFileBytes(store: Store, projectName: string): number {
+  const row = store.db
+    .prepare(
+      `SELECT COALESCE(SUM(byte_size),0) AS bytes FROM project_files WHERE project_name = ?`,
+    )
+    .get(projectName) as { bytes: number };
+  return row.bytes;
+}
+
+/** Schema for project file creation/update body. */
+const createFileBody = z
+  .object({
+    filename: z.string(),
+    media_type: z.enum(["text/plain", "text/markdown"]),
+    content: z.string(),
+  })
+  .strict();
+
+const updateFileBody = z
+  .object({
+    media_type: z.enum(["text/plain", "text/markdown"]),
+    content: z.string(),
+  })
+  .strict();
+
+const fileListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  offset: z.coerce.number().int().min(0).default(0),
+});
 
 export function buildApp(ctx: ColonydContext): Hono<Env> {
   const app = new Hono<Env>();
@@ -289,6 +354,29 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json({ projects, total, limit, offset });
   });
 
+  app.post("/projects", async (c) => {
+    const parsed = z
+      .object({
+        name: z.string().min(1).max(120),
+        context_doc: z.string().max(100_000).nullable().optional(),
+      })
+      .strict()
+      .safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    try {
+      const project = ctx.store.createProject({
+        name: parsed.data.name,
+        context_doc: parsed.data.context_doc ?? null,
+      });
+      ctx.store.audit(c.get("actor"), "project.created", {
+        detail: { project: parsed.data.name },
+      });
+      return c.json({ project }, 201);
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
   app.get("/projects/:name", (c) => {
     const project = ctx.store.getProject(c.req.param("name"));
     if (!project) return notFound(c, "project");
@@ -320,6 +408,133 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       },
     });
     return c.json({ project });
+  });
+
+  // -------------------------------------------------------------------
+  // Project reference files
+  // -------------------------------------------------------------------
+
+  app.get("/projects/:name/files", (c) => {
+    const parsed = fileListQuery.safeParse(c.req.query());
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+    const { files, total } = ctx.store.pageProjectFiles(
+      project.name,
+      parsed.data.limit,
+      parsed.data.offset,
+    );
+    return c.json({ files, total, limit: parsed.data.limit, offset: parsed.data.offset });
+  });
+
+  app.post("/projects/:name/files", async (c) => {
+    const name = c.req.param("name");
+    const parsed = createFileBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const project = ctx.store.getProject(name);
+    if (!project) return notFound(c, "project");
+    const filenameError = validateFilename(parsed.data.filename);
+    if (filenameError) return badBody(c, filenameError);
+    if (!isValidUtf8(parsed.data.content)) {
+      return badBody(c, "content is not valid UTF-8");
+    }
+    const contentBytes = Buffer.byteLength(parsed.data.content);
+    if (contentBytes > MAX_FILE_BYTES) {
+      return badBody(c, `content exceeds ${MAX_FILE_BYTES} bytes`);
+    }
+    const existing = totalProjectFileBytes(ctx.store, name);
+    if (existing + contentBytes > MAX_PROJECT_FILE_BYTES) {
+      return badBody(
+        c,
+        `project files exceed ${MAX_PROJECT_FILE_BYTES} bytes in total`,
+      );
+    }
+    try {
+      const file = ctx.store.createProjectFile({
+        project_name: name,
+        filename: parsed.data.filename,
+        media_type: parsed.data.media_type,
+        content: parsed.data.content,
+      });
+      ctx.store.audit(c.get("actor"), "project.file_created", {
+        detail: {
+          project: name,
+          filename: file.filename,
+          byte_size: file.byte_size,
+          sha256: file.sha256,
+        },
+      });
+      return c.json(file, 201);
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
+  app.put("/projects/:name/files/:id", async (c) => {
+    const name = c.req.param("name");
+    const id = c.req.param("id");
+    const parsed = updateFileBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const project = ctx.store.getProject(name);
+    if (!project) return notFound(c, "project");
+    if (!isValidUtf8(parsed.data.content)) {
+      return badBody(c, "content is not valid UTF-8");
+    }
+    const contentBytes = Buffer.byteLength(parsed.data.content);
+    if (contentBytes > MAX_FILE_BYTES) {
+      return badBody(c, `content exceeds ${MAX_FILE_BYTES} bytes`);
+    }
+    const existing = ctx.store.db
+      .prepare(`SELECT byte_size FROM project_files WHERE id = ? AND project_name = ?`)
+      .get(id, name) as { byte_size: number } | undefined;
+    if (!existing) return notFound(c, "file");
+    const otherBytes = totalProjectFileBytes(ctx.store, name) - existing.byte_size;
+    if (otherBytes + contentBytes > MAX_PROJECT_FILE_BYTES) {
+      return badBody(
+        c,
+        `project files exceed ${MAX_PROJECT_FILE_BYTES} bytes in total`,
+      );
+    }
+    const file = ctx.store.replaceProjectFile(name, id, {
+      media_type: parsed.data.media_type,
+      content: parsed.data.content,
+    });
+    if (!file) return notFound(c, "file");
+    ctx.store.audit(c.get("actor"), "project.file_replaced", {
+      detail: {
+        project: name,
+        filename: file.filename,
+        byte_size: file.byte_size,
+        sha256: file.sha256,
+      },
+    });
+    return c.json(file);
+  });
+
+  app.delete("/projects/:name/files/:id", (c) => {
+    const name = c.req.param("name");
+    const id = c.req.param("id");
+    const project = ctx.store.getProject(name);
+    if (!project) return notFound(c, "project");
+    const file = ctx.store.db
+      .prepare(`SELECT * FROM project_files WHERE id = ? AND project_name = ?`)
+      .get(id, name) as {
+      id: string;
+      filename: string;
+      byte_size: number;
+      sha256: string;
+    } | undefined;
+    if (!file) return notFound(c, "file");
+    ctx.store.deleteProjectFile(name, id);
+    ctx.store.audit(c.get("actor"), "project.file_deleted", {
+      detail: {
+        project: name,
+        filename: file.filename,
+        byte_size: file.byte_size,
+        sha256: file.sha256,
+      },
+    });
+    return c.json({ ok: true });
   });
 
   app.get("/scopes/:id", (c) => {
