@@ -59,7 +59,10 @@ test.describe("project context in the console", () => {
       timeout: 15000,
     });
 
-    // The moved editor prefills from the stored document.
+    // The editor is behind an Edit brief button (the always-open textarea is
+    // no longer the default view); reveal it and confirm it prefills from the
+    // stored document.
+    await page.getByRole("button", { name: "Edit brief" }).click();
     const textarea = page.locator('textarea[name="project-context"]');
     await expect(textarea).toBeVisible({ timeout: 15000 });
     await expect(textarea).toHaveValue(
@@ -91,6 +94,7 @@ test.describe("project context in the console", () => {
 
     // A reload re-reads the persisted text through GET /projects/:name.
     await page.reload();
+    await page.getByRole("button", { name: "Edit brief" }).click();
     const textareaAfter = page.locator('textarea[name="project-context"]');
     await expect(textareaAfter).toHaveValue(typed, { timeout: 15000 });
 
@@ -134,8 +138,11 @@ test.describe("project context in the console", () => {
     await expect
       .poll(() => page.url(), { timeout: 15000 })
       .toMatch(/#\/new\?project=/);
-    const input = page.locator('input[name="project"]');
-    await expect(input).toHaveValue(project, { timeout: 15000 });
+    // The project is shown as a fixed non-editable element, not a text input.
+    const fixed = page.locator(".composer-fixed").first();
+    await expect(fixed).toBeVisible({ timeout: 15000 });
+    await expect(fixed).toContainText(project);
+    await expect(page.locator('input[name="project"]')).toHaveCount(0);
 
     expect(errors).toEqual([]);
   });
