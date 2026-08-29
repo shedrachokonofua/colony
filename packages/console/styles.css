@@ -609,6 +609,14 @@ body {
   margin: 0 auto;
 }
 
+/* The index keeps the legacy `board` class so the frozen e2e specs can
+   locate it, but it is a centered single column, never the 21rem-sidebar
+   grid the bare `.board` rule would impose. */
+.project-index.board {
+  display: block;
+  grid-template-columns: none;
+}
+
 .project-cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -631,6 +639,14 @@ body {
 .project-card:hover,
 .project-card:focus-visible {
   border-color: var(--line-strong);
+}
+
+/* The card also carries the legacy `project-row` class so the frozen e2e
+   specs can locate and tab to it; neutralize the row's flex alignment so
+   the card keeps its column layout. */
+.project-card.project-row {
+  align-items: stretch;
+  flex-wrap: nowrap;
 }
 
 .project-card-name {

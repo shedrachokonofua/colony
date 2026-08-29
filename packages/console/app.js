@@ -22,6 +22,12 @@ import {
   pageCount,
   pageFromHash,
 } from "./pagination.js";
+import {
+  buildNewProjectPayload,
+  knowledgeText,
+  repoSummaryText,
+  resolveComposerProject,
+} from "./project-helpers.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
@@ -908,9 +914,10 @@ async function submitOpenScope(event) {
   if (!goal || !path) return;
   // When the composer was opened from a project, the project is fixed: the
   // operator cannot silently change it.
-  const project = String(
-    hashQueryProject() ?? data.get("project") ?? "",
-  ).trim();
+  const project = resolveComposerProject(
+    hashQueryProject(),
+    data.get("project"),
+  );
   try {
     const scope = await api("/scopes", {
       method: "POST",
@@ -966,13 +973,12 @@ async function submitNewProject(event) {
   const name = String(data.get("name") || "").trim();
   const context_doc = String(data.get("context_doc") || "").trim();
   if (!name) return;
+  const payload = buildNewProjectPayload(name, context_doc);
+  if (!payload) return;
   try {
     await api("/projects", {
       method: "POST",
-      body: JSON.stringify({
-        name,
-        ...(context_doc ? { context_doc } : {}),
-      }),
+      body: JSON.stringify(payload),
     });
     location.hash = projectHref(name);
   } catch (err) {
@@ -1655,18 +1661,12 @@ function scopeCard(scope) {
 function projectCard(project) {
   const counts = project.status_counts ?? {};
   const chips = Object.entries(counts).filter(([, n]) => n > 0);
-  const repos = project.repositories ?? [];
   const fileCount = project.file_count ?? 0;
-  const repoSummary = repos.length
-    ? html`${repos.length} connected repo${repos.length === 1 ? "" : "s"} ·
-      ${repos
-        .slice(0, 2)
-        .map((repo) => html`<span class="mono">${repo.repo_path}</span>`)}
-      ${repos.length > 2
-        ? html`<span class="mono">+${repos.length - 2} more</span>`
-        : nothing}`
-    : html`No connected repositories`;
-  return html`<a class="project-card" href=${projectHref(project.name)}>
+  const repoSummary = repoSummaryText(project.repositories);
+  return html`<a
+    class="project-card project-row"
+    href=${projectHref(project.name)}
+  >
     <span class="project-card-name">${project.name}</span>
     <span class="project-card-meta">
       <span class="mono"
@@ -1684,10 +1684,9 @@ function projectCard(project) {
       <span class="mono">${rel(project.last_activity_at)}</span>
     </span>
     <span class="project-card-repos">${repoSummary}</span>
-    <span class="project-card-knowledge">
-      ${project.context_doc ? "Brief" : "No brief"} · ${fileCount} reference
-      file${fileCount === 1 ? "" : "s"}
-    </span>
+    <span class="project-card-knowledge"
+      >${knowledgeText(project.context_doc, fileCount)}</span
+    >
   </a>`;
 }
 
@@ -1720,7 +1719,7 @@ function renderProjectList() {
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
       : nothing}
-    <div class="project-index" id="draw">
+    <div class="project-index board" id="draw">
       <div class="board-head">
         <h1 class="board-title">Projects</h1>
         <a class="btn btn-solid" href="#/new-project">New project</a>
@@ -1808,7 +1807,7 @@ function renderProjectPage() {
                 <a class="btn btn-quiet" href="#/">All projects</a>
               </div>`
             : scopes.length
-              ? html`<div class="rack">
+              ? html`<div class=${DEMO ? "rack rack-single" : "rack"}>
                   ${repeat(scopes, (scope) => scope.id, scopeCard)}
                 </div>`
               : html`<p class="rack-empty">No scopes in this project yet.</p>`}
@@ -1860,7 +1859,7 @@ function renderProjectContextCard() {
   const storedDoc = project.context_doc ?? "";
   const doc = saved === null ? storedDoc : saved.doc;
   const files = state.projectFiles ?? [];
-  const editing = state.briefOpen;
+  const editing = DEMO && doc ? true : state.briefOpen;
   return html`<aside class="card">
     <p class="card-head">
       Project knowledge

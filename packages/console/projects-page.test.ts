@@ -1,90 +1,95 @@
 import { describe, expect, it } from "bun:test";
-
-// Unit tests for the project-page render contract. They verify the markup
-// structure the app.js render functions produce, matching the required
-// classes, fields, and conditional empty states.
+import {
+  PROJECT_CARDS_GRID_DESKTOP,
+  PROJECT_CARDS_GRID_MOBILE,
+  buildNewProjectPayload,
+  knowledgeText,
+  repoSummaryText,
+  resolveComposerProject,
+} from "./project-helpers.js";
 
 describe("project-card markup invariants", () => {
-  it("references project-card-knowledge with Brief/No brief and reference file count", () => {
-    // The contract: each card shows .project-card-knowledge with "Brief" when
-    // context_doc is non-empty, "No brief" when null, plus file count.
-    // Actual DOM rendering is integration-tested; here we confirm the string
-    // patterns the render function must produce.
-    const contextDoc = "Some brief text";
-    const fileCount = 3;
-    const output = `<span class="project-card-knowledge">Brief · ${fileCount} reference files</span>`;
-    expect(output).toMatch(/Brief/);
-    expect(output).toMatch(/3 reference files/);
-
-    const noDoc = null;
-    const noFileCount = 0;
-    const output2 = `<span class="project-card-knowledge">No brief · ${noFileCount} reference files</span>`;
-    expect(output2).toMatch(/No brief/);
-    expect(output2).toMatch(/0 reference files/);
+  it("knowledge line: Brief with file count when context_doc present", () => {
+    expect(knowledgeText("Some brief", 3)).toBe("Brief · 3 reference files");
+    expect(knowledgeText("Some brief", 1)).toBe("Brief · 1 reference file");
   });
 
-  it("shows repo summary for empty repositories", () => {
-    // When repositories is [], the card shows "No connected repositories".
-    const repos: { repo_id: string; repo_path: string }[] = [];
-    const summary = repos.length
-      ? `${repos.length} connected repos`
-      : "No connected repositories";
-    expect(summary).toBe("No connected repositories");
+  it("knowledge line: No brief when context_doc empty/null", () => {
+    expect(knowledgeText(null, 0)).toBe("No brief · 0 reference files");
+    expect(knowledgeText("", 2)).toBe("No brief · 2 reference files");
   });
 
-  it("shows repo summary for non-empty repositories", () => {
-    const repos = [
-      { repo_id: "49", repo_path: "so/colony" },
-      { repo_id: "112", repo_path: "so/console-e2e" },
-    ];
-    const summary = `${repos.length} connected`;
-    expect(summary).toMatch(/2 connected/);
+  it("repo summary: No connected repositories when empty", () => {
+    expect(repoSummaryText([])).toBe("No connected repositories");
+    expect(repoSummaryText(null)).toBe("No connected repositories");
+  });
+
+  it("repo summary: count + up to two paths + more indicator", () => {
+    expect(
+      repoSummaryText([
+        { repo_id: "49", repo_path: "so/colony" },
+        { repo_id: "112", repo_path: "so/console-e2e" },
+      ]),
+    ).toBe("2 connected repos · so/colony · so/console-e2e");
+
+    expect(
+      repoSummaryText([
+        { repo_id: "1", repo_path: "a/b" },
+        { repo_id: "2", repo_path: "c/d" },
+        { repo_id: "3", repo_path: "e/f" },
+      ]),
+    ).toBe("3 connected repos · a/b · c/d +1 more");
+  });
+
+  it("repo summary: single repo", () => {
+    expect(repoSummaryText([{ repo_id: "1", repo_path: "only/repo" }])).toBe(
+      "1 connected repo · only/repo",
+    );
   });
 });
 
 describe("project-card grid layout", () => {
-  it("uses two-column grid on desktop, one-column below 900px", () => {
-    // The CSS class .project-cards has grid-template-columns: repeat(2, …)
-    // and @media (max-width:900px) overrides to 1fr.
-    // This test verifies the class name convention.
-    const gridClass = "project-cards";
-    expect(gridClass).toBe("project-cards");
+  it("two-column desktop class", () => {
+    expect(PROJECT_CARDS_GRID_DESKTOP).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
+  it("one-column mobile class", () => {
+    expect(PROJECT_CARDS_GRID_MOBILE).toBe("1fr");
   });
 });
 
-describe("new-project form", () => {
-  it("requires name and optional context_doc", () => {
-    // The form POST /projects with { name, context_doc? }.
-    const body = { name: "Test Project" };
-    expect(body.name).toBeTruthy();
-
-    const withDoc = { name: "Test", context_doc: "Brief" };
-    expect(withDoc.context_doc).toBeTruthy();
-
-    const noDoc = { name: "Test", context_doc: undefined };
-    expect(noDoc.context_doc).toBeUndefined();
+describe("new-project payload", () => {
+  it("requires name, optional context_doc", () => {
+    expect(buildNewProjectPayload("Test Project", "")).toEqual({
+      name: "Test Project",
+    });
+    expect(buildNewProjectPayload("Test", "Brief")).toEqual({
+      name: "Test",
+      context_doc: "Brief",
+    });
   });
 
-  it("handles 409 CONFLICT via error banner", () => {
-    // Duplicate POST returns { error: { code: "CONFLICT" } }.
-    const error = { code: "CONFLICT", message: "Project already exists" };
-    expect(error.code).toBe("CONFLICT");
+  it("returns null for empty/whitespace name", () => {
+    expect(buildNewProjectPayload("", "Brief")).toBeNull();
+    expect(buildNewProjectPayload("  ", "Brief")).toBeNull();
   });
 });
 
 describe("composer fixed-project behavior", () => {
-  it("submits the query project value when hashQueryProject is present", () => {
-    // When ?project=X, the field is not editable and the value is fixed.
-    const hashQueryProject = () => "Fixed Project";
-    const dataValue = ""; // no input[name=project]
-    const project = hashQueryProject() ?? dataValue;
-    expect(project).toBe("Fixed Project");
+  it("submits the fixed project when hashQueryProject is present", () => {
+    expect(resolveComposerProject("Fixed Project", "Form Value")).toBe(
+      "Fixed Project",
+    );
+    expect(resolveComposerProject("Fixed Project", "")).toBe("Fixed Project");
   });
 
   it("falls back to the form field when hashQueryProject is absent", () => {
-    const hashQueryProject = () => null;
-    const dataValue = "Form Project";
-    const project = hashQueryProject() ?? dataValue;
-    expect(project).toBe("Form Project");
+    expect(resolveComposerProject(null, "Form Project")).toBe("Form Project");
+    expect(resolveComposerProject("", "Form Project")).toBe("Form Project");
+  });
+
+  it("falls back to empty string when both are missing", () => {
+    expect(resolveComposerProject(null, "")).toBe("");
+    expect(resolveComposerProject(null, null)).toBe("");
   });
 });
