@@ -76,7 +76,13 @@ async function waitForScopeDetail(page: Page, scopeId: string) {
 
 async function createScopeViaApi(
   page: Page,
-  opts: { title?: string; goal: string; path?: string; approvals?: string },
+  opts: {
+    title?: string;
+    goal: string;
+    path?: string;
+    approvals?: string;
+    project?: string;
+  },
 ) {
   const title =
     opts.title ??
@@ -93,6 +99,7 @@ async function createScopeViaApi(
       goal,
       approvals: opts.approvals as unknown as "auto" | "manual" | undefined,
       repo: { path: repoPath },
+      ...(opts.project ? { project: opts.project } : {}),
     },
   });
   expect(res.ok(), `POST /scopes ${res.status()} ${await res.text()}`).toBe(
@@ -162,23 +169,28 @@ test.describe("console mobile", () => {
       timeout: 15000,
     });
 
-    const emptyMsg = page.getByText("No scopes yet — open the first one.");
+    const emptyMsg = page.getByText("No projects yet");
     const hasEmpty = (await emptyMsg.count()) > 0;
     if (hasEmpty) {
       await expect(emptyMsg.first()).toBeVisible({ timeout: 15000 });
       await expect(emptyMsg.first()).toBeInViewport({ timeout: 15000 });
     } else {
-      await page.route("**/scopes?*", (route) =>
+      await page.route("**/projects?*", (route) =>
         route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ scopes: [], total: 0, limit: 25, offset: 0 }),
+          body: JSON.stringify({
+            projects: [],
+            total: 0,
+            limit: 25,
+            offset: 0,
+          }),
         }),
       );
       await page.reload();
       await expect(emptyMsg.first()).toBeVisible({ timeout: 15000 });
       await expect(emptyMsg.first()).toBeInViewport({ timeout: 15000 });
-      await page.unroute("**/scopes?*");
+      await page.unroute("**/projects?*");
     }
     await assertNoHorizontalOverflow(page);
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
@@ -197,7 +209,7 @@ test.describe("console mobile", () => {
     await expect(page.locator(".board").first()).toBeVisible({
       timeout: 15000,
     });
-    await page.route("**/scopes*", (route) =>
+    await page.route("**/projects*", (route) =>
       route.fulfill({
         status: 502,
         contentType: "application/json",
@@ -211,7 +223,7 @@ test.describe("console mobile", () => {
     await expect(banner).toBeVisible({ timeout: 15000 });
     await expect(banner).toBeInViewport({ timeout: 15000 });
     await assertNoHorizontalOverflow(page);
-    await page.unroute("**/scopes*");
+    await page.unroute("**/projects*");
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
 
@@ -232,15 +244,14 @@ test.describe("console mobile", () => {
     await assertBoardSingleColumn(page);
     // crumbs hidden via @media (max-width:900px) { .crumbs { display:none } }
     await expect(page.locator(".crumbs")).toBeHidden({ timeout: 15000 });
-    const boardSidePosition = await page.evaluate(() => {
-      const el = document.querySelector(".board-side") as HTMLElement | null;
-      return el ? getComputedStyle(el).position : "";
-    });
-    expect(boardSidePosition).toBe("static");
+    // The homepage no longer has a side rail.
+    await expect(page.locator(".board-side")).toHaveCount(0);
     await expect(page.getByRole("link", { name: "New scope" })).toBeVisible();
-    await expect(page.locator(".rack-empty, .scope-card").first()).toBeVisible({
-      timeout: 15000,
-    });
+    await expect(page.locator(".rack-empty, .project-row").first()).toBeVisible(
+      {
+        timeout: 15000,
+      },
+    );
     await assertNoHorizontalOverflow(page);
 
     const scope = await createScopeViaApi(page, {
@@ -315,6 +326,7 @@ test.describe("console mobile", () => {
     await expect(pathInput).toBeVisible({ timeout: 15000 });
 
     const uniq = `${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+    const project = `mobile-proj-${uniq}`;
     await titleInput.tap();
     await titleInput.fill(`Mobile Touch ${uniq}`);
     await goalInput.tap();
@@ -323,6 +335,9 @@ test.describe("console mobile", () => {
     );
     await pathInput.tap();
     await pathInput.fill("so/console-e2e");
+    // Fill project field so the scope belongs to a named project.
+    await page.locator('input[name="project"]').tap();
+    await page.locator('input[name="project"]').fill(project);
 
     const submit = page.getByRole("button", { name: "Open scope" });
     await expect(submit).toBeVisible({ timeout: 15000 });
@@ -343,8 +358,9 @@ test.describe("console mobile", () => {
     await waitForScopeDetail(page, scopeId);
     await assertNoHorizontalOverflow(page);
 
-    await page.goto("/");
-    await expect(page.locator(".board").first()).toBeVisible({
+    // Navigate to the project page and tap the scope card.
+    await page.goto(`/#/project/${encodeURIComponent(project)}`);
+    await expect(page.locator(".board-head .board-title")).toBeVisible({
       timeout: 15000,
     });
     await expect(page.locator(".scope-card").first()).toBeVisible({

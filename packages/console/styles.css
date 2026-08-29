@@ -554,6 +554,54 @@ body {
   grid-template-columns: 1fr;
 }
 
+.project-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0.9rem 1rem;
+  text-decoration: none;
+  color: inherit;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  transition: border-color 130ms ease;
+}
+
+.project-row:hover,
+.project-row:focus-visible {
+  border-color: var(--line-strong);
+}
+
+.project-row-main {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.project-row-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-row-count {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.project-row-activity {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 0.78rem;
+}
+
+.rack-empty a {
+  color: var(--link);
+}
+
 /* ---------- Composer ---------- */
 
 .composer {
@@ -995,55 +1043,6 @@ body {
 
 .board-head .btn {
   text-decoration: none;
-}
-
-.board-filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-}
-
-.filter-chip {
-  padding: 0.3rem 0.75rem;
-  font: 600 0.8rem var(--body);
-  color: var(--muted);
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  cursor: pointer;
-  transition:
-    border-color 120ms ease,
-    color 120ms ease,
-    background 120ms ease;
-}
-
-.filter-chip:hover {
-  border-color: var(--line-strong);
-  color: var(--ink);
-}
-
-.filter-chip.is-active {
-  background: var(--navy);
-  border-color: var(--navy);
-  color: #fff;
-}
-
-.board-search {
-  margin-left: auto;
-  min-width: 15rem;
-  padding: 0.4rem 0.7rem;
-  font: inherit;
-  font-size: 0.85rem;
-  color: var(--ink);
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-}
-
-.board-search::placeholder {
-  color: var(--faint);
 }
 
 .create {

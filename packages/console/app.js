@@ -16,12 +16,24 @@ import {
 } from "./duration.js";
 import { costPredictionLines, parseCostPrediction } from "./cost-prediction.js";
 import { traceHref } from "./trace-link.js";
+import {
+  hrefForPage,
+  outOfRange,
+  pageCount,
+  pageFromHash,
+} from "./pagination.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
 const DEMO = new URLSearchParams(location.search).has("demo");
-// Demo-safe read paths: project detail, its context, and its scope page only.
-const DEMO_READS = /^\/projects\/[^/?]+(?:\/context)?(?:\?.*)?$|^\/scopes\?/;
+// Demo-safe read paths: project detail, its context, its scope page, and the
+// project list (the homepage) so the whole console is driveable offline.
+const DEMO_READS =
+  /^\/projects\/[^/?]+(?:\/context)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
+
+// Demo volume: enough projects and scopes to exercise page 2 on both surfaces.
+const DEMO_PROJECT_COUNT = 27;
+const DEMO_SCOPES_IN_PROJECT = 27;
 
 const KIND_LABEL = {
   architect: "plan",
@@ -40,7 +52,6 @@ const state = {
   },
   oidc: null,
   actor: localStorage.getItem(ACTOR_KEY) || "human:op-1",
-  scopes: [],
   detail: null,
   audit: [],
   selectedTaskId: null,
@@ -50,15 +61,9 @@ const state = {
   goalOpen: false,
   planOpen: false,
   reader: null,
-  boardFilter: "all",
-  boardQuery: "",
-  boardOffset: 0,
-  boardProject: null,
-  scopesTotal: 0,
-  scopeProjects: [],
   projectContext: null,
   projectPage: null,
-  projectOffset: 0,
+  projectsPage: null,
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -216,11 +221,17 @@ function rel(iso) {
 
 function routeScopeId() {
   const hash = location.hash.replace(/^#\/?/, "");
-  if (!hash || NEW_ROUTE.test(hash) || PROJECT_ROUTE.test(hash)) return null;
+  if (
+    !hash ||
+    hash.startsWith("?") ||
+    NEW_ROUTE.test(hash) ||
+    PROJECT_ROUTE.test(hash)
+  )
+    return null;
   return hash;
 }
 
-const PROJECT_ROUTE = /^project\/([^/]+)/;
+const PROJECT_ROUTE = /^project\/([^/?]+)/;
 // Create route, optionally carrying a query (e.g. #/new?project=X).
 const NEW_ROUTE = /^new(?:$|\?)/;
 
@@ -413,15 +424,80 @@ const DEMO_SHA_B = "b9c0d1e2f30415263748a9b0c1d2e3f401234567";
 const DEMO_GATE_STARTED = new Date(Date.now() - 12 * 1000).toISOString();
 
 function demoWorld() {
+  const now = Date.now();
+  // Filler projects: DEMO_PROJECT_COUNT - 1 of them, each strictly newer than
+  // the demo project, so "Operator console" sorts at index DEMO_PROJECT_COUNT - 1
+  // = offset 25 — the first row of the homepage's page 2.
+  const fillerProjects = Array.from(
+    { length: DEMO_PROJECT_COUNT - 1 },
+    (_, i) => ({
+      name: `Demo project ${String(i).padStart(2, "0")}`,
+      context_doc: null,
+      created_at: new Date(now - (i + 1) * 3600_000).toISOString(),
+      updated_at: new Date(now - (i + 1) * 3600_000).toISOString(),
+      scope_count: 0,
+      status_counts: {
+        draft: 0,
+        planning: 0,
+        active: 0,
+        validating: 0,
+        blocked: 0,
+        done: 0,
+        abandoned: 0,
+      },
+      last_activity_at: null,
+    }),
+  );
+  // Generated Operator-console scopes. Hand-authored scopes are newer than
+  // every generated one but are not owned by this project, so d25 is exactly
+  // the 26th row (offset 25): the first row of the project's scopes page 2.
+  const generatedScopes = Array.from(
+    { length: DEMO_SCOPES_IN_PROJECT },
+    (_, i) => {
+      const created = new Date(now - (i + 3) * 3600_000);
+      return {
+        id: `col-d${String(i).padStart(2, "0")}`,
+        goal: `Demo goal ${String(i).padStart(2, "0")}`,
+        title: `Demo scope ${String(i).padStart(2, "0")}`,
+        project_name: "Operator console",
+        status: ["active", "validating", "done", "blocked"][i % 4],
+        provider_repo_path: "so/colony",
+        default_branch: "main",
+        plan_json: null,
+        acceptance_json: null,
+        blocked_reason: null,
+        created_at: created.toISOString(),
+        updated_at: new Date(created.getTime() + 60_000).toISOString(),
+      };
+    },
+  );
+  const projectScopes = generatedScopes;
+  const statusCounts = {
+    draft: 0,
+    planning: 0,
+    active: 0,
+    validating: 0,
+    blocked: 0,
+    done: 0,
+    abandoned: 0,
+  };
+  for (const s of projectScopes) statusCounts[s.status] += 1;
   const demoProject = {
     name: "Operator console",
     context_doc:
       "Console is no-build lit-html served straight from packages/console. " +
       "Light theme, white and deep blues, no external CDNs.",
-    created_at: new Date(Date.now() - 30 * 86400 * 1000).toISOString(),
-    updated_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
-    scope_count: 2,
-    status_counts: { active: 1, validating: 1 },
+    created_at: new Date(now - 30 * 86400 * 1000).toISOString(),
+    // Exactly DEMO_PROJECT_COUNT - 1 >= 25 filler projects are strictly newer,
+    // so the demo project lands inside the page-2 window (offset 25).
+    updated_at: new Date(
+      now - (DEMO_PROJECT_COUNT + 1) * 3600_000,
+    ).toISOString(),
+    scope_count: projectScopes.length,
+    status_counts: statusCounts,
+    last_activity_at: new Date(
+      Math.max(...projectScopes.map((s) => Date.parse(s.updated_at))),
+    ).toISOString(),
   };
   const scope = {
     id: "col-a1b2c3d4",
@@ -627,13 +703,14 @@ function demoWorld() {
       trace_ui_base_url: "https://traces.home.shdr.ch",
     },
     project: demoProject,
+    projects: [...fillerProjects, demoProject],
     scopes: [
       scope,
       {
         id: "col-0badc0de",
         goal: "Expose run token usage per scope on the console",
         title: "Usage panel",
-        project_name: "Operator console",
+        project_name: null,
         status: "active",
         provider_repo_path: "so/colony",
         default_branch: "main",
@@ -642,19 +719,7 @@ function demoWorld() {
         created_at: new Date(Date.now() - 5 * 3600 * 1000).toISOString(),
         updated_at: new Date(Date.now() - 40 * 60 * 1000).toISOString(),
       },
-      {
-        id: "col-deadbeef",
-        goal: "Retire the leftover colony-dev hostname",
-        title: null,
-        project_name: "Aether cleanup",
-        status: "done",
-        provider_repo_path: "so/aether",
-        default_branch: "main",
-        plan_json: null,
-        blocked_reason: null,
-        created_at: new Date(Date.now() - 2 * 86400 * 1000).toISOString(),
-        updated_at: new Date(Date.now() - 2 * 86400 * 1000).toISOString(),
-      },
+      ...generatedScopes,
     ],
     detail: { scope, tasks, deps, runs },
     runEvents,
@@ -1284,6 +1349,7 @@ function abandonButton(scope) {
 
 function renderTopbar() {
   const id = routeScopeId();
+  const scopeProject = id ? state.detail?.scope?.project_name || null : null;
   const account = state.oidc
     ? state.auth
       ? html`<div class="sign account">
@@ -1305,10 +1371,22 @@ function renderTopbar() {
   return html`<header class="topbar">
     <a class="brand" href="#/">${BRAND_MARK}<span>COLONY</span></a>
     <nav class="crumbs" aria-label="Breadcrumb">
-      <a href="#/">Board</a>
+      <a href="#/">Projects</a>
+      ${routeProjectName()
+        ? html`<span class="crumb-sep">/</span>
+            <a class="crumb" href=${projectHref(routeProjectName())}
+              >${routeProjectName()}</a
+            >`
+        : nothing}
       ${routeIsNew()
         ? html`<span class="crumb-sep">/</span>
             <span class="crumb">new scope</span>`
+        : nothing}
+      ${scopeProject
+        ? html`<span class="crumb-sep">/</span>
+            <a class="crumb" href=${projectHref(scopeProject)}
+              >${scopeProject}</a
+            >`
         : nothing}
       ${id
         ? html`<span class="crumb-sep">/</span>
@@ -1338,47 +1416,7 @@ function renderSignin() {
   </div>`;
 }
 
-const BOARD_FILTERS = [
-  { key: "all", label: "All" },
-  { key: "needs-you", label: "Needs you" },
-  { key: "running", label: "Running" },
-  { key: "done", label: "Done" },
-  { key: "abandoned", label: "Abandoned" },
-];
-
-function scopeMatchesFilter(scope) {
-  switch (state.boardFilter) {
-    case "needs-you":
-      return (
-        (scope.status === "planning" && Boolean(scope.plan_json)) ||
-        scope.status === "blocked"
-      );
-    case "running":
-      return ["planning", "active", "validating"].includes(scope.status);
-    case "done":
-      return scope.status === "done";
-    case "abandoned":
-      return scope.status === "abandoned";
-    default:
-      return true;
-  }
-}
-
-function scopeMatchesQuery(scope) {
-  const q = state.boardQuery.trim().toLowerCase();
-  if (!q) return true;
-  return [
-    scope.title,
-    scope.goal,
-    scope.id,
-    scope.project_name,
-    scope.provider_repo_path,
-  ]
-    .filter(Boolean)
-    .some((field) => field.toLowerCase().includes(q));
-}
-
-const BOARD_PAGE_SIZE = 25;
+const PAGE_SIZE = 25;
 
 function scopeCard(scope) {
   return html`<button class="scope-card" @click=${() => openScope(scope.id)}>
@@ -1402,92 +1440,58 @@ function scopeCard(scope) {
   </button>`;
 }
 
-function renderBoardPager() {
-  const total = state.scopesTotal;
-  if (total <= BOARD_PAGE_SIZE) return nothing;
-  const from = state.boardOffset + 1;
-  const to = Math.min(state.boardOffset + state.scopes.length, total);
-  const turn = (offset) => {
-    state.boardOffset = Math.max(0, offset);
-    void refresh();
-  };
-  return html`<nav class="board-pager" aria-label="Scope pages">
-    <button
-      class="btn btn-quiet"
-      ?disabled=${state.boardOffset === 0}
-      @click=${() => turn(state.boardOffset - BOARD_PAGE_SIZE)}
+function projectRow(project) {
+  const counts = project.status_counts ?? {};
+  const chips = Object.entries(counts).filter(([, n]) => n > 0);
+  return html`<a class="project-row" href=${projectHref(project.name)}>
+    <span class="project-row-main">
+      <span class="project-row-name">${project.name}</span>
+      <span class="project-row-count mono"
+        >${project.scope_count}
+        scope${project.scope_count === 1 ? "" : "s"}</span
+      >
+    </span>
+    ${chips.length
+      ? html`<span class="project-counts">
+          ${chips.map(
+            ([status, count]) =>
+              html`<span class="chip" data-kind=${status}
+                >${status} ${count}</span
+              >`,
+          )}
+        </span>`
+      : nothing}
+    <span class="project-row-activity mono"
+      >${rel(project.last_activity_at)}</span
     >
-      Newer
-    </button>
+  </a>`;
+}
+
+function renderPager({ base, page, total, items, label }) {
+  if (total <= PAGE_SIZE) return nothing;
+  const from = (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min((page - 1) * PAGE_SIZE + items, total);
+  return html`<nav class="board-pager" aria-label=${label}>
+    <a class="btn btn-quiet" href=${hrefForPage(base, Math.max(1, page - 1))}>
+      Previous
+    </a>
     <span class="pager-range mono">${from}–${to} of ${total}</span>
-    <button
+    <a
       class="btn btn-quiet"
-      ?disabled=${to >= total}
-      @click=${() => turn(state.boardOffset + BOARD_PAGE_SIZE)}
+      href=${hrefForPage(base, Math.min(pageCount(total, PAGE_SIZE), page + 1))}
     >
-      Older
-    </button>
+      Next
+    </a>
   </nav>`;
 }
 
-function projectTotal(project) {
-  const row = state.scopeProjects.find((p) => p.project === project);
-  return row ? row.n : null;
-}
-
-function renderBoard() {
-  const visible = state.scopes.filter(
-    (scope) => scopeMatchesFilter(scope) && scopeMatchesQuery(scope),
-  );
-  // Group scopes by their project name, in page order (most recent scope
-  // first), ungrouped scopes together at the end. All-ungrouped renders flat.
-  const projects = new Map();
-  for (const scope of visible) {
-    const key = scope.project_name || "";
-    if (!projects.has(key)) projects.set(key, []);
-    projects.get(key).push(scope);
-  }
-  if (projects.has("") && projects.size > 1) {
-    const loose = projects.get("");
-    projects.delete("");
-    projects.set("", loose);
-  }
-  const cards = visible.length
-    ? repeat(
-        [...projects.entries()],
-        ([project]) => project,
-        ([project, scopes]) => html`
-          ${project
-            ? html`<h2 class="rack-group">
-                <a
-                  class="rack-group-link"
-                  href=${projectHref(project)}
-                  title="Open this project"
-                >
-                  ${project}
-                </a>
-                <span class="rack-count"
-                  >${projectTotal(project) ?? scopes.length}</span
-                >
-              </h2>`
-            : projects.size > 1
-              ? html`<h2 class="rack-group rack-group-loose">
-                  No project
-                  <span class="rack-count">${scopes.length}</span>
-                </h2>`
-              : nothing}
-          <div class="rack">
-            ${repeat(scopes, (scope) => scope.id, scopeCard)}
-          </div>
-        `,
-      )
-    : html`<p class="rack-empty">
-        ${state.scopes.length
-          ? "No scopes match this filter."
-          : state.boardOffset > 0
-            ? "Past the last page."
-            : "No scopes yet — open the first one."}
-      </p>`;
+function renderProjectList() {
+  const page = state.projectsPage;
+  const rows = page?.projects ?? [];
+  const total = page?.total ?? 0;
+  const items = rows.length;
+  const pageNo = page?.page ?? 1;
+  const base = "#/";
   return html`
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
@@ -1495,60 +1499,39 @@ function renderBoard() {
     <div class="board" id="draw">
       <section class="board-main">
         <div class="board-head">
-          <h1 class="board-title">Scopes</h1>
+          <h1 class="board-title">Projects</h1>
           <a class="btn btn-solid" href="#/new">New scope</a>
         </div>
-        <div class="board-filters">
-          ${BOARD_FILTERS.map(
-            (f) =>
-              html`<button
-                class=${classMap({
-                  "filter-chip": true,
-                  "is-active": state.boardFilter === f.key,
-                })}
-                @click=${() => {
-                  state.boardFilter = f.key;
-                  paint();
-                }}
-              >
-                ${f.label}
-              </button>`,
-          )}
-          ${state.boardProject
-            ? html`<button
-                class="filter-chip is-active"
-                title="Clear project filter"
-                @click=${() => {
-                  state.boardProject = null;
-                  state.boardOffset = 0;
-                  void refresh();
-                }}
-              >
-                ${state.boardProject} ✕
-              </button>`
-            : nothing}
-          <input
-            class="board-search"
-            type="search"
-            placeholder="Search title, goal, id, project…"
-            .value=${live(state.boardQuery)}
-            @input=${(event) => {
-              state.boardQuery = event.target.value;
-              paint();
-            }}
-          />
-        </div>
-        <div class="racks">${cards}</div>
-        ${renderBoardPager()}
+        ${total === 0
+          ? html`<p class="rack-empty">
+              No projects yet — open the first scope.
+              <a class="btn btn-solid" href="#/new">Open a scope</a>
+            </p>`
+          : items === 0
+            ? html`<div class="rack-empty">
+                <p>Past the last page.</p>
+                <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                  >Back to page 1</a
+                >
+              </div>`
+            : html`<div class="rack rack-single">
+                ${repeat(rows, (project) => project.name, projectRow)}
+              </div>`}
+        ${renderPager({
+          base,
+          page: pageNo,
+          total,
+          items,
+          label: "Project pages",
+        })}
       </section>
-      <div class="board-side">${renderActivity()}</div>
     </div>
   `;
 }
 
 function renderProjectPage() {
   const page = state.projectPage;
-  if (!page?.name) return renderBoard();
+  if (!page?.name) return renderProjectList();
   if (!page.project) {
     return html`<div class="project-page" id="draw">
       <p class="rack-empty">
@@ -1559,6 +1542,8 @@ function renderProjectPage() {
   }
   const counts = page.project.status_counts ?? {};
   const chips = Object.entries(counts).filter(([, n]) => n > 0);
+  const base = projectHref(page.project.name);
+  const scopes = page.scopes ?? [];
   return html`
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
@@ -1592,43 +1577,29 @@ function renderProjectPage() {
       ${renderProjectContextCard()}
       <section class="project-scopes">
         <p class="card-head">Scopes</p>
-        ${page.scopes.length
-          ? html`<div class="rack rack-single">
-              ${repeat(page.scopes, (scope) => scope.id, scopeCard)}
+        ${page.total > 0 && scopes.length === 0
+          ? html`<div class="rack-empty">
+              <p>Past the last page.</p>
+              <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                >Back to page 1</a
+              >
+              <a class="btn btn-quiet" href="#/">All projects</a>
             </div>`
-          : html`<p class="rack-empty">No scopes in this project yet.</p>`}
-        ${renderProjectPager()}
+          : scopes.length
+            ? html`<div class="rack rack-single">
+                ${repeat(scopes, (scope) => scope.id, scopeCard)}
+              </div>`
+            : html`<p class="rack-empty">No scopes in this project yet.</p>`}
+        ${renderPager({
+          base,
+          page: page.page,
+          total: page.total,
+          items: scopes.length,
+          label: "Project scope pages",
+        })}
       </section>
     </div>
   `;
-}
-
-function renderProjectPager() {
-  const page = state.projectPage;
-  if (!page || page.total <= BOARD_PAGE_SIZE) return nothing;
-  const from = state.projectOffset + 1;
-  const to = Math.min(state.projectOffset + page.scopes.length, page.total);
-  const turn = (offset) => {
-    state.projectOffset = Math.max(0, offset);
-    void refresh();
-  };
-  return html`<nav class="board-pager" aria-label="Project scope pages">
-    <button
-      class="btn btn-quiet"
-      ?disabled=${state.projectOffset === 0}
-      @click=${() => turn(state.projectOffset - BOARD_PAGE_SIZE)}
-    >
-      Newer
-    </button>
-    <span class="pager-range mono">${from}–${to} of ${page.total}</span>
-    <button
-      class="btn btn-quiet"
-      ?disabled=${to >= page.total}
-      @click=${() => turn(state.projectOffset + BOARD_PAGE_SIZE)}
-    >
-      Older
-    </button>
-  </nav>`;
 }
 
 function renderCreate() {
@@ -2335,7 +2306,7 @@ function paint() {
             ? renderSheet()
             : routeProjectName()
               ? renderProjectPage()
-              : renderBoard();
+              : renderProjectList();
     litRender(
       html`${renderTopbar()}
         <main class="view">${view}</main>
@@ -2357,23 +2328,37 @@ async function refresh() {
     if (DEMO) {
       const world = demoWorld();
       state.config = world.config;
-      state.scopes = world.scopes;
-      state.scopesTotal = world.scopes.length;
-      state.scopeProjects = [];
       const id = routeScopeId();
-      state.detail = id === world.detail.scope.id ? world.detail : null;
+      if (id) {
+        const scopeRow = world.scopes.find((s) => s.id === id) ?? null;
+        state.detail = scopeRow
+          ? scopeRow.id === world.detail.scope.id
+            ? world.detail
+            : { scope: scopeRow, tasks: [], deps: [], runs: [] }
+          : null;
+      } else {
+        state.detail = null;
+      }
       const demoName = routeProjectName();
+      const pageNo = pageFromHash(location.hash);
       if (demoName === world.project.name) {
-        const start = state.projectOffset;
-        const pageScopes = world.scopes.filter(
-          (scope) => scope.project_name === demoName,
-        );
+        // Page the demo project's scopes with the same rule the API uses:
+        // updated_at DESC, id (tie-break), so ?page=2 starts at col-d25.
+        const owned = world.scopes
+          .filter((scope) => scope.project_name === demoName)
+          .sort(
+            (a, b) =>
+              Date.parse(b.updated_at) - Date.parse(a.updated_at) ||
+              (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
+          );
+        const start = (pageNo - 1) * PAGE_SIZE;
         state.projectPage = {
           name: demoName,
           project: world.project,
-          scopes: pageScopes.slice(start, start + BOARD_PAGE_SIZE),
-          total: pageScopes.length,
+          scopes: owned.slice(start, start + PAGE_SIZE),
+          total: owned.length,
           offset: start,
+          page: pageNo,
         };
         // Same seeding path as live refresh(): read the stored doc through
         // the demo-served GET so the editor prefills offline.
@@ -2386,8 +2371,32 @@ async function refresh() {
             status: null,
           };
         }
+      } else if (demoName) {
+        state.projectPage = {
+          name: demoName,
+          project: null,
+          scopes: [],
+          total: 0,
+          offset: 0,
+          page: pageNo,
+        };
       } else {
         state.projectPage = null;
+        // Sort the demo world's projects exactly like the API (row
+        // updated_at DESC, name), then page. This keeps the demo ordering
+        // pin: "Operator console" lands at offset 25, page 2.
+        const ordered = [...world.projects].sort(
+          (a, b) =>
+            Date.parse(b.updated_at) - Date.parse(a.updated_at) ||
+            (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+        );
+        const start = (pageNo - 1) * PAGE_SIZE;
+        state.projectsPage = {
+          projects: ordered.slice(start, start + PAGE_SIZE),
+          total: ordered.length,
+          offset: start,
+          page: pageNo,
+        };
       }
       state.audit = world.audit;
       if (state.drawerOpen && state.selectedTaskId === "col-a1b2c3d4.1") {
@@ -2410,17 +2419,18 @@ async function refresh() {
         return;
       }
     }
+    const pageNo = pageFromHash(location.hash);
+    const offset = (pageNo - 1) * PAGE_SIZE;
     const projectName = routeProjectName();
     if (projectName) {
       // The project route owns this refresh: it must not touch board or sheet
       // state, and it must preserve an in-flight editor status ("Saved.").
-      const offset = state.projectOffset;
       const [project, scopesPage] = await Promise.all([
         api(`/projects/${encodeURIComponent(projectName)}`, {
           notFound: "null",
         }),
         api(
-          `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
+          `/scopes?limit=${PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
         ),
       ]);
       state.projectPage = {
@@ -2429,6 +2439,7 @@ async function refresh() {
         scopes: scopesPage.scopes,
         total: scopesPage.total,
         offset,
+        page: pageNo,
       };
       // Seed the editor from the same read the save round-trips through, so
       // prefill cannot drift from what Save will persist. An unknown project
@@ -2444,16 +2455,15 @@ async function refresh() {
       return;
     }
     state.projectPage = null;
-    const page = await api(
-      `/scopes?limit=${BOARD_PAGE_SIZE}&offset=${state.boardOffset}${
-        state.boardProject
-          ? `&project=${encodeURIComponent(state.boardProject)}`
-          : ""
-      }`,
+    const projectsPage = await api(
+      `/projects?limit=${PAGE_SIZE}&offset=${offset}`,
     );
-    state.scopes = page.scopes;
-    state.scopesTotal = page.total;
-    state.scopeProjects = page.projects ?? [];
+    state.projectsPage = {
+      projects: projectsPage.projects ?? [],
+      total: projectsPage.total ?? 0,
+      offset,
+      page: pageNo,
+    };
     const id = routeScopeId();
     if (id) {
       const [detail, audit] = await Promise.all([
@@ -2556,7 +2566,7 @@ window.addEventListener("hashchange", () => {
   state.planOpen = false;
   state.projectContext = null;
   state.projectPage = null;
-  state.projectOffset = 0;
+  state.projectsPage = null;
   void refresh();
 });
 

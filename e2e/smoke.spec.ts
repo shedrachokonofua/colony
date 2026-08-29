@@ -7,7 +7,7 @@ test.beforeEach(async () => {
   await controlReset();
 });
 
-test("board empty state, brand, actor default, no page errors", async ({
+test("project list empty state, brand, actor default, no page errors", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -17,15 +17,13 @@ test("board empty state, brand, actor default, no page errors", async ({
 
   // Empty state may be populated by other desktop tests sharing the DB; tolerate both
   const emptyVisible = await page
-    .getByText("No scopes yet — open the first one.")
+    .getByText("No projects yet")
     .isVisible()
     .catch(() => false);
   if (emptyVisible) {
-    await expect(
-      page.getByText("No scopes yet — open the first one."),
-    ).toBeVisible();
+    await expect(page.getByText("No projects yet")).toBeVisible();
   } else {
-    await expect(page.locator(".board").first()).toBeVisible();
+    await expect(page.locator(".project-row").first()).toBeVisible();
   }
   await expect(
     page.locator(".brand", { hasText: "COLONY" }).first(),
@@ -49,15 +47,13 @@ test("mobile — page loads and the board is visible within the 390x844 viewport
   await page.goto("/");
 
   const emptyVisible = await page
-    .getByText("No scopes yet — open the first one.")
+    .getByText("No projects yet")
     .isVisible()
     .catch(() => false);
   if (emptyVisible) {
-    await expect(
-      page.getByText("No scopes yet — open the first one."),
-    ).toBeVisible();
+    await expect(page.getByText("No projects yet")).toBeVisible();
   } else {
-    await expect(page.locator(".board").first()).toBeVisible();
+    await expect(page.locator(".project-row").first()).toBeVisible();
   }
   await expect(
     page.locator(".brand", { hasText: "COLONY" }).first(),
