@@ -948,7 +948,6 @@ async function saveProjectContext(value) {
     demoContextStore.set(page.project.name, doc);
     page.project.context_doc = doc;
     state.projectContext = { doc: value, status: "saved" };
-    state.briefOpen = false;
     paint();
     return;
   }
@@ -957,9 +956,9 @@ async function saveProjectContext(value) {
       method: "PUT",
       body: JSON.stringify({ context_doc: doc }),
     });
-    // Keep the editor text through refresh(); status flips to "saved".
+    // Keep the editor open with "Saved." status — matching the original
+    // always-open save flow. The user closes it via Cancel.
     state.projectContext = { doc: value, status: "saved" };
-    state.briefOpen = false;
     await refresh();
   } catch (err) {
     state.error = err instanceof Error ? err.message : String(err);
