@@ -292,6 +292,77 @@ describe("project reference files in packets", () => {
     expect(packet.project).toBeNull();
     expect(packet.body).not.toContain("## Project reference files");
   });
+
+  it("all three builders carry the files manifest and body section", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "all-test", DOC)).status).toBe(201);
+    expect(
+      (await createFile(app, "all-test", "ref.md", "# Ref", "text/markdown"))
+        .status,
+    ).toBe(201);
+    const scope = await createScope(app, {
+      goal: "test all builders",
+      project: "all-test",
+      repo: { path: "so/demo" },
+    });
+    // Move draft -> planning so materializePlan can transition planning -> active.
+    store.setScopeStatus(scope.id, "planning", "human:op-1");
+    // Materialize a plan to create a real task.
+    store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        acceptance: [{ description: "d", command: "true" }],
+        tasks: [{ title: "task1", spec: "spec1", depends_on: [] }],
+      },
+      "human:op-1",
+    );
+    const task = store.listTasks(scope.id)[0]!;
+    const project = store.getProject("all-test")!;
+    const files = store.listProjectFiles("all-test");
+    const s = store.getScope(scope.id)!;
+
+    const arch = buildArchitectPacket(
+      s,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "base",
+    );
+    const impl = buildImplementPacket(
+      task,
+      s,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      "base",
+    );
+    const rev = buildReviewPacket(
+      task,
+      s,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "base",
+    );
+
+    for (const packet of [arch, impl, rev]) {
+      expect(packet.project).not.toBeNull();
+      expect(packet.project!.files.map((f) => f.filename)).toEqual(["ref.md"]);
+      expect(packet.project!.files[0]!.path).toBe(".colony/project/ref.md");
+      expect(JSON.stringify(packet)).not.toContain("# Ref");
+      expect(packet.body).toContain(
+        "## Project reference files (read on demand)",
+      );
+      expect(packet.body).toContain("- .colony/project/ref.md (text/markdown");
+      expect(packet.body).toContain(
+        "## Operator-authored project background (project: all-test)",
+      );
+      expect(packet.body).toContain(DOC);
+    }
+  });
 });
 
 describe("project context HTTP contract", () => {

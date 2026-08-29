@@ -8,7 +8,7 @@ import {
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { provisionScratchDir } from "./pi-runner-common.js";
 import type { AgentRuntimePacket } from "./adapter.js";
@@ -115,7 +115,7 @@ describe("project reference file materialization", () => {
       { filename: ".git", content: "should-skip" },
       { filename: "safe.txt", content: "safe file" },
     ]);
-    const dir = provisionScratchDir("test-run", packet, base);
+    provisionScratchDir("test-run", packet, base);
 
     const projectDir = join(base, ".colony", "project");
     // Dangerous filenames were skipped — only safe.txt was written.

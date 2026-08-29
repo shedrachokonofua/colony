@@ -267,7 +267,7 @@ export function materializeProjectFiles(
       // Check traversal — resolved path must stay inside projectDir.
       const target = join(projectDir, filename);
       const targetResolved = resolve(target);
-      if (!targetResolved.startsWith(projectDirResolved + "/")) {
+      if (!targetResolved.startsWith(projectDirResolved + sep)) {
         continue;
       }
       const content =
