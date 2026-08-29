@@ -22,6 +22,7 @@ export {
   implementerCompletionEnvelopeTypeBox,
   reviewerVerdictEnvelopeTypeBox,
   provisionRepoWorkspace,
+  provisionScratchDir,
 } from "./pi-runner-common.js";
 export type { PiModelSpec, PiRunnerLogger } from "./pi-runner-common.js";
 export { validateDecompositionEnvelope } from "./envelope-validation.js";

@@ -1,12 +1,15 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Store } from "@colony/core";
+import { provisionScratchDir } from "@colony/agent-runtime";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import {
   buildArchitectPacket,
+  buildImplementPacket,
+  buildReviewPacket,
   projectContextSection,
 } from "../src/runs/packets.js";
 
@@ -98,12 +101,17 @@ describe("project context packets", () => {
     const packet = buildArchitectPacket(
       store.getScope(scope.id)!,
       store.getProject("demo")!,
+      store.listProjectFiles("demo"),
       { id: "1", path: "so/demo" },
       "abc123",
     );
     expect(packet.body).toContain(DOC);
     expect(packet.body).toContain(HEADING);
-    expect(packet.project).toEqual({ name: "demo", context_doc: DOC });
+    expect(packet.project).toEqual({
+      name: "demo",
+      context_doc: DOC,
+      files: [],
+    });
     // Unchanged packet contract.
     expect(packet.kind).toBe("architect_scope");
     expect(packet.scope_id).toBe(scope.id);
@@ -126,6 +134,7 @@ describe("project context packets", () => {
     const packet = buildArchitectPacket(
       store.getScope(scope.id)!,
       null,
+      [],
       { id: "1", path: "so/demo" },
       "abc123",
     );
@@ -144,6 +153,261 @@ describe("project context packets", () => {
     const section = projectContextSection({ name: "demo", context_doc: DOC });
     expect(section.startsWith(`${HEADING}\n\n`)).toBe(true);
     expect(section.endsWith(`${DOC}\n`)).toBe(true);
+  });
+});
+
+const JSON_HEADERS = { ...ACTOR.headers, "content-type": "application/json" };
+
+async function createProject(
+  app: TestApp,
+  name: string,
+  context_doc: string | null = null,
+): Promise<Response> {
+  return app.request("/projects", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, context_doc }),
+  });
+}
+
+async function createFile(
+  app: TestApp,
+  project: string,
+  filename: string,
+  content = "hello",
+  media_type = "text/plain",
+): Promise<Response> {
+  return app.request(`/projects/${project}/files`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ filename, media_type, content }),
+  });
+}
+
+describe("project reference files in packets", () => {
+  it("carries a compact files manifest and body paths for a brief + two files", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "demo", DOC)).status).toBe(201);
+    expect((await createFile(app, "demo", "b.txt", "second")).status).toBe(201);
+    expect(
+      (await createFile(app, "demo", "a.md", "# First", "text/markdown"))
+        .status,
+    ).toBe(201);
+
+    const scope = await createScope(app, {
+      goal: "ship",
+      project: "demo",
+      repo: { path: "so/demo" },
+    });
+    const project = store.getProject("demo")!;
+    const files = store.listProjectFiles("demo");
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+
+    expect(packet.project).not.toBeNull();
+    const manifest = packet.project!.files;
+    expect(manifest).toHaveLength(2);
+    // Sorted by filename: a.md before b.txt
+    expect(manifest[0]!.filename).toBe("a.md");
+    expect(manifest[0]!.media_type).toBe("text/markdown");
+    expect(manifest[0]!.path).toBe(".colony/project/a.md");
+    expect(manifest[0]!.id).toBe(files.find((f) => f.filename === "a.md")!.id);
+    expect(manifest[0]!.byte_size).toBe(
+      files.find((f) => f.filename === "a.md")!.byte_size,
+    );
+    // No file content in the packet JSON.
+    const json = JSON.stringify(packet);
+    expect(json).not.toContain("# First");
+    expect(json).not.toContain("second");
+    expect(json).not.toMatch(/(?<=project\.files.*?)content.*?:/s);
+    // Body lists paths, brief heading unchanged.
+    expect(packet.body).toContain(
+      "## Project reference files (read on demand)",
+    );
+    expect(packet.body).toContain("- .colony/project/a.md (text/markdown");
+    expect(packet.body).toContain("- .colony/project/b.txt (text/plain");
+    expect(packet.body).toContain(HEADING);
+    expect(packet.body).toContain(DOC);
+  });
+
+  it("carries a files manifest for a file-only project (empty brief)", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "fileonly", "")).status).toBe(201);
+    expect(
+      (
+        await createFile(
+          app,
+          "fileonly",
+          "guide.md",
+          "# Guide",
+          "text/markdown",
+        )
+      ).status,
+    ).toBe(201);
+    const scope = await createScope(app, {
+      goal: "files only",
+      project: "fileonly",
+      repo: { path: "so/demo" },
+    });
+    const project = store.getProject("fileonly")!;
+    const files = store.listProjectFiles("fileonly");
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+    expect(packet.project).not.toBeNull();
+    expect(packet.project!.name).toBe("fileonly");
+    expect(packet.project!.context_doc).toBe("");
+    expect(packet.project!.files.map((f) => f.filename)).toEqual(["guide.md"]);
+    expect(packet.body).not.toContain("Operator-authored project background");
+    expect(packet.body).toContain(
+      "## Project reference files (read on demand)",
+    );
+  });
+
+  it("yields project: null when a project has neither brief nor files", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "bare", null)).status).toBe(201);
+    const scope = await createScope(app, {
+      goal: "bare",
+      project: "bare",
+      repo: { path: "so/demo" },
+    });
+    const project = store.getProject("bare")!;
+    const files = store.listProjectFiles("bare");
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+    expect(packet.project).toBeNull();
+    expect(packet.body).not.toContain("## Project reference files");
+  });
+
+  it("all three builders carry the files manifest and body section", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "all-test", DOC)).status).toBe(201);
+    expect(
+      (await createFile(app, "all-test", "ref.md", "# Ref", "text/markdown"))
+        .status,
+    ).toBe(201);
+    const scope = await createScope(app, {
+      goal: "test all builders",
+      project: "all-test",
+      repo: { path: "so/demo" },
+    });
+    // Move draft -> planning so materializePlan can transition planning -> active.
+    store.setScopeStatus(scope.id, "planning", "human:op-1");
+    // Materialize a plan to create a real task.
+    store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        acceptance: [{ description: "d", command: "true" }],
+        tasks: [{ title: "task1", spec: "spec1", depends_on: [] }],
+      },
+      "human:op-1",
+    );
+    const task = store.listTasks(scope.id)[0]!;
+    const project = store.getProject("all-test")!;
+    const files = store.listProjectFiles("all-test");
+    const s = store.getScope(scope.id)!;
+
+    const arch = buildArchitectPacket(
+      s,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "base",
+    );
+    const impl = buildImplementPacket(
+      task,
+      s,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      "base",
+    );
+    const rev = buildReviewPacket(
+      task,
+      s,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "base",
+    );
+
+    for (const packet of [arch, impl, rev]) {
+      expect(packet.project).not.toBeNull();
+      expect(packet.project!.files.map((f) => f.filename)).toEqual(["ref.md"]);
+      expect(packet.project!.files[0]!.path).toBe(".colony/project/ref.md");
+      expect(JSON.stringify(packet)).not.toContain("# Ref");
+      expect(packet.body).toContain(
+        "## Project reference files (read on demand)",
+      );
+      expect(packet.body).toContain("- .colony/project/ref.md (text/markdown");
+      expect(packet.body).toContain(
+        "## Operator-authored project background (project: all-test)",
+      );
+      expect(packet.body).toContain(DOC);
+    }
+  });
+
+  it("materializes real file bytes from a builder-produced packet into the workspace", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "deliver", DOC)).status).toBe(201);
+    expect(
+      (await createFile(app, "deliver", "guide.md", "# Guide", "text/markdown"))
+        .status,
+    ).toBe(201);
+    expect(
+      (await createFile(app, "deliver", "notes.txt", "hello world")).status,
+    ).toBe(201);
+    const scope = await createScope(app, {
+      goal: "deliver",
+      project: "deliver",
+      repo: { path: "so/demo" },
+    });
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      store.getProject("deliver")!,
+      store.listProjectFiles("deliver"),
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-deliver-"));
+    dirs.push(dir);
+    provisionScratchDir(
+      "deliver-run",
+      packet as unknown as Parameters<typeof provisionScratchDir>[1],
+      dir,
+    );
+
+    // The workspace files carry the real reference content, read-only.
+    const guide = join(dir, ".colony", "project", "guide.md");
+    const notes = join(dir, ".colony", "project", "notes.txt");
+    expect(readFileSync(guide, "utf8")).toBe("# Guide");
+    expect(readFileSync(notes, "utf8")).toBe("hello world");
+
+    // The persisted PACKET.json stays content-free: the manifest lists
+    // paths only, never file contents.
+    const persisted = readFileSync(join(dir, "PACKET.json"), "utf8");
+    expect(persisted).not.toContain("# Guide");
+    expect(persisted).not.toContain("hello world");
+    expect(persisted).toContain(".colony/project/guide.md");
   });
 });
 

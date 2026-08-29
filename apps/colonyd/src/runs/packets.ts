@@ -1,4 +1,4 @@
-import type { Project, Scope, Task } from "@colony/core";
+import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 
 /**
@@ -17,9 +17,18 @@ export interface AgentPacketRepo {
   base_commit: string;
 }
 
+export interface PacketProjectFile {
+  id: string;
+  filename: string;
+  media_type: "text/plain" | "text/markdown";
+  byte_size: number;
+  path: string;
+}
+
 export interface PacketProject {
   name: string;
   context_doc: string;
+  files: readonly PacketProjectFile[];
 }
 
 export interface ArchitectPacket {
@@ -61,14 +70,63 @@ export function projectContextSection(
   return `## Operator-authored project background (project: ${project.name})\n\n${project.context_doc}\n`;
 }
 
-function packetProject(project: Project | null): PacketProject | null {
-  if (!project?.context_doc?.trim()) return null;
-  return { name: project.name, context_doc: project.context_doc };
+function packetProject(
+  project: Project | null,
+  files: readonly ProjectFile[],
+): PacketProject | null {
+  const hasContext = !!project?.context_doc?.trim();
+  const hasFiles = files.length > 0;
+  if (!hasContext && !hasFiles) return null;
+  const name = project?.name ?? files[0]!.project_name;
+  if (!name) return null;
+  const context_doc = project?.context_doc ?? "";
+  const sorted = [...files].sort((a, b) =>
+    a.filename.localeCompare(b.filename),
+  );
+  return {
+    name,
+    context_doc,
+    files: sorted.map((f) => {
+      const entry: PacketProjectFile & { content: string } = {
+        id: f.id,
+        filename: f.filename,
+        media_type: f.media_type,
+        byte_size: f.byte_size,
+        path: `.colony/project/${f.filename}`,
+        content: f.content,
+      };
+      // content must reach the workspace but never appear in PACKET.json
+      // or the packet body (spec: no file content in packet JSON). Keep it
+      // on the manifest entry as a non-enumerable property so
+      // JSON.stringify(packet) stays compact while
+      // materializeProjectFiles(dir, packet) can still read record["content"].
+      Object.defineProperty(entry, "content", {
+        value: f.content,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+      });
+      return entry;
+    }),
+  };
+}
+
+function projectFilesSection(files: readonly ProjectFile[]): string {
+  if (files.length === 0) return "";
+  const sorted = [...files].sort((a, b) =>
+    a.filename.localeCompare(b.filename),
+  );
+  const lines = sorted.map(
+    (f) =>
+      `- .colony/project/${f.filename} (${f.media_type}, ${f.byte_size} bytes)`,
+  );
+  return `## Project reference files (read on demand)\n${lines.join("\n")}\n`;
 }
 
 export function buildArchitectPacket(
   scope: Scope,
   project: Project | null,
+  files: readonly ProjectFile[],
   _repo: ProviderRepoRef,
   baseSha: string,
 ): ArchitectPacket {
@@ -76,10 +134,14 @@ export function buildArchitectPacket(
     kind: "architect_scope",
     scope_id: scope.id,
     goal: scope.goal,
-    body: [buildArchitectBody(scope), projectContextSection(project)]
+    body: [
+      buildArchitectBody(scope),
+      projectContextSection(project),
+      projectFilesSection(files),
+    ]
       .filter(Boolean)
       .join("\n"),
-    project: packetProject(project),
+    project: packetProject(project, files),
     repo: {
       url: scope.provider_repo_path,
       branch: scope.default_branch,
@@ -99,6 +161,7 @@ export function buildImplementPacket(
   task: Task,
   scope: Scope,
   project: Project | null,
+  files: readonly ProjectFile[],
   _repo: ProviderRepoRef,
   branch: string,
   baseSha: string,
@@ -109,10 +172,14 @@ export function buildImplementPacket(
     task_id: task.id,
     scope_id: scope.id,
     goal: task.title,
-    body: [buildImplementBody(task, continuity), projectContextSection(project)]
+    body: [
+      buildImplementBody(task, continuity),
+      projectContextSection(project),
+      projectFilesSection(files),
+    ]
       .filter(Boolean)
       .join("\n"),
-    project: packetProject(project),
+    project: packetProject(project, files),
     repo: {
       url: scope.provider_repo_path,
       branch,
@@ -125,6 +192,7 @@ export function buildReviewPacket(
   task: Task,
   scope: Scope,
   project: Project | null,
+  files: readonly ProjectFile[],
   _repo: ProviderRepoRef,
   headSha: string,
 ): ReviewPacket {
@@ -139,10 +207,11 @@ export function buildReviewPacket(
     body: [
       buildReviewBody(task, scope.default_branch),
       projectContextSection(project),
+      projectFilesSection(files),
     ]
       .filter(Boolean)
       .join("\n"),
-    project: packetProject(project),
+    project: packetProject(project, files),
     repo: {
       url: scope.provider_repo_path,
       branch: task.branch ?? `colony/${task.id}`,

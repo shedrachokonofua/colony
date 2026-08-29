@@ -11,6 +11,10 @@ import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
+import {
+  buildMergeProvenanceLine,
+  collectRunModelIds,
+} from "./model-provenance.js";
 
 const GATE_LEASE_MS = 30 * 60_000;
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 600;
@@ -231,8 +235,10 @@ async function executeMergeGate(
 
     let mergeResult: ProviderMergeRequest;
     try {
+      const provenance = buildScopeProvenance(ctx, scope, task);
       mergeResult = await ctx.provider.mergeRequests.merge(repo, mr.id, {
         sha: headSha,
+        ...(provenance ? { merge_commit_message: provenance } : {}),
       });
     } catch (mergeError) {
       let observed: ProviderMergeRequest | undefined;
@@ -424,6 +430,32 @@ function countConsecutive(
 
 function mrRef(repoId: string, mrIid: number): string {
   return `${repoId}:${mrIid}`;
+}
+
+/**
+ * Aggregate role-qualified model provenance for a scope/task merge commit
+ * message. Deterministic non-model gates (merge_gate, validate) are
+ * excluded; architect runs are scope-level, implement/review are task-level.
+ */
+function buildScopeProvenance(
+  ctx: ColonydContext,
+  scope: Scope,
+  task: Task,
+): string {
+  const listEvents = (runId: string) => ctx.store.listRunEvents(runId);
+  const architect = collectRunModelIds(
+    ctx.store.runsForScope(scope.id).filter((r) => r.kind === "architect"),
+    listEvents,
+  );
+  const implement = collectRunModelIds(
+    ctx.store.runsForTask(task.id).filter((r) => r.kind === "implement"),
+    listEvents,
+  );
+  const review = collectRunModelIds(
+    ctx.store.runsForTask(task.id).filter((r) => r.kind === "review"),
+    listEvents,
+  );
+  return buildMergeProvenanceLine(architect, implement, review);
 }
 
 export function buildCloneUrl(
