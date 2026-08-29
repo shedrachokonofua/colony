@@ -60,8 +60,8 @@ export async function createProjectFileViaApi(
     },
   );
   expect(res.ok(), `POST files ${res.status()} ${await res.text()}`).toBe(true);
-  const body = (await res.json()) as { file: { id: string } };
-  return body.file.id as string;
+  const body = (await res.json()) as { id: string };
+  return body.id as string;
 }
 
 export async function waitForPlan(

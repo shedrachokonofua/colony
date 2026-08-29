@@ -2052,37 +2052,33 @@ function renderManageFiles() {
 function fileRow(file) {
   const replacing = state.replaceFileId === file.id;
   return html`<div class="file-row">
-      <div class="file-row-main">
-        <span class="file-row-name">${file.filename}</span>
-        <span class="file-row-meta mono"
-          >${file.media_type} · ${file.byte_size} bytes</span
-        >
-      </div>
-      <div class="create-actions">
-        ${state.confirmFile === file.id
-          ? html`<button
-              class="btn btn-rev"
-              @click=${() => deleteProjectFile(file.id)}
-            >
-              Confirm delete
-            </button>`
-          : html`<button
-              class="btn btn-quiet"
-              @click=${() => setConfirmFile(file.id)}
-            >
-              Delete
-            </button>`}
-        <button
-          class="btn btn-quiet"
-          @click=${() => toggleReplaceFile(file.id)}
-        >
-          ${replacing ? "Cancel replace" : "Replace"}
-        </button>
-      </div>
+    <div class="file-row-main">
+      <span class="file-row-name">${file.filename}</span>
+      <span class="file-row-meta mono"
+        >${file.media_type} · ${file.byte_size} bytes</span
+      >
+    </div>
+    <div class="create-actions">
+      ${state.confirmFile === file.id
+        ? html`<button
+            class="btn btn-rev"
+            @click=${() => deleteProjectFile(file.id)}
+          >
+            Confirm delete
+          </button>`
+        : html`<button
+            class="btn btn-quiet"
+            @click=${() => setConfirmFile(file.id)}
+          >
+            Delete
+          </button>`}
+      <button class="btn btn-quiet" @click=${() => toggleReplaceFile(file.id)}>
+        ${replacing ? "Cancel replace" : "Replace"}
+      </button>
     </div>
     ${replacing
       ? html`<form
-          class="card composer"
+          class="composer"
           @submit=${(event) => replaceProjectFile(event, file.id)}
         >
           <label class="field">
@@ -2110,7 +2106,8 @@ function fileRow(file) {
             <button class="btn" type="submit">Replace file</button>
           </div>
         </form>`
-      : nothing}`;
+      : nothing}
+  </div>`;
 }
 
 function renderCreate() {

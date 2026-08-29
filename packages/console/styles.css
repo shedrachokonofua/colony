@@ -784,6 +784,10 @@ body {
   color: var(--muted);
 }
 
+.file-row .composer {
+  flex-basis: 100%;
+}
+
 /* ---------- Composer ---------- */
 
 .composer {
