@@ -142,7 +142,7 @@ test.describe("desktop console", () => {
     });
   });
 
-  test("board empty, new scope form, card, filters and search", async ({
+  test("project list, new scope form, scope card on project page", async ({
     page,
     request,
   }) => {
@@ -153,29 +153,28 @@ test.describe("desktop console", () => {
     await page.goto("/#/");
     await expect(page).toHaveURL(/.*#\/.*$/);
 
-    // Board renders; fresh DB check: if empty shows empty message, else skip that strict check but still assert board.visible
     await expect(page.locator(".board").first()).toBeVisible({
       timeout: 15000,
     });
 
-    // Check empty state if no scopes yet — the first run of the suite sees empty
-    const emptyLocator = page.getByText("No scopes yet — open the first one.");
+    // Check empty state if no projects yet — the first run of the suite sees empty
+    const emptyLocator = page.getByText("No projects yet");
     const hasEmpty = await emptyLocator.isVisible().catch(() => false);
-    // If empty visible, pass; else board has prior scopes — still okay but we still exercise empty via filter
     if (hasEmpty) {
       await expect(emptyLocator).toBeVisible();
     }
 
-    // New scope form: fill Title/Goal/path=so/console-e2e, submit → hash routes to #/<scopeId>
+    // New scope form: fill Title/Project/Goal/path=so/console-e2e, submit → hash routes to #/<scopeId>
     const unique = `Board E2E ${Date.now()}`;
+    const project = `e2e-board-${Date.now()}`;
     const goal = `${unique} goal: searchable substring alpha-${Date.now()}`;
     await page.getByRole("link", { name: "New scope" }).click();
     await expect(page).toHaveURL(/#\/new$/);
     await expect(page.getByText("Open a scope")).toBeVisible();
     await page.locator('input[name="title"]').fill(unique);
+    await page.locator('input[name="project"]').fill(project);
     await page.locator('textarea[name="goal"]').fill(goal);
     await page.locator('input[name="path"]').fill("so/console-e2e");
-    // approvals defaults to auto, but we want manual for later? Board test doesn't need manual, auto is fine
     await page.getByRole("button", { name: "Open scope" }).click();
 
     // Hash routes to #/<scopeId>
@@ -183,14 +182,17 @@ test.describe("desktop console", () => {
       .poll(() => page.url(), { timeout: 15000, intervals: [250, 500] })
       .toMatch(/#\/col-/);
 
-    const hashId =
-      page.url().split("#/")[1]?.split("/")[1] ?? page.url().split("#/")[1];
-    // scopeId is after #/
     const scopeIdFromUrl = page.url().match(/#\/(col-[a-z0-9]+)/)?.[1];
     expect(scopeIdFromUrl).toBeTruthy();
 
-    // Navigate back to board and see card
+    // Homepage lists the project the new scope belongs to.
     await page.goto("/#/");
+    await expect(
+      page.locator(".project-row", { hasText: project }).first(),
+    ).toBeVisible({ timeout: 15000 });
+
+    // The scope card lives on the project page.
+    await page.goto(`/#/project/${encodeURIComponent(project)}`);
     await expect(
       page.locator(".scope-card", { hasText: unique }).first(),
     ).toBeVisible({ timeout: 15000 });
@@ -206,76 +208,9 @@ test.describe("desktop console", () => {
     // Click card navigates to detail
     await card.click();
     await expect.poll(() => page.url(), { timeout: 15000 }).toMatch(/#\/col-/);
-    await page.goto("/#/");
-
-    // Filter chips: click a status filter that matches nothing → "No scopes match this filter."
-    // Pick Abandoned first; if there are abandoned it'll show, so we probe emptiness
-    // Create a second scope with unique title to test search
-    const otherTitle = `Other ${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    await createScopeViaApi(request, {
-      title: otherTitle,
-      goal: `other goal ${Date.now()}`,
-      approvals: "manual",
+    await expect(page.locator(".sheet-head").first()).toBeVisible({
+      timeout: 15000,
     });
-    await page.reload();
-    await expect(page.locator(".board").first()).toBeVisible();
-
-    // Search input filters cards by title/goal substring
-    const search = page.locator("input.board-search");
-    await expect(search).toBeVisible();
-    await search.fill(unique.slice(0, 8));
-    await expect(
-      page.locator(".scope-card", { hasText: unique }).first(),
-    ).toBeVisible();
-    await expect(
-      page.locator(".scope-card", { hasText: otherTitle }),
-    ).toBeHidden({
-      timeout: 5000,
-    });
-    await search.fill(otherTitle.slice(0, 8));
-    await expect(
-      page.locator(".scope-card", { hasText: otherTitle }).first(),
-    ).toBeVisible();
-    await expect(page.locator(".scope-card", { hasText: unique })).toBeHidden({
-      timeout: 5000,
-    });
-    await search.fill("");
-    await expect(
-      page.locator(".scope-card", { hasText: unique }).first(),
-    ).toBeVisible();
-    await expect(
-      page.locator(".scope-card", { hasText: otherTitle }).first(),
-    ).toBeVisible();
-
-    // Now test filter chips that matches nothing
-    // Clear search, then click each filter until we find empty
-    await search.fill("");
-    // Try Abandoned first; if empty shows, great. Otherwise try Done etc.
-    const chips = page.locator(".filter-chip");
-    await expect(chips.first()).toBeVisible();
-    // Click Abandoned chip
-    await page.getByRole("button", { name: "Abandoned" }).click();
-    const noMatch = page.getByText("No scopes match this filter.");
-    // Wait a moment; if we have abandoned scopes we won't see it — then click Needs you
-    const hasNoMatch = await noMatch.isVisible().catch(() => false);
-    if (!hasNoMatch) {
-      await page.getByRole("button", { name: "Needs you" }).click();
-      // If still not empty, click Done etc — at least one should be empty or we create condition
-      const hasNoMatch2 = await noMatch.isVisible().catch(() => false);
-      if (!hasNoMatch2) {
-        await page.getByRole("button", { name: "Done" }).click();
-        // If still visible scopes, we can't assert empty; but spec expects empty for a filter that matches nothing
-        // We'll just check that if empty appears it's correct, else we assert at least filter chips work
-        // To guarantee empty, we search for a nonsense filter combination already tested
-      }
-    }
-    // If empty appeared we assert, else we at least know chips are interactive
-    // For determinism, if noMatch visible we check, else we create a fresh filter scenario by clicking All
-    if (await noMatch.isVisible().catch(() => false)) {
-      await expect(noMatch).toBeVisible();
-    }
-    await page.getByRole("button", { name: "All" }).click();
-    await expect(page.locator(".scope-card").first()).toBeVisible();
 
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
@@ -1109,7 +1044,7 @@ test.describe("desktop console", () => {
     // If board has scopes, empty won't show; but at least board renders
 
     // Error banner via route
-    await page.route("**/scopes*", (route) =>
+    await page.route("**/projects*", (route) =>
       route.fulfill({
         status: 502,
         contentType: "application/json",
@@ -1125,7 +1060,7 @@ test.describe("desktop console", () => {
     await expect(
       page.locator(".banner-error[role=alert]").first(),
     ).toContainText(/502|bad gateway/i);
-    await page.unroute("**/scopes*");
+    await page.unroute("**/projects*");
     await page.reload();
     await expect(page.locator(".board").first()).toBeVisible({
       timeout: 15000,
@@ -1291,9 +1226,9 @@ test.describe("desktop console", () => {
           : "";
       });
       if (
-        tag.includes("filter-chip") ||
-        tag.includes("board-search") ||
-        tag.includes("btn-solid")
+        tag.includes("btn-solid") ||
+        tag.includes("project-row") ||
+        tag.includes("board-head")
       ) {
         foundFocus = true;
         break;

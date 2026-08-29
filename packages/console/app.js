@@ -231,7 +231,7 @@ function routeScopeId() {
   return hash;
 }
 
-const PROJECT_ROUTE = /^project\/([^/]+)/;
+const PROJECT_ROUTE = /^project\/([^/?]+)/;
 // Create route, optionally carrying a query (e.g. #/new?project=X).
 const NEW_ROUTE = /^new(?:$|\?)/;
 
