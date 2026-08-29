@@ -12,7 +12,7 @@ const cssSource = readFileSync(join(here, "styles.css"), "utf8");
  * module top level but never exported. Evaluate the exact function source the
  * UI runs against the test's inputs — no copy-paste, no dead constants.
  */
-function evalAppFunction(name) {
+function evalAppFunction(name: string) {
   const start = appSource.indexOf(`function ${name}(`);
   if (start < 0) throw new Error(`app.js has no function ${name}`);
   let depth = 0;
@@ -31,7 +31,7 @@ function evalAppFunction(name) {
 }
 
 /** The `grid-template-columns` a selector resolves to, or null when absent. */
-function gridColumnsOf(selector) {
+function gridColumnsOf(selector: string) {
   const start = cssSource.indexOf(`${selector} {`);
   if (start < 0) return null;
   const rule = cssSource.slice(start, cssSource.indexOf("}", start));

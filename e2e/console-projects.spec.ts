@@ -195,9 +195,9 @@ test.describe("console projects (live)", () => {
       timeout: 15000,
     });
     await expect(page.getByRole("link", { name: "New project" })).toBeVisible();
-    // New project is the index's only btn-solid primary action; a secondary
-    // New scope link remains for frozen-spec compatibility.
-    await expect(page.getByRole("link", { name: "New scope" })).toBeVisible();
+    // New project is the index's only primary action — New scope lives on the
+    // project page. The index must not offer it at all.
+    await expect(page.getByRole("link", { name: "New scope" })).toHaveCount(0);
     await expect(page.locator(".board-head a.btn-solid")).toHaveText(
       "New project",
     );
