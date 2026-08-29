@@ -502,6 +502,185 @@ describe("Store", () => {
     expect(firstPage.projects).toHaveLength(1);
     expect(secondPage.projects).toHaveLength(1);
   });
+
+  it("orders projects stably by updated_at DESC then name", () => {
+    // All three share an identical updated_at: only the name tiebreaker
+    // can order them, so pages never shuffle between calls.
+    const sameUpdated = "2026-01-01T00:00:00.000Z";
+    for (const name of ["beta", "alpha", "gamma"]) {
+      store.ensureProject(name);
+      store.db
+        .prepare(`UPDATE projects SET updated_at = ? WHERE name = ?`)
+        .run(sameUpdated, name);
+    }
+
+    // Windowed by one: deterministic name-ascending slices.
+    expect(store.pageProjects(1, 0).projects.map((p) => p.name)).toEqual([
+      "alpha",
+    ]);
+    expect(store.pageProjects(1, 1).projects.map((p) => p.name)).toEqual([
+      "beta",
+    ]);
+    expect(store.pageProjects(1, 2).projects.map((p) => p.name)).toEqual([
+      "gamma",
+    ]);
+
+    // Both page windows are stable across repeated calls.
+    expect(store.pageProjects(2, 0).projects.map((p) => p.name)).toEqual([
+      "alpha",
+      "beta",
+    ]);
+    expect(store.pageProjects(2, 0).projects.map((p) => p.name)).toEqual([
+      "alpha",
+      "beta",
+    ]);
+    expect(store.pageProjects(2, 1).projects.map((p) => p.name)).toEqual([
+      "beta",
+      "gamma",
+    ]);
+    expect(store.pageProjects(2, 1).projects.map((p) => p.name)).toEqual([
+      "beta",
+      "gamma",
+    ]);
+  });
+
+  it("surfaces last_activity_at from the newest scope", () => {
+    // A project with no scopes reports null.
+    store.ensureProject("empty");
+    store.db
+      .prepare(`UPDATE projects SET updated_at = ? WHERE name = ?`)
+      .run("2026-01-01T00:00:00.000Z", "empty");
+
+    store.ensureProject("active-proj");
+    store.db
+      .prepare(`UPDATE projects SET updated_at = ? WHERE name = ?`)
+      .run("2026-01-02T00:00:00.000Z", "active-proj");
+    const older = store.createScope({
+      goal: "older",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
+      project: "active-proj",
+    }).id;
+    const newer = store.createScope({
+      goal: "newer",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
+      project: "active-proj",
+    }).id;
+    store.db
+      .prepare(`UPDATE scopes SET updated_at = ? WHERE id = ?`)
+      .run("2026-01-02T01:00:00.000Z", older);
+    store.db
+      .prepare(`UPDATE scopes SET updated_at = ? WHERE id = ?`)
+      .run("2026-01-02T02:00:00.000Z", newer);
+
+    const page = store.pageProjects(10, 0);
+    expect(
+      page.projects.find((p) => p.name === "active-proj")!.last_activity_at,
+    ).toBe("2026-01-02T02:00:00.000Z");
+    expect(
+      page.projects.find((p) => p.name === "empty")!.last_activity_at,
+    ).toBeNull();
+
+    // Activity never drives order: a project whose scopes are newer than its
+    // own updated_at still sorts by its own (older) updated_at.
+    store.ensureProject("busy-scopes");
+    store.db
+      .prepare(`UPDATE projects SET updated_at = ? WHERE name = ?`)
+      .run("2026-01-01T12:00:00.000Z", "busy-scopes");
+    const busyScope = store.createScope({
+      goal: "new scope",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
+      project: "busy-scopes",
+    }).id;
+    store.db
+      .prepare(`UPDATE scopes SET updated_at = ? WHERE id = ?`)
+      .run("2026-01-03T00:00:00.000Z", busyScope);
+
+    // Sorted by projects.updated_at DESC: active-proj (01-02) before
+    // busy-scopes (01-01T12) despite busy-scopes holding the newest scope.
+    const ordered = store.pageProjects(10, 0).projects.map((p) => p.name);
+    expect(ordered.indexOf("active-proj")).toBeLessThan(
+      ordered.indexOf("busy-scopes"),
+    );
+  });
+
+  it("returns an empty page with the true total beyond the end", () => {
+    store.ensureProject("P1");
+    store.ensureProject("P2");
+    store.createScope({
+      goal: "g1",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
+      project: "P1",
+    });
+    store.createScope({
+      goal: "g2",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
+      project: "P1",
+    });
+    store.createScope({
+      goal: "g3",
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
+      project: "P2",
+    });
+
+    const beyondProjects = store.pageProjects(10, 2);
+    expect(beyondProjects.projects).toEqual([]);
+    expect(beyondProjects.total).toBe(2);
+    const wayBeyond = store.pageProjects(10, 100);
+    expect(wayBeyond.projects).toEqual([]);
+    expect(wayBeyond.total).toBe(2);
+
+    const beyondScopes = store.pageScopes(10, 3);
+    expect(beyondScopes.scopes).toEqual([]);
+    expect(beyondScopes.total).toBe(3);
+    const beyondScopesP1 = store.pageScopes(10, 2, "P1");
+    expect(beyondScopesP1.scopes).toEqual([]);
+    expect(beyondScopesP1.total).toBe(2);
+  });
+
+  it("filters scopes to a project newest-first without leaking others", () => {
+    const ids = {
+      p1a: store.createScope({
+        goal: "p1-a",
+        provider_repo_id: "1",
+        provider_repo_path: "so/x",
+        project: "projA",
+      }).id,
+      p1b: store.createScope({
+        goal: "p1-b",
+        provider_repo_id: "1",
+        provider_repo_path: "so/x",
+        project: "projA",
+      }).id,
+      p2: store.createScope({
+        goal: "p2",
+        provider_repo_id: "1",
+        provider_repo_path: "so/x",
+        project: "projB",
+      }).id,
+    };
+    store.db
+      .prepare(`UPDATE scopes SET updated_at = ? WHERE id = ?`)
+      .run("2026-01-01T00:00:00.000Z", ids.p1a);
+    store.db
+      .prepare(`UPDATE scopes SET updated_at = ? WHERE id = ?`)
+      .run("2026-01-02T00:00:00.000Z", ids.p1b);
+    store.db
+      .prepare(`UPDATE scopes SET updated_at = ? WHERE id = ?`)
+      .run("2026-01-03T00:00:00.000Z", ids.p2);
+
+    const page = store.pageScopes(10, 0, "projA");
+    // Newest-first (updated_at DESC), scoped to projA only.
+    expect(page.scopes.map((s) => s.id)).toEqual([ids.p1b, ids.p1a]);
+    expect(page.total).toBe(2);
+    for (const scope of page.scopes) expect(scope.project_name).toBe("projA");
+    expect(page.scopes.some((s) => s.id === ids.p2)).toBe(false);
+  });
 });
 
 describe("legacy CHECK constraint migrations", () => {

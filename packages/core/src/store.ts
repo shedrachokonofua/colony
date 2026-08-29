@@ -38,6 +38,7 @@ export interface ProjectWithCounts extends Project {
   readonly scope_count: number;
   /** Every SCOPE_STATUSES key is present; statuses with no scopes are 0. */
   readonly status_counts: Record<ScopeStatus, number>;
+  readonly last_activity_at: string | null;
 }
 
 export interface Scope {
@@ -237,15 +238,19 @@ export class Store {
   }
 
   /**
-   * One page of projects, oldest first; `total` counts the whole table.
-   * Every row carries its whole-table scope tallies from a single GROUP BY.
+   * One page of projects, most recently updated first; `total` counts the
+   * whole table. Every row carries its whole-table scope tallies from a
+   * single GROUP BY. Order is deterministic: updated_at DESC, then name ASC
+   * as tiebreaker so rows with identical timestamps never shuffle pages.
    */
   pageProjects(
     limit: number,
     offset: number,
   ): { projects: ProjectWithCounts[]; total: number } {
     const rows = this.db
-      .prepare(`SELECT * FROM projects ORDER BY created_at LIMIT ? OFFSET ?`)
+      .prepare(
+        `SELECT * FROM projects ORDER BY updated_at DESC, name LIMIT ? OFFSET ?`,
+      )
       .all(limit, offset) as Project[];
     const { n } = this.db
       .prepare(`SELECT COUNT(*) AS n FROM projects`)
@@ -262,15 +267,33 @@ export class Store {
   private withScopeCounts(projects: readonly Project[]): ProjectWithCounts[] {
     const rows = this.db
       .prepare(
-        `SELECT project_name, status, COUNT(*) AS n FROM scopes
-         WHERE project_name IS NOT NULL GROUP BY project_name, status`,
+        `SELECT project_name, status, COUNT(*) AS n, MAX(updated_at) AS last_activity_at
+         FROM scopes
+         WHERE project_name IS NOT NULL
+         GROUP BY project_name, status`,
       )
-      .all() as { project_name: string; status: ScopeStatus; n: number }[];
+      .all() as {
+      project_name: string;
+      status: ScopeStatus;
+      n: number;
+      last_activity_at: string | null;
+    }[];
     const byName = new Map<string, Map<ScopeStatus, number>>();
-    for (const { project_name, status, n } of rows) {
+    const lastActivity = new Map<string, string>();
+    for (const { project_name, status, n, last_activity_at } of rows) {
       const perStatus = byName.get(project_name);
       if (perStatus) perStatus.set(status, n);
       else byName.set(project_name, new Map([[status, n]]));
+      // Every status group contributes its own MAX; the project-wide
+      // last_activity_at is the greatest of those (each scope belongs to
+      // exactly one group, so this equals MAX(scopes.updated_at)).
+      const current = lastActivity.get(project_name);
+      if (
+        last_activity_at !== null &&
+        (current === undefined || last_activity_at > current)
+      ) {
+        lastActivity.set(project_name, last_activity_at);
+      }
     }
     return projects.map((project) => {
       const perStatus = byName.get(project.name);
@@ -281,6 +304,7 @@ export class Store {
         ...project,
         scope_count: Object.values(status_counts).reduce((a, b) => a + b, 0),
         status_counts,
+        last_activity_at: lastActivity.get(project.name) ?? null,
       };
     });
   }
