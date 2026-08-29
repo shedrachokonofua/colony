@@ -29,13 +29,7 @@ providers:
       kind: api_key
       value: COLONY_OPENAI_COMPATIBLE_API_KEY
     models:
-      - id: router/mimo-v2.5-pro
-        name: mimo-v2.5-pro
-        reasoning: true
-        context_window: 1000000
-        max_tokens: 131072
-        cost: { input: 0, output: 0 }
-      - id: commandcode/muse-spark-1.2-contributor
+      - id: router/muse-spark-1.2-contributor
         name: muse-spark
         reasoning: true
         context_window: 1048576
@@ -46,22 +40,18 @@ providers:
         # of monologuing.
         max_tokens: 16384
         cost: { input: 0, output: 0 }
-      - id: router/glm-5.2
-        name: glm-5.2
-        reasoning: true
-        context_window: 1000000
-        max_tokens: 131072
-        cost: { input: 0, output: 0 }
       - id: router/glm-5.3
         name: glm-5.3
         reasoning: true
         context_window: 1000000
         max_tokens: 131072
         cost: { input: 0, output: 0 }
-      # Stealth alpha via the opencode Go credential (upstream ox-alpha-free).
-      # Published: 1M context, 131072 max output (openrouter.ai/stealth/ox-alpha).
-      - id: opencode-go/ox-alpha
-        name: ox-alpha
+      # ox-alpha's free stealth preview ended; OpenRouter and aether's own
+      # litellm config both confirm the named successor is GLM-5.3-Flash.
+      # Pooled across 5 credentials (clinepass, zai, commandcode, opencode-go,
+      # ollama-cloud) for quota resilience under developer's high turn volume.
+      - id: router/glm-5.3-flash
+        name: glm-5.3-flash
         reasoning: true
         context_window: 1048576
         max_tokens: 131072
@@ -104,8 +94,8 @@ agents:
   # implement 20-26 min at the old 30 min cap, review 10-23 min, plan 8-25 min.
   developer:
     provider: openai_compatible
-    model: ox-alpha
-    fallback_models: [muse-spark, deepseek-v4-flash, mimo-v2.5-pro, qwen3.8-27b]
+    model: glm-5.3-flash
+    fallback_models: [deepseek-v4-flash, muse-spark, qwen3.8-27b]
     thinking_level: medium
     timeout_ms: 3600000
     max_turns: 250
@@ -115,7 +105,6 @@ agents:
     fallback_models:
       - glm-5.3
       - qwen3.8-max
-      - glm-5.2
       - deepseek-v4-pro
       - qwen3.8-27b
     thinking_level: xhigh
@@ -124,7 +113,7 @@ agents:
   architect:
     provider: openai_compatible
     model: glm-5.3
-    fallback_models: [kimi-k3, glm-5.2, deepseek-v4-pro]
+    fallback_models: [kimi-k3, deepseek-v4-pro, qwen3.8-27b]
     timeout_ms: 2700000
     max_turns: 200
   memory_consolidator:
