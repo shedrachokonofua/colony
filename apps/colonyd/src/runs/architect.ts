@@ -118,9 +118,13 @@ async function executeArchitect(
     const project = scope.project_name
       ? (ctx.store.getProject(scope.project_name) ?? null)
       : null;
+    const files = scope.project_name
+      ? ctx.store.listProjectFiles(scope.project_name)
+      : [];
     const { repo: repoWithCredentials, ...packet } = buildArchitectPacket(
       scope,
       project,
+      files,
       repo,
       baseSha,
     );

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { COLONY_SKILLS, playbookPrompt } from "./colony-skills.js";
 import type { Agent, AgentTool, StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
@@ -162,6 +162,7 @@ export function provisionScratchDir(
     // best-effort seed; the agent can still operate without the file
   }
   seedPlaybooks(dir);
+  materializeProjectFiles(dir, packet);
   return dir;
 }
 
@@ -185,7 +186,7 @@ function seedPlaybooks(dir: string): void {
       const existing = existsSync(excludePath)
         ? readFileSync(excludePath, "utf8")
         : "";
-      const wanted = ["PACKET.json", ".colony/"].filter(
+      const wanted = ["PACKET.json", ".colony/", ".colony/project/"].filter(
         (line) => !existing.split("\n").includes(line),
       );
       if (wanted.length > 0) {
@@ -198,6 +199,83 @@ function seedPlaybooks(dir: string): void {
     }
   } catch {
     // best-effort; never fail provisioning over playbooks
+  }
+}
+
+const RESERVED_PREFIXES = ["packet.json", ".colony", ".git", ".env"];
+
+/**
+ * Materialize project reference files into `.colony/project/` from the
+ * packet manifest. Best-effort — a materialization failure never fails
+ * provisioning. Files are written read-only (0o444); stale files from a
+ * reused run dir are removed first. Invalid or dangerous filenames are
+ * silently skipped: they never clobber PACKET.json, .git/** , or
+ * .colony/skills/** .
+ */
+export function materializeProjectFiles(
+  dir: string,
+  packet: AgentRuntimePacket,
+): void {
+  try {
+    const rawProject = (packet as Record<string, unknown>)["project"];
+    if (
+      !rawProject ||
+      typeof rawProject !== "object" ||
+      !("files" in (rawProject as Record<string, unknown>))
+    ) {
+      return;
+    }
+    const files = (rawProject as Record<string, unknown>)["files"];
+    if (!Array.isArray(files) || files.length === 0) return;
+
+    const projectDir = join(dir, ".colony", "project");
+    // Drop stale files from a reused run dir.
+    rmSync(projectDir, { recursive: true, force: true });
+    mkdirSync(projectDir, { recursive: true });
+
+    const projectDirResolved = resolve(projectDir);
+    // Sort by filename defensively.
+    const sorted = [...files].sort((a: unknown, b: unknown) => {
+      const fa =
+        typeof a === "object" && a !== null
+          ? String((a as Record<string, unknown>)["filename"] ?? "")
+          : "";
+      const fb =
+        typeof b === "object" && b !== null
+          ? String((b as Record<string, unknown>)["filename"] ?? "")
+          : "";
+      return fa.localeCompare(fb);
+    });
+
+    for (const entry of sorted) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      const filename = String(record["filename"] ?? "");
+      // Path safety checks — skip dangerous filenames.
+      if (
+        !filename ||
+        filename === "." ||
+        filename === ".." ||
+        filename.includes("/") ||
+        filename.includes("\\") ||
+        filename.includes("\u0000")
+      ) {
+        continue;
+      }
+      const lower = filename.toLowerCase();
+      if (RESERVED_PREFIXES.includes(lower)) continue;
+      // Check traversal — resolved path must stay inside projectDir.
+      const target = join(projectDir, filename);
+      const targetResolved = resolve(target);
+      if (!targetResolved.startsWith(projectDirResolved + "/")) {
+        continue;
+      }
+      const content =
+        typeof record["content"] === "string" ? record["content"] : "";
+      writeFileSync(target, content, { mode: 0o444, encoding: "utf8" });
+    }
+  } catch {
+    // best-effort; never fail provisioning over file materialization
   }
 }
 
@@ -269,6 +347,7 @@ export function provisionRepoWorkspace(
         encoding: "utf8",
       });
       seedPlaybooks(dir);
+      materializeProjectFiles(dir, packet);
       return dir;
     } catch (err) {
       lastFailure = { stage: "packet_seed", error: err };
@@ -616,6 +695,7 @@ export function buildImplementerSystemPrompt(): string {
     "- Your working directory is a clone of the target repository with the prepared work branch checked out (see packet.repo). The remote is preconfigured with credentials: `git push` works as-is.",
     "- Your sandbox is this directory only. Never read, write, grep, or list paths outside it; never use absolute paths like /Users, /home, /etc, or globs that escape it. Stay inside `.`.",
     "- If you are unsure about file contents or structure, read the files — never guess or invent code you have not seen.",
+    "- Project reference files listed in the packet are available read-only at `.colony/project/<filename>` — read the ones relevant to the task before acting; never modify, move, or delete anything under `.colony/project/`.",
     "",
     "# Workflow",
     "1. Understand: read the task spec in packet.body, including any 'Spec amendment (operator...)' sections — those are authoritative and supersede earlier text they contradict.",
@@ -672,6 +752,7 @@ export function buildArchitectSystemPrompt(): string {
     "",
     "# Environment",
     "Your working directory is a read-only clone of the target repository at its default branch. Repository exploration is mandatory: inspect the root, CI configuration, relevant implementation, tests, and conventions with read/grep before decomposing. Derive tasks from observed code, never from the goal alone — do not invent files, symbols, dependencies, or infrastructure you have not seen.",
+    "Project reference files listed in the packet are available read-only at `.colony/project/<filename>` — read the ones relevant to the task before acting; never modify, move, or delete anything under `.colony/project/`.",
     "",
     "# Decomposition rules",
     "- At most 20 tasks, but the best plan is the SMALLEST one: every extra task buys real concurrency or it costs review cycles, merge risk, and drift for nothing. Three coarse vertical slices (end-to-end observable outcomes) beat seven file-sliced tasks whose independence is fictional. One task is a legitimate plan.",
@@ -902,6 +983,7 @@ export function buildReviewerSystemPrompt(): string {
     "",
     "# Environment",
     "The repository is cloned at the head SHA of a merge request. The task spec is in the packet body; sections titled 'Spec amendment (operator...)' are authoritative and supersede earlier spec text they contradict. You are read-only: do NOT edit files or push.",
+    "Project reference files listed in the packet are available read-only at `.colony/project/<filename>` — read the ones relevant to the task before acting; never modify, move, or delete anything under `.colony/project/`.",
     "",
     "# Workflow",
     "1. Read the spec and its required evidence — that is your success criteria, not your taste.",

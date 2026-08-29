@@ -7,6 +7,8 @@ import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import {
   buildArchitectPacket,
+  buildImplementPacket,
+  buildReviewPacket,
   projectContextSection,
 } from "../src/runs/packets.js";
 
@@ -98,12 +100,17 @@ describe("project context packets", () => {
     const packet = buildArchitectPacket(
       store.getScope(scope.id)!,
       store.getProject("demo")!,
+      store.listProjectFiles("demo"),
       { id: "1", path: "so/demo" },
       "abc123",
     );
     expect(packet.body).toContain(DOC);
     expect(packet.body).toContain(HEADING);
-    expect(packet.project).toEqual({ name: "demo", context_doc: DOC });
+    expect(packet.project).toEqual({
+      name: "demo",
+      context_doc: DOC,
+      files: [],
+    });
     // Unchanged packet contract.
     expect(packet.kind).toBe("architect_scope");
     expect(packet.scope_id).toBe(scope.id);
@@ -126,6 +133,7 @@ describe("project context packets", () => {
     const packet = buildArchitectPacket(
       store.getScope(scope.id)!,
       null,
+      [],
       { id: "1", path: "so/demo" },
       "abc123",
     );
@@ -144,6 +152,145 @@ describe("project context packets", () => {
     const section = projectContextSection({ name: "demo", context_doc: DOC });
     expect(section.startsWith(`${HEADING}\n\n`)).toBe(true);
     expect(section.endsWith(`${DOC}\n`)).toBe(true);
+  });
+});
+
+const JSON_HEADERS = { ...ACTOR.headers, "content-type": "application/json" };
+
+async function createProject(
+  app: TestApp,
+  name: string,
+  context_doc: string | null = null,
+): Promise<Response> {
+  return app.request("/projects", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, context_doc }),
+  });
+}
+
+async function createFile(
+  app: TestApp,
+  project: string,
+  filename: string,
+  content = "hello",
+  media_type = "text/plain",
+): Promise<Response> {
+  return app.request(`/projects/${project}/files`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ filename, media_type, content }),
+  });
+}
+
+describe("project reference files in packets", () => {
+  it("carries a compact files manifest and body paths for a brief + two files", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "demo", DOC)).status).toBe(201);
+    expect((await createFile(app, "demo", "b.txt", "second")).status).toBe(201);
+    expect(
+      (await createFile(app, "demo", "a.md", "# First", "text/markdown"))
+        .status,
+    ).toBe(201);
+
+    const scope = await createScope(app, {
+      goal: "ship",
+      project: "demo",
+      repo: { path: "so/demo" },
+    });
+    const project = store.getProject("demo")!;
+    const files = store.listProjectFiles("demo");
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+
+    expect(packet.project).not.toBeNull();
+    const manifest = packet.project!.files;
+    expect(manifest).toHaveLength(2);
+    // Sorted by filename: a.md before b.txt
+    expect(manifest[0]!.filename).toBe("a.md");
+    expect(manifest[0]!.media_type).toBe("text/markdown");
+    expect(manifest[0]!.path).toBe(".colony/project/a.md");
+    expect(manifest[0]!.id).toBe(files.find((f) => f.filename === "a.md")!.id);
+    expect(manifest[0]!.byte_size).toBe(
+      files.find((f) => f.filename === "a.md")!.byte_size,
+    );
+    // No file content in the packet JSON.
+    const json = JSON.stringify(packet);
+    expect(json).not.toContain("# First");
+    expect(json).not.toContain("second");
+    expect(json).not.toMatch(/(?<=project\.files.*?)content.*?:/s);
+    // Body lists paths, brief heading unchanged.
+    expect(packet.body).toContain(
+      "## Project reference files (read on demand)",
+    );
+    expect(packet.body).toContain("- .colony/project/a.md (text/markdown");
+    expect(packet.body).toContain("- .colony/project/b.txt (text/plain");
+    expect(packet.body).toContain(HEADING);
+    expect(packet.body).toContain(DOC);
+  });
+
+  it("carries a files manifest for a file-only project (empty brief)", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "fileonly", "")).status).toBe(201);
+    expect(
+      (
+        await createFile(
+          app,
+          "fileonly",
+          "guide.md",
+          "# Guide",
+          "text/markdown",
+        )
+      ).status,
+    ).toBe(201);
+    const scope = await createScope(app, {
+      goal: "files only",
+      project: "fileonly",
+      repo: { path: "so/demo" },
+    });
+    const project = store.getProject("fileonly")!;
+    const files = store.listProjectFiles("fileonly");
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+    expect(packet.project).not.toBeNull();
+    expect(packet.project!.name).toBe("fileonly");
+    expect(packet.project!.context_doc).toBe("");
+    expect(packet.project!.files.map((f) => f.filename)).toEqual(["guide.md"]);
+    expect(packet.body).not.toContain("Operator-authored project background");
+    expect(packet.body).toContain(
+      "## Project reference files (read on demand)",
+    );
+  });
+
+  it("yields project: null when a project has neither brief nor files", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "bare", null)).status).toBe(201);
+    const scope = await createScope(app, {
+      goal: "bare",
+      project: "bare",
+      repo: { path: "so/demo" },
+    });
+    const project = store.getProject("bare")!;
+    const files = store.listProjectFiles("bare");
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      project,
+      files,
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+    expect(packet.project).toBeNull();
+    expect(packet.body).not.toContain("## Project reference files");
   });
 });
 
