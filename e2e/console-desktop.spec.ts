@@ -1208,7 +1208,8 @@ test.describe("desktop console", () => {
       .not.toEqual("");
 
     // Ensure we can tab to filter chips and search
-    // Press Tab multiple times and check that at some point board-search or filter-chip focused
+    // Press Tab multiple times and check that at some point a project row or
+    // the New scope button is focused.
     let foundFocus = false;
     for (let i = 0; i < 10; i++) {
       const tag = await page.evaluate(() => {
