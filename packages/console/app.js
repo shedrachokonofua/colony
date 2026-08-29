@@ -75,6 +75,7 @@ const state = {
   briefOpen: false,
   confirmFile: null,
   replaceFileId: null,
+  newProjectDraft: null,
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -980,8 +981,10 @@ async function submitNewProject(event) {
       method: "POST",
       body: JSON.stringify(payload),
     });
+    state.newProjectDraft = null;
     location.hash = projectHref(name);
   } catch (err) {
+    state.newProjectDraft = { name, context_doc };
     state.error = err instanceof Error ? err.message : String(err);
     paint();
   }
@@ -1722,7 +1725,10 @@ function renderProjectList() {
     <div class="project-index board" id="draw">
       <div class="board-head">
         <h1 class="board-title">Projects</h1>
-        <a class="btn btn-solid" href="#/new-project">New project</a>
+        <div class="board-head-actions">
+          <a class="btn btn-solid" href="#/new-project">New project</a>
+          <a class="btn btn-quiet" href="#/new">New scope</a>
+        </div>
       </div>
       ${total === 0
         ? html`<div class="rack-empty">
@@ -1947,6 +1953,7 @@ function renderNewProject() {
                 maxlength="120"
                 placeholder="Project name"
                 autocomplete="off"
+                .value=${live(state.newProjectDraft?.name ?? "")}
               />
             </label>
             <label class="field">
@@ -1955,6 +1962,7 @@ function renderNewProject() {
                 name="context_doc"
                 rows="10"
                 placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
+                .value=${live(state.newProjectDraft?.context_doc ?? "")}
               ></textarea>
             </label>
             <div class="create-actions">
@@ -3143,6 +3151,7 @@ window.addEventListener("hashchange", () => {
   state.briefOpen = false;
   state.confirmFile = null;
   state.replaceFileId = null;
+  state.newProjectDraft = null;
   void refresh();
 });
 

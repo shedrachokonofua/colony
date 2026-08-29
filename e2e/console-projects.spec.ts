@@ -3,6 +3,7 @@ import {
   controlReset,
   createProjectFileViaApi,
   createProjectViaApi,
+  createScopeViaApi,
 } from "./helpers.js";
 import { expect, test } from "@playwright/test";
 
@@ -194,7 +195,12 @@ test.describe("console projects (live)", () => {
       timeout: 15000,
     });
     await expect(page.getByRole("link", { name: "New project" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "New scope" })).toHaveCount(0);
+    // New project is the index's only btn-solid primary action; a secondary
+    // New scope link remains for frozen-spec compatibility.
+    await expect(page.getByRole("link", { name: "New scope" })).toBeVisible();
+    await expect(page.locator(".board-head a.btn-solid")).toHaveText(
+      "New project",
+    );
     const card = page.locator(".project-card", { hasText: name }).first();
     await expect(card).toBeVisible({ timeout: 15000 });
     await expect(card.locator(".project-card-name")).toHaveText(name);
@@ -390,6 +396,12 @@ test.describe("console projects (mobile)", () => {
       media_type: "text/markdown",
       content: "# Agents",
     });
+    await createScopeViaApi(request, {
+      title: `mobile-scope-${Date.now()}`,
+      goal: "Mobile scope for rack layout",
+      approvals: "manual",
+      project: name,
+    });
 
     // Index: one-column project cards.
     await page.goto("/#/");
@@ -420,6 +432,13 @@ test.describe("console projects (mobile)", () => {
     });
     const layoutTracks = layoutCols.trim().split(/\s+/).filter(Boolean);
     expect(layoutTracks.length, `layout grid: ${layoutCols}`).toBe(1);
+    // The scopes rack stacks to one column on mobile.
+    const rackCols = await page.evaluate(() => {
+      const el = document.querySelector(".rack") as HTMLElement | null;
+      return el ? getComputedStyle(el).gridTemplateColumns : "";
+    });
+    const rackTracks = rackCols.trim().split(/\s+/).filter(Boolean);
+    expect(rackTracks.length, `rack grid: ${rackCols}`).toBe(1);
     await assertNoHorizontalOverflow(page);
 
     // Manage files route on mobile.
