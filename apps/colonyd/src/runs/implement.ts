@@ -11,6 +11,13 @@ import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
 import { buildImplementPacket, type ImplementContinuity } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
+import {
+  amendBranchWithTrailer,
+  buildMergeProvenanceLine,
+  collectRunModelIds,
+  formatColonyModelsTrailer,
+} from "./model-provenance.js";
+import { buildCloneUrl } from "./merge-gate.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 /** Run errors that mean "killed before it could submit", not "did the wrong thing". */
@@ -269,12 +276,28 @@ async function executeImplement(
         // Stale MR reference — open a fresh one below.
       }
     }
+    // Model provenance: the implement runs that contributed to this branch
+    // (incl. fallback destinations) ride as a Colony-Models trailer on every
+    // branch commit and in the MR description.
+    const modelIds = collectRunModelIds(
+      ctx.store.runsForTask(task.id).filter((r) => r.kind === "implement"),
+      (runId: string) => ctx.store.listRunEvents(runId),
+    );
+    const archIds = collectRunModelIds(
+      ctx.store.runsForScope(scope.id).filter((r) => r.kind === "architect"),
+      (runId: string) => ctx.store.listRunEvents(runId),
+    );
+
     if (mrIid === undefined) {
       const mr = await ctx.provider.mergeRequests.open(repo, {
         source_branch: envelope.branch,
         target_branch: scope.default_branch,
         title: task.title,
-        description: buildMrDescription(task, envelope),
+        description: buildMrDescription(
+          task,
+          envelope,
+          buildMergeProvenanceLine(archIds, modelIds, []),
+        ),
       });
       if (mr.iid === undefined) {
         ctx.store.finishRun(runId, "failed", {
@@ -287,8 +310,40 @@ async function executeImplement(
       mrIid = mr.iid;
     }
 
+    // Provenance: normalize the branch commits with a Colony-Models
+    // trailer before the MR is reviewed, so reviewer evidence binds to
+    // the canonical head. Best-effort — failure never fails the run.
+    let finalHeadSha = envelope.head_sha;
+    try {
+      const trailer = formatColonyModelsTrailer(modelIds);
+      if (trailer) {
+        const clone = buildCloneUrl(ctx, scope.provider_repo_path);
+        const amended = amendBranchWithTrailer({
+          cloneUrl: clone.cloneUrl,
+          branch: envelope.branch,
+          defaultBranch: scope.default_branch,
+          expectedHeadSha: envelope.head_sha,
+          trailer,
+        });
+        finalHeadSha = amended;
+        ctx.store.audit(SERVICE_ACTOR, "provenance.amended", {
+          scope_id: scope.id,
+          task_id: task.id,
+          run_id: runId,
+          detail: { old_head: envelope.head_sha, new_head: amended },
+        });
+      }
+    } catch (amendErr) {
+      ctx.store.audit(SERVICE_ACTOR, "provenance.amend_failed", {
+        scope_id: scope.id,
+        task_id: task.id,
+        run_id: runId,
+        detail: { head: envelope.head_sha, error: String(amendErr) },
+      });
+    }
+
     ctx.store.finishRun(runId, "succeeded", {
-      head_sha: envelope.head_sha,
+      head_sha: finalHeadSha,
       envelope_json: JSON.stringify(envelope),
       evidence_json: JSON.stringify({ commands: envelope.commands }),
     });
@@ -297,7 +352,7 @@ async function executeImplement(
       scope_id: scope.id,
       task_id: task.id,
       run_id: runId,
-      detail: { mr_iid: mrIid, head_sha: envelope.head_sha },
+      detail: { mr_iid: mrIid, head_sha: finalHeadSha },
     });
     const current = ctx.store.getTask(task.id)!;
     ctx.store.transitionTask(
@@ -431,6 +486,7 @@ function latestGateFailure(
 function buildMrDescription(
   task: Task,
   envelope: ImplementerCompletionV2,
+  provenanceLine?: string,
 ): string {
   const commands = envelope.commands
     .map((c) => `- \`${c.cmd}\` -> exit ${c.exit_code}`)
@@ -440,6 +496,7 @@ function buildMrDescription(
     "",
     `Colony task: ${task.id}`,
     commands ? `Evidence:\n${commands}` : "",
+    provenanceLine ? `\n${provenanceLine}` : "",
   ]
     .filter(Boolean)
     .join("\n");

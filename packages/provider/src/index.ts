@@ -405,7 +405,7 @@ export interface ProviderAdapter {
     merge(
       repo: ProviderRepoRef,
       id: ProviderId,
-      input?: { readonly sha?: string },
+      input?: { readonly sha?: string; readonly merge_commit_message?: string },
     ): Promise<ProviderMergeRequest>;
     close(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderMergeRequest>;
     comment(

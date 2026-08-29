@@ -433,7 +433,13 @@ export class GitLabProviderAdapter implements ProviderAdapter {
       }
 
       const mergePath = `/merge_requests/${encodePath(iid)}/merge`;
-      const body = JSON.stringify(input?.sha ? { sha: input.sha } : {});
+      const body = JSON.stringify(
+        input?.merge_commit_message
+          ? { sha: input.sha, merge_commit_message: input.merge_commit_message }
+          : input?.sha
+            ? { sha: input.sha }
+            : {},
+      );
       try {
         const mr = await this.repoApi<GitLabMergeRequest>(repo.id, mergePath, {
           method: "PUT",

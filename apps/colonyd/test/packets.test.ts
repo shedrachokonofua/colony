@@ -372,8 +372,9 @@ describe("project reference files in packets", () => {
       (await createFile(app, "deliver", "guide.md", "# Guide", "text/markdown"))
         .status,
     ).toBe(201);
-    expect((await createFile(app, "deliver", "notes.txt", "hello world")).status)
-      .toBe(201);
+    expect(
+      (await createFile(app, "deliver", "notes.txt", "hello world")).status,
+    ).toBe(201);
     const scope = await createScope(app, {
       goal: "deliver",
       project: "deliver",
@@ -389,7 +390,11 @@ describe("project reference files in packets", () => {
 
     const dir = mkdtempSync(join(tmpdir(), "colonyd-deliver-"));
     dirs.push(dir);
-    provisionScratchDir("deliver-run", packet, dir);
+    provisionScratchDir(
+      "deliver-run",
+      packet as unknown as Parameters<typeof provisionScratchDir>[1],
+      dir,
+    );
 
     // The workspace files carry the real reference content, read-only.
     const guide = join(dir, ".colony", "project", "guide.md");
