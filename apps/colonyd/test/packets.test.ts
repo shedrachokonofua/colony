@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Store } from "@colony/core";
+import { provisionScratchDir } from "@colony/agent-runtime";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import {
@@ -362,6 +363,46 @@ describe("project reference files in packets", () => {
       );
       expect(packet.body).toContain(DOC);
     }
+  });
+
+  it("materializes real file bytes from a builder-produced packet into the workspace", async () => {
+    const { store, app } = appWithStore();
+    expect((await createProject(app, "deliver", DOC)).status).toBe(201);
+    expect(
+      (await createFile(app, "deliver", "guide.md", "# Guide", "text/markdown"))
+        .status,
+    ).toBe(201);
+    expect((await createFile(app, "deliver", "notes.txt", "hello world")).status)
+      .toBe(201);
+    const scope = await createScope(app, {
+      goal: "deliver",
+      project: "deliver",
+      repo: { path: "so/demo" },
+    });
+    const packet = buildArchitectPacket(
+      store.getScope(scope.id)!,
+      store.getProject("deliver")!,
+      store.listProjectFiles("deliver"),
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-deliver-"));
+    dirs.push(dir);
+    provisionScratchDir("deliver-run", packet, dir);
+
+    // The workspace files carry the real reference content, read-only.
+    const guide = join(dir, ".colony", "project", "guide.md");
+    const notes = join(dir, ".colony", "project", "notes.txt");
+    expect(readFileSync(guide, "utf8")).toBe("# Guide");
+    expect(readFileSync(notes, "utf8")).toBe("hello world");
+
+    // The persisted PACKET.json stays content-free: the manifest lists
+    // paths only, never file contents.
+    const persisted = readFileSync(join(dir, "PACKET.json"), "utf8");
+    expect(persisted).not.toContain("# Guide");
+    expect(persisted).not.toContain("hello world");
+    expect(persisted).toContain(".colony/project/guide.md");
   });
 });
 

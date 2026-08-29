@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,6 +106,14 @@ describe("project reference file materialization", () => {
 
   it("skips dangerous filenames without clobbering protected paths or existing files", () => {
     const base = scratchDir();
+    // Protected paths that must survive provisioning untouched.
+    writeFileSync(join(base, "PACKET.json"), '{"sentinel":"packet"}', "utf8");
+    mkdirSync(join(base, ".git", "info"), { recursive: true });
+    writeFileSync(join(base, ".git", "config"), "[core]\n", "utf8");
+    writeFileSync(join(base, ".git", "info", "exclude"), "", "utf8");
+    mkdirSync(join(base, ".colony", "skills"), { recursive: true });
+    writeFileSync(join(base, ".colony", "skills", "keep.md"), "keep", "utf8");
+
     const packet = packetWithFiles([
       { filename: "../PACKET.json", content: "should-not-write" },
       { filename: "..", content: "should-skip" },
@@ -113,6 +123,8 @@ describe("project reference file materialization", () => {
       { filename: "PACKET.json", content: "should-skip" },
       { filename: ".colony", content: "should-skip" },
       { filename: ".git", content: "should-skip" },
+      { filename: "a\u0000b.txt", content: "should-skip" },
+      { filename: "a/../../etc/passwd", content: "should-skip" },
       { filename: "safe.txt", content: "safe file" },
     ]);
     provisionScratchDir("test-run", packet, base);
@@ -121,9 +133,14 @@ describe("project reference file materialization", () => {
     // Dangerous filenames were skipped — only safe.txt was written.
     expect(readdirSync(projectDir)).toEqual(["safe.txt"]);
 
-    // Check .colony/skills were not clobbered.
-    const skillsDir = join(base, ".colony", "skills");
-    expect(existsSync(skillsDir)).toBeTrue();
+    // No dangerous entry escaped `.colony/project/`: the traversal
+    // `a/../../etc/passwd` created nothing outside it, and .git/config and
+    // .colony/skills/* were never clobbered.
+    expect(existsSync(join(base, "etc"))).toBeFalse();
+    expect(readFileSync(join(base, ".git", "config"), "utf8")).toBe("[core]\n");
+    expect(
+      readFileSync(join(base, ".colony", "skills", "keep.md"), "utf8"),
+    ).toBe("keep");
 
     // Safe file was written.
     expect(readFileSync(join(projectDir, "safe.txt"), "utf8")).toBe(

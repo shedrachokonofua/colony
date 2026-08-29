@@ -86,13 +86,28 @@ function packetProject(
   return {
     name,
     context_doc,
-    files: sorted.map((f) => ({
-      id: f.id,
-      filename: f.filename,
-      media_type: f.media_type,
-      byte_size: f.byte_size,
-      path: `.colony/project/${f.filename}`,
-    })),
+    files: sorted.map((f) => {
+      const entry: PacketProjectFile & { content: string } = {
+        id: f.id,
+        filename: f.filename,
+        media_type: f.media_type,
+        byte_size: f.byte_size,
+        path: `.colony/project/${f.filename}`,
+        content: f.content,
+      };
+      // content must reach the workspace but never appear in PACKET.json
+      // or the packet body (spec: no file content in packet JSON). Keep it
+      // on the manifest entry as a non-enumerable property so
+      // JSON.stringify(packet) stays compact while
+      // materializeProjectFiles(dir, packet) can still read record["content"].
+      Object.defineProperty(entry, "content", {
+        value: f.content,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+      });
+      return entry;
+    }),
   };
 }
 

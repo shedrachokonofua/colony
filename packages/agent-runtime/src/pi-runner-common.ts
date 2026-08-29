@@ -217,6 +217,12 @@ export function materializeProjectFiles(
   packet: AgentRuntimePacket,
 ): void {
   try {
+    const projectDir = join(dir, ".colony", "project");
+    // Drop stale files from a reused run dir FIRST — a reused dir
+    // must never carry stale content even when this packet carries
+    // no manifest.
+    rmSync(projectDir, { recursive: true, force: true });
+
     const rawProject = (packet as Record<string, unknown>)["project"];
     if (
       !rawProject ||
@@ -228,9 +234,6 @@ export function materializeProjectFiles(
     const files = (rawProject as Record<string, unknown>)["files"];
     if (!Array.isArray(files) || files.length === 0) return;
 
-    const projectDir = join(dir, ".colony", "project");
-    // Drop stale files from a reused run dir.
-    rmSync(projectDir, { recursive: true, force: true });
     mkdirSync(projectDir, { recursive: true });
 
     const projectDirResolved = resolve(projectDir);
