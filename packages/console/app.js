@@ -1470,7 +1470,7 @@ function projectRow(project) {
 function renderPager({ base, page, total, items, label }) {
   if (total <= PAGE_SIZE) return nothing;
   const from = (page - 1) * PAGE_SIZE + 1;
-  const to = Math.min((page - 1) * PAGE_SIZE + items.length, total);
+  const to = Math.min((page - 1) * PAGE_SIZE + items, total);
   return html`<nav class="board-pager" aria-label=${label}>
     <a class="btn btn-quiet" href=${hrefForPage(base, Math.max(1, page - 1))}>
       Previous
