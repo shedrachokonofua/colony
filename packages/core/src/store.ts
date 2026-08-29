@@ -197,7 +197,9 @@ export function projectFileId(): string {
 
 /** Lowercase hex sha256 of the UTF-8 content. */
 export function sha256Hex(content: string): string {
-  return createHash("sha256").update(Buffer.from(content, "utf8")).digest("hex");
+  return createHash("sha256")
+    .update(Buffer.from(content, "utf8"))
+    .digest("hex");
 }
 
 /** Byte length of the UTF-8 content. */
@@ -380,17 +382,25 @@ export class Store {
       )
       .all(...names) as { project_name: string; cnt: number; bytes: number }[];
     const fileByProject = new Map<string, { cnt: number; bytes: number }>();
-    for (const row of fileAggs) fileByProject.set(row.project_name, { cnt: row.cnt, bytes: row.bytes });
+    for (const row of fileAggs)
+      fileByProject.set(row.project_name, { cnt: row.cnt, bytes: row.bytes });
 
     const scopeRows = this.db
       .prepare(
         `SELECT DISTINCT project_name, provider_repo_id, provider_repo_path FROM scopes WHERE project_name IN (${placeholders}) ORDER BY project_name, provider_repo_path`,
       )
-      .all(...names) as { project_name: string; provider_repo_id: string; provider_repo_path: string }[];
+      .all(...names) as {
+      project_name: string;
+      provider_repo_id: string;
+      provider_repo_path: string;
+    }[];
     const reposByProject = new Map<string, ProjectRepository[]>();
     for (const row of scopeRows) {
       const list = reposByProject.get(row.project_name) ?? [];
-      list.push({ repo_id: row.provider_repo_id, repo_path: row.provider_repo_path });
+      list.push({
+        repo_id: row.provider_repo_id,
+        repo_path: row.provider_repo_path,
+      });
       reposByProject.set(row.project_name, list);
     }
 
@@ -440,15 +450,15 @@ export class Store {
   createProject(input: { name: string; context_doc: string | null }): Project {
     try {
       this.db
-        .prepare(
-          `INSERT INTO projects (name, context_doc) VALUES (?, ?)`,
-        )
+        .prepare(`INSERT INTO projects (name, context_doc) VALUES (?, ?)`)
         .run(input.name, input.context_doc);
     } catch (err: unknown) {
       if (
         err instanceof Error &&
-        typeof (err as Record<string, unknown>).code === "string" &&
-        String((err as Record<string, unknown>).code).startsWith("SQLITE_CONSTRAINT")
+        typeof (err as unknown as Record<string, unknown>).code === "string" &&
+        String((err as unknown as Record<string, unknown>).code).startsWith(
+          "SQLITE_CONSTRAINT",
+        )
       ) {
         throw new DomainStateError(
           domainError(
@@ -528,12 +538,22 @@ export class Store {
           `INSERT INTO project_files (id, project_name, filename, media_type, content, byte_size, sha256)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, input.project_name, input.filename, input.media_type, input.content, bsize, hash);
+        .run(
+          id,
+          input.project_name,
+          input.filename,
+          input.media_type,
+          input.content,
+          bsize,
+          hash,
+        );
     } catch (err: unknown) {
       if (
         err instanceof Error &&
-        typeof (err as Record<string, unknown>).code === "string" &&
-        String((err as Record<string, unknown>).code).startsWith("SQLITE_CONSTRAINT")
+        typeof (err as unknown as Record<string, unknown>).code === "string" &&
+        String((err as unknown as Record<string, unknown>).code).startsWith(
+          "SQLITE_CONSTRAINT",
+        )
       ) {
         throw new DomainStateError(
           domainError(
@@ -559,9 +579,7 @@ export class Store {
     input: { media_type: "text/plain" | "text/markdown"; content: string },
   ): ProjectFile | undefined {
     const existing = this.db
-      .prepare(
-        `SELECT * FROM project_files WHERE id = ? AND project_name = ?`,
-      )
+      .prepare(`SELECT * FROM project_files WHERE id = ? AND project_name = ?`)
       .get(id, projectName) as ProjectFile | undefined;
     if (!existing) return undefined;
     const hash = sha256Hex(input.content);

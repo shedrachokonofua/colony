@@ -1109,10 +1109,12 @@ describe("project files", () => {
     expect(replaced.media_type).toBe("text/markdown");
     expect(replaced.byte_size).toBe(Buffer.byteLength("new content"));
     expect(replaced.sha256).not.toBe(created.sha256);
-    expect(store.replaceProjectFile("p", "pf-000000000000", {
-      media_type: "text/plain",
-      content: "x",
-    })).toBeUndefined();
+    expect(
+      store.replaceProjectFile("p", "pf-000000000000", {
+        media_type: "text/plain",
+        content: "x",
+      }),
+    ).toBeUndefined();
   });
 
   it("deleteProjectFile removes a row and reports not-found", () => {

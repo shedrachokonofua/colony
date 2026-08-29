@@ -424,7 +424,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       parsed.data.limit,
       parsed.data.offset,
     );
-    return c.json({ files, total, limit: parsed.data.limit, offset: parsed.data.offset });
+    return c.json({
+      files,
+      total,
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
+    });
   });
 
   app.post("/projects/:name/files", async (c) => {
@@ -485,10 +490,13 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       return badBody(c, `content exceeds ${MAX_FILE_BYTES} bytes`);
     }
     const existing = ctx.store.db
-      .prepare(`SELECT byte_size FROM project_files WHERE id = ? AND project_name = ?`)
+      .prepare(
+        `SELECT byte_size FROM project_files WHERE id = ? AND project_name = ?`,
+      )
       .get(id, name) as { byte_size: number } | undefined;
     if (!existing) return notFound(c, "file");
-    const otherBytes = totalProjectFileBytes(ctx.store, name) - existing.byte_size;
+    const otherBytes =
+      totalProjectFileBytes(ctx.store, name) - existing.byte_size;
     if (otherBytes + contentBytes > MAX_PROJECT_FILE_BYTES) {
       return badBody(
         c,
@@ -518,12 +526,14 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!project) return notFound(c, "project");
     const file = ctx.store.db
       .prepare(`SELECT * FROM project_files WHERE id = ? AND project_name = ?`)
-      .get(id, name) as {
-      id: string;
-      filename: string;
-      byte_size: number;
-      sha256: string;
-    } | undefined;
+      .get(id, name) as
+      | {
+          id: string;
+          filename: string;
+          byte_size: number;
+          sha256: string;
+        }
+      | undefined;
     if (!file) return notFound(c, "file");
     ctx.store.deleteProjectFile(name, id);
     ctx.store.audit(c.get("actor"), "project.file_deleted", {

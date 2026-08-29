@@ -146,7 +146,13 @@ describe("project files HTTP contract", () => {
     const { store, app } = appWithStore();
     await createProject(app, "p");
 
-    const created = await createFile(app, "p", "notes.md", "# Notes", "text/markdown");
+    const created = await createFile(
+      app,
+      "p",
+      "notes.md",
+      "# Notes",
+      "text/markdown",
+    );
     expect(created.status).toBe(201);
     const createdBody = (await created.json()) as {
       id: string;
@@ -216,7 +222,9 @@ describe("project files HTTP contract", () => {
     expect(actions).toContain("project.file_created");
     expect(actions).toContain("project.file_replaced");
     expect(actions).toContain("project.file_deleted");
-    const createdAudit = audit.find((row) => row.action === "project.file_created")!;
+    const createdAudit = audit.find(
+      (row) => row.action === "project.file_created",
+    )!;
     expect(createdAudit.actor).toBe("human:op-1");
     expect(JSON.parse(createdAudit.detail_json)).toEqual({
       project: "p",
@@ -258,7 +266,9 @@ describe("project files HTTP contract", () => {
     for (const filename of cases) {
       const res = await createFile(app, "p", filename);
       expect(res.status).toBe(400);
-      const body = (await res.json()) as { error: { code: string; message: string } };
+      const body = (await res.json()) as {
+        error: { code: string; message: string };
+      };
       expect(body.error.code).toBe("INVALID_BODY");
       expect(body.error.message).toContain("filename invalid");
     }
@@ -270,7 +280,11 @@ describe("project files HTTP contract", () => {
     const res = await app.request("/projects/p/files", {
       method: "POST",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ filename: "a.txt", media_type: "application/pdf", content: "x" }),
+      body: JSON.stringify({
+        filename: "a.txt",
+        media_type: "application/pdf",
+        content: "x",
+      }),
     });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: { message: string } };
@@ -317,28 +331,40 @@ describe("project files HTTP contract", () => {
     expect(listMissing.status).toBe(404);
     const createMissing = await createFile(app, "nope", "a.txt");
     expect(createMissing.status).toBe(404);
-    const putMissing = await app.request("/projects/nope/files/pf-000000000000", {
-      method: "PUT",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ media_type: "text/plain", content: "x" }),
-    });
+    const putMissing = await app.request(
+      "/projects/nope/files/pf-000000000000",
+      {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ media_type: "text/plain", content: "x" }),
+      },
+    );
     expect(putMissing.status).toBe(404);
-    const deleteMissing = await app.request("/projects/nope/files/pf-000000000000", {
-      method: "DELETE",
-      headers: ACTOR.headers,
-    });
+    const deleteMissing = await app.request(
+      "/projects/nope/files/pf-000000000000",
+      {
+        method: "DELETE",
+        headers: ACTOR.headers,
+      },
+    );
     expect(deleteMissing.status).toBe(404);
 
-    const putUnknownFile = await app.request("/projects/p/files/pf-000000000000", {
-      method: "PUT",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({ media_type: "text/plain", content: "x" }),
-    });
+    const putUnknownFile = await app.request(
+      "/projects/p/files/pf-000000000000",
+      {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ media_type: "text/plain", content: "x" }),
+      },
+    );
     expect(putUnknownFile.status).toBe(404);
-    const deleteUnknownFile = await app.request("/projects/p/files/pf-000000000000", {
-      method: "DELETE",
-      headers: ACTOR.headers,
-    });
+    const deleteUnknownFile = await app.request(
+      "/projects/p/files/pf-000000000000",
+      {
+        method: "DELETE",
+        headers: ACTOR.headers,
+      },
+    );
     expect(deleteUnknownFile.status).toBe(404);
   });
 
@@ -346,7 +372,9 @@ describe("project files HTTP contract", () => {
     const { app } = appWithStore();
     await createProject(app, "p");
     for (let i = 0; i < 5; i += 1) {
-      expect((await createFile(app, "p", `f${i}.txt`, `content ${i}`)).status).toBe(201);
+      expect(
+        (await createFile(app, "p", `f${i}.txt`, `content ${i}`)).status,
+      ).toBe(201);
     }
     const page = await app.request("/projects/p/files?limit=2&offset=1", ACTOR);
     expect(page.status).toBe(200);
@@ -382,19 +410,32 @@ describe("project files HTTP contract", () => {
 
     const list = await app.request("/projects", ACTOR);
     const listBody = (await list.json()) as {
-      projects: { name: string; file_count: number; file_bytes: number; repositories: unknown[] }[];
+      projects: {
+        name: string;
+        file_count: number;
+        file_bytes: number;
+        repositories: unknown[];
+      }[];
     };
     const row = listBody.projects.find((x) => x.name === "p")!;
     expect(row.file_count).toBe(2);
-    expect(row.file_bytes).toBe(Buffer.byteLength("hello") + Buffer.byteLength("world"));
+    expect(row.file_bytes).toBe(
+      Buffer.byteLength("hello") + Buffer.byteLength("world"),
+    );
     expect(row.repositories).toEqual([{ repo_id: "1", repo_path: "so/p" }]);
 
     const detail = await app.request("/projects/p", ACTOR);
     const detailBody = (await detail.json()) as {
-      project: { file_count: number; file_bytes: number; repositories: unknown[] };
+      project: {
+        file_count: number;
+        file_bytes: number;
+        repositories: unknown[];
+      };
     };
     expect(detailBody.project.file_count).toBe(2);
     expect(detailBody.project.file_bytes).toBe(row.file_bytes);
-    expect(detailBody.project.repositories).toEqual([{ repo_id: "1", repo_path: "so/p" }]);
+    expect(detailBody.project.repositories).toEqual([
+      { repo_id: "1", repo_path: "so/p" },
+    ]);
   });
 });
