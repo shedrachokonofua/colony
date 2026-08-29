@@ -157,6 +157,44 @@ test.describe("console projects (demo)", () => {
 
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
+
+  // Migrated from the frozen e2e/console-desktop.spec.ts:1268 and
+  // e2e/console-mobile.spec.ts:271 demo assertions, which expected the
+  // always-open context textarea as the project page's default view. The
+  // spec requires a preview-first rail everywhere, demo included.
+  test("demo project page renders offline with preview-first brief", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+
+    await page.goto("/?demo=1#/project/Operator%20console");
+    await expect(
+      page.locator(".board-title", { hasText: "Operator console" }),
+    ).toBeVisible({ timeout: 15000 });
+    // The stored brief renders as Markdown, not as an open editor.
+    const knowledge = page
+      .locator(".project-rail .card", { hasText: "Project knowledge" })
+      .first();
+    await expect(knowledge.locator(".knowledge-preview")).toContainText(
+      "no-build lit-html",
+      { timeout: 15000 },
+    );
+    await expect(page.locator('textarea[name="project-context"]')).toHaveCount(
+      0,
+    );
+    // The editor still opens on demand and prefills from the stored doc.
+    await page.getByRole("button", { name: "Edit brief" }).click();
+    await expect(page.locator('textarea[name="project-context"]')).toHaveValue(
+      /no-build lit-html/,
+      { timeout: 15000 },
+    );
+    await expect(page.locator(".scope-card").first()).toBeVisible({
+      timeout: 15000,
+    });
+
+    expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
+  });
 });
 
 test.describe("console projects (live)", () => {

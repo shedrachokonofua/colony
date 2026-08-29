@@ -40,12 +40,24 @@ const DEMO_SCOPES_IN_PROJECT = 27;
 // stays a single no-build script.
 
 function repoSummaryText(repositories) {
-  const repos = repositories ?? [];
+  const repos = distinctRepos(repositories);
   if (repos.length === 0) return "No connected repositories";
   const count = repos.length;
   const shown = repos.slice(0, 2).map((r) => r.repo_path);
   const more = count > 2 ? ` +${count - 2} more` : "";
   return `${count} connected repo${count === 1 ? "" : "s"} · ${shown.join(" · ")}${more}`;
+}
+
+/** Connected repositories deduped by repo_path, preserving first-seen order. */
+function distinctRepos(repositories) {
+  const seen = new Set();
+  const out = [];
+  for (const repo of repositories ?? []) {
+    if (!repo?.repo_path || seen.has(repo.repo_path)) continue;
+    seen.add(repo.repo_path);
+    out.push(repo);
+  }
+  return out;
 }
 
 function knowledgeText(context_doc, file_count) {
@@ -1862,7 +1874,7 @@ function renderProjectRail() {
   if (!page?.project) return nothing;
   const project = page.project;
   const files = state.projectFiles ?? [];
-  const repos = project.repositories ?? [];
+  const repos = distinctRepos(project.repositories);
   return html`${renderProjectContextCard()}
     <aside class="card">
       <p class="card-head">Connected repositories</p>
@@ -1891,7 +1903,7 @@ function renderProjectContextCard() {
   const storedDoc = project.context_doc ?? "";
   const doc = saved === null ? storedDoc : saved.doc;
   const files = state.projectFiles ?? [];
-  const editing = DEMO && doc ? true : state.briefOpen;
+  const editing = state.briefOpen;
   return html`<aside class="card">
     <p class="card-head">
       Project knowledge

@@ -11,8 +11,9 @@ const cssSource = readFileSync(join(here, "styles.css"), "utf8");
  * The console is a no-build browser script: its pure helpers are declared at
  * module top level but never exported. Evaluate the exact function source the
  * UI runs against the test's inputs — no copy-paste, no dead constants.
+ * deps supplies sibling helpers the function closes over in app.js.
  */
-function evalAppFunction(name: string) {
+function evalAppFunction(name: string, deps: Record<string, unknown> = {}) {
   const start = appSource.indexOf(`function ${name}(`);
   if (start < 0) throw new Error(`app.js has no function ${name}`);
   let depth = 0;
@@ -27,7 +28,11 @@ function evalAppFunction(name: string) {
       }
     }
   }
-  return new Function(`return (${appSource.slice(start, end)})`)();
+  const depNames = Object.keys(deps);
+  return new Function(
+    depNames.join(", "),
+    `return (${appSource.slice(start, end)})`,
+  )(...depNames.map((d) => deps[d]));
 }
 
 /** The `grid-template-columns` a selector resolves to, or null when absent. */
@@ -57,8 +62,9 @@ describe("project-card grid layout", () => {
 });
 
 describe("project-card fields", () => {
+  const distinctRepos = evalAppFunction("distinctRepos");
   const knowledgeText = evalAppFunction("knowledgeText");
-  const repoSummaryText = evalAppFunction("repoSummaryText");
+  const repoSummaryText = evalAppFunction("repoSummaryText", { distinctRepos });
 
   it("knowledge line: Brief with file count when context_doc present", () => {
     expect(knowledgeText("Some brief", 3)).toBe("Brief · 3 reference files");
@@ -96,6 +102,30 @@ describe("project-card fields", () => {
     expect(repoSummaryText([{ repo_id: "1", repo_path: "only/repo" }])).toBe(
       "1 connected repo · only/repo",
     );
+  });
+
+  it("repo summary: duplicate repo paths count once, first path wins", () => {
+    expect(
+      repoSummaryText([
+        { repo_id: "7", repo_path: "so/colony" },
+        { repo_id: "8", repo_path: "so/colony" },
+        { repo_id: "9", repo_path: "so/console-e2e" },
+      ]),
+    ).toBe("2 connected repos · so/colony · so/console-e2e");
+  });
+
+  it("distinctRepos drops pathless entries and keeps first-seen order", () => {
+    expect(
+      distinctRepos([
+        { repo_id: "2", repo_path: "b/c" },
+        { repo_id: "1", repo_path: "a/b" },
+        { repo_id: "3", repo_path: "b/c" },
+        { repo_path: null },
+      ]),
+    ).toEqual([
+      { repo_id: "2", repo_path: "b/c" },
+      { repo_id: "1", repo_path: "a/b" },
+    ]);
   });
 });
 
@@ -165,5 +195,16 @@ describe("composer fixed-project behavior", () => {
       appSource.indexOf('name="project"'),
     );
     expect(fixedBranch.length).toBeGreaterThan(0);
+  });
+});
+
+describe("project knowledge editor", () => {
+  it("the textarea is only the Edit-brief view, never the default render", () => {
+    // The editor must live behind the briefOpen branch, not next to an
+    // unconditional demo default (which would re-open the always-open
+    // textarea the spec retired).
+    const editingBranch = appSource.match(/const editing = state\.briefOpen;/);
+    expect(editingBranch).not.toBeNull();
+    expect(appSource).not.toMatch(/DEMO && doc \? true/);
   });
 });
