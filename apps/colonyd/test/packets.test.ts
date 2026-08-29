@@ -233,7 +233,7 @@ describe("project context HTTP contract", () => {
   });
 
   it("returns honest pagination from GET /projects", async () => {
-    const { app } = appWithStore();
+    const { store, app } = appWithStore();
     for (let i = 0; i < 7; i += 1) {
       const res = await app.request(`/projects/p${i}/context`, {
         method: "PUT",
@@ -241,6 +241,13 @@ describe("project context HTTP contract", () => {
         body: JSON.stringify({ context_doc: `doc ${i}` }),
       });
       expect(res.status).toBe(200);
+    }
+    // Force a deterministic updated_at per project so the ordering contract
+    // (updated_at DESC, name ASC) is asserted without millisecond ties.
+    for (let i = 0; i < 7; i += 1) {
+      store.db
+        .prepare(`UPDATE projects SET updated_at = ? WHERE name = ?`)
+        .run(`2026-01-01T00:00:0${i}.000Z`, `p${i}`);
     }
     const page = await app.request("/projects?limit=3&offset=2", ACTOR);
     expect(page.status).toBe(200);
@@ -253,7 +260,8 @@ describe("project context HTTP contract", () => {
     expect(body.total).toBe(7);
     expect(body.limit).toBe(3);
     expect(body.offset).toBe(2);
-    expect(body.projects.map((p) => p.name)).toEqual(["p2", "p3", "p4"]);
+    // Most recently updated first: p6..p0, so offset 2 -> p4, p3, p2.
+    expect(body.projects.map((p) => p.name)).toEqual(["p4", "p3", "p2"]);
 
     const defaults = (await (await app.request("/projects", ACTOR)).json()) as {
       limit: number;
