@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database, type SQLQueryBindings } from "./sqlite-compat.js";
@@ -6,6 +6,7 @@ import { migrate } from "./migrations.js";
 import {
   DomainStateError,
   domainError,
+  type DomainErrorCode,
   type ScopeId,
   type TaskId,
 } from "@colony/domain";
@@ -39,6 +40,40 @@ export interface ProjectWithCounts extends Project {
   /** Every SCOPE_STATUSES key is present; statuses with no scopes are 0. */
   readonly status_counts: Record<ScopeStatus, number>;
   readonly last_activity_at: string | null;
+  /** Number of curated reference files in this project. */
+  readonly file_count: number;
+  /** Total bytes of curated reference files (0 when none). */
+  readonly file_bytes: number;
+  /** Distinct connected repositories, derived from scopes only. */
+  readonly repositories: readonly ProjectRepository[];
+}
+
+export interface ProjectFile {
+  readonly id: string;
+  readonly project_name: string;
+  readonly filename: string;
+  readonly media_type: "text/plain" | "text/markdown";
+  readonly content: string;
+  readonly byte_size: number;
+  readonly sha256: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+/** A project file row with content omitted (list/detail views). */
+export interface ProjectFileMeta {
+  readonly id: string;
+  readonly filename: string;
+  readonly media_type: "text/plain" | "text/markdown";
+  readonly byte_size: number;
+  readonly sha256: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+export interface ProjectRepository {
+  readonly repo_id: string;
+  readonly repo_path: string;
 }
 
 export interface Scope {
@@ -155,6 +190,23 @@ export function nowIso(date: Date = new Date()): string {
   return date.toISOString();
 }
 
+/** `pf-` + 12 lowercase hex, matching the `col-<hex>` id style. */
+export function projectFileId(): string {
+  return `pf-${randomBytes(6).toString("hex")}`;
+}
+
+/** Lowercase hex sha256 of the UTF-8 content. */
+export function sha256Hex(content: string): string {
+  return createHash("sha256")
+    .update(Buffer.from(content, "utf8"))
+    .digest("hex");
+}
+
+/** Byte length of the UTF-8 content. */
+export function byteSize(content: string): number {
+  return Buffer.byteLength(content, "utf8");
+}
+
 /**
  * bun:sqlite binds named parameters only when the object keys carry the
  * placeholder prefix, unlike better-sqlite3's bare keys.
@@ -228,7 +280,7 @@ export class Store {
       .prepare(`SELECT * FROM projects WHERE name = ?`)
       .get(name) as Project | undefined;
     if (!project) return undefined;
-    return this.withScopeCounts([project])[0];
+    return this.enrichProjectFileStats(this.withScopeCounts([project]))[0];
   }
 
   listProjects(): Project[] {
@@ -255,7 +307,10 @@ export class Store {
     const { n } = this.db
       .prepare(`SELECT COUNT(*) AS n FROM projects`)
       .get() as { n: number };
-    return { projects: this.withScopeCounts(rows), total: n };
+    return {
+      projects: this.enrichProjectFileStats(this.withScopeCounts(rows)),
+      total: n,
+    };
   }
 
   /**
@@ -305,8 +360,60 @@ export class Store {
         scope_count: Object.values(status_counts).reduce((a, b) => a + b, 0),
         status_counts,
         last_activity_at: lastActivity.get(project.name) ?? null,
+        file_count: 0,
+        file_bytes: 0,
+        repositories: [] as readonly ProjectRepository[],
       };
     });
+  }
+
+  /**
+   * Enrich project rows with file aggregate counts and repositories.
+   */
+  private enrichProjectFileStats(
+    rows: readonly ProjectWithCounts[],
+  ): ProjectWithCounts[] {
+    if (rows.length === 0) return rows as ProjectWithCounts[];
+    const names = rows.map((r) => r.name);
+    const placeholders = names.map(() => "?").join(",");
+    const fileAggs = this.db
+      .prepare(
+        `SELECT project_name, COUNT(*) AS cnt, COALESCE(SUM(byte_size),0) AS bytes FROM project_files WHERE project_name IN (${placeholders}) GROUP BY project_name`,
+      )
+      .all(...names) as { project_name: string; cnt: number; bytes: number }[];
+    const fileByProject = new Map<string, { cnt: number; bytes: number }>();
+    for (const row of fileAggs)
+      fileByProject.set(row.project_name, { cnt: row.cnt, bytes: row.bytes });
+
+    const scopeRows = this.db
+      .prepare(
+        `SELECT DISTINCT project_name, provider_repo_id, provider_repo_path FROM scopes WHERE project_name IN (${placeholders}) ORDER BY project_name, provider_repo_path`,
+      )
+      .all(...names) as {
+      project_name: string;
+      provider_repo_id: string;
+      provider_repo_path: string;
+    }[];
+    const reposByProject = new Map<string, ProjectRepository[]>();
+    for (const row of scopeRows) {
+      const list = reposByProject.get(row.project_name) ?? [];
+      list.push({
+        repo_id: row.provider_repo_id,
+        repo_path: row.provider_repo_path,
+      });
+      reposByProject.set(row.project_name, list);
+    }
+
+    return rows.map((project) => {
+      const fileAgg = fileByProject.get(project.name);
+      const projRepos = reposByProject.get(project.name) ?? [];
+      return {
+        ...project,
+        file_count: fileAgg?.cnt ?? 0,
+        file_bytes: fileAgg?.bytes ?? 0,
+        repositories: projRepos,
+      };
+    }) as ProjectWithCounts[];
   }
 
   /**
@@ -335,6 +442,179 @@ export class Store {
     const project = this.getProject(name);
     if (!project) throw new Error(`project insert lost: ${name}`);
     return project;
+  }
+
+  /**
+   * Explicit project creation. Duplicate name throws DomainStateError → 409.
+   */
+  createProject(input: { name: string; context_doc: string | null }): Project {
+    try {
+      this.db
+        .prepare(`INSERT INTO projects (name, context_doc) VALUES (?, ?)`)
+        .run(input.name, input.context_doc);
+    } catch (err: unknown) {
+      if (
+        err instanceof Error &&
+        typeof (err as unknown as Record<string, unknown>).code === "string" &&
+        String((err as unknown as Record<string, unknown>).code).startsWith(
+          "SQLITE_CONSTRAINT",
+        )
+      ) {
+        throw new DomainStateError(
+          domainError(
+            "DUPLICATE_PROJECT" as DomainErrorCode,
+            `project already exists: ${input.name}`,
+            { name: input.name },
+          ),
+        );
+      }
+      throw err;
+    }
+    const project = this.getProject(input.name);
+    if (!project) throw new Error(`project insert lost: ${input.name}`);
+    return project;
+  }
+
+  // ---------------------------------------------------------------------
+  // Project Files
+  // ---------------------------------------------------------------------
+
+  /** Full file rows including content, ordered by filename; [] for unknown project. */
+  listProjectFiles(projectName: string): readonly ProjectFile[] {
+    const project = this.db
+      .prepare(`SELECT 1 FROM projects WHERE name = ?`)
+      .get(projectName);
+    if (!project) return [];
+    return this.db
+      .prepare(
+        `SELECT * FROM project_files WHERE project_name = ? ORDER BY filename`,
+      )
+      .all(projectName) as ProjectFile[];
+  }
+
+  /** Paginated file metadata (content omitted). Unknown project returns zero rows. */
+  pageProjectFiles(
+    projectName: string,
+    limit: number,
+    offset: number,
+  ): { files: ProjectFileMeta[]; total: number } {
+    const fileRows = this.db
+      .prepare(
+        `SELECT id, filename, media_type, byte_size, sha256, created_at, updated_at
+         FROM project_files WHERE project_name = ? ORDER BY filename LIMIT ? OFFSET ?`,
+      )
+      .all(projectName, limit, offset) as ProjectFileMeta[];
+    const { n } = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM project_files WHERE project_name = ?`)
+      .get(projectName) as { n: number };
+    return { files: fileRows, total: n };
+  }
+
+  /** Create a new project file. Throws DomainStateError for unknown project or duplicate filename. */
+  createProjectFile(input: {
+    project_name: string;
+    filename: string;
+    media_type: "text/plain" | "text/markdown";
+    content: string;
+  }): ProjectFile {
+    const project = this.db
+      .prepare(`SELECT 1 FROM projects WHERE name = ?`)
+      .get(input.project_name);
+    if (!project) {
+      throw new DomainStateError(
+        domainError(
+          "UNKNOWN_PROJECT" as DomainErrorCode,
+          `unknown project: ${input.project_name}`,
+          { project_name: input.project_name },
+        ),
+      );
+    }
+    const id = projectFileId();
+    const hash = sha256Hex(input.content);
+    const bsize = byteSize(input.content);
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO project_files (id, project_name, filename, media_type, content, byte_size, sha256)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          input.project_name,
+          input.filename,
+          input.media_type,
+          input.content,
+          bsize,
+          hash,
+        );
+    } catch (err: unknown) {
+      if (
+        err instanceof Error &&
+        typeof (err as unknown as Record<string, unknown>).code === "string" &&
+        String((err as unknown as Record<string, unknown>).code).startsWith(
+          "SQLITE_CONSTRAINT",
+        )
+      ) {
+        throw new DomainStateError(
+          domainError(
+            "FILE_EXISTS" as DomainErrorCode,
+            `file exists: ${input.filename}`,
+            { filename: input.filename },
+          ),
+        );
+      }
+      throw err;
+    }
+    const file = this.db
+      .prepare(`SELECT * FROM project_files WHERE id = ?`)
+      .get(id) as ProjectFile | undefined;
+    if (!file) throw new Error(`file insert lost: ${id}`);
+    return file;
+  }
+
+  /** Replace file content and metadata (full replace). Unknown project or file → undefined. */
+  replaceProjectFile(
+    projectName: string,
+    id: string,
+    input: { media_type: "text/plain" | "text/markdown"; content: string },
+  ): ProjectFile | undefined {
+    const existing = this.db
+      .prepare(`SELECT * FROM project_files WHERE id = ? AND project_name = ?`)
+      .get(id, projectName) as ProjectFile | undefined;
+    if (!existing) return undefined;
+    const hash = sha256Hex(input.content);
+    const bsize = byteSize(input.content);
+    this.db
+      .prepare(
+        `UPDATE project_files SET media_type = ?, content = ?, byte_size = ?, sha256 = ?,
+         updated_at = ? WHERE id = ?`,
+      )
+      .run(input.media_type, input.content, bsize, hash, nowIso(), id);
+    const file = this.db
+      .prepare(`SELECT * FROM project_files WHERE id = ?`)
+      .get(id) as ProjectFile | undefined;
+    if (!file) throw new Error(`file lost after replace: ${id}`);
+    return file;
+  }
+
+  /** Delete a project file. Returns false when not found. */
+  deleteProjectFile(projectName: string, id: string): boolean {
+    const result = this.db
+      .prepare(`DELETE FROM project_files WHERE id = ? AND project_name = ?`)
+      .run(id, projectName);
+    return result.changes > 0;
+  }
+
+  /**
+   * Distinct connected repositories for a project, derived from scopes only.
+   * Returns [] for unknown project. Ordered by provider_repo_path.
+   */
+  projectRepositories(projectName: string): readonly ProjectRepository[] {
+    return this.db
+      .prepare(
+        `SELECT DISTINCT provider_repo_id AS repo_id, provider_repo_path AS repo_path FROM scopes WHERE project_name = ? ORDER BY provider_repo_path`,
+      )
+      .all(projectName) as ProjectRepository[];
   }
 
   /**

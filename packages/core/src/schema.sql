@@ -107,3 +107,17 @@ CREATE TABLE IF NOT EXISTS run_events (
   detail_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
+
+CREATE TABLE IF NOT EXISTS project_files (
+  id TEXT PRIMARY KEY,
+  project_name TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  media_type TEXT NOT NULL CHECK (media_type IN ('text/plain','text/markdown')),
+  content TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (project_name, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_project_files_project ON project_files(project_name, filename);
