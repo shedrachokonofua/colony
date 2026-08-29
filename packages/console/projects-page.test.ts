@@ -1,14 +1,65 @@
 import { describe, expect, it } from "bun:test";
-import {
-  PROJECT_CARDS_GRID_DESKTOP,
-  PROJECT_CARDS_GRID_MOBILE,
-  buildNewProjectPayload,
-  knowledgeText,
-  repoSummaryText,
-  resolveComposerProject,
-} from "./project-helpers.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-describe("project-card markup invariants", () => {
+const here = dirname(fileURLToPath(import.meta.url));
+const appSource = readFileSync(join(here, "app.js"), "utf8");
+const cssSource = readFileSync(join(here, "styles.css"), "utf8");
+
+/**
+ * The console is a no-build browser script: its pure helpers are declared at
+ * module top level but never exported. Evaluate the exact function source the
+ * UI runs against the test's inputs — no copy-paste, no dead constants.
+ */
+function evalAppFunction(name) {
+  const start = appSource.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`app.js has no function ${name}`);
+  let depth = 0;
+  let end = appSource.indexOf("{", start);
+  for (let i = end; i < appSource.length; i++) {
+    if (appSource[i] === "{") depth++;
+    else if (appSource[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  return new Function(`return (${appSource.slice(start, end)})`)();
+}
+
+/** The `grid-template-columns` a selector resolves to, or null when absent. */
+function gridColumnsOf(selector) {
+  const start = cssSource.indexOf(`${selector} {`);
+  if (start < 0) return null;
+  const rule = cssSource.slice(start, cssSource.indexOf("}", start));
+  const match = rule.match(/grid-template-columns:\s*([^;]+);/);
+  return match ? match[1].trim() : null;
+}
+
+describe("project-card grid layout", () => {
+  it("styles.css gives .project-cards two desktop columns", () => {
+    expect(gridColumnsOf(".project-cards")).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
+  it("styles.css collapses .project-cards to one column at max-width 900px", () => {
+    const mediaStart = cssSource.indexOf("@media (max-width: 900px)");
+    expect(mediaStart).toBeGreaterThan(0);
+    const media = cssSource.slice(
+      mediaStart,
+      cssSource.indexOf("}", cssSource.indexOf(".project-cards", mediaStart)),
+    );
+    expect(media).toContain(".project-cards");
+    expect(media).toMatch(/grid-template-columns:\s*1fr/);
+  });
+});
+
+describe("project-card fields", () => {
+  const knowledgeText = evalAppFunction("knowledgeText");
+  const repoSummaryText = evalAppFunction("repoSummaryText");
+
   it("knowledge line: Brief with file count when context_doc present", () => {
     expect(knowledgeText("Some brief", 3)).toBe("Brief · 3 reference files");
     expect(knowledgeText("Some brief", 1)).toBe("Brief · 1 reference file");
@@ -48,17 +99,24 @@ describe("project-card markup invariants", () => {
   });
 });
 
-describe("project-card grid layout", () => {
-  it("two-column desktop class", () => {
-    expect(PROJECT_CARDS_GRID_DESKTOP).toBe("repeat(2, minmax(0, 1fr))");
+describe("index card markup", () => {
+  it("app.js renders project cards from .project-cards with a card per project", () => {
+    expect(appSource).toContain('<div class="project-cards">');
+    expect(appSource).toMatch(
+      /class="project-card[^"]*"\s+href=\$\{projectHref\(project\.name\)\}/,
+    );
+    expect(appSource).toContain('class="project-card-name"');
+    expect(appSource).toContain('class="project-card-knowledge"');
   });
 
-  it("one-column mobile class", () => {
-    expect(PROJECT_CARDS_GRID_MOBILE).toBe("1fr");
+  it("app.js never forces the project page's scopes into rack-single", () => {
+    expect(appSource).not.toContain("rack rack-single");
   });
 });
 
 describe("new-project payload", () => {
+  const buildNewProjectPayload = evalAppFunction("buildNewProjectPayload");
+
   it("requires name, optional context_doc", () => {
     expect(buildNewProjectPayload("Test Project", "")).toEqual({
       name: "Test Project",
@@ -73,9 +131,16 @@ describe("new-project payload", () => {
     expect(buildNewProjectPayload("", "Brief")).toBeNull();
     expect(buildNewProjectPayload("  ", "Brief")).toBeNull();
   });
+
+  it("app.js POSTs the payload to /projects on the new-project route", () => {
+    expect(appSource).toContain('api("/projects"');
+    expect(appSource).toMatch(/routeIsNewProject\(\)\s*\?\s*renderNewProject/);
+  });
 });
 
 describe("composer fixed-project behavior", () => {
+  const resolveComposerProject = evalAppFunction("resolveComposerProject");
+
   it("submits the fixed project when hashQueryProject is present", () => {
     expect(resolveComposerProject("Fixed Project", "Form Value")).toBe(
       "Fixed Project",
@@ -91,5 +156,14 @@ describe("composer fixed-project behavior", () => {
   it("falls back to empty string when both are missing", () => {
     expect(resolveComposerProject(null, "")).toBe("");
     expect(resolveComposerProject(null, null)).toBe("");
+  });
+
+  it("app.js renders the fixed project as a non-editable element, not an input", () => {
+    expect(appSource).toContain('class="composer-fixed"');
+    const fixedBranch = appSource.slice(
+      appSource.indexOf("composer-fixed"),
+      appSource.indexOf('name="project"'),
+    );
+    expect(fixedBranch.length).toBeGreaterThan(0);
   });
 });

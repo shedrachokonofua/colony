@@ -22,12 +22,6 @@ import {
   pageCount,
   pageFromHash,
 } from "./pagination.js";
-import {
-  buildNewProjectPayload,
-  knowledgeText,
-  repoSummaryText,
-  resolveComposerProject,
-} from "./project-helpers.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
@@ -40,6 +34,40 @@ const DEMO_READS =
 // Demo volume: enough projects and scopes to exercise page 2 on both surfaces.
 const DEMO_PROJECT_COUNT = 27;
 const DEMO_SCOPES_IN_PROJECT = 27;
+
+// Pure helpers for the project surfaces. They live here (not a module) so the
+// unit tests can bind to the exact source the UI runs, and so the console
+// stays a single no-build script.
+
+function repoSummaryText(repositories) {
+  const repos = repositories ?? [];
+  if (repos.length === 0) return "No connected repositories";
+  const count = repos.length;
+  const shown = repos.slice(0, 2).map((r) => r.repo_path);
+  const more = count > 2 ? ` +${count - 2} more` : "";
+  return `${count} connected repo${count === 1 ? "" : "s"} · ${shown.join(" · ")}${more}`;
+}
+
+function knowledgeText(context_doc, file_count) {
+  const brief = context_doc ? "Brief" : "No brief";
+  const n = file_count ?? 0;
+  return `${brief} · ${n} reference file${n === 1 ? "" : "s"}`;
+}
+
+function resolveComposerProject(fixedProject, formValue) {
+  const fixed = fixedProject != null ? String(fixedProject).trim() : "";
+  if (fixed) return fixed;
+  return String(formValue ?? "").trim();
+}
+
+function buildNewProjectPayload(name, context_doc) {
+  const trimmedName = String(name ?? "").trim();
+  if (!trimmedName) return null;
+  const doc = String(context_doc ?? "").trim();
+  const body = { name: trimmedName };
+  if (doc) body.context_doc = doc;
+  return body;
+}
 
 const KIND_LABEL = {
   architect: "plan",
@@ -1726,7 +1754,6 @@ function renderProjectList() {
         <h1 class="board-title">Projects</h1>
         <div class="board-head-actions">
           <a class="btn btn-solid" href="#/new-project">New project</a>
-          <a class="btn btn-quiet" href="#/new">New scope</a>
         </div>
       </div>
       ${total === 0
@@ -1812,7 +1839,7 @@ function renderProjectPage() {
                 <a class="btn btn-quiet" href="#/">All projects</a>
               </div>`
             : scopes.length
-              ? html`<div class=${DEMO ? "rack rack-single" : "rack"}>
+              ? html`<div class="rack">
                   ${repeat(scopes, (scope) => scope.id, scopeCard)}
                 </div>`
               : html`<p class="rack-empty">No scopes in this project yet.</p>`}
