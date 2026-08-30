@@ -12,13 +12,22 @@ import {
   costPredictionLines,
   parseCostPrediction,
 } from "../cost-prediction.js";
-import { traceHref } from "../trace-link.js";
-import "./markdown-reader.js";
 import "./run-feed.js";
 import "./run-line.js";
 
 function shortSha(sha) {
   return sha && sha.length >= 7 ? sha.slice(0, 7) : "—";
+}
+
+function parsePlan(raw) {
+  if (!raw) return null;
+  try {
+    const plan = JSON.parse(raw);
+    if (!plan || !Array.isArray(plan.tasks)) return null;
+    return plan;
+  } catch {
+    return null;
+  }
 }
 
 export class TaskDrawer extends ColonyElement {
@@ -88,10 +97,56 @@ export class TaskDrawer extends ColonyElement {
     this._feedbackDraft = event.target.value;
   }
 
+  #drawerHead(task, label = "Task detail") {
+    return html`<div class="drawer-head">
+      <span class="chip" data-kind=${task.state}>${task.state}</span>
+      <span class="mono drawer-id">${label}</span>
+      <button
+        class="btn btn-quiet drawer-close"
+        @click=${() => this.#emit("colony-close-drawer")}
+        aria-label="Close task detail"
+      >
+        ✕
+      </button>
+    </div>`;
+  }
+
+  #planDrawer() {
+    const index = Number(String(this.#planTaskId()).slice(5));
+    const plan = parsePlan(this.detail?.scope?.plan_json);
+    const planTask = Number.isInteger(index) ? plan?.tasks?.[index] : null;
+    if (!planTask) return nothing;
+    const deps = (planTask.depends_on || []).length
+      ? `depends on ${(planTask.depends_on || [])
+          .map((d) => `#${d}`)
+          .join(", ")}`
+      : "no dependencies";
+    return html`<aside class="drawer" role="dialog" aria-label="Planned task">
+      ${this.#drawerHead(
+        { state: "proposed" },
+        `plan #${index}`,
+      )}
+      <div class="drawer-body">
+        <p class="task-title">${planTask.title}</p>
+        <p class="task-meta">${deps}</p>
+        <pre class="spec spec-tall">${planTask.spec}</pre>
+        <p class="note">
+          This task is proposed — approve or reject the plan from the Plan card.
+        </p>
+      </div>
+    </aside>`;
+  }
+
+  /** A selected `plan:<i>` id, or null for a real-task selection. */
+  #planTaskId() {
+    return this.task?.id?.startsWith("plan:") ? this.task.id : null;
+  }
+
   render() {
     const task = this.task;
     const scope = this.scope;
     if (!task || !scope) return nothing;
+    if (this.#planTaskId()) return this.#planDrawer();
     const runs = (this.detail?.runs || []).filter(
       (run) => run.task_id === task.id,
     );
@@ -109,17 +164,7 @@ export class TaskDrawer extends ColonyElement {
         : "";
     const liveRun = [...runs].reverse().find((run) => run.status === "running");
     return html`<aside class="drawer" role="dialog" aria-label="Task detail">
-      <div class="drawer-head">
-        <span class="chip" data-kind=${task.state}>${task.state}</span>
-        <span class="mono drawer-id">${task.id}</span>
-        <button
-          class="btn btn-quiet drawer-close"
-          @click=${() => this.#emit("colony-close-drawer")}
-          aria-label="Close task detail"
-        >
-          ✕
-        </button>
-      </div>
+      ${this.#drawerHead(task, task.id)}
       <div class="drawer-body">
         <p class="task-title">${task.title}</p>
         <p class="task-meta">

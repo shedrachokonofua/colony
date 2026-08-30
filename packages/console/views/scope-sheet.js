@@ -82,6 +82,9 @@ export class ScopeSheet extends ColonyElement {
     scopeRunEvents: { type: Object },
     error: { type: String },
     config: { type: Object },
+    // The shell's armed confirm kind (merge/stop/cancel/abandon…); the
+    // abandon button renders its Confirm step while it matches.
+    confirm: { type: String },
   };
 
   constructor() {
@@ -96,6 +99,7 @@ export class ScopeSheet extends ColonyElement {
     this.scopeRunEvents = null;
     this.error = "";
     this.config = null;
+    this.confirm = null;
   }
 
   #emit(type, detail = {}) {
@@ -104,6 +108,25 @@ export class ScopeSheet extends ColonyElement {
 
   #abandonVisible(scope) {
     return Boolean(scope) && !["done", "abandoned"].includes(scope.status);
+  }
+
+  /** The monolith's abandonButton (app.js): arm with a confirm, then emit
+   * colony-abandon {scopeId} — the event the shell's _abandon listens for. */
+  #abandonButton(scope) {
+    if (!this.#abandonVisible(scope)) return nothing;
+    return this.confirm === "abandon"
+      ? html`<button
+          class="btn btn-rev"
+          @click=${() => this.#emit("colony-abandon", { scopeId: scope.id })}
+        >
+          Confirm abandon
+        </button>`
+      : html`<button
+          class="btn btn-quiet"
+          @click=${() => this.#emit("colony-confirm", { kind: "abandon" })}
+        >
+          Abandon scope
+        </button>`;
   }
 
   #drawerTask(detail) {
@@ -146,14 +169,7 @@ export class ScopeSheet extends ColonyElement {
           ${scope.approvals === "manual"
             ? html`<span class="chip">manual approvals</span>`
             : nothing}
-          ${this.#abandonVisible(scope)
-            ? html`<button
-                class="btn btn-quiet"
-                @click=${() => this.#emit("colony-confirm", { kind: "abandon" })}
-              >
-                Abandon scope
-              </button>`
-            : nothing}
+          ${this.#abandonButton(scope)}
         </div>
       </header>
       ${this.error
@@ -201,6 +217,7 @@ export class ScopeSheet extends ColonyElement {
               .detail=${detail}
               .runEvents=${this.runEvents}
               .config=${this.config}
+              .confirm=${this.confirm}
             ></task-drawer>`
           : nothing
         : nothing}
