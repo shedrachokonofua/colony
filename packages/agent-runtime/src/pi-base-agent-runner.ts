@@ -59,6 +59,7 @@ import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import { createSubagentTool } from "./subagent-tool.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
 import { buildSandboxTools } from "./sandbox-tools.js";
+import { RunEvidenceCollector } from "./run-evidence.js";
 import {
   buildSandboxLaunchProfile,
   type SandboxEngine,
@@ -217,6 +218,8 @@ export class PiBaseAgentRunner implements PiRunner {
     const runId = request.runId;
     const sandboxId = createSandboxId(this.profile.sandboxPrefix);
     const broker = runnerBroker(this.options);
+    // The run's own provider token; redaction secrets for persisted evidence.
+    const runToken = packetRepo(request.packet)?.credentials?.token;
     let model = await resolvePiModel(request, this.options.model);
     const models = [model, ...(this.options.fallbackModels ?? [])];
     const workTools = this.options.tools ?? this.profile.defaultTools;
@@ -396,7 +399,7 @@ export class PiBaseAgentRunner implements PiRunner {
           runId,
           // The packet's repo token is a live secret: every exec ledger string
           // must redact it, not just the well-known token patterns.
-          runToken: packetRepo(request.packet)?.credentials?.token,
+          runToken,
           // Ledger emission is best-effort: a sink that throws must be
           // visible in the run logs, never swallowed silently.
           logger: this.options.logger,
@@ -474,7 +477,11 @@ export class PiBaseAgentRunner implements PiRunner {
         // spans on whatever OTEL context is active at prompt time, which the
         // prompt wrappers below bind to environment.traceContext.
         ...(request.environment.traceContext !== undefined
-          ? { telemetry: {} }
+          ? {
+              telemetry: {
+                attributes: { "colony.run_id": runId },
+              },
+            }
           : {}),
       });
 
@@ -605,9 +612,18 @@ export class PiBaseAgentRunner implements PiRunner {
       let jigglesUsed = 0;
       const sleep = (ms: number) =>
         new Promise<void>((resolve) => setTimeout(resolve, ms));
+      // Rich evidence rows flow through the run's own audit sink; the
+      // provider token is a live secret, so it rides the redaction secrets.
+      const evidence = new RunEvidenceCollector(
+        runId,
+        this.options.auditSink,
+        runToken ? [runToken] : [],
+      );
       const unsubscribeGuards = installRunGuards(session.agent, runId, {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
         logger: this.options.logger,
+        evidence,
+        rejectionToolName: submitTool.name,
         onFailure: (reason) => {
           failureReason ??= reason;
         },
@@ -685,6 +701,9 @@ export class PiBaseAgentRunner implements PiRunner {
           context.args,
           context.isError,
         );
+        // Rejection evidence lives in the guard subscription's end-event
+        // seam (see pi-runner-common): it is the only path that sees TypeBox
+        // argument-validation refusals, which never reach afterToolCall.
         this.options.logger?.info?.(
           {
             runId,
@@ -693,7 +712,7 @@ export class PiBaseAgentRunner implements PiRunner {
             args: this.options.logToolArgs ? context.args : undefined,
             isError: context.isError,
           },
-          "pi_tool_call",
+          "pi_tool_observation",
         );
         const phaseNudge = takePhaseBudgetNudge();
         const repeatNudge = phaseNudge

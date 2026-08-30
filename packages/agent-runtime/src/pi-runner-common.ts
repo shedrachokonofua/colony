@@ -32,6 +32,7 @@ import type { RunAuditSink } from "./audit-sink.js";
 import type { PiRunRequest } from "./pi-adapter.js";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { WebToolsConfig } from "./web-tools.js";
+import { RunEvidenceCollector, toolResultText } from "./run-evidence.js";
 
 export interface PiRunnerLogger {
   info?(fields: Record<string, unknown>, message: string): void;
@@ -89,6 +90,13 @@ export type PiModelResolver = (
 ) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
+  /** Evidence collector fed by the guard subscription; noop when unset. */
+  readonly evidence?: RunEvidenceCollector;
+  /**
+   * Submit tool whose failed calls emit `completion_rejected`. Undefined on
+   * guard install sites without an evidence collector (subagents, critics).
+   */
+  readonly rejectionToolName?: string;
   /**
    * Fired when the model returns `zeroOutputStallTurns` consecutive
    * assistant messages with zero output tokens and no tool activity - a
@@ -604,9 +612,33 @@ export function installRunGuards(
     if (event.type === "tool_execution_start") {
       inFlightTools += 1;
       zeroOutputTurns = 0;
+      options.evidence?.toolStart(event.toolCallId, event.args, event.intent);
     }
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
+      // The end event is the sole carrier of the result; the collector is
+      // keyed by toolCallId, so firing here (and only here) yields exactly
+      // one tool_call row per call.
+      const { text, isErrorText } = toolResultText(event.result);
+      void options.evidence?.toolEnd({
+        toolCallId: event.toolCallId,
+        tool: event.toolName,
+        isError: isErrorText || event.isError === true,
+        endedAtMs: Date.now(),
+        resultText: text,
+      });
+      // Rejected submission evidence: submit-tool executes that threw (the
+      // schema/mechanical validators throw deliberately) and upstream argument
+      // validation failures (the loop emits the TypeBox message as the end
+      // event's result, never reaching afterToolCall) both surface here. The
+      // end event is the one seam that carries every rejection verbatim.
+      if (
+        options.rejectionToolName !== undefined &&
+        event.toolName === options.rejectionToolName &&
+        (isErrorText || event.isError === true)
+      ) {
+        options.evidence?.completionRejected(text, event.toolName);
+      }
     }
     armWatchdog();
     if (event.type === "turn_end") {
@@ -617,6 +649,21 @@ export function installRunGuards(
       const messageUsd = usage?.cost.total ?? 0;
       const messageCompletedAt = performance.now();
       usdSpent += messageUsd;
+      // Extended evidence row: keeps the legacy logger row's fields plus the
+      // new evidence keys, emitted through the audit sink. The logger line is
+      // renamed so `pi_usage` reaches `run_events` through this path only —
+      // colonyd's roleLogger mirrors every logger message into `run_events`
+      // under its message string, so keeping the old name would double-emit.
+      options.evidence?.usage({
+        usage,
+        provider: event.message.provider,
+        model: event.message.model,
+        stopReason: event.message.stopReason,
+        errorMessage: event.message.errorMessage,
+        duration: event.message.duration,
+        ttft: event.message.ttft,
+        turnDurationSeconds: (messageCompletedAt - previousMessageAt) / 1_000,
+      });
       options.logger?.info?.(
         {
           runId,
@@ -628,7 +675,8 @@ export function installRunGuards(
           turnDurationSeconds: (messageCompletedAt - previousMessageAt) / 1_000,
           cacheWriteTokens: usage?.cacheWrite,
         },
-        "pi_usage",
+        // Was "pi_usage": that name is now owned by the sink row above.
+        "pi_turn_usage",
       );
       previousMessageAt = messageCompletedAt;
       if ((usage?.output ?? 0) === 0) {
@@ -664,11 +712,19 @@ export function installRunGuards(
       options.onFailure?.(reason);
       agent.abort();
     }
+    // agent_end closes the run's evidence stream with the aggregate row.
+    if (event.type === "agent_end") {
+      options.evidence?.runSummary();
+    }
   });
   return () => {
     unsubscribed = true;
     clearTimeout(watchdog);
     unsubscribe();
+    // The collector serializes its emits; settle() drains every pending
+    // tool_call row (artifact storage awaits) so the feed is complete — and
+    // run_summary ordered after them — before finalization reads it.
+    void options.evidence?.settle();
   };
 }
 

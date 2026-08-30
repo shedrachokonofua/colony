@@ -317,14 +317,14 @@ export function buildDemoRunEvents(now) {
       id: 1,
       run_id: "run-gate-1",
       at: new Date(now - 11 * 1000).toISOString(),
-      event: "pi_tool_call",
+      event: "tool_call",
       detail_json: JSON.stringify({ tool: "bash", isError: false }),
     },
     {
       id: 2,
       run_id: "run-gate-1",
       at: new Date(now - 6 * 1000).toISOString(),
-      event: "pi_tool_call",
+      event: "tool_call",
       detail_json: JSON.stringify({ tool: "read", isError: false }),
     },
     {
