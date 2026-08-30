@@ -1,20 +1,15 @@
 // Shell unit tests for <colony-app>, under happy-dom: route parsing, the
 // 2.5s poll (document.hidden skip), and the hashchange reset handler.
 // @ts-nocheck
-import { Window } from "happy-dom";
 import { afterEach, describe, expect, it } from "bun:test";
+import { sharedDom } from "./elements/test-dom.js";
 
-// reactive-element's happy-dom mode patches `window.HTMLElement`, so the
-// Window globals must be installed before `./base.js` (and therefore lit)
-// is imported; dynamic import here is the sequencing primitive.
-const win = new Window({ url: "https://console.local/?demo=1#/" });
-win.window = win;
-globalThis.window = win;
-globalThis.document = win.document;
-globalThis.customElements = win.customElements;
-globalThis.HTMLElement = win.HTMLElement;
+// Element suites share this window and registry (bun runs every suite in one
+// process with one module cache); the shared window must be installed before
+// colony-app.js (and therefore base.js/lit/demo.js) is imported.
+sharedDom();
 // demo.js reads location.search at module top level; seed the global before
-// the shell (and therefore demo.js) is imported.
+// the shell is imported.
 globalThis.location = { hash: "#/", search: "?demo=1" };
 
 const { ColonyApp } = await import("./colony-app.js");
@@ -223,7 +218,7 @@ describe("hashchange handler", () => {
     // _refresh in demo mode re-populates the paginated surfaces after the
     // reset; only the handler's own clearing is under test here.
     app._refresh = async () => {};
-    window.dispatchEvent(new win.Event("hashchange"));
+    window.dispatchEvent(new window.Event("hashchange"));
     await app.updateComplete;
     expect(app.currentRoute).toEqual({
       name: "scope",
@@ -253,7 +248,7 @@ describe("hashchange handler", () => {
     // The list view is the first module; every later task registers its own.
     expect(app.viewModule?.route).toBe("list");
     withHash("#/new-project");
-    window.dispatchEvent(new win.Event("hashchange"));
+    window.dispatchEvent(new window.Event("hashchange"));
     await app.updateComplete;
     expect(app.viewModule?.route).toBe("newProject");
     expect(app.viewModule?.loading).toBe(true);

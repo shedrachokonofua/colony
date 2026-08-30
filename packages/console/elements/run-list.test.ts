@@ -1,18 +1,13 @@
 // Unit tests for <run-list>, under happy-dom: rows key on run id, so a poll
 // that re-sends the same list patches rows in place instead of rebuilding.
 // @ts-nocheck
-import { Window } from "happy-dom";
 import { afterEach, describe, expect, it } from "bun:test";
+import { sharedDom } from "./test-dom.js";
 
-// reactive-element's happy-dom mode patches `window.HTMLElement`, so the
-// Window globals must be installed before `../base.js` (and therefore lit)
-// is imported; dynamic import here is the sequencing primitive.
-const win = new Window({ url: "https://console.local/" });
-win.window = win;
-globalThis.window = win;
-globalThis.document = win.document;
-globalThis.customElements = win.customElements;
-globalThis.HTMLElement = win.HTMLElement;
+// Element modules self-register into globalThis.customElements at import
+// time (a static import would hoist above this setup), so the shared
+// window must be installed before they load.
+sharedDom();
 
 await import("./run-list.js");
 

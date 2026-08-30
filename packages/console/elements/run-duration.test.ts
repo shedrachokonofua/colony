@@ -2,18 +2,13 @@
 // static duration, running runs tick once a second via the shared ticker,
 // and the interval is torn down on disconnect.
 // @ts-nocheck
-import { Window } from "happy-dom";
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { sharedDom } from "./test-dom.js";
 
-// reactive-element's happy-dom mode patches `window.HTMLElement`, so the
-// Window globals must be installed before `../base.js` (and therefore lit)
-// is imported; dynamic import here is the sequencing primitive.
-const win = new Window({ url: "https://console.local/" });
-win.window = win;
-globalThis.window = win;
-globalThis.document = win.document;
-globalThis.customElements = win.customElements;
-globalThis.HTMLElement = win.HTMLElement;
+// Element modules self-register into globalThis.customElements at import
+// time (a static import would hoist above this setup), so the shared
+// window must be installed before they load.
+sharedDom();
 
 const clock = { now: Date.parse("2026-01-01T00:00:10.000Z") };
 globalThis.Date = class extends Date {

@@ -1,18 +1,13 @@
 // Base module unit tests, under happy-dom.
 // @ts-nocheck
 import { readFileSync } from "node:fs";
-import { Window } from "happy-dom";
 import { afterEach, describe, expect, it } from "bun:test";
+import { sharedDom } from "./elements/test-dom.js";
 
-// reactive-element's happy-dom mode patches `window.HTMLElement`, so the
-// Window globals must be installed before `./base.js` (and therefore lit)
-// is imported; dynamic import here is the sequencing primitive.
-const win = new Window({ url: "https://console.local/" });
-win.window = win;
-globalThis.window = win;
-globalThis.document = win.document;
-globalThis.customElements = win.customElements;
-globalThis.HTMLElement = win.HTMLElement;
+// Element suites share this window and registry (bun runs every suite in one
+// process with one module cache); the shared window must be installed before
+// base.js (and therefore lit) is imported.
+sharedDom();
 
 const base = await import("./base.js");
 const { ColonyElement, html, nothing, svg } = base;
