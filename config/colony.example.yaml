@@ -48,6 +48,7 @@ providers:
         reasoning: true
         context_window: 1000000
         max_tokens: 131072
+        # max_parallel_runs: 1   # optional cap on concurrently RUNNING runs (absent = unlimited)
         cost: { input: 0, output: 0 }
       - id: router/glm-5.2
         name: glm-5.2
