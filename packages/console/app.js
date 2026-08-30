@@ -1,12 +1,7 @@
-import {
-  html,
-  svg,
-  render as litRender,
-  nothing,
-  classMap,
-  repeat,
-  live,
-} from "/ui/vendor/lit-html.js";
+import { html, svg, render as litRender, nothing } from "lit";
+import { classMap } from "lit-html/directives/class-map.js";
+import { repeat } from "lit-html/directives/repeat.js";
+import { live } from "lit-html/directives/live.js";
 import {
   createRunTicker,
   durationAriaLabel,
