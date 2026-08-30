@@ -106,9 +106,11 @@ describe("createLocalArtifactStore", () => {
 // The canonical AWS documentation example credentials, assembled at runtime so
 // secret scanners do not mistake these public fixtures for real keys.
 const SIGV4_TEST_ACCESS_KEY = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");
-const SIGV4_TEST_SECRET_KEY = ["wJalrXUtnFEMI", "/K7MDENG+bPxRfi", "CYEXAMPLEKEY"].join(
-  "",
-);
+const SIGV4_TEST_SECRET_KEY = [
+  "wJalrXUtnFEMI",
+  "/K7MDENG+bPxRfi",
+  "CYEXAMPLEKEY",
+].join("");
 
 const SIGV4_PUT_VECTOR = {
   method: "PUT",
