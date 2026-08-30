@@ -630,7 +630,9 @@ describe("Store", () => {
     expect(store.activeRunCountByModel("m2")).toBe(1);
     expect(store.activeRunCountByModel("m3")).toBe(0);
 
-    const [m1First] = store.activeRuns("implement").filter((r) => r.model_id === "m1");
+    const [m1First] = store
+      .activeRuns("implement")
+      .filter((r) => r.model_id === "m1");
     store.finishRun(m1First!.id, "succeeded", {});
     expect(store.activeRunCountByModel("m1")).toBe(1);
   });
