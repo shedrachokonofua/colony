@@ -1,0 +1,356 @@
+import type { RunAuditSink } from "./audit-sink.js";
+import { redactText, redactValue } from "./redact.js";
+
+/**
+ * Rich run evidence, aggregated in the runner: one `tool_call` row per tool
+ * call, an extended `pi_usage` per completed assistant turn,
+ * `completion_rejected` for submit calls the tool refused, and `run_summary`
+ * at run end. Rows are appended through the run's audit sink only — never as
+ * logger messages, because colonyd's `roleLogger` already mirrors logger
+ * output into `run_events` under the logger's own message string.
+ */
+
+/** The persisted `tool_call` detail; all strings are redacted before here. */
+export interface ToolCallDetail {
+  readonly tool_call_id: string;
+  readonly tool: string;
+  readonly intent?: string;
+  readonly args?: unknown;
+  readonly started_at: string;
+  readonly ended_at: string;
+  readonly duration_ms: number;
+  readonly is_error: boolean;
+  readonly result_summary: string;
+  readonly result_ref?: string;
+  readonly error_detail?: string;
+}
+
+/** Extended `pi_usage` row: legacy token fields plus the new evidence keys. */
+export interface PiUsageDetail {
+  readonly input: number | undefined;
+  readonly output: number | undefined;
+  readonly cacheRead: number | undefined;
+  readonly cacheWrite: number | undefined;
+  readonly total_tokens: number | undefined;
+  readonly context_tokens: number | undefined;
+  readonly reasoning_tokens: number | undefined;
+  readonly cost_input: number | undefined;
+  readonly cost_output: number | undefined;
+  readonly cost_cache_read: number | undefined;
+  readonly cost_cache_write: number | undefined;
+  readonly model: string | undefined;
+  readonly provider: string | undefined;
+  readonly request_duration_ms: number | undefined;
+  readonly ttft_ms: number | undefined;
+  readonly stop_reason: string | undefined;
+  readonly error_message: string | undefined;
+}
+
+/** `run_summary` aggregates over one run's completed turns and tool calls. */
+export interface RunSummaryDetail {
+  readonly turns: number;
+  readonly tool_calls: number;
+  readonly tool_errors: number;
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly cache_read_tokens: number;
+  readonly cache_write_tokens: number;
+  readonly total_tokens: number;
+  readonly cost_input: number;
+  readonly cost_output: number;
+  readonly cost_cache_read: number;
+  readonly cost_cache_write: number;
+  readonly cost_total: number;
+  readonly per_tool: Record<
+    string,
+    { calls: number; errors: number; p50_ms: number; p95_ms: number }
+  >;
+}
+
+/**
+ * Truncation limits. The row keeps a bounded summary; anything longer goes to
+ * the artifact sink whole and is referenced by `result_ref`.
+ */
+export const RESULT_SUMMARY_CHARS = 2000;
+/** Same cut for the `completion_rejected` message (no artifact path). */
+export const REJECTION_SUMMARY_CHARS = 4000;
+
+/** The part of a completed assistant message a usage row reads. */
+export interface UsageMessageSlice {
+  readonly usage?:
+    | {
+        readonly input?: number;
+        readonly output?: number;
+        readonly cacheRead?: number;
+        readonly cacheWrite?: number;
+        readonly totalTokens?: number;
+        readonly contextTokens?: number;
+        readonly reasoningTokens?: number;
+        readonly cost?: {
+          readonly input?: number;
+          readonly output?: number;
+          readonly cacheRead?: number;
+          readonly cacheWrite?: number;
+          readonly total?: number;
+        };
+      }
+    | undefined;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly stopReason?: string;
+  readonly errorMessage?: string;
+  /** Provider request wall clock in ms (AssistantMessage.duration). */
+  readonly duration?: number;
+  /** Time to first token in ms (AssistantMessage.ttft). */
+  readonly ttft?: number;
+}
+
+/** One `tool_execution_end` observation, before any persistence decision. */
+export interface ToolCallObserved {
+  readonly toolCallId: string;
+  readonly tool: string;
+  readonly args: unknown;
+  readonly isError: boolean;
+  readonly startedAtMs: number;
+  readonly endedAtMs: number;
+  /** Raw textual result BEFORE truncation; overflow goes to the artifact sink. */
+  readonly resultText: string;
+  /** Thrown/structured validation message when the result is an error. */
+  readonly errorText?: string;
+}
+
+const percentile = (sorted: readonly number[], p: number): number => {
+  if (sorted.length === 0) return 0;
+  const rank = Math.min(
+    sorted.length - 1,
+    Math.floor((p / 100) * sorted.length - Number.EPSILON),
+  );
+  return Math.round(sorted[Math.max(0, rank)]!);
+};
+
+/**
+ * Per-run evidence state. Pure state machine — everything it emits goes
+ * through the caller's sink, which is contractually best-effort, so no path
+ * here can break the run.
+ */
+export class RunEvidenceCollector {
+  private readonly toolStarts = new Map<
+    string,
+    { at: number; intent?: string }
+  >();
+  private readonly perTool = new Map<string, number[]>();
+  private readonly perToolErrors = new Map<string, number>();
+  private toolTotal = 0;
+  private toolErrorTotal = 0;
+  private turns = 0;
+  private totals = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    costInput: 0,
+    costOutput: 0,
+    costCacheRead: 0,
+    costCacheWrite: 0,
+    costTotal: 0,
+  };
+
+  constructor(
+    private readonly runId: string,
+    private readonly sink: RunAuditSink | undefined,
+    private readonly secrets: readonly string[],
+  ) {}
+
+  /** Observe `tool_execution_start`: wall clock + intent for the pairing. */
+  toolStart(toolCallId: string, intent?: string): void {
+    this.toolStarts.set(toolCallId, {
+      at: Date.now(),
+      ...(intent !== undefined ? { intent: intent } : {}),
+    });
+  }
+
+  /**
+   * Observe `tool_execution_end` and append the run's single `tool_call` row.
+   * Both the loop's subscribe stream and its `afterToolCall` hook fire per
+   * call; only the end event carries the result, so this keyed entry point
+   * (one call per end observation, duplicates refused) keeps exactly one row
+   * per call no matter how many seams observe it.
+   */
+  async toolEnd(input: ToolCallObserved): Promise<void> {
+    this.toolTotal += 1;
+    if (input.isError) {
+      this.toolErrorTotal += 1;
+      const errors = this.perToolErrors.get(input.tool) ?? 0;
+      this.perToolErrors.set(input.tool, errors + 1);
+    }
+    // A tool that threw still owns its latency window even though the loop
+    // does not timestamp it.
+    const durations = this.perTool.get(input.tool) ?? [];
+    durations.push(Math.max(0, input.endedAtMs - input.startedAtMs));
+    this.perTool.set(input.tool, durations);
+
+    let resultRef: string | undefined;
+    if (this.sink && input.resultText.length > RESULT_SUMMARY_CHARS) {
+      try {
+        // putArtifact stores the bytes AND records the run_artifacts row;
+        // a missing row always means missing bytes, never half a record.
+        const stored = await this.sink.putArtifact(
+          this.runId,
+          "tool_result",
+          `${this.runId}/tool-result-${input.toolCallId}.txt`,
+          new TextEncoder().encode(input.resultText),
+          "text/plain",
+        );
+        resultRef = stored?.ref;
+      } catch {
+        // putArtifact is contractually non-rejecting; a sink that still
+        // throws must not take the run down — the row simply has no ref.
+      }
+    }
+    const start = this.toolStarts.get(input.toolCallId);
+    this.toolStarts.delete(input.toolCallId);
+    const detail: ToolCallDetail = {
+      tool_call_id: input.toolCallId,
+      tool: input.tool,
+      ...(start?.intent ? { intent: start.intent } : {}),
+      args: redactValue(input.args, this.secrets),
+      started_at: new Date(input.startedAtMs).toISOString(),
+      ended_at: new Date(input.endedAtMs).toISOString(),
+      duration_ms: Math.max(0, input.endedAtMs - input.startedAtMs),
+      is_error: input.isError,
+      result_summary: redactText(
+        input.resultText.slice(0, RESULT_SUMMARY_CHARS),
+        this.secrets,
+      ),
+      ...(resultRef ? { result_ref: resultRef } : {}),
+      ...(input.errorText
+        ? { error_detail: redactText(input.errorText, this.secrets) }
+        : {}),
+    };
+    this.emit("tool_call", detail);
+  }
+
+  /** Observe one completed assistant message: extended usage row + totals. */
+  usage(message: UsageMessageSlice): void {
+    this.turns += 1;
+    const usage = message.usage;
+    const cost = usage?.cost;
+    this.totals = {
+      input: this.totals.input + (usage?.input ?? 0),
+      output: this.totals.output + (usage?.output ?? 0),
+      cacheRead: this.totals.cacheRead + (usage?.cacheRead ?? 0),
+      cacheWrite: this.totals.cacheWrite + (usage?.cacheWrite ?? 0),
+      totalTokens: this.totals.totalTokens + (usage?.totalTokens ?? 0),
+      costInput: this.totals.costInput + (cost?.input ?? 0),
+      costOutput: this.totals.costOutput + (cost?.output ?? 0),
+      costCacheRead: this.totals.costCacheRead + (cost?.cacheRead ?? 0),
+      costCacheWrite: this.totals.costCacheWrite + (cost?.cacheWrite ?? 0),
+      costTotal: this.totals.costTotal + (cost?.total ?? 0),
+    };
+    const detail: PiUsageDetail = {
+      input: usage?.input,
+      output: usage?.output,
+      cacheRead: usage?.cacheRead,
+      cacheWrite: usage?.cacheWrite,
+      total_tokens: usage?.totalTokens,
+      context_tokens: usage?.contextTokens,
+      reasoning_tokens: usage?.reasoningTokens,
+      cost_input: cost?.input,
+      cost_output: cost?.output,
+      cost_cache_read: cost?.cacheRead,
+      cost_cache_write: cost?.cacheWrite,
+      model: message.model,
+      provider: message.provider,
+      request_duration_ms: message.duration,
+      ttft_ms: message.ttft,
+      stop_reason: message.stopReason,
+      error_message: message.errorMessage
+        ? redactText(message.errorMessage, this.secrets)
+        : undefined,
+    };
+    this.emit("pi_usage", detail);
+  }
+
+  /** A submit call was refused (throw or structured validation failure). */
+  completionRejected(message: string, tool: string): void {
+    this.emit("completion_rejected", {
+      tool,
+      message: redactText(
+        message.slice(0, REJECTION_SUMMARY_CHARS),
+        this.secrets,
+      ),
+    });
+  }
+
+  /** Aggregates since run start; the caller emits it exactly once at the end. */
+  summary(): RunSummaryDetail {
+    const perTool: RunSummaryDetail["per_tool"] = {};
+    for (const [tool, durations] of this.perTool) {
+      const sorted = [...durations].sort((a, b) => a - b);
+      perTool[tool] = {
+        calls: durations.length,
+        errors: this.perToolErrors.get(tool) ?? 0,
+        p50_ms: percentile(sorted, 50),
+        p95_ms: percentile(sorted, 95),
+      };
+    }
+    return {
+      turns: this.turns,
+      tool_calls: this.toolTotal,
+      tool_errors: this.toolErrorTotal,
+      input_tokens: this.totals.input,
+      output_tokens: this.totals.output,
+      cache_read_tokens: this.totals.cacheRead,
+      cache_write_tokens: this.totals.cacheWrite,
+      total_tokens: this.totals.totalTokens,
+      cost_input: this.totals.costInput,
+      cost_output: this.totals.costOutput,
+      cost_cache_read: this.totals.costCacheRead,
+      cost_cache_write: this.totals.costCacheWrite,
+      cost_total: this.totals.costTotal,
+      per_tool: perTool,
+    };
+  }
+
+  private emit(event: string, detail: Record<string, unknown>): void {
+    try {
+      this.sink?.appendEvent(this.runId, event, detail);
+    } catch {
+      // appendEvent is contractually non-throwing; a foreign sink that does
+      // must still never reach the run path.
+    }
+  }
+}
+
+/**
+ * Flatten a tool result to its textual form for the summary/artifact split.
+ * Text blocks join with newlines; non-text blocks note their kind so the
+ * summary still shows something at that position.
+ */
+export function toolResultText(
+  result: unknown,
+): { text: string; isErrorText: boolean } {
+  const content = (result as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return { text: "", isErrorText: false };
+  const pieces: string[] = [];
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === "object" &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string"
+    ) {
+      pieces.push((block as { text: string }).text);
+      continue;
+    }
+    const kind =
+      block && typeof block === "object"
+        ? String((block as { type?: unknown }).type ?? "unknown")
+        : "unknown";
+    pieces.push(`[${kind}]`);
+  }
+  const isError =
+    (result as { isError?: unknown } | undefined)?.isError === true;
+  return { text: pieces.length > 0 ? pieces.join("\n") : "", isErrorText: isError };
+}
