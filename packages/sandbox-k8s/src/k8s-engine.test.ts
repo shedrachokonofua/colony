@@ -102,6 +102,10 @@ describe("buildSandboxCustomResource (developer profile)", () => {
       memory: "4Gi",
       "ephemeral-storage": "8Gi",
     });
+    expect(container.resources.requests).toEqual({
+      cpu: "500m",
+      memory: "1536Mi",
+    });
     expect(container.securityContext.runAsUser).toBe(1000);
     expect(container.securityContext.runAsNonRoot).toBe(true);
     expect(container.securityContext.allowPrivilegeEscalation).toBe(false);
@@ -149,6 +153,10 @@ describe("buildSandboxCustomResource (reviewer profile)", () => {
       cpu: "1",
       memory: "2Gi",
       "ephemeral-storage": "4Gi",
+    });
+    expect(container.resources.requests).toEqual({
+      cpu: "250m",
+      memory: "1Gi",
     });
     expect(cr.metadata.labels[SANDBOX_ROLE_LABEL]).toBe("reviewer");
   });

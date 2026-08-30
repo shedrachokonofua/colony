@@ -47,6 +47,10 @@ export interface SandboxCustomResourceContainer {
   readonly workingDir: typeof POD_WORKSPACE_DIR;
   readonly securityContext: SandboxContainerSecurityContext;
   readonly resources: {
+    readonly requests: {
+      readonly cpu: string;
+      readonly memory: string;
+    };
     readonly limits: {
       readonly cpu: string;
       readonly memory: string;
@@ -236,6 +240,12 @@ export function buildSandboxCustomResource({
       seccompProfile: { type: "RuntimeDefault" },
     },
     resources: {
+      // Requests deliberately below limits: quota is priced on requests, and
+      // sandboxes idle near zero while their agent waits on the model.
+      requests: {
+        cpu: profile.resourceRequests.cpu,
+        memory: profile.resourceRequests.memory,
+      },
       limits: {
         cpu: profile.resourceLimits.cpu,
         memory: profile.resourceLimits.memory,

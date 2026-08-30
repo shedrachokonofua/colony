@@ -41,6 +41,17 @@ export interface SandboxResourceLimits {
   readonly ephemeralStorage: string;
 }
 
+/**
+ * Scheduler requests, deliberately far below the limits: a sandbox idles at
+ * ~0 CPU while its agent waits on the model and peaked at 0.4 CPU / 670Mi
+ * under a full monorepo test run (measured 2026-08-30). Requests size the
+ * namespace quota footprint; limits still grant full burst.
+ */
+export interface SandboxResourceRequests {
+  readonly cpu: string;
+  readonly memory: string;
+}
+
 export interface SandboxLaunchProfile {
   readonly role: SandboxRole;
   readonly actorRole: "developer" | "reviewer";
@@ -52,6 +63,7 @@ export interface SandboxLaunchProfile {
   readonly capabilities: readonly SandboxCapability[];
   readonly runExtensions: SandboxRunExtensions;
   readonly resourceLimits: SandboxResourceLimits;
+  readonly resourceRequests: SandboxResourceRequests;
   readonly readOnlyRootFilesystem: boolean;
 }
 
@@ -90,10 +102,20 @@ const DEVELOPER_RESOURCES: SandboxResourceLimits = {
   ephemeralStorage: "8Gi",
 };
 
+const DEVELOPER_REQUESTS: SandboxResourceRequests = {
+  cpu: "500m",
+  memory: "1536Mi",
+};
+
 const REVIEWER_RESOURCES: SandboxResourceLimits = {
   cpu: "1",
   memory: "2Gi",
   ephemeralStorage: "4Gi",
+};
+
+const REVIEWER_REQUESTS: SandboxResourceRequests = {
+  cpu: "250m",
+  memory: "1Gi",
 };
 
 const VALIDATE_ENV_ALLOWLIST: readonly string[] = [
@@ -165,6 +187,7 @@ export function buildSandboxLaunchProfile(
       capabilities: VALIDATE_CAPABILITIES,
       runExtensions: EMPTY_SANDBOX_RUN_EXTENSIONS,
       resourceLimits: REVIEWER_RESOURCES,
+      resourceRequests: REVIEWER_REQUESTS,
       readOnlyRootFilesystem: true,
     };
   }
@@ -181,6 +204,7 @@ export function buildSandboxLaunchProfile(
       capabilities: DEVELOPER_CAPABILITIES,
       runExtensions,
       resourceLimits: DEVELOPER_RESOURCES,
+      resourceRequests: DEVELOPER_REQUESTS,
       readOnlyRootFilesystem: false,
     };
   }
@@ -196,6 +220,7 @@ export function buildSandboxLaunchProfile(
     capabilities: REVIEWER_CAPABILITIES,
     runExtensions,
     resourceLimits: REVIEWER_RESOURCES,
+    resourceRequests: REVIEWER_REQUESTS,
     readOnlyRootFilesystem: true,
   };
 }
