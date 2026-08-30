@@ -16,6 +16,7 @@ import {
   type AgentRuntimePacket,
 } from "@colony/agent-runtime";
 import type { AuditRow } from "@colony/core";
+import { registerInMemorySpanExporter } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
 import { awaitPendingRuns } from "../src/runs/registry.js";
@@ -383,7 +384,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(passedEvidence.passed).toBe(true);
     const validatedAudit = handle.ctx.store
       .listAudit({ scope_id: scopeId, limit: 1000 })
-      .filter((row) => row.action === "scope.validated");
+      .events.filter((row) => row.action === "scope.validated");
     expect(validatedAudit.length).toBeGreaterThanOrEqual(1);
 
     const tasks = handle.ctx.store.listTasks(scopeId);
@@ -395,13 +396,13 @@ describe("colonyd fake end-to-end loop", () => {
     // A merged before B ever dispatched: audit row order proves it.
     const firstRunningB = handle.ctx.store
       .listAudit({ task_id: taskB!.id, limit: 1000 })
-      .find(
+      .events.find(
         (row) =>
           row.action === "task.transition" && transitionTo(row) === "running",
       );
     const mergedA = handle.ctx.store
       .listAudit({ task_id: taskA!.id, limit: 1000 })
-      .find(
+      .events.find(
         (row) =>
           row.action === "task.transition" && transitionTo(row) === "merged",
       );
@@ -412,7 +413,7 @@ describe("colonyd fake end-to-end loop", () => {
     for (const task of tasks) {
       const hops = handle.ctx.store
         .listAudit({ task_id: task.id, limit: 1000 })
-        .filter((row) => row.action === "task.transition")
+        .events.filter((row) => row.action === "task.transition")
         .sort((x, y) => x.id - y.id)
         .map((row) => {
           const detail = JSON.parse(row.detail_json) as Record<string, unknown>;
@@ -509,7 +510,7 @@ describe("colonyd fake end-to-end loop", () => {
     // No duplicate MRs were opened for the task.
     const auditMrOpened = handle.ctx.store
       .listAudit({ task_id: taskA.id, limit: 1000 })
-      .filter((row) => row.action === "mr.opened");
+      .events.filter((row) => row.action === "mr.opened");
     expect(auditMrOpened).toHaveLength(1);
   }, 30_000);
 
@@ -591,7 +592,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(
       handle.ctx.store
         .listAudit({ task_id: taskA.id, limit: 100 })
-        .some((row) => row.action === "gate.merge_timeout_reconciled"),
+        .events.some((row) => row.action === "gate.merge_timeout_reconciled"),
     ).toBe(true);
   }, 30_000);
 
@@ -692,7 +693,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(a.attempt).toBe(1);
     const changes = handle.ctx.store
       .listAudit({ task_id: taskA.id, limit: 1000 })
-      .filter((row) => row.action === "review.changes_requested");
+      .events.filter((row) => row.action === "review.changes_requested");
     expect(changes).toHaveLength(1);
 
     handle.ctx.store.clearRetryDelay(taskA.id);
@@ -706,7 +707,7 @@ describe("colonyd fake end-to-end loop", () => {
 
     const audit = handle.ctx.store
       .listAudit({ task_id: taskA.id, limit: 1000 })
-      .slice()
+      .events.slice()
       .sort((x, y) => x.id - y.id)
       .map((row) => row.action);
     const requested = audit.indexOf("review.changes_requested");
@@ -783,7 +784,7 @@ describe("colonyd fake end-to-end loop", () => {
     // Audit records the failure.
     const failedAudit = handle.ctx.store
       .listAudit({ scope_id: scopeId, limit: 1000 })
-      .filter((row) => row.action === "scope.validation_failed");
+      .events.filter((row) => row.action === "scope.validation_failed");
     expect(failedAudit.length).toBeGreaterThanOrEqual(1);
 
     // Flip the fake to pass, then revalidate via the HTTP endpoint.
@@ -798,7 +799,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(body.status).toBe("validating");
     const revalidateAudit = handle.ctx.store
       .listAudit({ scope_id: scopeId, limit: 1000 })
-      .filter((row) => row.action === "scope.revalidate_requested");
+      .events.filter((row) => row.action === "scope.revalidate_requested");
     expect(revalidateAudit.length).toBeGreaterThanOrEqual(1);
 
     // Settle the re-triggered validation run.
@@ -812,4 +813,40 @@ describe("colonyd fake end-to-end loop", () => {
       .filter((r) => r.kind === "validate" && r.status === "succeeded");
     expect(succeededRuns.length).toBeGreaterThanOrEqual(1);
   }, 30_000);
+
+  it("every run kind's colony.run span carries the run row id", async () => {
+    const seam = registerInMemorySpanExporter();
+    try {
+      const scopeId = await createScope("span ids across run kinds");
+      await driveToDone(scopeId);
+      const scope = handle.ctx.store.getScope(scopeId)!;
+      expect(scope.status).toBe("done");
+
+      // architect + implement + merge_gate all ran to reach done.
+      const runs = handle.ctx.store.runsForScope(scopeId);
+      const runKinds = runs.map((r) => r.kind);
+      expect(runKinds).toContain("architect");
+      expect(runKinds).toContain("implement");
+      expect(runKinds).toContain("merge_gate");
+
+      // One colony.run span per run row, keyed by the id minted into the
+      // runs row - not a second uuid minted when the span started.
+      const runSpans = seam.exporter
+        .getFinishedSpans()
+        .filter(
+          (span) =>
+            span.name === "colony.run" &&
+            span.attributes["colony.scope_id"] === scopeId,
+        );
+      const spanRunIds = runSpans.map(
+        (span) => span.attributes["colony.run_id"],
+      );
+      expect(spanRunIds).toHaveLength(runs.length);
+      for (const run of runs) {
+        expect(spanRunIds).toContain(run.id);
+      }
+    } finally {
+      await seam.shutdown();
+    }
+  });
 });

@@ -212,11 +212,11 @@ describe("project files HTTP contract", () => {
 
     // Audit rows for every mutation.
     const auditRes = await app.request("/audit?limit=100", ACTOR);
-    const audit = (await auditRes.json()) as {
-      action: string;
-      actor: string;
-      detail_json: string;
-    }[];
+    const audit = (
+      (await auditRes.json()) as {
+        events: { action: string; actor: string; detail_json: string }[];
+      }
+    ).events;
     const actions = audit.map((row) => row.action);
     expect(actions).toContain("project.created");
     expect(actions).toContain("project.file_created");

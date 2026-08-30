@@ -74,6 +74,12 @@ describe("run tracing disabled", () => {
     expect(run).toBeTruthy();
     expect(run!.status).toBe("succeeded");
     expect(run!.trace_id).toBeNull();
+    // The run-scoped audit rows (run.start, run.finished) must reference the
+    // runs row id, so the trail stays joinable to runs by run_id.
+    const startRows = handle.ctx.store
+      .listAudit({ run_id: run!.id })
+      .events.filter((row) => row.action === "run.start");
+    expect(startRows).toHaveLength(1);
 
     const app = buildApp(handle.ctx);
     const res = await app.request(`/scopes/${scope.id}`, {

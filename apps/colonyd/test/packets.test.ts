@@ -445,11 +445,11 @@ describe("project context HTTP contract", () => {
     ).resolves.toEqual({ context_doc: null });
 
     const auditRes = await app.request("/audit?limit=100", ACTOR);
-    const audit = (await auditRes.json()) as {
-      actor: string;
-      action: string;
-      detail_json: string;
-    }[];
+    const audit = (
+      (await auditRes.json()) as {
+        events: { actor: string; action: string; detail_json: string }[];
+      }
+    ).events;
     const writes = audit.filter(
       (row) => row.action === "project.context_updated",
     );
@@ -457,11 +457,9 @@ describe("project context HTTP contract", () => {
     expect(writes[0]!.actor).toBe("human:op-1");
     expect(JSON.parse(writes[0]!.detail_json)).toEqual({
       name: "pre-seeded",
-      bytes: 0,
+      bytes: Buffer.byteLength(DOC),
     });
-    expect(JSON.parse(writes[1]!.detail_json).bytes).toBe(
-      Buffer.byteLength(DOC),
-    );
+    expect(JSON.parse(writes[1]!.detail_json).bytes).toBe(0);
 
     expect(store.getProject("pre-seeded")).toBeTruthy();
   });

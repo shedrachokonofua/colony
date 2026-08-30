@@ -159,6 +159,22 @@ export interface RunEvent {
   readonly detail_json: string;
 }
 
+/** Ascending-by-id cursor page; newest page by default. */
+export interface RunEventPage {
+  readonly events: RunEvent[];
+  readonly has_more: boolean;
+  readonly oldest_id: number | null;
+  readonly newest_id: number | null;
+}
+
+/** Cursor page of audit rows, same envelope as RunEventPage. */
+export interface AuditPage {
+  readonly events: AuditRow[];
+  readonly has_more: boolean;
+  readonly oldest_id: number | null;
+  readonly newest_id: number | null;
+}
+
 export interface TaskTransitionPatch {
   readonly branch?: string | null;
   readonly mr_iid?: number | null;
@@ -170,6 +186,8 @@ export interface TaskTransitionPatch {
 export interface AuditFilter {
   readonly scope_id?: string;
   readonly task_id?: string;
+  readonly run_id?: string;
+  readonly before_id?: number;
   readonly limit?: number;
 }
 
@@ -220,6 +238,11 @@ function named(values: Record<string, SQLQueryBindings>): SQLQueryBindings {
   const bound: Record<string, SQLQueryBindings> = {};
   for (const [key, value] of Object.entries(values)) bound[`@${key}`] = value;
   return bound as unknown as SQLQueryBindings;
+}
+
+/** Page sizes are caller-chosen but bounded: default 200, clamp 1..1000. */
+function clampPageLimit(limit: number | undefined): number {
+  return Math.max(1, Math.min(limit ?? 200, 1000));
 }
 
 export class Store {
@@ -1044,8 +1067,10 @@ export class Store {
     workspace_path?: string;
     model_id?: string;
     trace_id?: string | null;
+    /** Pre-minted id so a span started before the row can carry it. */
+    id?: string;
   }): Run {
-    const id = crypto.randomUUID();
+    const id = input.id ?? crypto.randomUUID();
     const lease = new Date(Date.now() + input.lease_ttl_ms).toISOString();
     this.db
       .prepare(
@@ -1120,7 +1145,7 @@ export class Store {
       error?: string;
     } = {},
   ): Run {
-    this.db
+    const finished = this.db
       .prepare(
         `UPDATE runs SET status = @status, head_sha = @head_sha,
          envelope_json = @envelope_json, evidence_json = @evidence_json,
@@ -1140,6 +1165,21 @@ export class Store {
       );
     const run = this.getRun(runId);
     if (!run) throw new Error(`run lost after finish: ${runId}`);
+    // Only a matched UPDATE moved the row to terminal. A no-op (the run was
+    // already finished) must not append a second run.finished row that
+    // contradicts the runs row's terminal status.
+    if (finished.changes === 1) {
+      this.audit("svc:colonyd", "run.finished", {
+        run_id: run.id,
+        scope_id: run.scope_id,
+        task_id: run.task_id,
+        detail: {
+          run_id: run.id,
+          status,
+          ...(patch.error === undefined ? {} : { error: patch.error }),
+        },
+      });
+    }
     return run;
   }
 
@@ -1238,14 +1278,42 @@ export class Store {
       .run(runId, event, JSON.stringify(detail ?? {}));
   }
 
-  listRunEvents(runId: string, limit = 200): RunEvent[] {
-    return this.db
+  /**
+   * Run activity feed paginated at the store layer. Rows come back ascending
+   * by id; with no cursor you get the newest `limit` rows (default 200, clamp
+   * 1..1000). `before_id` is an exclusive cursor: only rows older than it are
+   * considered, so paging `before_id: page.oldest_id` walks the feed backwards.
+   */
+  listRunEvents(
+    runId: string,
+    opts: { before_id?: number; limit?: number } = {},
+  ): RunEventPage {
+    const rows = this.db
       .prepare(
         `SELECT * FROM (
-           SELECT * FROM run_events WHERE run_id = ? ORDER BY id DESC LIMIT ?
+           SELECT * FROM run_events WHERE run_id = @runId
+             AND (@beforeId IS NULL OR id < @beforeId)
+           ORDER BY id DESC LIMIT @limit
          ) ORDER BY id`,
       )
-      .all(runId, limit) as RunEvent[];
+      .all(
+        named({
+          runId,
+          beforeId: opts.before_id ?? null,
+          limit: clampPageLimit(opts.limit),
+        }),
+      ) as RunEvent[];
+    return this.pageEnvelope(rows, () => {
+      const oldest = rows[0]!.id;
+      // bun:sqlite yields null (node:sqlite undefined) when no row matches;
+      // accept neither as "a row was found".
+      const row = this.db
+        .prepare(
+          `SELECT 1 AS one FROM run_events WHERE run_id = ? AND id < ? LIMIT 1`,
+        )
+        .get(runId, oldest) as { one: number } | null | undefined;
+      return row !== null && row !== undefined;
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -1295,20 +1363,84 @@ export class Store {
       );
   }
 
-  listAudit(filter: AuditFilter = {}): AuditRow[] {
+  listAudit(filter: AuditFilter = {}): AuditPage {
     const clauses: string[] = [];
-    const params: Record<string, SQLQueryBindings> = {
-      scopeId: filter.scope_id ?? null,
-      taskId: filter.task_id ?? null,
-    };
-    if (filter.scope_id) clauses.push(`scope_id = @scopeId`);
-    if (filter.task_id) clauses.push(`task_id = @taskId`);
+    if (filter.scope_id) clauses.push("scope_id = @scopeId");
+    if (filter.task_id) clauses.push("task_id = @taskId");
+    if (filter.run_id) clauses.push("run_id = @runId");
+    if (filter.before_id !== undefined) clauses.push("id < @beforeId");
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    return this.db
+    const rows = this.db
       .prepare(
-        `SELECT * FROM audit ${where} ORDER BY id DESC LIMIT ${Math.max(1, Math.min(filter.limit ?? 200, 1000))}`,
+        `SELECT * FROM (
+           SELECT * FROM audit ${where} ORDER BY id DESC LIMIT @limit
+         ) ORDER BY id`,
       )
-      .all(named(params)) as AuditRow[];
+      .all(
+        named({
+          scopeId: filter.scope_id ?? null,
+          taskId: filter.task_id ?? null,
+          runId: filter.run_id ?? null,
+          beforeId: filter.before_id ?? null,
+          limit: clampPageLimit(filter.limit),
+        }),
+      ) as AuditRow[];
+    return {
+      events: rows,
+      has_more: this.olderAuditRowExists(filter, rows),
+      oldest_id: rows[0]?.id ?? null,
+      newest_id: rows[rows.length - 1]?.id ?? null,
+    };
+  }
+
+  /** Shared {events, has_more, oldest_id, newest_id} envelope for list pages. */
+  private pageEnvelope<T extends { id: number }>(
+    rows: T[],
+    hasMore: () => boolean,
+  ): {
+    events: T[];
+    has_more: boolean;
+    oldest_id: number | null;
+    newest_id: number | null;
+  } {
+    return {
+      events: rows,
+      has_more: rows.length === 0 ? false : hasMore(),
+      oldest_id: rows[0]?.id ?? null,
+      newest_id: rows[rows.length - 1]?.id ?? null,
+    };
+  }
+
+  /**
+   * True iff older audit rows exist than the page just returned, honoring the
+   * filter's scope/task/run narrowing — i.e. the cursor can still be walked.
+   */
+  private olderAuditRowExists(
+    filter: AuditFilter,
+    rows: readonly { id: number }[],
+  ): boolean {
+    if (rows.length === 0) return false;
+    const cursor = rows[0]!.id;
+    const clauses = ["id < ?"];
+    const bindings: (string | number)[] = [cursor];
+    if (filter.scope_id) {
+      clauses.push("scope_id = ?");
+      bindings.push(filter.scope_id);
+    }
+    if (filter.task_id) {
+      clauses.push("task_id = ?");
+      bindings.push(filter.task_id);
+    }
+    if (filter.run_id) {
+      clauses.push("run_id = ?");
+      bindings.push(filter.run_id);
+    }
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS one FROM audit WHERE ${clauses.join(" AND ")} LIMIT 1`,
+      )
+      .get(...bindings) as { one: number } | null | undefined;
+    return row !== null && row !== undefined;
   }
 }
 

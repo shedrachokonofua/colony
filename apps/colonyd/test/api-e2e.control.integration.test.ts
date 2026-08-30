@@ -151,7 +151,11 @@ describe("api e2e control — 1. replan + replacement plan", () => {
       `/audit?scope_id=${encodeURIComponent(scopeId)}&limit=1000`,
     );
     expect(audit.status).toBe(200);
-    const rows = audit.body as { action: string; detail_json: string }[];
+    const rows = (
+      audit.body as {
+        events: { action: string; detail_json: string }[];
+      }
+    ).events;
     const replanRow = rows.find((r) => r.action === "plan.replan_requested");
     expect(replanRow).toBeDefined();
     const detail = JSON.parse(replanRow!.detail_json) as { feedback?: string };
@@ -289,7 +293,7 @@ describe("api e2e control — 2. task transitions", () => {
     );
     expect(auditStop.status).toBe(200);
     expect(
-      (auditStop.body as { action: string }[]).some(
+      (auditStop.body as { events: { action: string }[] }).events.some(
         (r) => r.action === "task.stop_and_retry",
       ),
     ).toBe(true);
@@ -737,7 +741,7 @@ describe("api e2e control — 2. task transitions", () => {
     );
     expect(auditRc.status).toBe(200);
     expect(
-      (auditRc.body as { action: string }[]).some(
+      (auditRc.body as { events: { action: string }[] }).events.some(
         (r) => r.action === "task.changes_requested",
       ),
     ).toBe(true);
@@ -1006,7 +1010,7 @@ describe("api e2e control — 3. review loop", () => {
         `/audit?task_id=${encodeURIComponent(firstTask)}&limit=1000`,
       );
       expect(audit.status).toBe(200);
-      const rows = audit.body as { action: string }[];
+      const rows = (audit.body as { events: { action: string }[] }).events;
       expect(
         rows.filter((r) => r.action === "review.changes_requested").length,
       ).toBe(1);
@@ -1017,7 +1021,8 @@ describe("api e2e control — 3. review loop", () => {
         `/audit?scope_id=${encodeURIComponent(scopeId)}&limit=1000`,
       );
       expect(scopeAudit.status).toBe(200);
-      const sRows = scopeAudit.body as { action: string }[];
+      const sRows = (scopeAudit.body as { events: { action: string }[] })
+        .events;
       expect(sRows.some((r) => r.action === "mr.reused")).toBe(true);
 
       const taskAudit = await http(
@@ -1025,7 +1030,8 @@ describe("api e2e control — 3. review loop", () => {
         "GET",
         `/audit?task_id=${encodeURIComponent(firstTask)}&limit=1000`,
       );
-      const taskRows = taskAudit.body as { action: string }[];
+      const taskRows = (taskAudit.body as { events: { action: string }[] })
+        .events;
       expect(taskRows.filter((r) => r.action === "mr.opened").length).toBe(1);
       expect(taskRows.filter((r) => r.action === "mr.reused").length).toBe(1);
     } finally {
@@ -1164,7 +1170,7 @@ describe("api e2e control — 4. merge gate fail-then-pass", () => {
     );
     expect(audit.status).toBe(200);
     expect(
-      (audit.body as { action: string }[]).filter(
+      (audit.body as { events: { action: string }[] }).events.filter(
         (r) => r.action === "mr.opened",
       ).length,
     ).toBe(1);
@@ -1251,7 +1257,7 @@ describe("api e2e control — 5. manual vs auto merge approvals", () => {
       `/audit?task_id=${encodeURIComponent(mrOpen!)}&limit=1000`,
     );
     expect(
-      (beforeAudit.body as { action: string }[]).some(
+      (beforeAudit.body as { events: { action: string }[] }).events.some(
         (row) => row.action === "merge.approved",
       ),
     ).toBe(false);
@@ -1447,7 +1453,11 @@ describe("api e2e control — 6. abandon", () => {
       `/audit?scope_id=${encodeURIComponent(scopeId)}&limit=1000`,
     );
     expect(audit.status).toBe(200);
-    const rows = audit.body as { action: string; detail_json: string }[];
+    const rows = (
+      audit.body as {
+        events: { action: string; detail_json: string }[];
+      }
+    ).events;
     expect(
       rows.some(
         (r) =>
