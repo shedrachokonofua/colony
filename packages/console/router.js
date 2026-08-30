@@ -1,0 +1,55 @@
+// Route parsing for the console's hash-based URLs. Every reader decodes
+// `location.hash` at call time so paint-after-navigation sees the new route.
+
+export const PROJECT_ROUTE = /^project\/([^/?]+)/;
+export const FILES_ROUTE = /^project\/([^/?]+)\/files(?:$|\?)/;
+// Create route, optionally carrying a query (e.g. #/new?project=X).
+export const NEW_ROUTE = /^new(?:$|\?)/;
+export const NEW_PROJECT_ROUTE = /^new-project(?:$|\?)/;
+
+export function routeScopeId() {
+  const hash = location.hash.replace(/^#\/?/, "");
+  if (
+    !hash ||
+    hash.startsWith("?") ||
+    NEW_ROUTE.test(hash) ||
+    NEW_PROJECT_ROUTE.test(hash) ||
+    PROJECT_ROUTE.test(hash)
+  )
+    return null;
+  return hash;
+}
+
+export function routeIsNew() {
+  return NEW_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+export function routeIsNewProject() {
+  return NEW_PROJECT_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+export function routeIsManageFiles() {
+  return FILES_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+export function routeProjectFilesName() {
+  const match = location.hash.replace(/^#\/?/, "").match(FILES_ROUTE);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/** Decoded project name from `#/project/<name>`, or null on any other route. */
+export function routeProjectName() {
+  const match = location.hash.replace(/^#\/?/, "").match(PROJECT_ROUTE);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+export function projectHref(name) {
+  return `#/project/${encodeURIComponent(name)}`;
+}
+
+/** The `?project=` query of the current hash route, or null when absent. */
+export function hashQueryProject() {
+  const q = location.hash.split("?")[1];
+  if (!q) return null;
+  return new URLSearchParams(q).get("project");
+}
