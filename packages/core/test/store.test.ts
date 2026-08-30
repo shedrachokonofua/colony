@@ -1170,6 +1170,56 @@ describe("versioned migrations", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("migration 6 creates the append-only run_artifacts table on legacy databases", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig6-"));
+    try {
+      // A version-5 database: created fresh, then downgraded by dropping the
+      // migration-6 table and stamping user_version=5.
+      const v5Path = join(dir, "v5.db");
+      const v5 = new Store(v5Path);
+      v5.close();
+      const downgrade = new Database(v5Path);
+      downgrade.exec(
+        `DROP TABLE run_artifacts;
+         PRAGMA user_version = 5;`,
+      );
+      downgrade.close();
+
+      const migrated = new Store(v5Path);
+      try {
+        expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
+        expect(tableColumns(migrated.db, "run_artifacts")).toEqual([
+          "bytes",
+          "content_type",
+          "created_at",
+          "id",
+          "key",
+          "kind",
+          "ref",
+          "run_id",
+          "sha256",
+        ]);
+        expect(
+          migrated.db
+            .prepare(
+              `SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='run_artifacts' ORDER BY name`,
+            )
+            .all()
+            .map((r) => (r as { name: string }).name),
+        ).toEqual(["run_artifacts_no_delete", "run_artifacts_no_update"]);
+        const fresh = new Store(join(dir, "fresh.db"));
+        expect(tableColumns(fresh.db, "run_artifacts")).toEqual(
+          tableColumns(migrated.db, "run_artifacts"),
+        );
+        fresh.close();
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("project files", () => {
@@ -1385,5 +1435,120 @@ describe("project files", () => {
     expect(empty.file_count).toBe(0);
     expect(empty.file_bytes).toBe(0);
     expect(empty.repositories).toEqual([]);
+  });
+});
+
+describe("run artifacts", () => {
+  function createRun(goal: string): string {
+    const scope = store.createScope({
+      goal,
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    return store.startRun({
+      scope_id: scope.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    }).id;
+  }
+
+  it("records artifact rows with defaults and reads them back", () => {
+    const runId = createRun("artifact rows");
+    const row = store.recordRunArtifact(runId, {
+      kind: "log",
+      key: "runs/r1/log.txt",
+      ref: "runs/r1/log.txt",
+      sha256: "abc123",
+      bytes: 42,
+      contentType: "text/plain",
+    });
+    expect(row.id).toMatch(/^ra-[0-9a-f]{12}$/);
+    expect(row.run_id).toBe(runId);
+    expect(row.kind).toBe("log");
+    expect(row.key).toBe("runs/r1/log.txt");
+    expect(row.ref).toBe("runs/r1/log.txt");
+    expect(row.sha256).toBe("abc123");
+    expect(row.bytes).toBe(42);
+    expect(row.content_type).toBe("text/plain");
+    expect(row.created_at).toBeTruthy();
+    const fetched = store.getRunArtifact(runId, row.id);
+    expect(fetched).toEqual(row);
+  });
+
+  it("lists a run's artifacts with the paginated envelope", () => {
+    const runId = createRun("artifact pagination");
+    const otherRun = createRun("other run");
+    for (let i = 1; i <= 5; i++) {
+      store.recordRunArtifact(runId, {
+        kind: "file",
+        key: `k${i}`,
+        ref: `k${i}`,
+      });
+    }
+    store.recordRunArtifact(otherRun, { kind: "file", key: "x", ref: "x" });
+
+    const page = store.listRunArtifacts(runId);
+    expect(page.total).toBe(5);
+    expect(page.limit).toBe(200);
+    expect(page.offset).toBe(0);
+    expect(page.items).toHaveLength(5);
+    // Ordered by the (run_id, id) index: ids are random hex (descending
+    // lexicographic here), so assert the stable index order rather than
+    // insertion order.
+    const byId = [...page.items].sort((a, b) => (a.id < b.id ? -1 : 1));
+    expect(page.items.map((r) => r.key)).toEqual(byId.map((r) => r.key));
+
+    const window = store.listRunArtifacts(runId, { limit: 2, offset: 1 });
+    expect(window.items).toHaveLength(2);
+    expect(window.limit).toBe(2);
+    expect(window.offset).toBe(1);
+    expect(window.total).toBe(5);
+    // The window is a slice of the same stable order.
+    expect(window.items.map((r) => r.key)).toEqual(
+      page.items.slice(1, 3).map((r) => r.key),
+    );
+
+    // Limit clamps like every other paginated store API.
+    expect(store.listRunArtifacts(runId, { limit: 5000 }).limit).toBe(1000);
+    expect(store.listRunArtifacts(runId, { limit: 0 }).limit).toBe(1);
+  });
+
+  it("getRunArtifact scopes by run and returns undefined when unknown", () => {
+    const runA = createRun("scope a");
+    const runB = createRun("scope b");
+    const row = store.recordRunArtifact(runA, {
+      kind: "file",
+      key: "k",
+      ref: "k",
+    });
+    expect(store.getRunArtifact(runB, row.id)).toBeUndefined();
+    expect(store.getRunArtifact(runA, "ra-missing")).toBeUndefined();
+  });
+
+  it("enforces append-only: UPDATE and DELETE abort", () => {
+    const runId = createRun("append only");
+    const row = store.recordRunArtifact(runId, {
+      kind: "file",
+      key: "k",
+      ref: "k",
+    });
+    expect(() =>
+      store.db
+        .prepare(`UPDATE run_artifacts SET key = 'tampered' WHERE id = ?`)
+        .run(row.id),
+    ).toThrow(/run_artifacts is append-only/);
+    expect(() =>
+      store.db.prepare(`DELETE FROM run_artifacts WHERE id = ?`).run(row.id),
+    ).toThrow(/run_artifacts is append-only/);
+  });
+
+  it("rejects artifact rows for unknown runs (foreign key)", () => {
+    expect(() =>
+      store.recordRunArtifact("no-such-run", {
+        kind: "file",
+        key: "k",
+        ref: "k",
+      }),
+    ).toThrow(/FOREIGN KEY/);
   });
 });

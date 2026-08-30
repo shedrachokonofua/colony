@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import type {
   ResolvedArtifactsConfig,
   S3ArtifactBackendConfig,
@@ -86,7 +86,9 @@ export function createLocalArtifactStore(dir: string): ArtifactStore {
     async put(key, data, meta) {
       assertSafeArtifactKey(key);
       const bytes = await toBytes(data);
-      writeFileSync(underRoot(key), bytes);
+      const full = underRoot(key);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, bytes);
       void meta;
       return { ref: key, bytes: bytes.byteLength };
     },
@@ -129,8 +131,7 @@ export function createS3ArtifactStore(
     async put(key, data, meta) {
       assertSafeArtifactKey(key);
       const bytes = await toBytes(data);
-      const payloadSha256 =
-        meta.sha256 ?? sha256HexOf(bytes);
+      const payloadSha256 = meta.sha256 ?? sha256HexOf(bytes);
       const res = await signedFetch(
         fetchImpl,
         { url: refFor(key), method: "PUT", body: bytes },
@@ -146,7 +147,10 @@ export function createS3ArtifactStore(
         throw new ArtifactStoreError(`s3 put failed: ${res.status}`);
       }
       const header = res.headers.get("content-length");
-      return { ref: refFor(key), bytes: header ? Number(header) : bytes.byteLength };
+      return {
+        ref: refFor(key),
+        bytes: header ? Number(header) : bytes.byteLength,
+      };
     },
     async get(ref) {
       const res = await signedFetch(
@@ -193,9 +197,11 @@ function hmac(key: Uint8Array | string, data: string): Uint8Array {
  * One SigV4 signing step, pure: the caller supplies the canonical pieces and
  * the exact `amzDate` (`YYYYMMDDTHHMMSSZ`); the result carries the canonical
  * request, the string-to-sign and the finished Authorization header, so
- * recorded vectors can assert every intermediate string. `headers` must
- * already carry `host` and `x-amz-content-sha256`; those (plus `x-amz-date`)
- * are what the canonical request signs.
+ * recorded vectors can assert every intermediate string.
+ *
+ * `headers` may carry `host` and `x-amz-content-sha256`; `host` is derived
+ * from the URL when absent, and `x-amz-date`/`x-amz-content-sha256` are set
+ * here — exactly these lowercase-sorted headers are signed.
  */
 export function sigv4Sign(input: {
   method: string;
@@ -210,11 +216,14 @@ export function sigv4Sign(input: {
 }): { canonicalRequest: string; stringToSign: string; authorization: string } {
   const url = new URL(input.url);
 
-  // Dynamic header assembly with exact-name preservation needs insertion
-  // order; a plain Record loses nothing here but sorting is required anyway.
+  // Dynamic header assembly: lowercase-name map, then sort for canonical
+  // ordering. Values are trimmed per SigV4.
   const lower: Record<string, string> = {};
   for (const [name, value] of Object.entries(input.headers)) {
     lower[name.toLowerCase()] = value.trim();
+  }
+  if (!("host" in lower)) {
+    lower["host"] = url.port ? `${url.hostname}:${url.port}` : url.hostname;
   }
   lower["x-amz-date"] = input.amzDate;
   lower["x-amz-content-sha256"] = input.payloadSha256;
@@ -225,9 +234,11 @@ export function sigv4Sign(input: {
     .join("");
   const signedHeaders = names.join(";");
 
+  // Canonical URI: the pathname as the URL already encodes it (single
+  // encoding, `%24` stays `%24`) — never re-encoded, per the S3 flavor.
   const canonicalRequest = [
     input.method,
-    encodeS3Path(url.pathname),
+    url.pathname,
     url.search.replace(/^\?/, ""),
     canonicalHeaders,
     signedHeaders,
@@ -294,9 +305,13 @@ async function signedFetch(
     service: "s3",
     amzDate,
   });
+  // `host` signs but is never sent: fetch derives it from the URL, and it
+  // is a forbidden header name on the client side anyway.
+  const sent: Record<string, string> = { ...headers, authorization };
+  delete sent["host"];
   return fetchImpl(req.url, {
     method: req.method,
-    headers: { ...headers, authorization },
+    headers: sent,
     ...(req.body === undefined ? {} : { body: req.body }),
   });
 }
@@ -306,31 +321,27 @@ async function signedFetch(
 // ---------------------------------------------------------------------------
 
 /** Build the store matching the resolved artifacts config. */
-export function createArtifactStore(
-  cfg: ResolvedArtifactsConfig,
-): ArtifactStore {
+export function createArtifactStore(cfg: ResolvedArtifactsConfig): ArtifactStore {
   return cfg.kind === "s3"
     ? createS3ArtifactStore(cfg.s3)
     : createLocalArtifactStore(cfg.local.dir);
 }
 
 /**
- * S3 single-encoding: RFC3986 unreserved characters stay bare, `/` is kept
- * for the URL form. Both the canonical request path and the request URL use
- * the same single-encoding — the object name is the encoded form.
+ * S3 single-encoding of an object key: RFC3986 unreserved characters stay
+ * bare, `/` separators survive verbatim. The same encoded form is used in
+ * the request URL and therefore in the canonical request (the URL parser
+ * keeps it as-is).
  */
 export function encodeS3Key(key: string): string {
-  return encodeURIComponent(key).replace(
-    /[!'()*]/g,
-    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-}
-
-/** encodeS3Key per segment so `/` separators survive. */
-function encodeS3Path(path: string): string {
-  return path
+  return key
     .split("/")
-    .map((segment, i) => (i === 0 ? segment : encodeS3Key(segment)))
+    .map((segment) =>
+      encodeURIComponent(segment).replace(
+        /[!'()*]/g,
+        (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+      ),
+    )
     .join("/");
 }
 

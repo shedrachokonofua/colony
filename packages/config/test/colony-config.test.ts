@@ -460,3 +460,97 @@ ${VALID_YAML}`),
     }
   });
 });
+
+describe("artifacts config", () => {
+  it("absent section resolves to local data/artifacts", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(VALID_YAML),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.artifacts).toEqual({
+      kind: "local",
+      local: { dir: "data/artifacts" },
+    });
+  });
+
+  it("resolves a local section with an explicit dir", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(`${VALID_YAML}\nartifacts:\n  kind: local\n  local:\n    dir: /var/colony/artifacts\n`),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.artifacts).toEqual({
+      kind: "local",
+      local: { dir: "/var/colony/artifacts" },
+    });
+  });
+
+  it("resolves an s3 section and defaults the region", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(
+        `${VALID_YAML}\nartifacts:\n  kind: s3\n  s3:\n    endpoint: http://minio.home:9000\n    bucket: colony\n    access_key_env: S3_AK\n    secret_key_env: S3_SK\n`,
+      ),
+      env: { ANTHROPIC_API_KEY: "x", S3_AK: "ak", S3_SK: "sk" },
+    });
+    expect(cfg.artifacts).toEqual({
+      kind: "s3",
+      s3: {
+        endpoint: "http://minio.home:9000",
+        bucket: "colony",
+        region: "us-east-1",
+        access_key_env: "S3_AK",
+        secret_key_env: "S3_SK",
+      },
+    });
+  });
+
+  it("rejects an s3 section missing the s3 block", () => {
+    expect(
+      () =>
+        loadColonyConfig({
+          path: tempConfig(`${VALID_YAML}\nartifacts:\n  kind: s3\n`),
+          env: { ANTHROPIC_API_KEY: "x" },
+        }),
+    ).toThrow(/artifacts.s3 section is missing/);
+  });
+
+  it("names the field when a credential env var is unset", () => {
+    for (const [yaml, field, envVar] of [
+      [
+        `${VALID_YAML}\nartifacts:\n  kind: s3\n  s3:\n    endpoint: http://m:9000\n    bucket: b\n    access_key_env: MISSING_AK\n    secret_key_env: S3_SK\n`,
+        "artifacts.s3.access_key_env",
+        "MISSING_AK",
+      ],
+      [
+        `${VALID_YAML}\nartifacts:\n  kind: s3\n  s3:\n    endpoint: http://m:9000\n    bucket: b\n    access_key_env: S3_AK\n    secret_key_env: MISSING_SK\n`,
+        "artifacts.s3.secret_key_env",
+        "MISSING_SK",
+      ],
+    ] as const) {
+      try {
+        loadColonyConfig({
+          path: tempConfig(yaml),
+          env: { ANTHROPIC_API_KEY: "x", S3_AK: "ak", S3_SK: "sk" },
+        });
+        expect.unreachable(`should have thrown for ${field}`);
+      } catch (err) {
+        expect(err).toBeInstanceOf(ColonyConfigError);
+        const cfgErr = err as ColonyConfigError;
+        expect(cfgErr.code).toBe("UNRESOLVED_ARTIFACT_CREDENTIAL");
+        expect(cfgErr.message).toContain(field);
+        expect(cfgErr.message).toContain(envVar);
+      }
+    }
+  });
+
+  it("rejects unknown artifacts keys (strict schema)", () => {
+    expect(
+      () =>
+        loadColonyConfig({
+          path: tempConfig(
+            `${VALID_YAML}\nartifacts:\n  kind: local\n  bucket: nope\n`,
+          ),
+          env: { ANTHROPIC_API_KEY: "x" },
+        }),
+    ).toThrow(/colony config validation failed/);
+  });
+});

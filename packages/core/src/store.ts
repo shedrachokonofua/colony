@@ -1399,11 +1399,12 @@ export class Store {
   }
 
   getRunArtifact(runId: string, artifactId: string): RunArtifactRow | undefined {
-    return this.db
-      .prepare(
-        `SELECT * FROM run_artifacts WHERE run_id = ? AND id = ?`,
-      )
-      .get(runId, artifactId) as RunArtifactRow | undefined;
+    // bun:sqlite yields null (not undefined) for a missing row; normalize so
+    // the declared `| undefined` contract holds.
+    const row = this.db
+      .prepare(`SELECT * FROM run_artifacts WHERE run_id = ? AND id = ?`)
+      .get(runId, artifactId) as RunArtifactRow | null | undefined;
+    return row ?? undefined;
   }
 
   // ---------------------------------------------------------------------
