@@ -1334,6 +1334,16 @@ export class Store {
     });
   }
 
+  /**
+   * Every event row of one name for a run, ascending by id, no limit —
+   * provenance reads must not be truncated by the feed's page window.
+   */
+  listRunEventsByName(runId: string, event: string): RunEvent[] {
+    return this.db
+      .prepare(`SELECT * FROM run_events WHERE run_id = ? AND event = ? ORDER BY id`)
+      .all(runId, event) as RunEvent[];
+  }
+
   // ---------------------------------------------------------------------
   // Run artifacts (append-only)
   // ---------------------------------------------------------------------
@@ -1378,8 +1388,9 @@ export class Store {
   }
 
   /**
-   * One page of a run's artifacts, ascending by id (creation order);
-   * `total` counts the whole run. Default 200, clamp 1..1000.
+   * One page of a run's artifacts, ascending by (created_at, id) — creation
+   * order with a deterministic tiebreak; `total` counts the whole run.
+   * Default 200, clamp 1..1000.
    */
   listRunArtifacts(
     runId: string,
@@ -1389,7 +1400,7 @@ export class Store {
     const offset = Math.max(0, opts.offset ?? 0);
     const items = this.db
       .prepare(
-        `SELECT * FROM run_artifacts WHERE run_id = ? ORDER BY id LIMIT ? OFFSET ?`,
+        `SELECT * FROM run_artifacts WHERE run_id = ? ORDER BY created_at, id LIMIT ? OFFSET ?`,
       )
       .all(runId, limit, offset) as RunArtifactRow[];
     const { n } = this.db
