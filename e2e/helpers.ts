@@ -27,6 +27,43 @@ export async function createScopeViaApi(
   return body.id as string;
 }
 
+export async function createProjectViaApi(
+  request: APIRequestContext,
+  opts: { name: string; context_doc?: string },
+): Promise<void> {
+  const res = await request.post("/projects", {
+    headers: HEADERS,
+    data: {
+      name: opts.name,
+      ...(opts.context_doc ? { context_doc: opts.context_doc } : {}),
+    },
+  });
+  expect(res.ok(), `POST /projects ${res.status()} ${await res.text()}`).toBe(
+    true,
+  );
+}
+
+export async function createProjectFileViaApi(
+  request: APIRequestContext,
+  name: string,
+  opts: { filename: string; media_type: string; content: string },
+): Promise<string> {
+  const res = await request.post(
+    `/projects/${encodeURIComponent(name)}/files`,
+    {
+      headers: HEADERS,
+      data: {
+        filename: opts.filename,
+        media_type: opts.media_type,
+        content: opts.content,
+      },
+    },
+  );
+  expect(res.ok(), `POST files ${res.status()} ${await res.text()}`).toBe(true);
+  const body = (await res.json()) as { id: string };
+  return body.id as string;
+}
+
 export async function waitForPlan(
   request: APIRequestContext,
   scopeId: string,

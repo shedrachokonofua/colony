@@ -29,11 +29,57 @@ const DEMO = new URLSearchParams(location.search).has("demo");
 // Demo-safe read paths: project detail, its context, its scope page, and the
 // project list (the homepage) so the whole console is driveable offline.
 const DEMO_READS =
-  /^\/projects\/[^/?]+(?:\/context)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
+  /^\/projects\/[^/?]+(?:\/context|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
 
 // Demo volume: enough projects and scopes to exercise page 2 on both surfaces.
 const DEMO_PROJECT_COUNT = 27;
 const DEMO_SCOPES_IN_PROJECT = 27;
+
+// Pure helpers for the project surfaces. They live here (not a module) so the
+// unit tests can bind to the exact source the UI runs, and so the console
+// stays a single no-build script.
+
+function repoSummaryText(repositories) {
+  const repos = distinctRepos(repositories);
+  if (repos.length === 0) return "No connected repositories";
+  const count = repos.length;
+  const shown = repos.slice(0, 2).map((r) => r.repo_path);
+  const more = count > 2 ? ` +${count - 2} more` : "";
+  return `${count} connected repo${count === 1 ? "" : "s"} · ${shown.join(" · ")}${more}`;
+}
+
+/** Connected repositories deduped by repo_path, preserving first-seen order. */
+function distinctRepos(repositories) {
+  const seen = new Set();
+  const out = [];
+  for (const repo of repositories ?? []) {
+    if (!repo?.repo_path || seen.has(repo.repo_path)) continue;
+    seen.add(repo.repo_path);
+    out.push(repo);
+  }
+  return out;
+}
+
+function knowledgeText(context_doc, file_count) {
+  const brief = context_doc ? "Brief" : "No brief";
+  const n = file_count ?? 0;
+  return `${brief} · ${n} reference file${n === 1 ? "" : "s"}`;
+}
+
+function resolveComposerProject(fixedProject, formValue) {
+  const fixed = fixedProject != null ? String(fixedProject).trim() : "";
+  if (fixed) return fixed;
+  return String(formValue ?? "").trim();
+}
+
+function buildNewProjectPayload(name, context_doc) {
+  const trimmedName = String(name ?? "").trim();
+  if (!trimmedName) return null;
+  const doc = String(context_doc ?? "").trim();
+  const body = { name: trimmedName };
+  if (doc) body.context_doc = doc;
+  return body;
+}
 
 const KIND_LABEL = {
   architect: "plan",
@@ -64,6 +110,12 @@ const state = {
   projectContext: null,
   projectPage: null,
   projectsPage: null,
+  filesPage: null,
+  projectFiles: null,
+  briefOpen: false,
+  confirmFile: null,
+  replaceFileId: null,
+  newProjectDraft: null,
   auth: loadAuth(),
   error: "",
   confirm: null,
@@ -225,6 +277,7 @@ function routeScopeId() {
     !hash ||
     hash.startsWith("?") ||
     NEW_ROUTE.test(hash) ||
+    NEW_PROJECT_ROUTE.test(hash) ||
     PROJECT_ROUTE.test(hash)
   )
     return null;
@@ -232,11 +285,26 @@ function routeScopeId() {
 }
 
 const PROJECT_ROUTE = /^project\/([^/?]+)/;
+const FILES_ROUTE = /^project\/([^/?]+)\/files(?:$|\?)/;
 // Create route, optionally carrying a query (e.g. #/new?project=X).
 const NEW_ROUTE = /^new(?:$|\?)/;
+const NEW_PROJECT_ROUTE = /^new-project(?:$|\?)/;
 
 function routeIsNew() {
   return NEW_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+function routeIsNewProject() {
+  return NEW_PROJECT_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+function routeIsManageFiles() {
+  return FILES_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+function routeProjectFilesName() {
+  const match = location.hash.replace(/^#\/?/, "").match(FILES_ROUTE);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 /** Decoded project name from `#/project/<name>`, or null on any other route. */
@@ -423,6 +491,11 @@ const DEMO_SHA_A = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const DEMO_SHA_B = "b9c0d1e2f30415263748a9b0c1d2e3f401234567";
 const DEMO_GATE_STARTED = new Date(Date.now() - 12 * 1000).toISOString();
 
+// Demo brief/file edits are purely local state: they must never hit the
+// network, but the same affordances stay visible.
+const demoContextStore = new Map();
+const demoFileStore = new Map();
+
 function demoWorld() {
   const now = Date.now();
   // Filler projects: DEMO_PROJECT_COUNT - 1 of them, each strictly newer than
@@ -446,6 +519,9 @@ function demoWorld() {
         abandoned: 0,
       },
       last_activity_at: null,
+      file_count: 0,
+      file_bytes: 0,
+      repositories: [],
     }),
   );
   // Generated Operator-console scopes. Hand-authored scopes are newer than
@@ -482,6 +558,27 @@ function demoWorld() {
     abandoned: 0,
   };
   for (const s of projectScopes) statusCounts[s.status] += 1;
+  const demoFiles = [
+    {
+      id: "demo-file-1",
+      filename: "AGENTS.md",
+      media_type: "text/markdown",
+      byte_size: 512,
+      sha256: "a".repeat(64),
+      created_at: new Date(now - 20 * 86400 * 1000).toISOString(),
+      updated_at: new Date(now - 20 * 86400 * 1000).toISOString(),
+    },
+    {
+      id: "demo-file-2",
+      filename: "conventions.md",
+      media_type: "text/markdown",
+      byte_size: 1280,
+      sha256: "b".repeat(64),
+      created_at: new Date(now - 18 * 86400 * 1000).toISOString(),
+      updated_at: new Date(now - 18 * 86400 * 1000).toISOString(),
+    },
+  ];
+  demoFileStore.set("Operator console", demoFiles);
   const demoProject = {
     name: "Operator console",
     context_doc:
@@ -498,7 +595,39 @@ function demoWorld() {
     last_activity_at: new Date(
       Math.max(...projectScopes.map((s) => Date.parse(s.updated_at))),
     ).toISOString(),
+    file_count: demoFiles.length,
+    file_bytes: demoFiles.reduce((sum, f) => sum + f.byte_size, 0),
+    repositories: [
+      { repo_id: "49", repo_path: "so/colony" },
+      { repo_id: "112", repo_path: "so/console-e2e" },
+    ],
   };
+  if (demoContextStore.has(demoProject.name)) {
+    demoProject.context_doc = demoContextStore.get(demoProject.name);
+  }
+  // A second demo project with no brief, no files, and no scopes so the
+  // empty states are visible offline.
+  const emptyProject = {
+    name: "Empty workspace",
+    context_doc: null,
+    created_at: new Date(now - 40 * 86400 * 1000).toISOString(),
+    updated_at: new Date(now - 40 * 86400 * 1000).toISOString(),
+    scope_count: 0,
+    status_counts: {
+      draft: 0,
+      planning: 0,
+      active: 0,
+      validating: 0,
+      blocked: 0,
+      done: 0,
+      abandoned: 0,
+    },
+    last_activity_at: null,
+    file_count: 0,
+    file_bytes: 0,
+    repositories: [],
+  };
+  demoFileStore.set("Empty workspace", []);
   const scope = {
     id: "col-a1b2c3d4",
     goal: "Add a /version endpoint that returns the running colonyd SHA",
@@ -703,7 +832,8 @@ function demoWorld() {
       trace_ui_base_url: "https://traces.home.shdr.ch",
     },
     project: demoProject,
-    projects: [...fillerProjects, demoProject],
+    projects: [...fillerProjects, demoProject, emptyProject],
+    files: demoFileStore.get("Operator console") ?? demoFiles,
     scopes: [
       scope,
       {
@@ -823,7 +953,12 @@ async function submitOpenScope(event) {
   const path = String(data.get("path") || "").trim();
   const approvals = String(data.get("approvals") || "auto");
   if (!goal || !path) return;
-  const project = String(data.get("project") || "").trim();
+  // When the composer was opened from a project, the project is fixed: the
+  // operator cannot silently change it.
+  const project = resolveComposerProject(
+    hashQueryProject(),
+    data.get("project"),
+  );
   try {
     const scope = await api("/scopes", {
       method: "POST",
@@ -842,59 +977,172 @@ async function submitOpenScope(event) {
   }
 }
 
-function renderProjectContextCard() {
-  const page = state.projectPage;
-  if (!page?.project) return nothing;
-  const saved = state.projectContext;
-  const storedDoc = page.project.context_doc ?? "";
-  return html`<aside class="card">
-    <p class="card-head">Project context</p>
-    <div class="card-body">
-      <form
-        class="project-context"
-        @submit=${(event) => {
-          event.preventDefault();
-          void saveProjectContext(
-            String(new FormData(event.target).get("project-context") ?? ""),
-          );
-        }}
-      >
-        <textarea
-          name="project-context"
-          class="mono"
-          placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
-          .value=${live(saved === null ? storedDoc : saved.doc)}
-        ></textarea>
-        <div class="pc-actions">
-          <button class="btn" type="submit">Save context</button>
-          ${saved?.status === "saving"
-            ? html`<span class="pc-status">Saving…</span>`
-            : saved?.status === "saved"
-              ? html`<span class="pc-status is-saved">Saved.</span>`
-              : nothing}
-        </div>
-      </form>
-    </div>
-  </aside>`;
-}
-
 async function saveProjectContext(value) {
   const page = state.projectPage;
   if (!page?.project) return;
   const doc = value.trim() ? value : null;
   state.projectContext = { doc: value, status: "saving" };
   paint();
+  if (DEMO) {
+    // Demo brief editing is purely local state, never a network write.
+    demoContextStore.set(page.project.name, doc);
+    page.project.context_doc = doc;
+    state.projectContext = { doc: value, status: "saved" };
+    paint();
+    return;
+  }
   try {
     await api(`/projects/${encodeURIComponent(page.project.name)}/context`, {
       method: "PUT",
       body: JSON.stringify({ context_doc: doc }),
     });
-    // Keep the editor text through refresh(); status flips to "saved".
+    // Keep the editor open with "Saved." status — matching the original
+    // always-open save flow. The user closes it via Cancel.
     state.projectContext = { doc: value, status: "saved" };
     await refresh();
   } catch (err) {
     state.error = err instanceof Error ? err.message : String(err);
     state.projectContext = { doc: value, status: null };
+    paint();
+  }
+}
+
+async function submitNewProject(event) {
+  event.preventDefault();
+  const data = new FormData(event.target);
+  const name = String(data.get("name") || "").trim();
+  const context_doc = String(data.get("context_doc") || "").trim();
+  if (!name) return;
+  const payload = buildNewProjectPayload(name, context_doc);
+  if (!payload) return;
+  try {
+    await api("/projects", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.newProjectDraft = null;
+    location.hash = projectHref(name);
+  } catch (err) {
+    state.newProjectDraft = { name, context_doc };
+    state.error = err instanceof Error ? err.message : String(err);
+    paint();
+  }
+}
+
+function setConfirmFile(fileId) {
+  state.confirmFile = state.confirmFile === fileId ? null : fileId;
+  paint();
+}
+
+function toggleReplaceFile(fileId) {
+  state.replaceFileId = state.replaceFileId === fileId ? null : fileId;
+  state.confirmFile = null;
+  paint();
+}
+
+async function addProjectFile(event) {
+  event.preventDefault();
+  const page = state.filesPage;
+  if (!page?.project) return;
+  const data = new FormData(event.target);
+  const filename = String(data.get("filename") || "").trim();
+  const media_type = String(data.get("media_type") || "").trim();
+  const content = String(data.get("content") || "");
+  if (!filename || !media_type) return;
+  if (DEMO) {
+    const files = demoFileStore.get(page.project.name) ?? [];
+    demoFileStore.set(page.project.name, [
+      ...files,
+      {
+        id: `demo-file-${Date.now()}`,
+        filename,
+        media_type,
+        byte_size: new TextEncoder().encode(content).length,
+        sha256: "d".repeat(64),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    await refresh();
+    return;
+  }
+  try {
+    await api(`/projects/${encodeURIComponent(page.project.name)}/files`, {
+      method: "POST",
+      body: JSON.stringify({ filename, media_type, content }),
+    });
+    await refresh();
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : String(err);
+    paint();
+  }
+}
+
+async function replaceProjectFile(event, fileId) {
+  event.preventDefault();
+  const page = state.filesPage;
+  if (!page?.project) return;
+  const data = new FormData(event.target);
+  const media_type = String(data.get("media_type") || "").trim();
+  const content = String(data.get("content") || "");
+  if (DEMO) {
+    const files = demoFileStore.get(page.project.name) ?? [];
+    demoFileStore.set(
+      page.project.name,
+      files.map((f) =>
+        f.id === fileId
+          ? {
+              ...f,
+              media_type,
+              byte_size: new TextEncoder().encode(content).length,
+              updated_at: new Date().toISOString(),
+            }
+          : f,
+      ),
+    );
+    state.replaceFileId = null;
+    await refresh();
+    return;
+  }
+  try {
+    await api(
+      `/projects/${encodeURIComponent(page.project.name)}/files/${encodeURIComponent(fileId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ media_type, content }),
+      },
+    );
+    state.replaceFileId = null;
+    await refresh();
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : String(err);
+    paint();
+  }
+}
+
+async function deleteProjectFile(fileId) {
+  const page = state.filesPage;
+  if (!page?.project) return;
+  if (DEMO) {
+    demoFileStore.set(
+      page.project.name,
+      (demoFileStore.get(page.project.name) ?? []).filter(
+        (f) => f.id !== fileId,
+      ),
+    );
+    state.confirmFile = null;
+    await refresh();
+    return;
+  }
+  try {
+    await api(
+      `/projects/${encodeURIComponent(page.project.name)}/files/${encodeURIComponent(fileId)}`,
+      { method: "DELETE" },
+    );
+    state.confirmFile = null;
+    await refresh();
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : String(err);
     paint();
   }
 }
@@ -1382,6 +1630,18 @@ function renderTopbar() {
         ? html`<span class="crumb-sep">/</span>
             <span class="crumb">new scope</span>`
         : nothing}
+      ${routeIsNewProject()
+        ? html`<span class="crumb-sep">/</span>
+            <span class="crumb">new project</span>`
+        : nothing}
+      ${routeIsManageFiles()
+        ? html`<span class="crumb-sep">/</span>
+            <a class="crumb" href=${projectHref(routeProjectFilesName())}
+              >${routeProjectFilesName()}</a
+            >
+            <span class="crumb-sep">/</span>
+            <span class="crumb">files</span>`
+        : nothing}
       ${scopeProject
         ? html`<span class="crumb-sep">/</span>
             <a class="crumb" href=${projectHref(scopeProject)}
@@ -1440,29 +1700,34 @@ function scopeCard(scope) {
   </button>`;
 }
 
-function projectRow(project) {
+function projectCard(project) {
   const counts = project.status_counts ?? {};
   const chips = Object.entries(counts).filter(([, n]) => n > 0);
-  return html`<a class="project-row" href=${projectHref(project.name)}>
-    <span class="project-row-main">
-      <span class="project-row-name">${project.name}</span>
-      <span class="project-row-count mono"
+  const fileCount = project.file_count ?? 0;
+  const repoSummary = repoSummaryText(project.repositories);
+  return html`<a
+    class="project-card project-row"
+    href=${projectHref(project.name)}
+  >
+    <span class="project-card-name">${project.name}</span>
+    <span class="project-card-meta">
+      <span class="mono"
         >${project.scope_count}
         scope${project.scope_count === 1 ? "" : "s"}</span
       >
-    </span>
-    ${chips.length
-      ? html`<span class="project-counts">
-          ${chips.map(
+      ${chips.length
+        ? chips.map(
             ([status, count]) =>
               html`<span class="chip" data-kind=${status}
                 >${status} ${count}</span
               >`,
-          )}
-        </span>`
-      : nothing}
-    <span class="project-row-activity mono"
-      >${rel(project.last_activity_at)}</span
+          )
+        : nothing}
+      <span class="mono">${rel(project.last_activity_at)}</span>
+    </span>
+    <span class="project-card-repos">${repoSummary}</span>
+    <span class="project-card-knowledge"
+      >${knowledgeText(project.context_doc, fileCount)}</span
     >
   </a>`;
 }
@@ -1496,35 +1761,35 @@ function renderProjectList() {
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
       : nothing}
-    <div class="board" id="draw">
-      <section class="board-main">
-        <div class="board-head">
-          <h1 class="board-title">Projects</h1>
-          <a class="btn btn-solid" href="#/new">New scope</a>
+    <div class="project-index board" id="draw">
+      <div class="board-head">
+        <h1 class="board-title">Projects</h1>
+        <div class="board-head-actions">
+          <a class="btn btn-solid" href="#/new-project">New project</a>
         </div>
-        ${total === 0
-          ? html`<p class="rack-empty">
-              No projects yet — open the first scope.
-              <a class="btn btn-solid" href="#/new">Open a scope</a>
-            </p>`
-          : items === 0
-            ? html`<div class="rack-empty">
-                <p>Past the last page.</p>
-                <a class="btn btn-solid" href=${hrefForPage(base, 1)}
-                  >Back to page 1</a
-                >
-              </div>`
-            : html`<div class="rack rack-single">
-                ${repeat(rows, (project) => project.name, projectRow)}
-              </div>`}
-        ${renderPager({
-          base,
-          page: pageNo,
-          total,
-          items,
-          label: "Project pages",
-        })}
-      </section>
+      </div>
+      ${total === 0
+        ? html`<div class="rack-empty">
+            <p>No projects yet</p>
+            <a class="btn btn-solid" href="#/new-project">New project</a>
+          </div>`
+        : items === 0
+          ? html`<div class="rack-empty">
+              <p>Past the last page.</p>
+              <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                >Back to page 1</a
+              >
+            </div>`
+          : html`<div class="project-cards">
+              ${repeat(rows, (project) => project.name, projectCard)}
+            </div>`}
+      ${renderPager({
+        base,
+        page: pageNo,
+        total,
+        items,
+        label: "Project pages",
+      })}
     </div>
   `;
 }
@@ -1574,35 +1839,324 @@ function renderProjectPage() {
             )}
           </p>`
         : nothing}
-      ${renderProjectContextCard()}
-      <section class="project-scopes">
-        <p class="card-head">Scopes</p>
-        ${page.total > 0 && scopes.length === 0
+      <div class="project-layout">
+        <section class="project-scopes">
+          <p class="card-head">Scopes</p>
+          ${page.total > 0 && scopes.length === 0
+            ? html`<div class="rack-empty">
+                <p>Past the last page.</p>
+                <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                  >Back to page 1</a
+                >
+                <a class="btn btn-quiet" href="#/">All projects</a>
+              </div>`
+            : scopes.length
+              ? html`<div class="rack">
+                  ${repeat(scopes, (scope) => scope.id, scopeCard)}
+                </div>`
+              : html`<p class="rack-empty">No scopes in this project yet.</p>`}
+          ${renderPager({
+            base,
+            page: page.page,
+            total: page.total,
+            items: scopes.length,
+            label: "Project scope pages",
+          })}
+        </section>
+        <aside class="project-rail">${renderProjectRail()}</aside>
+      </div>
+    </div>
+  `;
+}
+
+function renderProjectRail() {
+  const page = state.projectPage;
+  if (!page?.project) return nothing;
+  const project = page.project;
+  const files = state.projectFiles ?? [];
+  const repos = distinctRepos(project.repositories);
+  return html`${renderProjectContextCard()}
+    <aside class="card">
+      <p class="card-head">Connected repositories</p>
+      <div class="card-body">
+        ${repos.length
+          ? html`<ul class="repo-list">
+              ${repos.map(
+                (repo) =>
+                  html`<li>
+                    <a href=${gitlabRepoUrl(repo.repo_path)}
+                      >${repo.repo_path}</a
+                    >
+                  </li>`,
+              )}
+            </ul>`
+          : html`<p class="note">No connected repositories</p>`}
+      </div>
+    </aside>`;
+}
+
+function renderProjectContextCard() {
+  const page = state.projectPage;
+  if (!page?.project) return nothing;
+  const project = page.project;
+  const saved = state.projectContext;
+  const storedDoc = project.context_doc ?? "";
+  const doc = saved === null ? storedDoc : saved.doc;
+  const files = state.projectFiles ?? [];
+  const editing = state.briefOpen;
+  return html`<aside class="card">
+    <p class="card-head">
+      Project knowledge
+      ${!editing
+        ? html`<button
+            class="btn btn-quiet"
+            @click=${() => toggle("briefOpen")}
+          >
+            ${doc ? "Edit brief" : "Add brief"}
+          </button>`
+        : nothing}
+    </p>
+    <div class="card-body">
+      ${editing
+        ? html`<form
+            class="project-context"
+            @submit=${(event) => {
+              event.preventDefault();
+              void saveProjectContext(
+                String(new FormData(event.target).get("project-context") ?? ""),
+              );
+            }}
+          >
+            <textarea
+              name="project-context"
+              class="mono"
+              placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
+              .value=${live(doc)}
+            ></textarea>
+            <div class="pc-actions">
+              <button class="btn" type="submit">Save context</button>
+              <button
+                class="btn btn-quiet"
+                type="button"
+                @click=${() => toggle("briefOpen")}
+              >
+                Cancel
+              </button>
+              ${saved?.status === "saving"
+                ? html`<span class="pc-status">Saving…</span>`
+                : saved?.status === "saved"
+                  ? html`<span class="pc-status is-saved">Saved.</span>`
+                  : nothing}
+            </div>
+          </form>`
+        : doc
+          ? html`<div class="knowledge-preview md">${mdFragment(doc)}</div>`
+          : html`<p class="note">No brief yet.</p>`}
+      ${files.length
+        ? html`<ul class="file-list">
+            ${files.map(
+              (file) =>
+                html`<li>
+                  <span class="mono">${file.filename}</span>
+                  <span>${file.media_type}</span>
+                  <span class="mono">${file.byte_size} B</span>
+                </li>`,
+            )}
+          </ul>`
+        : nothing}
+      <a
+        class="btn btn-quiet"
+        href=${`#/project/${encodeURIComponent(project.name)}/files`}
+        >Manage files</a
+      >
+    </div>
+  </aside>`;
+}
+
+function renderNewProject() {
+  return html`
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
+    <div class="create" id="draw">
+      <aside class="card create-card">
+        <p class="card-head">New project</p>
+        <div class="card-body">
+          <form class="composer" @submit=${submitNewProject}>
+            <label class="field">
+              <span>Name</span>
+              <input
+                name="name"
+                required
+                maxlength="120"
+                placeholder="Project name"
+                autocomplete="off"
+                .value=${live(state.newProjectDraft?.name ?? "")}
+              />
+            </label>
+            <label class="field">
+              <span>Brief <em>optional Markdown</em></span>
+              <textarea
+                name="context_doc"
+                rows="10"
+                placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
+                .value=${live(state.newProjectDraft?.context_doc ?? "")}
+              ></textarea>
+            </label>
+            <div class="create-actions">
+              <button class="btn btn-solid" type="submit">
+                Create project
+              </button>
+              <a class="btn btn-quiet" href="#/">Cancel</a>
+            </div>
+          </form>
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
+function renderManageFiles() {
+  const page = state.filesPage;
+  if (!page?.name) return renderProjectList();
+  if (!page.project) {
+    return html`<div class="project-page" id="draw">
+      <p class="rack-empty">
+        No project named “${page.name}” — scopes group under a project once one
+        of them names it.
+      </p>
+    </div>`;
+  }
+  const files = page.files ?? [];
+  const base = `#/project/${encodeURIComponent(page.project.name)}/files`;
+  return html`
+    ${state.error
+      ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
+      : nothing}
+    <div class="project-page" id="draw">
+      <header class="board-head">
+        <h1 class="board-title">${page.project.name} · files</h1>
+        <a class="btn btn-quiet" href=${projectHref(page.project.name)}
+          >Back to project</a
+        >
+      </header>
+      <section class="project-files">
+        ${page.total > 0 && files.length === 0
           ? html`<div class="rack-empty">
               <p>Past the last page.</p>
               <a class="btn btn-solid" href=${hrefForPage(base, 1)}
                 >Back to page 1</a
               >
-              <a class="btn btn-quiet" href="#/">All projects</a>
             </div>`
-          : scopes.length
-            ? html`<div class="rack rack-single">
-                ${repeat(scopes, (scope) => scope.id, scopeCard)}
-              </div>`
-            : html`<p class="rack-empty">No scopes in this project yet.</p>`}
-        ${renderPager({
-          base,
-          page: page.page,
-          total: page.total,
-          items: scopes.length,
-          label: "Project scope pages",
-        })}
+          : files.length
+            ? repeat(files, (file) => file.id, fileRow)
+            : html`<p class="rack-empty">No reference files yet.</p>`}
       </section>
+      ${renderPager({
+        base,
+        page: page.page,
+        total: page.total,
+        items: files.length,
+        label: "Project file pages",
+      })}
+      <aside class="card">
+        <p class="card-head">Add a file</p>
+        <div class="card-body">
+          <form class="composer" @submit=${addProjectFile}>
+            <label class="field">
+              <span>Filename</span>
+              <input
+                name="filename"
+                required
+                maxlength="255"
+                placeholder="AGENTS.md"
+                autocomplete="off"
+              />
+            </label>
+            <label class="field">
+              <span>Media type</span>
+              <select name="media_type">
+                <option value="text/plain">text/plain</option>
+                <option value="text/markdown">text/markdown</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Content</span>
+              <textarea name="content" rows="10"></textarea>
+            </label>
+            <div class="create-actions">
+              <button class="btn btn-solid" type="submit">Add file</button>
+            </div>
+          </form>
+        </div>
+      </aside>
     </div>
   `;
 }
 
+function fileRow(file) {
+  const replacing = state.replaceFileId === file.id;
+  return html`<div class="file-row">
+    <div class="file-row-main">
+      <span class="file-row-name">${file.filename}</span>
+      <span class="file-row-meta mono"
+        >${file.media_type} · ${file.byte_size} bytes</span
+      >
+    </div>
+    <div class="create-actions">
+      ${state.confirmFile === file.id
+        ? html`<button
+            class="btn btn-rev"
+            @click=${() => deleteProjectFile(file.id)}
+          >
+            Confirm delete
+          </button>`
+        : html`<button
+            class="btn btn-quiet"
+            @click=${() => setConfirmFile(file.id)}
+          >
+            Delete
+          </button>`}
+      <button class="btn btn-quiet" @click=${() => toggleReplaceFile(file.id)}>
+        ${replacing ? "Cancel replace" : "Replace"}
+      </button>
+    </div>
+    ${replacing
+      ? html`<form
+          class="composer"
+          @submit=${(event) => replaceProjectFile(event, file.id)}
+        >
+          <label class="field">
+            <span>Media type</span>
+            <select name="media_type">
+              <option
+                value="text/plain"
+                ?selected=${file.media_type === "text/plain"}
+              >
+                text/plain
+              </option>
+              <option
+                value="text/markdown"
+                ?selected=${file.media_type === "text/markdown"}
+              >
+                text/markdown
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Content</span>
+            <textarea name="content" rows="8"></textarea>
+          </label>
+          <div class="create-actions">
+            <button class="btn" type="submit">Replace file</button>
+          </div>
+        </form>`
+      : nothing}
+  </div>`;
+}
+
 function renderCreate() {
+  const fixedProject = hashQueryProject();
   return html`
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
@@ -1617,6 +2171,20 @@ function renderCreate() {
               passes. Write the goal like a brief for an engineer who cannot ask
               questions: outcomes, constraints, and what done looks like.
             </p>
+            ${fixedProject
+              ? html`<p class="composer-fixed">
+                  Project:
+                  <a href=${projectHref(fixedProject)}>${fixedProject}</a>
+                </p>`
+              : html`<label class="field">
+                  <span>Project <em>optional</em></span>
+                  <input
+                    name="project"
+                    maxlength="120"
+                    placeholder="Project this scope belongs to"
+                    autocomplete="off"
+                  />
+                </label>`}
             <label class="field">
               <span>Title <em>optional</em></span>
               <input
@@ -1624,16 +2192,6 @@ function renderCreate() {
                 maxlength="120"
                 placeholder="Short label for the board"
                 autocomplete="off"
-              />
-            </label>
-            <label class="field">
-              <span>Project <em>optional</em></span>
-              <input
-                name="project"
-                maxlength="120"
-                placeholder="Project this scope belongs to"
-                autocomplete="off"
-                .value=${live(hashQueryProject() ?? "")}
               />
             </label>
             <label class="field">
@@ -2302,11 +2860,15 @@ function paint() {
         ? renderSignin()
         : routeIsNew()
           ? renderCreate()
-          : routeScopeId()
-            ? renderSheet()
-            : routeProjectName()
-              ? renderProjectPage()
-              : renderProjectList();
+          : routeIsNewProject()
+            ? renderNewProject()
+            : routeIsManageFiles()
+              ? renderManageFiles()
+              : routeScopeId()
+                ? renderSheet()
+                : routeProjectName()
+                  ? renderProjectPage()
+                  : renderProjectList();
     litRender(
       html`${renderTopbar()}
         <main class="view">${view}</main>
@@ -2340,7 +2902,25 @@ async function refresh() {
         state.detail = null;
       }
       const demoName = routeProjectName();
+      const filesName = routeProjectFilesName();
       const pageNo = pageFromHash(location.hash);
+      if (filesName) {
+        // The demo world serves the project's reference files offline.
+        const found = world.projects.find((p) => p.name === filesName) ?? null;
+        const files = demoFileStore.get(filesName) ?? [];
+        const start = (pageNo - 1) * PAGE_SIZE;
+        state.filesPage = {
+          name: filesName,
+          project: found,
+          files: files.slice(start, start + PAGE_SIZE),
+          total: files.length,
+          offset: start,
+          page: pageNo,
+        };
+        state.projectPage = null;
+      } else {
+        state.filesPage = null;
+      }
       if (demoName === world.project.name) {
         // Page the demo project's scopes with the same rule the API uses:
         // updated_at DESC, id (tie-break), so ?page=2 starts at col-d25.
@@ -2361,25 +2941,32 @@ async function refresh() {
           page: pageNo,
         };
         // Same seeding path as live refresh(): read the stored doc through
-        // the demo-served GET so the editor prefills offline.
+        // the demo-served GET so the editor prefills offline. Local edits
+        // are kept in demoContextStore so an edited brief survives re-render.
         if (state.projectContext === null) {
-          const stored = await api(
-            `/projects/${encodeURIComponent(demoName)}/context`,
-          );
+          const stored = demoContextStore.has(demoName)
+            ? { context_doc: demoContextStore.get(demoName) }
+            : { context_doc: world.project.context_doc ?? "" };
           state.projectContext = {
             doc: stored.context_doc ?? "",
             status: null,
           };
         }
+        state.projectFiles = demoFileStore.get(demoName) ?? [];
       } else if (demoName) {
+        const found =
+          demoName === world.project.name
+            ? world.project
+            : (world.projects.find((p) => p.name === demoName) ?? null);
         state.projectPage = {
           name: demoName,
-          project: null,
+          project: found,
           scopes: [],
           total: 0,
           offset: 0,
           page: pageNo,
         };
+        state.projectFiles = found ? (demoFileStore.get(demoName) ?? []) : [];
       } else {
         state.projectPage = null;
         // Sort the demo world's projects exactly like the API (row
@@ -2422,6 +3009,30 @@ async function refresh() {
     const pageNo = pageFromHash(location.hash);
     const offset = (pageNo - 1) * PAGE_SIZE;
     const projectName = routeProjectName();
+    const filesName = routeProjectFilesName();
+    if (filesName) {
+      const [project, filesPage] = await Promise.all([
+        api(`/projects/${encodeURIComponent(filesName)}`, {
+          notFound: "null",
+        }),
+        api(
+          `/projects/${encodeURIComponent(filesName)}/files?limit=${PAGE_SIZE}&offset=${offset}`,
+        ),
+      ]);
+      state.filesPage = {
+        name: filesName,
+        project: project === null ? null : project.project,
+        files: filesPage.files ?? [],
+        total: filesPage.total ?? 0,
+        offset,
+        page: pageNo,
+      };
+      state.projectPage = null;
+      state.error = "";
+      paint();
+      return;
+    }
+    state.filesPage = null;
     if (projectName) {
       // The project route owns this refresh: it must not touch board or sheet
       // state, and it must preserve an in-flight editor status ("Saved.").
@@ -2449,6 +3060,12 @@ async function refresh() {
           `/projects/${encodeURIComponent(projectName)}/context`,
         );
         state.projectContext = { doc: stored.context_doc ?? "", status: null };
+      }
+      if (state.projectFiles === null && project) {
+        const filesPage = await api(
+          `/projects/${encodeURIComponent(projectName)}/files?limit=${PAGE_SIZE}&offset=0`,
+        );
+        state.projectFiles = filesPage.files ?? [];
       }
       state.error = "";
       paint();
@@ -2567,6 +3184,12 @@ window.addEventListener("hashchange", () => {
   state.projectContext = null;
   state.projectPage = null;
   state.projectsPage = null;
+  state.filesPage = null;
+  state.projectFiles = null;
+  state.briefOpen = false;
+  state.confirmFile = null;
+  state.replaceFileId = null;
+  state.newProjectDraft = null;
   void refresh();
 });
 
