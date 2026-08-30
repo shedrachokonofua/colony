@@ -50,8 +50,16 @@ function appAndStore(): { app: Hono<Env>; store: Store } {
   return { app: buildApp(fakeCtx(store)), store };
 }
 
+interface EventRow {
+  id: number;
+  event: string;
+  detail_json: string;
+  /** Audit rows carry run_id; run_events rows do not. */
+  run_id?: string | null;
+}
+
 interface Envelope {
-  events: { id: number; event: string; detail_json: string }[];
+  events: EventRow[];
   has_more: boolean;
   oldest_id: number | null;
   newest_id: number | null;
@@ -150,9 +158,7 @@ describe("audit cursor pagination over HTTP", () => {
     }
     store.audit("test", "b.step", { run_id: runB.id });
 
-    const all = (await (
-      await app.request("/audit", ACTOR)
-    ).json()) as Envelope;
+    const all = (await (await app.request("/audit", ACTOR)).json()) as Envelope;
     expect(all.events).toHaveLength(31);
     expect(all.has_more).toBe(false);
 
@@ -160,9 +166,7 @@ describe("audit cursor pagination over HTTP", () => {
       await app.request(`/audit?run_id=${runA.id}`, ACTOR)
     ).json()) as Envelope;
     expect(filtered.events).toHaveLength(30);
-    expect(
-      filtered.events.every((row) => row.run_id === runA.id),
-    ).toBe(true);
+    expect(filtered.events.every((row) => row.run_id === runA.id)).toBe(true);
     expect(filtered.oldest_id).toBe(filtered.events[0]!.id);
 
     const page = (await (
@@ -171,15 +175,17 @@ describe("audit cursor pagination over HTTP", () => {
     expect(page.events).toHaveLength(10);
     expect(page.has_more).toBe(true);
     expect(page.newest_id).toBe(30);
+    expect(page.oldest_id).toBe(page.events[0]!.id);
 
+    const cursor = page.events[0]!.id;
     const older = (await (
       await app.request(
-        `/audit?run_id=${runA.id}&before_id=${page.oldest_id}&limit=10`,
+        `/audit?run_id=${runA.id}&before_id=${cursor}&limit=10`,
         ACTOR,
       )
     ).json()) as Envelope;
     expect(older.events.map((r) => r.id)).toEqual(
-      Array.from({ length: 10 }, (_, k) => page.oldest_id - 10 + k),
+      Array.from({ length: 10 }, (_, k) => cursor - 10 + k),
     );
     expect(older.has_more).toBe(true);
   });
