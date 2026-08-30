@@ -16,6 +16,7 @@ import {
   type AgentRuntimePacket,
 } from "@colony/agent-runtime";
 import type { AuditRow } from "@colony/core";
+import { registerInMemorySpanExporter } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
 import { awaitPendingRuns } from "../src/runs/registry.js";
@@ -812,4 +813,40 @@ describe("colonyd fake end-to-end loop", () => {
       .filter((r) => r.kind === "validate" && r.status === "succeeded");
     expect(succeededRuns.length).toBeGreaterThanOrEqual(1);
   }, 30_000);
+
+  it("every run kind's colony.run span carries the run row id", async () => {
+    const seam = registerInMemorySpanExporter();
+    try {
+      const scopeId = await createScope("span ids across run kinds");
+      await driveToDone(scopeId);
+      const scope = handle.ctx.store.getScope(scopeId)!;
+      expect(scope.status).toBe("done");
+
+      // architect + implement + merge_gate all ran to reach done.
+      const runs = handle.ctx.store.runsForScope(scopeId);
+      const runKinds = runs.map((r) => r.kind);
+      expect(runKinds).toContain("architect");
+      expect(runKinds).toContain("implement");
+      expect(runKinds).toContain("merge_gate");
+
+      // One colony.run span per run row, keyed by the id minted into the
+      // runs row - not a second uuid minted when the span started.
+      const runSpans = seam.exporter
+        .getFinishedSpans()
+        .filter(
+          (span) =>
+            span.name === "colony.run" &&
+            span.attributes["colony.scope_id"] === scopeId,
+        );
+      const spanRunIds = runSpans.map(
+        (span) => span.attributes["colony.run_id"],
+      );
+      expect(spanRunIds).toHaveLength(runs.length);
+      for (const run of runs) {
+        expect(spanRunIds).toContain(run.id);
+      }
+    } finally {
+      await seam.shutdown();
+    }
+  });
 });
