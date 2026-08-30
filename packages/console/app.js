@@ -3083,7 +3083,7 @@ async function refresh() {
         api(`/audit?scope_id=${encodeURIComponent(id)}&limit=1000`),
       ]);
       state.detail = detail;
-      state.audit = audit;
+      state.audit = audit.events;
       if (
         state.projectContext === null &&
         detail.project &&
@@ -3105,7 +3105,7 @@ async function refresh() {
     } else {
       state.detail = null;
       state.projectContext = null;
-      state.audit = await api("/audit?limit=12");
+      state.audit = (await api("/audit?limit=12")).events;
     }
     state.error = "";
   } catch (err) {
