@@ -34,8 +34,8 @@ async function crumbsFor(hash, props = {}) {
   for (const [key, value] of Object.entries(props)) el[key] = value;
   document.body.append(el);
   await el.updateComplete;
-  return [...el.querySelectorAll(".crumbs a, .crumbs .crumb")].map(
-    (node) => node.textContent.trim(),
+  return [...el.querySelectorAll(".crumbs a, .crumbs .crumb")].map((node) =>
+    node.textContent.trim(),
   );
 }
 
@@ -86,8 +86,8 @@ describe("topbar breadcrumbs", () => {
     withHash("#/project/Acme");
     el.actor = "human:op-2";
     await el.updateComplete;
-    const crumbs = [...el.querySelectorAll(".crumbs .crumb")].map(
-      (node) => node.textContent.trim(),
+    const crumbs = [...el.querySelectorAll(".crumbs .crumb")].map((node) =>
+      node.textContent.trim(),
     );
     expect(crumbs).toEqual(["Acme"]);
   });
