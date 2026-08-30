@@ -13,7 +13,7 @@ const GITLAB_TOKEN = /glpat-[A-Za-z0-9_-]+/g;
 const SK_TOKEN = /sk-[A-Za-z0-9_-]{8,}/g;
 /** HTTP Authorization bearer headers; the scheme is case-insensitive. */
 const BEARER_TOKEN = /bearer [A-Za-z0-9._~+/=-]+/gi;
-/** `PRIVATE-TOKEN:` headers; the header name survives, the value is redacted. */
+/** GitLab's private-token header; the name survives, the value is redacted. */
 const PRIVATE_TOKEN_HEADER = /(private-token:)[ \t]*[A-Za-z0-9._~+/=-]+/gi;
 
 /**
