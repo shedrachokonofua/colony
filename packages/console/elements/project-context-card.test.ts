@@ -169,10 +169,11 @@ describe("project-context-card draft vs poll (defect 1)", () => {
   it("a focused editor keeps its draft through polls and catches up on blur", async () => {
     const el = makeCard({ contextDoc: "orig", editing: true });
     await el.updateComplete;
-    textarea(el).focus();
-    textarea(el).dispatchEvent(new window.Event("focus", { bubbles: false }));
-    el._focused = true;
+    // The element tracks focus through the real @focus/@blur handlers, so
+    // drive the actual events rather than setting the state by hand.
+    textarea(el).dispatchEvent(new window.FocusEvent("focus"));
     await el.updateComplete;
+    expect(el._focused).toBe(true);
 
     // Poll while focused: the draft and the textarea both stay put.
     el.contextDoc = "poll2";
@@ -181,7 +182,7 @@ describe("project-context-card draft vs poll (defect 1)", () => {
     expect(textarea(el).value).toBe("orig");
 
     // Blur, then poll again: the new doc lands.
-    textarea(el).dispatchEvent(new window.Event("blur", { bubbles: false }));
+    textarea(el).dispatchEvent(new window.FocusEvent("blur"));
     await el.updateComplete;
     expect(el._focused).toBe(false);
     el.contextDoc = "poll3";
