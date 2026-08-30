@@ -259,6 +259,8 @@ function buildImplementBody(
     "- Work on the branch provided in packet.repo; commit there and push.",
     "- colonyd opens the merge request after your run — do NOT open an MR yourself.",
     "- Never commit PACKET.json or credentials; keep the diff limited to this task.",
+    "- Iterate with targeted tests (bun test <paths you touched>) plus typecheck. For cross-package changes, verify breadth with `bun run test:unit` (integration tests excluded). Avoid the full `npm test`: its integration tests exceed the sandbox's 15-minute exec deadline and return nothing — CI and review run the full suite for you.",
+    "- Push your work early and after every green test run; unpushed work does not survive this sandbox.",
     "- Submit implementer_completion with the exact branch and head SHA you pushed.",
   ];
   if (continuity.interrupted) {

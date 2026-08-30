@@ -78,6 +78,16 @@ export interface SandboxCustomResource {
       readonly spec: {
         readonly runtimeClassName: "kata";
         readonly automountServiceAccountToken: false;
+        readonly topologySpreadConstraints: readonly [
+          {
+            readonly maxSkew: number;
+            readonly topologyKey: "kubernetes.io/hostname";
+            readonly whenUnsatisfiable: "ScheduleAnyway";
+            readonly labelSelector: {
+              readonly matchLabels: Record<string, string>;
+            };
+          },
+        ];
         readonly containers: readonly [SandboxCustomResourceContainer];
       };
     };
@@ -274,6 +284,22 @@ export function buildSandboxCustomResource({
         spec: {
           runtimeClassName: "kata",
           automountServiceAccountToken: false,
+          // Soft spread across the kata-capable nodes: the default scheduler
+          // bin-packs sandboxes onto one node while others idle. maxSkew 2 +
+          // ScheduleAnyway biases toward balance without ever making a pod
+          // unschedulable that would otherwise fit.
+          topologySpreadConstraints: [
+            {
+              maxSkew: 2,
+              topologyKey: "kubernetes.io/hostname",
+              whenUnsatisfiable: "ScheduleAnyway",
+              labelSelector: {
+                matchLabels: {
+                  "app.kubernetes.io/component": "agent-sandbox",
+                },
+              },
+            },
+          ],
           containers: [container],
         },
       },
