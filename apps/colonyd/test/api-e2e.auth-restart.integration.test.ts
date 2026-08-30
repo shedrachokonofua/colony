@@ -380,9 +380,11 @@ describe("api e2e OIDC bearer enforcement", () => {
       },
     );
     expect(audit.status).toBe(200);
-    const rows = (audit.body as unknown as {
-      events: { actor: string; action: string }[];
-    }).events;
+    const rows = (
+      audit.body as unknown as {
+        events: { actor: string; action: string }[];
+      }
+    ).events;
     const creation = rows.find((r) => r.action === "scope.created");
     expect(creation?.actor).toBe("human:shdrch");
 
@@ -407,9 +409,11 @@ describe("api e2e OIDC bearer enforcement", () => {
       },
     );
     expect(svcAudit.status).toBe(200);
-    const svcRows = (svcAudit.body as unknown as {
-      events: { actor: string; action: string }[];
-    }).events;
+    const svcRows = (
+      svcAudit.body as unknown as {
+        events: { actor: string; action: string }[];
+      }
+    ).events;
     const svcCreation = svcRows.find((r) => r.action === "scope.created");
     expect(svcCreation?.actor).toBe(`svc:${OIDC_CLIENT}`);
 
@@ -659,14 +663,16 @@ describe("api e2e restart recovery (subprocess SIGKILL)", () => {
         `/audit?task_id=${encodeURIComponent(task.id)}&limit=1000`,
       );
       expect(auditRes.status).toBe(200);
-      const auditRows = (auditRes.body as {
-        events: {
-          id: number;
-          at: string;
-          action: string;
-          detail_json: string;
-        }[];
-      }).events;
+      const auditRows = (
+        auditRes.body as {
+          events: {
+            id: number;
+            at: string;
+            action: string;
+            detail_json: string;
+          }[];
+        }
+      ).events;
 
       const requeues = auditRows.filter((row) => {
         if (row.action !== "task.transition") return false;

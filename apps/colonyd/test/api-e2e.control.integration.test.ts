@@ -151,9 +151,11 @@ describe("api e2e control — 1. replan + replacement plan", () => {
       `/audit?scope_id=${encodeURIComponent(scopeId)}&limit=1000`,
     );
     expect(audit.status).toBe(200);
-    const rows = (audit.body as {
-      events: { action: string; detail_json: string }[];
-    }).events;
+    const rows = (
+      audit.body as {
+        events: { action: string; detail_json: string }[];
+      }
+    ).events;
     const replanRow = rows.find((r) => r.action === "plan.replan_requested");
     expect(replanRow).toBeDefined();
     const detail = JSON.parse(replanRow!.detail_json) as { feedback?: string };
@@ -1451,9 +1453,11 @@ describe("api e2e control — 6. abandon", () => {
       `/audit?scope_id=${encodeURIComponent(scopeId)}&limit=1000`,
     );
     expect(audit.status).toBe(200);
-    const rows = (audit.body as {
-      events: { action: string; detail_json: string }[];
-    }).events;
+    const rows = (
+      audit.body as {
+        events: { action: string; detail_json: string }[];
+      }
+    ).events;
     expect(
       rows.some(
         (r) =>

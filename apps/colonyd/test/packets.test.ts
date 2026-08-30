@@ -445,9 +445,11 @@ describe("project context HTTP contract", () => {
     ).resolves.toEqual({ context_doc: null });
 
     const auditRes = await app.request("/audit?limit=100", ACTOR);
-    const audit = ((await auditRes.json()) as {
-      events: { actor: string; action: string; detail_json: string }[];
-    }).events;
+    const audit = (
+      (await auditRes.json()) as {
+        events: { actor: string; action: string; detail_json: string }[];
+      }
+    ).events;
     const writes = audit.filter(
       (row) => row.action === "project.context_updated",
     );

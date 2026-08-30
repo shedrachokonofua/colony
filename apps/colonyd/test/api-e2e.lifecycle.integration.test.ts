@@ -167,9 +167,11 @@ describe("api e2e lifecycle", () => {
         `/audit?task_id=${encodeURIComponent(t.id)}&limit=1000`,
       );
       expect(audit.status).toBe(200);
-      const rows = (audit.body as {
-        events: { action: string; detail_json: string }[];
-      }).events;
+      const rows = (
+        audit.body as {
+          events: { action: string; detail_json: string }[];
+        }
+      ).events;
       const hops = rows
         .filter((r) => r.action === "task.transition")
         .map((r) => JSON.parse(r.detail_json) as { from: string; to: string });
