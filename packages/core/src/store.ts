@@ -1340,7 +1340,9 @@ export class Store {
    */
   listRunEventsByName(runId: string, event: string): RunEvent[] {
     return this.db
-      .prepare(`SELECT * FROM run_events WHERE run_id = ? AND event = ? ORDER BY id`)
+      .prepare(
+        `SELECT * FROM run_events WHERE run_id = ? AND event = ? ORDER BY id`,
+      )
       .all(runId, event) as RunEvent[];
   }
 

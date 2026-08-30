@@ -1528,7 +1528,13 @@ describe("run artifacts", () => {
     expect(page.offset).toBe(0);
     expect(page.items).toHaveLength(5);
     // Ascending (created_at, id): insertion order.
-    expect(page.items.map((r) => r.key)).toEqual(["k1", "k2", "k3", "k4", "k5"]);
+    expect(page.items.map((r) => r.key)).toEqual([
+      "k1",
+      "k2",
+      "k3",
+      "k4",
+      "k5",
+    ]);
 
     const window = store.listRunArtifacts(runId, { limit: 2, offset: 1 });
     expect(window.items).toHaveLength(2);
