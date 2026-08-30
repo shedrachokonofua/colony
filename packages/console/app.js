@@ -3146,7 +3146,7 @@ async function refreshRunEvents(detail) {
     const feeds = await Promise.all(
       targets.map(async (run) => ({
         runId: run.id,
-        rows: await api(`/runs/${encodeURIComponent(run.id)}/events`),
+        rows: (await api(`/runs/${encodeURIComponent(run.id)}/events`)).events,
       })),
     );
     const drawerTarget = targets.find((run) => run !== architect);
