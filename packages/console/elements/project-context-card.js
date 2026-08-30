@@ -72,39 +72,44 @@ export class ProjectContextCard extends ColonyElement {
     });
   }
 
+  // Both branches carry the file summary and the Manage files link, so the
+  // card body stays a single child part swapping between two whole
+  // templates — lit's cleanup trips over a part sitting beside another
+  // part when the branch swaps under happy-dom.
   #editor() {
     return html`<form class="project-context" @submit=${(e) => this.#submit(e)}>
-      <textarea
-        name="project-context"
-        class="mono"
-        placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
-        .value=${this._contextDraft}
-        @input=${(event) => {
-          this._contextDraft = event.target.value;
-        }}
-        @focus=${() => {
-          this._focused = true;
-        }}
-        @blur=${() => {
-          this._focused = false;
-        }}
-      ></textarea>
-      <div class="pc-actions">
-        <button class="btn" type="submit">Save context</button>
-        <button
-          class="btn btn-quiet"
-          type="button"
-          @click=${() => this.#emit("colony-toggle", { key: "briefOpen" })}
-        >
-          Cancel
-        </button>
-        ${this.saveStatus === "saving"
-          ? html`<span class="pc-status">Saving…</span>`
-          : this.saveStatus === "saved"
-            ? html`<span class="pc-status is-saved">Saved.</span>`
-            : nothing}
-      </div>
-    </form>`;
+        <textarea
+          name="project-context"
+          class="mono"
+          placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
+          .value=${this._contextDraft}
+          @input=${(event) => {
+            this._contextDraft = event.target.value;
+          }}
+          @focus=${() => {
+            this._focused = true;
+          }}
+          @blur=${() => {
+            this._focused = false;
+          }}
+        ></textarea>
+        <div class="pc-actions">
+          <button class="btn" type="submit">Save context</button>
+          <button
+            class="btn btn-quiet"
+            type="button"
+            @click=${() => this.#emit("colony-toggle", { key: "briefOpen" })}
+          >
+            Cancel
+          </button>
+          ${this.saveStatus === "saving"
+            ? html`<span class="pc-status">Saving…</span>`
+            : this.saveStatus === "saved"
+              ? html`<span class="pc-status is-saved">Saved.</span>`
+              : nothing}
+        </div>
+      </form>
+      ${this.#fileList()}`;
   }
 
   #editButton(doc) {
@@ -116,39 +121,37 @@ export class ProjectContextCard extends ColonyElement {
     </button>`;
   }
 
-  // The child part must sit flush against its parent's closing tag. Lit's
-  // NodePart cleanup walks the part's own tree, so a part followed by a
-  // sibling text node breaks the update when the branch swaps under
-  // happy-dom — which is exactly what the edit/preview toggle does.
   #preview(doc) {
     return doc
       ? html`<div class="knowledge-preview">
-          <markdown-reader .markdown=${doc}></markdown-reader>
-        </div>`
-      : html`<p class="note">No brief yet.</p>`;
+            <markdown-reader .markdown=${doc}></markdown-reader>
+          </div>
+          ${this.#fileList()}`
+      : html`<p class="note">No brief yet.</p>
+          ${this.#fileList()}`;
   }
 
   /** The file summary and the Manage files link, shared by both branches. */
   #fileList() {
     const files = this.files ?? [];
     return html`${files.length
-      ? html`<ul class="file-list">
-          ${files.map(
-            (file) =>
-              html`<li>
-                <span class="mono">${file.filename}</span>
-                <span>${file.media_type}</span>
-                <span class="mono">${file.byte_size} B</span>
-              </li>`,
-          )}
-        </ul>`
-      : nothing}<a
-      class="btn btn-quiet"
-      href=${projectFilesHref(this.project.name)}
-      @click=${(event) =>
-        this.#nav(event, projectFilesHref(this.project.name))}
-      >Manage files</a
-    >`;
+        ? html`<ul class="file-list">
+            ${files.map(
+              (file) =>
+                html`<li>
+                  <span class="mono">${file.filename}</span>
+                  <span>${file.media_type}</span>
+                  <span class="mono">${file.byte_size} B</span>
+                </li>`,
+            )}
+          </ul>`
+        : nothing}<a
+        class="btn btn-quiet"
+        href=${projectFilesHref(this.project.name)}
+        @click=${(event) =>
+          this.#nav(event, projectFilesHref(this.project.name))}
+        >Manage files</a
+      >`;
   }
 
   render() {
@@ -160,11 +163,10 @@ export class ProjectContextCard extends ColonyElement {
     // swaps under happy-dom, which blows up the update. The short local keeps
     // the `>${body}</div>` pair on one line, and prettier with it.
     const action = this.editing ? nothing : this.#editButton(doc);
+    const body = this.editing ? this.#editor() : this.#preview(doc);
     return html`<aside class="card">
       <p class="card-head">Project knowledge ${action}</p>
-      <div class="card-body">
-        ${this.#fileList()}${this.editing ? this.#editor() : this.#preview(doc)}</div
-      >
+      <div class="card-body">${body}</div>
     </aside>`;
   }
 }
