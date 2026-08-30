@@ -67,7 +67,7 @@ describe("exec command ledger", () => {
       buildSandboxTools(handle, workspace, {
         auditSink: sink,
         runId: "run-ledger",
-        runToken: "glpat-run-secret-token-xyz",
+        runToken: "glpat-run-secret-xyz",
       }).map((tool) => [tool.name, tool]),
     );
     try {
@@ -78,7 +78,7 @@ describe("exec command ledger", () => {
       const stderrPayload = "e\u001B[32mRR\u001B[0mf\n";
       try {
         await runTool(tools["bash"], {
-          command: `printf 'a\\033[31mANSI\\033[0mb\\n'; echo glpat-run-secret-token-xyz; echo out; printf 'e\\033[32mRR\\033[0mf\\n' 1>&2; exit 3`,
+          command: `printf 'a\\033[31mANSI\\033[0mb\\n'; echo glpat-run-secret-xyz; echo out; printf 'e\\033[32mRR\\033[0mf\\n' 1>&2; exit 3`,
         });
         throw new Error("expected bash exit 3 to surface as a tool error");
       } catch (err) {
@@ -92,15 +92,13 @@ describe("exec command ledger", () => {
       const detail = commandEvents[0]!.detail;
       expect(commandEvents[0]!.runId).toBe("run-ledger");
       expect(typeof detail["command"]).toBe("string");
-      expect(String(detail["command"])).not.toContain(
-        "glpat-run-secret-token-xyz",
-      );
+      expect(String(detail["command"])).not.toContain("glpat-run-secret-xyz");
       expect(detail["exit_code"]).toBe(3);
       // Byte counts are the RAW captured stdout/stderr lengths, computed
       // before any redaction: a regression that redacts first (or swaps the
       // counters) flips these exact integers.
       expect(detail["stdout_bytes"]).toBe(
-        Buffer.byteLength(`${stdoutPayload}glpat-run-secret-token-xyz\nout\n`),
+        Buffer.byteLength(`${stdoutPayload}glpat-run-secret-xyz\nout\n`),
       );
       expect(detail["stderr_bytes"]).toBe(Buffer.byteLength(stderrPayload));
       // The exec ran in the workspace root ("." is the workspace-relative
