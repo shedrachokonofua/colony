@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { createRequire } from "node:module";
 import { Hono, type Context } from "hono";
@@ -27,6 +28,16 @@ const UI_MIME: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
   ".svg": "image/svg+xml",
   ".woff2": "font/woff2",
+};
+
+/** Compressed variants of UI text assets, keyed by absolute file path. */
+export const uiGzipCache = new Map<string, Buffer>();
+
+const GZIPPABLE_UI_EXTS: Record<string, true> = {
+  ".js": true,
+  ".css": true,
+  ".html": true,
+  ".svg": true,
 };
 
 type Env = { Variables: { actor: string } };
@@ -227,11 +238,13 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }),
   );
 
-  app.get("/", (c) => uiResponse("index.html") ?? c.notFound());
+  app.get("/", (c) =>
+    uiResponse("index.html", acceptsGzip(c)) ?? c.notFound(),
+  );
   app.get("/ui/*", (c) => {
     const rel = c.req.path.replace(/^\/ui\/?/, "");
     if (!rel || rel === "config") return c.notFound();
-    return uiResponse(rel) ?? c.notFound();
+    return uiResponse(rel, acceptsGzip(c)) ?? c.notFound();
   });
 
   // Actor middleware for every remaining route. With OIDC configured the
@@ -1148,22 +1161,37 @@ function conflict(c: Context<Env>, err: unknown) {
   return c.json({ error: { code: "CONFLICT", message } }, 409);
 }
 
-function uiResponse(relPath: string): Response | null {
+/** Whether the request's Accept-Encoding header includes gzip. */
+function acceptsGzip(c: Context<Env>): boolean {
+  return (c.req.header("accept-encoding") ?? "").includes("gzip");
+}
+
+function uiResponse(relPath: string, acceptsGzip = false): Response | null {
   const rel = decodeURIComponent(relPath).replace(/^\/+/, "");
   const full = resolveStaticUiPath(rel);
   if (!full) return null;
   const mime = UI_MIME[extname(full)] ?? "application/octet-stream";
+  const gzippable = GZIPPABLE_UI_EXTS[extname(full)] === true;
   const cache =
     extname(full) === ".woff2"
       ? "public, max-age=31536000, immutable"
       : "no-cache";
-  return new Response(readFileSync(full), {
-    headers: {
-      "content-type": mime,
-      "cache-control": cache,
-      "x-content-type-options": "nosniff",
-    },
-  });
+  const headers: Record<string, string> = {
+    "content-type": mime,
+    "cache-control": cache,
+    "x-content-type-options": "nosniff",
+  };
+  if (gzippable) headers["vary"] = "accept-encoding";
+  if (gzippable && acceptsGzip) {
+    let compressed = uiGzipCache.get(full);
+    if (!compressed) {
+      compressed = gzipSync(readFileSync(full));
+      uiGzipCache.set(full, compressed);
+    }
+    headers["content-encoding"] = "gzip";
+    return new Response(compressed, { headers });
+  }
+  return new Response(readFileSync(full), { headers });
 }
 
 function staticUiAsset(requestPath: string): string | null {
