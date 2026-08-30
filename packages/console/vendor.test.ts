@@ -11,10 +11,7 @@ import { describe, expect, it } from "bun:test";
  * would 404 at runtime. Deleting or regenerating the tree wrong turns
  * this red.
  */
-const vendorDir = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "vendor",
-);
+const vendorDir = resolve(dirname(fileURLToPath(import.meta.url)), "vendor");
 
 const VENDORED_ROOTS = ["lit-html", "lit-element", "@lit", "@lit-labs"];
 
@@ -32,7 +29,8 @@ const REQUIRED_FILES = [
 ];
 
 /** Mirrors the specifier grammar of scripts/vendor-ui.ts. */
-const SPECIFIER = /(?:import|export)\b[\s\S]*?\bfrom\s*"([^"]+)"|import\s*"([^"]+)"/g;
+const SPECIFIER =
+  /(?:import|export)\b[\s\S]*?\bfrom\s*"([^"]+)"|import\s*"([^"]+)"/g;
 
 function walkJsFiles(dir: string): string[] {
   const out: string[] = [];

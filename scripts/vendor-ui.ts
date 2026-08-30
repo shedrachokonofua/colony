@@ -280,7 +280,10 @@ function vendorReadme(versions: { pkg: string; version: string }[]): string {
 function main(): void {
   rmSync(join(vendorDir, "lit-html"), { recursive: true, force: true });
   for (const pkg of WHOLE_PACKAGES) {
-    rmSync(join(vendorDir, ...pkg.split("/")), { recursive: true, force: true });
+    rmSync(join(vendorDir, ...pkg.split("/")), {
+      recursive: true,
+      force: true,
+    });
   }
 
   const files = collectSourceFiles();
