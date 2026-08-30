@@ -41,7 +41,11 @@ describe("buildFillerProjects", () => {
 
   it("every filler is strictly newer than the pinned demo project", () => {
     const fillers = buildFillerProjects(NOW);
-    const demo = buildDemoProject(NOW, buildDemoScopes(NOW), buildDemoFiles(NOW));
+    const demo = buildDemoProject(
+      NOW,
+      buildDemoScopes(NOW),
+      buildDemoFiles(NOW),
+    );
     for (const filler of fillers) {
       expect(Date.parse(filler.updated_at)).toBeGreaterThan(
         Date.parse(demo.updated_at),
@@ -137,8 +141,9 @@ describe("buildDemoDetail", () => {
   });
 
   it("timestamps derive from now, not Date.now()", () => {
-    expect(Date.parse(detail.scope.created_at)).toBe(NOW - 36 * 60 * 1000);
-    expect(Date.parse(detail.scope.updated_at)).toBe(NOW - 12 * 1000);
+    const scope = detail.scope as { created_at: string; updated_at: string };
+    expect(Date.parse(scope.created_at)).toBe(NOW - 36 * 60 * 1000);
+    expect(Date.parse(scope.updated_at)).toBe(NOW - 12 * 1000);
   });
 });
 
@@ -155,7 +160,10 @@ describe("buildEmptyProject / buildDemoFiles", () => {
 
   it("demo files carry markdown fixtures sized into the project", () => {
     const files = buildDemoFiles(NOW);
-    expect(files.map((f) => f.filename)).toEqual(["AGENTS.md", "conventions.md"]);
+    expect(files.map((f) => f.filename)).toEqual([
+      "AGENTS.md",
+      "conventions.md",
+    ]);
     expect(files.every((f) => f.media_type === "text/markdown")).toBe(true);
   });
 });

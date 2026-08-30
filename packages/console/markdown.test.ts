@@ -28,9 +28,15 @@ describe("renderMarkdown", () => {
   });
 
   it("renders unordered and ordered lists, closing them between blocks", () => {
-    expect(renderMarkdown("- a\n- b")).toBe("<ul>\n<li>a</li>\n<li>b</li>\n</ul>");
-    expect(renderMarkdown("1. a\n2) b")).toBe("<ol>\n<li>a</li>\n<li>b</li>\n</ol>");
-    expect(renderMarkdown("- a\n\npara")).toBe("<ul>\n<li>a</li>\n</ul>\n<p>para</p>");
+    expect(renderMarkdown("- a\n- b")).toBe(
+      "<ul>\n<li>a</li>\n<li>b</li>\n</ul>",
+    );
+    expect(renderMarkdown("1. a\n2) b")).toBe(
+      "<ol>\n<li>a</li>\n<li>b</li>\n</ol>",
+    );
+    expect(renderMarkdown("- a\n\npara")).toBe(
+      "<ul>\n<li>a</li>\n</ul>\n<p>para</p>",
+    );
   });
 
   it("renders fenced code blocks without inline processing inside", () => {
@@ -56,22 +62,18 @@ describe("renderMarkdown", () => {
   });
 
   it("wraps plain paragraphs", () => {
-    expect(renderMarkdown("hello\n\nworld")).toBe(
-      "<p>hello</p>\n<p>world</p>",
-    );
+    expect(renderMarkdown("hello\n\nworld")).toBe("<p>hello</p>\n<p>world</p>");
   });
 
   it("escapes XSS vectors before rebuilding markup", () => {
-    const html = renderMarkdown('<img src=x onerror=alert(1)>');
+    const html = renderMarkdown("<img src=x onerror=alert(1)>");
     expect(html).toBe("<p>&lt;img src=x onerror=alert(1)&gt;</p>");
     expect(html).not.toContain("<img");
     expect(renderMarkdown("<script>bad()</script>")).not.toContain("<script>");
     expect(renderMarkdown('quote " and amp & and < tag')).toBe(
       "<p>quote &quot; and amp &amp; and &lt; tag</p>",
     );
-    expect(renderMarkdown("[click](javascript:alert(1))")).not.toContain(
-      "<a ",
-    );
+    expect(renderMarkdown("[click](javascript:alert(1))")).not.toContain("<a ");
   });
 
   it("keeps link/inline grammar working on escaped input", () => {
@@ -85,14 +87,18 @@ describe("renderMarkdown", () => {
 
 describe("mdInline", () => {
   it("converts code, bold, italic, and links", () => {
-    expect(mdInline("`x` **y** *z*")).toBe("<code>x</code> <strong>y</strong> <em>z</em>");
+    expect(mdInline("`x` **y** *z*")).toBe(
+      "<code>x</code> <strong>y</strong> <em>z</em>",
+    );
     expect(mdInline("[a](https://x.io)")).toBe(
       '<a href="https://x.io" target="_blank" rel="noopener noreferrer">a</a>',
     );
   });
 
   it("never links non-http schemes", () => {
-    expect(mdInline("[a](javascript:alert(1))")).toBe("[a](javascript:alert(1))");
+    expect(mdInline("[a](javascript:alert(1))")).toBe(
+      "[a](javascript:alert(1))",
+    );
   });
 });
 
@@ -108,7 +114,7 @@ describe("mdFragment", () => {
   });
 
   it("never materializes raw agent-authored markup", () => {
-    const frag = mdFragment('<img src=x onerror=alert(1)>');
+    const frag = mdFragment("<img src=x onerror=alert(1)>");
     expect(frag.querySelectorAll("img")).toHaveLength(0);
     expect(frag.textContent).toContain("<img");
   });

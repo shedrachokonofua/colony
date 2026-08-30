@@ -1,6 +1,6 @@
-export function distinctRepos<T extends { repo_path?: string | null }>(
-  repositories: T[] | null | undefined,
-): T[];
+export function distinctRepos<
+  T extends { repo_id?: string; repo_path?: string | null },
+>(repositories: T[] | null | undefined): T[];
 
 export function knowledgeText(
   context_doc: string | null | undefined,
@@ -9,7 +9,10 @@ export function knowledgeText(
 
 export function repoSummaryText(
   repositories:
-    | Array<{ repo_path: string | null | undefined }>
+    | Array<{
+        repo_id?: string;
+        repo_path: string | null | undefined;
+      }>
     | null
     | undefined,
 ): string;

@@ -14,19 +14,28 @@ import {
   routeScopeId,
 } from "./router.js";
 
-const realLocation = globalThis.location;
+/** location is absent in bun; tests seed and swap this record. */
+interface LocationStub {
+  hash: string;
+  search: string;
+}
+
+const globalScope = globalThis as typeof globalThis & {
+  location?: LocationStub;
+};
+const realLocation = globalScope.location;
 
 /** location is a read-only global in bun: swap it wholesale, then restore. */
 function withHash(hash: string) {
-  Object.defineProperty(globalThis, "location", {
-    value: { ...realLocation, hash },
+  Object.defineProperty(globalScope, "location", {
+    value: { ...realLocation, hash } as LocationStub,
     configurable: true,
     writable: true,
   });
 }
 
 afterEach(() => {
-  Object.defineProperty(globalThis, "location", {
+  Object.defineProperty(globalScope, "location", {
     value: realLocation,
     configurable: true,
     writable: true,
@@ -83,7 +92,14 @@ describe("routeScopeId", () => {
   });
 
   it("returns null for the homepage, query-only, new, and project routes", () => {
-    for (const hash of ["#", "#/", "#/?page=2", "#/new", "#/new-project", "#/project/acme"]) {
+    for (const hash of [
+      "#",
+      "#/",
+      "#/?page=2",
+      "#/new",
+      "#/new-project",
+      "#/project/acme",
+    ]) {
       withHash(hash);
       expect(routeScopeId()).toBeNull();
     }

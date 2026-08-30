@@ -15,9 +15,8 @@ Object.defineProperty(globalThis, "location", {
 
 const { DEMO, DEMO_READS, demoContextStore, demoFileStore, demoWorld } =
   await import("./demo.js");
-const { DEMO_PROJECT_COUNT, DEMO_SCOPES_IN_PROJECT } = await import(
-  "./demo-data.js"
-);
+const { DEMO_PROJECT_COUNT, DEMO_SCOPES_IN_PROJECT } =
+  await import("./demo-data.js");
 
 function withSearch(search: string) {
   Object.defineProperty(globalThis, "location", {
