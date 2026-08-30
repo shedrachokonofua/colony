@@ -47,6 +47,10 @@ export function projectHref(name) {
   return `#/project/${encodeURIComponent(name)}`;
 }
 
+export function projectFilesHref(name) {
+  return `#/project/${encodeURIComponent(name)}/files`;
+}
+
 /** The `?project=` query of the current hash route, or null when absent. */
 export function hashQueryProject() {
   const q = location.hash.split("?")[1];
