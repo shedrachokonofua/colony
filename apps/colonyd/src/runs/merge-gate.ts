@@ -442,7 +442,7 @@ function buildScopeProvenance(
   scope: Scope,
   task: Task,
 ): string {
-  const listEvents = (runId: string) => ctx.store.listRunEvents(runId);
+  const listEvents = (runId: string) => ctx.store.listRunEvents(runId).events;
   const architect = collectRunModelIds(
     ctx.store.runsForScope(scope.id).filter((r) => r.kind === "architect"),
     listEvents,

@@ -382,7 +382,7 @@ describe("colonyd fake end-to-end loop", () => {
     };
     expect(passedEvidence.passed).toBe(true);
     const validatedAudit = handle.ctx.store
-      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .listAudit({ scope_id: scopeId, limit: 1000 }).events
       .filter((row) => row.action === "scope.validated");
     expect(validatedAudit.length).toBeGreaterThanOrEqual(1);
 
@@ -394,13 +394,13 @@ describe("colonyd fake end-to-end loop", () => {
 
     // A merged before B ever dispatched: audit row order proves it.
     const firstRunningB = handle.ctx.store
-      .listAudit({ task_id: taskB!.id, limit: 1000 })
+      .listAudit({ task_id: taskB!.id, limit: 1000 }).events
       .find(
         (row) =>
           row.action === "task.transition" && transitionTo(row) === "running",
       );
     const mergedA = handle.ctx.store
-      .listAudit({ task_id: taskA!.id, limit: 1000 })
+      .listAudit({ task_id: taskA!.id, limit: 1000 }).events
       .find(
         (row) =>
           row.action === "task.transition" && transitionTo(row) === "merged",
@@ -411,7 +411,7 @@ describe("colonyd fake end-to-end loop", () => {
     // Audit contains task.transition rows for every hop of both tasks.
     for (const task of tasks) {
       const hops = handle.ctx.store
-        .listAudit({ task_id: task.id, limit: 1000 })
+        .listAudit({ task_id: task.id, limit: 1000 }).events
         .filter((row) => row.action === "task.transition")
         .sort((x, y) => x.id - y.id)
         .map((row) => {
@@ -508,7 +508,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(passedGate).toBeTruthy();
     // No duplicate MRs were opened for the task.
     const auditMrOpened = handle.ctx.store
-      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .listAudit({ task_id: taskA.id, limit: 1000 }).events
       .filter((row) => row.action === "mr.opened");
     expect(auditMrOpened).toHaveLength(1);
   }, 30_000);
@@ -590,7 +590,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(taskA.state).toBe("merged");
     expect(
       handle.ctx.store
-        .listAudit({ task_id: taskA.id, limit: 100 })
+        .listAudit({ task_id: taskA.id, limit: 100 }).events
         .some((row) => row.action === "gate.merge_timeout_reconciled"),
     ).toBe(true);
   }, 30_000);
@@ -691,7 +691,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(a.state).toBe("queued");
     expect(a.attempt).toBe(1);
     const changes = handle.ctx.store
-      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .listAudit({ task_id: taskA.id, limit: 1000 }).events
       .filter((row) => row.action === "review.changes_requested");
     expect(changes).toHaveLength(1);
 
@@ -705,7 +705,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(scope.status).toBe("done");
 
     const audit = handle.ctx.store
-      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .listAudit({ task_id: taskA.id, limit: 1000 }).events
       .slice()
       .sort((x, y) => x.id - y.id)
       .map((row) => row.action);
@@ -782,7 +782,7 @@ describe("colonyd fake end-to-end loop", () => {
 
     // Audit records the failure.
     const failedAudit = handle.ctx.store
-      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .listAudit({ scope_id: scopeId, limit: 1000 }).events
       .filter((row) => row.action === "scope.validation_failed");
     expect(failedAudit.length).toBeGreaterThanOrEqual(1);
 
@@ -797,7 +797,7 @@ describe("colonyd fake end-to-end loop", () => {
     const body = (await res.json()) as { status: string };
     expect(body.status).toBe("validating");
     const revalidateAudit = handle.ctx.store
-      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .listAudit({ scope_id: scopeId, limit: 1000 }).events
       .filter((row) => row.action === "scope.revalidate_requested");
     expect(revalidateAudit.length).toBeGreaterThanOrEqual(1);
 

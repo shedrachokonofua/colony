@@ -178,7 +178,7 @@ describe("run event sink persists pi_model_fallback", () => {
     });
     expect(result.envelope).toEqual(envelope);
 
-    const events = store.listRunEvents(run.id);
+    const events = store.listRunEvents(run.id).events;
     const fallback = events.find((e) => e.event === "pi_model_fallback");
     expect(fallback).toBeTruthy();
     const detail = JSON.parse(fallback!.detail_json) as {

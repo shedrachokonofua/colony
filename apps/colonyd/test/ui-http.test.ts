@@ -330,7 +330,7 @@ describe("operator console", () => {
     expect(res.status).toBe(200);
     const updated = (await res.json()) as { merge_approved_sha: string };
     expect(updated.merge_approved_sha).toBe(headSha);
-    const audit = store.listAudit({ scope_id: manual.id });
+    const audit = store.listAudit({ scope_id: manual.id }).events;
     expect(audit.some((row) => row.action === "merge.approved")).toBe(true);
   });
 
@@ -419,7 +419,7 @@ describe("operator console", () => {
     expect(requeued.state).toBe("queued");
     expect(requeued.human_feedback).toBe("handle the empty case");
     expect(requeued.merge_approved_sha).toBeNull();
-    const audit = store.listAudit({ scope_id: scope.id });
+    const audit = store.listAudit({ scope_id: scope.id }).events;
     expect(audit.some((r) => r.action === "task.changes_requested")).toBe(true);
     expect(audit.some((r) => r.action === "plan.replan_requested")).toBe(true);
   });
@@ -513,7 +513,7 @@ describe("operator controls", () => {
     expect(updated.spec).toContain("Spec amendment (operator, authoritative)");
     expect(updated.spec).toContain("env split is authoritative");
     expect(updated.state).toBe("queued");
-    const audit = store.listAudit({ task_id: task.id });
+    const audit = store.listAudit({ task_id: task.id }).events;
     expect(audit.some((r) => r.action === "task.spec_amended")).toBe(true);
   });
 
@@ -560,7 +560,7 @@ describe("acceptance amendment", () => {
     expect(res.status).toBe(200);
     const updated = store.getScope(scope.id)!;
     expect(JSON.parse(updated.acceptance_json!)).toEqual(acceptance);
-    const audit = store.listAudit({ scope_id: scope.id });
+    const audit = store.listAudit({ scope_id: scope.id }).events;
     expect(audit.some((r) => r.action === "scope.acceptance_amended")).toBe(
       true,
     );

@@ -1300,13 +1300,14 @@ export class Store {
       ) as RunEvent[];
     return this.pageEnvelope(rows, () => {
       const oldest = rows[0]!.id;
-      return (
-        this.db
-          .prepare(
-            `SELECT 1 AS one FROM run_events WHERE run_id = ? AND id < ? LIMIT 1`,
-          )
-          .get(runId, oldest) !== undefined
-      );
+      // bun:sqlite yields null (node:sqlite undefined) when no row matches;
+      // accept neither as "a row was found".
+      const row = this.db
+        .prepare(
+          `SELECT 1 AS one FROM run_events WHERE run_id = ? AND id < ? LIMIT 1`,
+        )
+        .get(runId, oldest) as { one: number } | null | undefined;
+      return row !== null && row !== undefined;
     });
   }
 
@@ -1365,7 +1366,11 @@ export class Store {
     if (filter.before_id !== undefined) clauses.push("id < @beforeId");
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.db
-      .prepare(`SELECT * FROM audit ${where} ORDER BY id DESC LIMIT @limit`)
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM audit ${where} ORDER BY id DESC LIMIT @limit
+         ) ORDER BY id`,
+      )
       .all(
         named({
           scopeId: filter.scope_id ?? null,
@@ -1429,8 +1434,8 @@ export class Store {
       .prepare(
         `SELECT 1 AS one FROM audit WHERE ${clauses.join(" AND ")} LIMIT 1`,
       )
-      .get(...bindings) as { one: number } | undefined;
-    return row !== undefined;
+      .get(...bindings) as { one: number } | null | undefined;
+    return row !== null && row !== undefined;
   }
 }
 

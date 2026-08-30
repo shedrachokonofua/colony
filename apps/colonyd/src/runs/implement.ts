@@ -281,11 +281,11 @@ async function executeImplement(
     // branch commit and in the MR description.
     const modelIds = collectRunModelIds(
       ctx.store.runsForTask(task.id).filter((r) => r.kind === "implement"),
-      (runId: string) => ctx.store.listRunEvents(runId),
+      (runId: string) => ctx.store.listRunEvents(runId).events,
     );
     const archIds = collectRunModelIds(
       ctx.store.runsForScope(scope.id).filter((r) => r.kind === "architect"),
-      (runId: string) => ctx.store.listRunEvents(runId),
+      (runId: string) => ctx.store.listRunEvents(runId).events,
     );
 
     if (mrIid === undefined) {

@@ -353,7 +353,172 @@ describe("Store", () => {
     expect(() => store.db.prepare(`DELETE FROM audit`).run()).toThrow(
       /append-only/,
     );
-    expect(store.listAudit()).toHaveLength(1);
+    expect(store.listAudit().events).toHaveLength(1);
+  });
+
+  it("pages run events newest-first by default with has_more and cursor walkback", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    for (let i = 1; i <= 250; i++) {
+      store.appendRunEvent(run.id, "pi_tool_call", { seq: i });
+    }
+
+    const page = store.listRunEvents(run.id);
+    expect(page.events).toHaveLength(200);
+    expect(page.has_more).toBe(true);
+    expect(page.events[0]!.detail_json).toBe(JSON.stringify({ seq: 51 }));
+    expect(page.newest_id).toBe(page.events.at(-1)!.id);
+    expect(page.oldest_id).toBe(page.events[0]!.id);
+    const ids = page.events.map((e) => e.id);
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+
+    // Exclusive cursor: everything strictly older than the page's oldest_id.
+    const older = store.listRunEvents(run.id, {
+      before_id: page.oldest_id!,
+    });
+    expect(older.events).toHaveLength(50);
+    expect(older.has_more).toBe(false);
+    expect(older.oldest_id).toBe(older.events[0]!.id);
+    expect(older.events[0]!.detail_json).toBe(JSON.stringify({ seq: 1 }));
+  });
+
+  it("clamps run-event page limits to 1..1000", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    for (let i = 0; i < 1200; i++) {
+      store.appendRunEvent(run.id, "tick", { seq: i });
+    }
+    expect(store.listRunEvents(run.id, { limit: 5000 }).events).toHaveLength(
+      1000,
+    );
+    expect(store.listRunEvents(run.id, { limit: 0 }).events).toHaveLength(1);
+    expect(store.listRunEvents(run.id, { limit: -50 }).events).toHaveLength(1);
+    expect(store.listRunEvents(run.id).events).toHaveLength(200);
+  });
+
+  it("returns an empty run-event page with null cursor bounds", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    const page = store.listRunEvents(run.id);
+    expect(page.events).toEqual([]);
+    expect(page.has_more).toBe(false);
+    expect(page.oldest_id).toBeNull();
+    expect(page.newest_id).toBeNull();
+  });
+
+  it("writes a run.finished audit row on every run completion", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    store.finishRun(run.id, "failed", { error: "agent_failed" });
+
+    const rows = store
+      .listAudit({ run_id: run.id })
+      .events.filter((row) => row.action === "run.finished");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.actor).toBe("svc:colonyd");
+    expect(rows[0]!.run_id).toBe(run.id);
+    expect(rows[0]!.scope_id).toBe(scopeId);
+    expect(rows[0]!.task_id).toBeNull();
+    expect(JSON.parse(rows[0]!.detail_json)).toEqual({
+      run_id: run.id,
+      status: "failed",
+      error: "agent_failed",
+    });
+  });
+
+  it("writes run.finished audit rows for lease expiry and orphan sweeps", () => {
+    const scopeId = seededScope();
+    const leased = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 1,
+    });
+    store.expireDeadLeases(new Date(Date.now() + 1000));
+    const orphaned = store.startRun({
+      scope_id: scopeId,
+      kind: "validate",
+      lease_ttl_ms: 60_000,
+    });
+    store.expireOrphanedRuns();
+
+    for (const id of [leased.id, orphaned.id]) {
+      const rows = store
+        .listAudit({ run_id: id })
+        .events.filter((row) => row.action === "run.finished");
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0]!.detail_json).status).toBe("failed");
+    }
+  });
+
+  it("pages audit with before_id and honors run_id filtering", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    store.audit("svc:colonyd", "first", { run_id: run.id });
+    store.finishRun(run.id, "succeeded");
+    store.audit("svc:colonyd", "last", { run_id: run.id });
+
+    const page = store.listAudit({ run_id: run.id });
+    expect(page.events.map((row) => row.action)).toEqual([
+      "first",
+      "run.finished",
+      "last",
+    ]);
+    expect(page.has_more).toBe(false);
+
+    const first = store.listAudit({ run_id: run.id, limit: 2 });
+    expect(first.events.map((row) => row.action)).toEqual([
+      "run.finished",
+      "last",
+    ]);
+    expect(first.has_more).toBe(true);
+    const older = store.listAudit({
+      run_id: run.id,
+      before_id: first.oldest_id!,
+    });
+    expect(older.events.map((row) => row.action)).toEqual(["first"]);
+  });
+
+  it("startRun honors a pre-minted id and still mints uuids without one", () => {
+    const scopeId = seededScope();
+    const preMinted = crypto.randomUUID();
+    const run = store.startRun({
+      id: preMinted,
+      scope_id: scopeId,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+    });
+    expect(run.id).toBe(preMinted);
+    expect(store.getRun(preMinted)!.id).toBe(preMinted);
+
+    const minted = store.startRun({
+      scope_id: scopeId,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+    });
+    expect(minted.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(minted.id).not.toBe(preMinted);
   });
 
   it("dedupes observations by dedup_key", () => {

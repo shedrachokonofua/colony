@@ -123,7 +123,7 @@ describe("task recovery API", () => {
     expect(
       store
         .listAudit({ scope_id: task.scope_id })
-        .some(
+        .events.some(
           (row) =>
             row.actor === "human:operator" &&
             row.action === "task.stop_and_retry",
