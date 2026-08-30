@@ -386,6 +386,33 @@ describe("Store", () => {
     expect(older.events[0]!.detail_json).toBe(JSON.stringify({ seq: 1 }));
   });
 
+  it("listRunEventsByName returns every row of one event name, ascending, unpaginated", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    // The fallback row is the oldest event of the run: beyond the feed's
+    // 200-row window, so only a by-name query can see it.
+    store.appendRunEvent(run.id, "pi_model_fallback", { from: "m1", to: "m2" });
+    for (let i = 1; i <= 250; i++) {
+      store.appendRunEvent(run.id, "tool_call", { seq: i });
+    }
+
+    const fallbacks = store.listRunEventsByName(run.id, "pi_model_fallback");
+    expect(fallbacks).toHaveLength(1);
+    expect(fallbacks[0]!.event).toBe("pi_model_fallback");
+    expect(fallbacks[0]!.detail_json).toBe(
+      JSON.stringify({ from: "m1", to: "m2" }),
+    );
+
+    const toolCalls = store.listRunEventsByName(run.id, "tool_call");
+    expect(toolCalls).toHaveLength(250);
+    const ids = toolCalls.map((e) => e.id);
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+  });
+
   it("clamps run-event page limits to 1..1000", () => {
     const scopeId = seededScope();
     const run = store.startRun({
@@ -1478,12 +1505,20 @@ describe("run artifacts", () => {
   it("lists a run's artifacts with the paginated envelope", () => {
     const runId = createRun("artifact pagination");
     const otherRun = createRun("other run");
+    // created_at has millisecond resolution and recordRunArtifact does not
+    // take a timestamp; busy-wait one clock tick between inserts so each
+    // row's created_at differs.
+    const tick = (): void => {
+      const t = Date.now();
+      while (Date.now() === t) {}
+    };
     for (let i = 1; i <= 5; i++) {
       store.recordRunArtifact(runId, {
         kind: "file",
         key: `k${i}`,
         ref: `k${i}`,
       });
+      tick();
     }
     store.recordRunArtifact(otherRun, { kind: "file", key: "x", ref: "x" });
 
@@ -1492,21 +1527,16 @@ describe("run artifacts", () => {
     expect(page.limit).toBe(200);
     expect(page.offset).toBe(0);
     expect(page.items).toHaveLength(5);
-    // Ordered by the (run_id, id) index: ids are random hex (descending
-    // lexicographic here), so assert the stable index order rather than
-    // insertion order.
-    const byId = [...page.items].sort((a, b) => (a.id < b.id ? -1 : 1));
-    expect(page.items.map((r) => r.key)).toEqual(byId.map((r) => r.key));
+    // Ascending (created_at, id): insertion order.
+    expect(page.items.map((r) => r.key)).toEqual(["k1", "k2", "k3", "k4", "k5"]);
 
     const window = store.listRunArtifacts(runId, { limit: 2, offset: 1 });
     expect(window.items).toHaveLength(2);
     expect(window.limit).toBe(2);
     expect(window.offset).toBe(1);
     expect(window.total).toBe(5);
-    // The window is a slice of the same stable order.
-    expect(window.items.map((r) => r.key)).toEqual(
-      page.items.slice(1, 3).map((r) => r.key),
-    );
+    // The window is a slice of the same creation order.
+    expect(window.items.map((r) => r.key)).toEqual(["k2", "k3"]);
 
     // Limit clamps like every other paginated store API.
     expect(store.listRunArtifacts(runId, { limit: 5000 }).limit).toBe(1000);
