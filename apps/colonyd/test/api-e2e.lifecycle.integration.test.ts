@@ -172,8 +172,7 @@ describe("api e2e lifecycle", () => {
       }).events;
       const hops = rows
         .filter((r) => r.action === "task.transition")
-        .map((r) => JSON.parse(r.detail_json) as { from: string; to: string })
-        .reverse();
+        .map((r) => JSON.parse(r.detail_json) as { from: string; to: string });
       const chain = hops.map((h) => `${h.from}->${h.to}`);
       expect(chain).toEqual([
         "queued->running",
