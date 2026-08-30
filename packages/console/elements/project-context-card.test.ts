@@ -180,10 +180,12 @@ describe("project-context-card files and manage-files link", () => {
   it("links to the manage-files route — the only path to that surface", async () => {
     const el = makeCard();
     await el.updateComplete;
-    const link = [...el.querySelectorAll(".card-body a")].find((a) =>
-      a.textContent.trim() === "Manage files",
+    const link = [...el.querySelectorAll(".card-body a")].find(
+      (a) => a.textContent.trim() === "Manage files",
     );
-    expect(link.getAttribute("href")).toBe("#/project/Operator%20console/files");
+    expect(link.getAttribute("href")).toBe(
+      "#/project/Operator%20console/files",
+    );
   });
 
   it("the Manage files link bubbles colony-navigate and survives editing", async () => {
@@ -198,9 +200,7 @@ describe("project-context-card files and manage-files link", () => {
         (a) => a.textContent.trim() === "Manage files",
       );
       link.click();
-      expect(seen).toEqual([
-        { href: "#/project/Operator%20console/files" },
-      ]);
+      expect(seen).toEqual([{ href: "#/project/Operator%20console/files" }]);
     }
   });
 });

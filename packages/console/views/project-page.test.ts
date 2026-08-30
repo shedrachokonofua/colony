@@ -239,7 +239,9 @@ describe("project-page settings rail", () => {
   it("hands the files and save status down to the card", async () => {
     const el = makePage(pageOf({ scopes: [] }), {
       tab: "settings",
-      files: [{ filename: "notes.md", media_type: "text/markdown", byte_size: 12 }],
+      files: [
+        { filename: "notes.md", media_type: "text/markdown", byte_size: 12 },
+      ],
       saveStatus: "saved",
       editing: true,
     });
