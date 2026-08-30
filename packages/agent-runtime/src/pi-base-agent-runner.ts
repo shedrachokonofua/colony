@@ -619,11 +619,6 @@ export class PiBaseAgentRunner implements PiRunner {
         this.options.auditSink,
         runToken ? [runToken] : [],
       );
-      // agent_end closes the run's evidence stream: the aggregate row is
-      // minted here in the runner, from the same collector the feed used.
-      const unsubscribeSummary = session.agent.subscribe((event) => {
-        if (event.type === "agent_end") evidence.runSummary();
-      });
       const unsubscribeGuards = installRunGuards(session.agent, runId, {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
         logger: this.options.logger,
@@ -965,7 +960,6 @@ export class PiBaseAgentRunner implements PiRunner {
           }
         }
       } finally {
-        unsubscribeSummary();
         unsubscribeGuards();
       }
 

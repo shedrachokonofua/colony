@@ -140,6 +140,8 @@ export class RunEvidenceCollector {
     string,
     { at: number; args: unknown; intent?: string }
   >();
+  /** toolCallIds whose tool_call row was already booked — dedups double-end. */
+  private readonly completed = new Set<string>();
   private readonly perTool = new Map<string, number[]>();
   private readonly perToolErrors = new Map<string, number>();
   private toolTotal = 0;
@@ -168,11 +170,7 @@ export class RunEvidenceCollector {
    * Observe `tool_execution_start`: wall clock, validated args, and intent.
    * The end event carries none of these, so the pairing lives here.
    */
-  toolStart(
-    toolCallId: string,
-    args: unknown,
-    intent?: string,
-  ): void {
+  toolStart(toolCallId: string, args: unknown, intent?: string): void {
     this.toolStarts.set(toolCallId, {
       at: Date.now(),
       args,
@@ -188,6 +186,8 @@ export class RunEvidenceCollector {
    * per call no matter how many seams observe it.
    */
   async toolEnd(input: ToolCallObserved): Promise<void> {
+    if (this.completed.has(input.toolCallId)) return;
+    this.completed.add(input.toolCallId);
     const start = this.toolStarts.get(input.toolCallId);
     this.toolStarts.delete(input.toolCallId);
     const startedAtMs = start?.at ?? input.startedAtMs ?? input.endedAtMs;
@@ -348,9 +348,10 @@ export class RunEvidenceCollector {
  * Text blocks join with newlines; non-text blocks note their kind so the
  * summary still shows something at that position.
  */
-export function toolResultText(
-  result: unknown,
-): { text: string; isErrorText: boolean } {
+export function toolResultText(result: unknown): {
+  text: string;
+  isErrorText: boolean;
+} {
   const content = (result as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) return { text: "", isErrorText: false };
   const pieces: string[] = [];
@@ -372,5 +373,8 @@ export function toolResultText(
   }
   const isError =
     (result as { isError?: unknown } | undefined)?.isError === true;
-  return { text: pieces.length > 0 ? pieces.join("\n") : "", isErrorText: isError };
+  return {
+    text: pieces.length > 0 ? pieces.join("\n") : "",
+    isErrorText: isError,
+  };
 }

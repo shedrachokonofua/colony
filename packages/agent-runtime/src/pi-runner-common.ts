@@ -690,6 +690,10 @@ export function installRunGuards(
       options.onFailure?.(reason);
       agent.abort();
     }
+    // agent_end closes the run's evidence stream with the aggregate row.
+    if (event.type === "agent_end") {
+      options.evidence?.runSummary();
+    }
   });
   return () => {
     unsubscribed = true;

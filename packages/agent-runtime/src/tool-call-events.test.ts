@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
-import type { ToolCallDetail } from "./run-evidence.js";
+import type { RunSummaryDetail, ToolCallDetail } from "./run-evidence.js";
+import { installRunGuards } from "./pi-runner-common.js";
 import { RunEvidenceCollector, toolResultText } from "./run-evidence.js";
 
 interface RecordedEvent {
@@ -11,8 +12,12 @@ interface RecordedEvent {
 /** Capturing sink shaped exactly like RunAuditSink (putArtifact never rejects). */
 function recordingSink() {
   const events: RecordedEvent[] = [];
-  const artifacts: { kind: string; key: string; bytes: number; text: string }[] =
-    [];
+  const artifacts: {
+    kind: string;
+    key: string;
+    bytes: number;
+    text: string;
+  }[] = [];
   return {
     events,
     artifacts,
@@ -48,18 +53,36 @@ function recordingSink() {
 }
 
 const toolDetail = (row: RecordedEvent | undefined): ToolCallDetail =>
-  row?.detail as ToolCallDetail;
+  row?.detail as unknown as ToolCallDetail;
+
+/** Minimal Agent seam: subscribe + abort, driven manually by the test. */
+function fakeAgent() {
+  const listeners = new Set<(e: unknown) => void>();
+  return {
+    subscribe(fn: (e: unknown) => void) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    abort() {},
+    emit(event: unknown) {
+      for (const fn of listeners) fn(event);
+    },
+  };
+}
 
 describe("RunEvidenceCollector: tool_call rows", () => {
   it("emits exactly one tool_call row per call with redacted args and paired duration", async () => {
     const { events, sink } = recordingSink();
-    const evidence = new RunEvidenceCollector("run-1", sink, ["glpat-abc-secret"]);
+    const evidence = new RunEvidenceCollector("run-1", sink, [
+      "glpat-abc-secret",
+    ]);
     evidence.toolStart("t1", { command: "echo glpat-abc-secret" }, "prove it");
+    const startedAt = Date.now();
     await evidence.toolEnd({
       toolCallId: "t1",
       tool: "bash",
       isError: false,
-      endedAtMs: Date.now() + 42,
+      endedAtMs: startedAt + 42,
       resultText: "ok",
     });
     const rows = events.filter((e) => e.event === "tool_call");
@@ -134,7 +157,12 @@ describe("RunEvidenceCollector: extended pi_usage", () => {
         totalTokens: 180,
         contextTokens: 170,
         reasoningTokens: 12,
-        cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0.002 },
+        cost: {
+          input: 0.01,
+          output: 0.02,
+          cacheRead: 0.001,
+          cacheWrite: 0.002,
+        },
       },
       provider: "test-gateway",
       model: "m1",
@@ -195,9 +223,7 @@ describe("RunEvidenceCollector: completion_rejected", () => {
       "Submission rejected: bad branch",
       "submit_implementer_completion",
     );
-    expect(events[0]?.detail.message).toBe(
-      "Submission rejected: bad branch",
-    );
+    expect(events[0]?.detail.message).toBe("Submission rejected: bad branch");
   });
 });
 
@@ -210,7 +236,13 @@ describe("RunEvidenceCollector: run_summary aggregation", () => {
         input: 30,
         output: 12,
         totalTokens: 42,
-        cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1.0 },
+        cost: {
+          input: 0.1,
+          output: 0.2,
+          cacheRead: 0.3,
+          cacheWrite: 0.4,
+          total: 1.0,
+        },
       },
     });
     let now = 10_000;
@@ -234,16 +266,17 @@ describe("RunEvidenceCollector: run_summary aggregation", () => {
       resultText: "boom",
     });
     evidence.runSummary();
-    const summary = events.find((e) => e.event === "run_summary");
-    expect(summary?.detail.turns).toBe(1);
-    expect(summary?.detail.tool_calls).toBe(4);
-    expect(summary?.detail.tool_errors).toBe(1);
-    expect(summary?.detail.input_tokens).toBe(30);
-    expect(summary?.detail.output_tokens).toBe(12);
-    expect(summary?.detail.total_tokens).toBe(42);
-    expect(summary?.detail.cost_input).toBe(0.1);
-    expect(summary?.detail.cost_total).toBe(1);
-    expect(summary?.detail.per_tool.bash).toEqual({
+    const summary = events.find((e) => e.event === "run_summary")
+      ?.detail as unknown as RunSummaryDetail;
+    expect(summary.turns).toBe(1);
+    expect(summary.tool_calls).toBe(4);
+    expect(summary.tool_errors).toBe(1);
+    expect(summary.input_tokens).toBe(30);
+    expect(summary.output_tokens).toBe(12);
+    expect(summary.total_tokens).toBe(42);
+    expect(summary.cost_input).toBe(0.1);
+    expect(summary.cost_total).toBe(1);
+    expect(summary.per_tool.bash).toEqual({
       calls: 4,
       errors: 1,
       p50_ms: 200,
@@ -268,5 +301,62 @@ describe("toolResultText", () => {
       isError: true,
     });
     expect(failed.isErrorText).toBe(true);
+  });
+});
+describe("installRunGuards evidence wiring", () => {
+  it("feeds the collector from the guard subscription: one row per call, usage, summary", async () => {
+    const { events, sink } = recordingSink();
+    const evidence = new RunEvidenceCollector("run-8", sink, []);
+    const agent = fakeAgent();
+    const unsubscribe = installRunGuards(agent as never, "run-8", {
+      evidence,
+      livenessTimeoutMs: 0,
+      maxTurns: 100,
+    });
+    agent.emit({
+      type: "tool_execution_start",
+      toolCallId: "c1",
+      toolName: "bash",
+      args: { command: "echo hi" },
+      intent: "probe",
+    });
+    agent.emit({
+      type: "tool_execution_end",
+      toolCallId: "c1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "hi" }] },
+      isError: false,
+    });
+    agent.emit({
+      type: "tool_execution_end",
+      toolCallId: "c1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "hi" }] },
+      isError: false,
+    });
+    agent.emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        provider: "test-gateway",
+        model: "m",
+        stopReason: "toolUse",
+        usage: { input: 5, output: 3, cost: { total: 0.5 } },
+      },
+    });
+    agent.emit({ type: "agent_end", messages: [] });
+    unsubscribe();
+    await Bun.sleep(0);
+    const toolRows = events.filter((e) => e.event === "tool_call");
+    expect(toolRows).toHaveLength(1);
+    expect(toolDetail(toolRows[0])).toMatchObject({
+      tool_call_id: "c1",
+      tool: "bash",
+      intent: "probe",
+    });
+    expect(toolDetail(toolRows[0]).args).toEqual({ command: "echo hi" });
+    expect(typeof toolDetail(toolRows[0]).duration_ms).toBe("number");
+    expect(events.some((e) => e.event === "pi_usage")).toBe(true);
+    expect(events.some((e) => e.event === "run_summary")).toBe(true);
   });
 });
