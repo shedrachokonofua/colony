@@ -65,7 +65,11 @@ export function createRunAuditSink(
         store.appendRunEvent(runId, event, detail);
       } catch (err) {
         logger?.warn?.(
-          { runId, event, error: err instanceof Error ? err.message : String(err) },
+          {
+            runId,
+            event,
+            error: err instanceof Error ? err.message : String(err),
+          },
           "audit_sink_append_event_failed",
         );
       }
@@ -87,7 +91,12 @@ export function createRunAuditSink(
           });
         } catch (err) {
           logger?.warn?.(
-            { runId, kind, key, error: err instanceof Error ? err.message : String(err) },
+            {
+              runId,
+              kind,
+              key,
+              error: err instanceof Error ? err.message : String(err),
+            },
             "audit_sink_record_artifact_failed",
           );
           return undefined;
@@ -95,7 +104,12 @@ export function createRunAuditSink(
         return { ref, bytes, sha256 };
       } catch (err) {
         logger?.warn?.(
-          { runId, kind, key, error: err instanceof Error ? err.message : String(err) },
+          {
+            runId,
+            kind,
+            key,
+            error: err instanceof Error ? err.message : String(err),
+          },
           "audit_sink_put_artifact_failed",
         );
         return undefined;
@@ -113,7 +127,12 @@ export function createRunAuditSink(
         });
       } catch (err) {
         logger?.warn?.(
-          { runId, kind, key, error: err instanceof Error ? err.message : String(err) },
+          {
+            runId,
+            kind,
+            key,
+            error: err instanceof Error ? err.message : String(err),
+          },
           "audit_sink_record_artifact_ref_failed",
         );
       }

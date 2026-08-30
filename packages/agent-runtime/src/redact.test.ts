@@ -37,7 +37,7 @@ describe("redactText", () => {
   it("redacts a run token embedded in a command string", () => {
     const token = "sk-run-token-99aa";
     expect(redactText(`curl -H "Authorization: ${token}"`, [token])).toBe(
-      "curl -H \"Authorization: [REDACTED]\"",
+      'curl -H "Authorization: [REDACTED]"',
     );
   });
 

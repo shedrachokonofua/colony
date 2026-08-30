@@ -44,7 +44,8 @@ interface ExecCapture {
 }
 
 /** ANSI escape / control sequences, stripped from the ledger tail. */
-const ANSI_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u001B[PX^_].*?\u001B\\|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+const ANSI_PATTERN =
+  /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u001B[PX^_].*?\u001B\\|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
 /** Only the human-readable tail and strings in the ledger are redacted. */
 const LEDGER_TAIL_CHARS = 1000;
@@ -67,9 +68,10 @@ async function execCapture(
     readonly env?: NodeJS.ProcessEnv;
     readonly timeoutMs?: number;
     readonly signal?: AbortSignal;
-    readonly ledger?: ExecLedger;
-    /** Exact secrets redacted from ledger strings; regex patterns always apply. */
-    readonly secrets?: readonly string[];
+    readonly execOptions?: {
+      ledger?: ExecLedger;
+      secrets?: readonly string[];
+    };
   } = {},
 ): Promise<ExecCapture> {
   const stdoutChunks: Buffer[] = [];
@@ -93,15 +95,15 @@ async function execCapture(
     );
     const stdout = Buffer.concat(stdoutChunks);
     const stderr = Buffer.concat(stderrChunks);
-    options.ledger?.command({
-      command: redactText(command, options.secrets),
-      cwd: options.cwd === undefined ? undefined : redactText(options.cwd, options.secrets),
-      exit_code: output.exitCode,
-      duration_ms: Date.now() - startedAt,
-      stdout_bytes: stdout.byteLength,
-      stderr_bytes: stderr.byteLength,
-      truncated_tail: outputTail(stdout, stderr, options.secrets ?? []),
-    });
+    emitLedger(
+      options.execOptions,
+      command,
+      options.cwd,
+      output.exitCode,
+      Date.now() - startedAt,
+      stdout,
+      stderr,
+    );
     return {
       output: Buffer.concat([stdout, stderr]),
       exitCode: output.exitCode,
@@ -109,8 +111,13 @@ async function execCapture(
       stderrBytes: stderr.byteLength,
     };
   } catch {
-    // Abort/timeout path: no completed exec, nothing to ledger.
-    return { output: Buffer.alloc(0), exitCode: null, stdoutBytes: 0, stderrBytes: 0 };
+    // Abort path: no completed exec, nothing to ledger.
+    return {
+      output: Buffer.alloc(0),
+      exitCode: null,
+      stdoutBytes: 0,
+      stderrBytes: 0,
+    };
   }
 }
 
@@ -119,7 +126,11 @@ async function execCapture(
  * redacted. Byte counts above are the raw captured lengths; only this
  * human-readable tail is cleaned.
  */
-function outputTail(stdout: Buffer, stderr: Buffer, secrets: readonly string[]): string {
+function outputTail(
+  stdout: Buffer,
+  stderr: Buffer,
+  secrets: readonly string[],
+): string {
   const combined = stripAnsi(
     `${stdout.toString("utf8")}${stderr.toString("utf8")}`,
   );
@@ -141,6 +152,31 @@ interface ExecLedger {
     stderr_bytes: number;
     truncated_tail: string;
   }) => void;
+}
+
+/**
+ * Emit the exec's ledger entry: best-effort by construction (the sink's
+ * appendEvent already swallows throws) and redacted for persistence.
+ */
+function emitLedger(
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] } | undefined,
+  command: string,
+  cwd: string | undefined,
+  exitCode: number | null,
+  durationMs: number,
+  stdout: Buffer,
+  stderr: Buffer,
+): void {
+  const secrets = execOptions?.secrets ?? [];
+  execOptions?.ledger?.command({
+    command: redactText(command, secrets),
+    cwd: cwd === undefined ? undefined : redactText(cwd, secrets),
+    exit_code: exitCode,
+    duration_ms: durationMs,
+    stdout_bytes: stdout.byteLength,
+    stderr_bytes: stderr.byteLength,
+    truncated_tail: outputTail(stdout, stderr, secrets),
+  });
 }
 
 function toEnvRecord(
@@ -213,8 +249,12 @@ function bashOperations(
   handle: SandboxHandle,
   base: string,
   execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
-): BashOperations {  return {
+): BashOperations {
+  return {
     exec: async (command, cwd, { onData, signal, timeout, env }) => {
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      const startedAt = Date.now();
       const result = await runWithSignal(
         handle,
         {
@@ -224,7 +264,21 @@ function bashOperations(
           timeoutMs: timeout !== undefined ? timeout * 1000 : undefined,
         },
         signal,
-        (data, kind) => onData(Buffer.from(data), kind),
+        (data, kind) => {
+          const buffer = Buffer.from(data);
+          if (kind === "stderr") stderrChunks.push(buffer);
+          else stdoutChunks.push(buffer);
+          onData(buffer);
+        },
+      );
+      emitLedger(
+        execOptions,
+        command,
+        toWorkspaceRelative(base, cwd),
+        result.exitCode,
+        Date.now() - startedAt,
+        Buffer.concat(stdoutChunks),
+        Buffer.concat(stderrChunks),
       );
       if (result.timedOut) {
         // The shim's `timeout:<seconds>` contract renders as "Command timed
@@ -248,7 +302,8 @@ function sandboxReadTool(
   handle: SandboxHandle,
   base: string,
   execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
-): ToolDefinition {  const parameters = Type.Object(
+): ToolDefinition {
+  const parameters = Type.Object(
     {
       path: Type.String({
         description: "Workspace-relative path to read.",
@@ -315,7 +370,8 @@ function sandboxWriteTool(
   handle: SandboxHandle,
   base: string,
   execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
-): ToolDefinition {  const parameters = Type.Object(
+): ToolDefinition {
+  const parameters = Type.Object(
     {
       path: Type.String({ description: "Workspace-relative path to write." }),
       content: Type.String({ description: "Full file content." }),
@@ -339,8 +395,8 @@ function sandboxWriteTool(
       if (parent && parent !== "." && parent !== "/") {
         const { exitCode } = await execCapture(
           handle,
-          execOptions,
           `mkdir -p ${shellQuote(parent)}`,
+          { execOptions },
         );
         if (exitCode !== 0) {
           throw new Error(`cannot create directory: ${parent}`);
@@ -372,7 +428,8 @@ function sandboxEditTool(
   handle: SandboxHandle,
   base: string,
   execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
-): ToolDefinition {  const parameters = Type.Object(
+): ToolDefinition {
+  const parameters = Type.Object(
     {
       path: Type.String({ description: "Workspace-relative path to edit." }),
       edits: Type.Array(
@@ -438,13 +495,14 @@ function findOperations(
   handle: SandboxHandle,
   base: string,
   execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
-): FindOperations {  const rel = (p: string) => toWorkspaceRelative(base, p);
+): FindOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     exists: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        execOptions,
         `test -e ${shellQuote(rel(absolutePath))}`,
+        { execOptions },
       );
       return exitCode === 0;
     },
@@ -452,8 +510,8 @@ function findOperations(
       const relSearch = rel(searchPath);
       const { output, exitCode } = await execCapture(
         handle,
-        execOptions,
         `find ${shellQuote(relSearch)} -type f`,
+        { execOptions },
       );
       if (exitCode !== 0) return [];
       const matcher = globToRegExp(pattern);
@@ -482,7 +540,8 @@ function sandboxGrepTool(
   handle: SandboxHandle,
   base: string,
   execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
-): ToolDefinition {  const parameters = Type.Object(
+): ToolDefinition {
+  const parameters = Type.Object(
     {
       pattern: Type.String({ description: "Extended regular expression." }),
       path: Type.Optional(
@@ -515,8 +574,8 @@ function sandboxGrepTool(
       const flags = params.case_sensitive === false ? "-rInE" : "-rnIE";
       const { output, exitCode } = await execCapture(
         handle,
-        execOptions,
         `grep ${flags} -- ${shellQuote(params.pattern)} ${shellQuote(target)} || true`,
+        { execOptions },
       );
       const text = output.subarray(0, MAX_TOOL_OUTPUT_BYTES).toString("utf8");
       const matches = text.split("\n").filter((line) => line.length > 0);
@@ -541,29 +600,30 @@ function lsOperations(
   handle: SandboxHandle,
   base: string,
   execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
-): LsOperations {  const rel = (p: string) => toWorkspaceRelative(base, p);
+): LsOperations {
+  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     exists: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        execOptions,
         `test -e ${shellQuote(rel(absolutePath))}`,
+        { execOptions },
       );
       return exitCode === 0;
     },
     stat: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
-        execOptions,
         `test -d ${shellQuote(rel(absolutePath))}`,
+        { execOptions },
       );
       return { isDirectory: () => exitCode === 0 };
     },
     readdir: async (absolutePath) => {
       const { output, exitCode } = await execCapture(
         handle,
-        execOptions,
         `ls -1 ${shellQuote(rel(absolutePath))}`,
+        { execOptions },
       );
       if (exitCode !== 0) {
         throw new Error(`cannot read directory: ${absolutePath}`);
@@ -648,8 +708,12 @@ export function buildSandboxTools(
   const secrets = audit?.runToken ? [audit.runToken] : [];
   const execOptions = { ledger, secrets };
   return [
-    createBashTool(cwd, { operations: bashOperations(handle, cwd, execOptions) }),
-    createFindTool(cwd, { operations: findOperations(handle, cwd, execOptions) }),
+    createBashTool(cwd, {
+      operations: bashOperations(handle, cwd, execOptions),
+    }),
+    createFindTool(cwd, {
+      operations: findOperations(handle, cwd, execOptions),
+    }),
     createLsTool(cwd, { operations: lsOperations(handle, cwd, execOptions) }),
     sandboxReadTool(handle, cwd, execOptions),
     sandboxGrepTool(handle, cwd, execOptions),

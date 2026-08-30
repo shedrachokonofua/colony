@@ -390,7 +390,9 @@ export class PiBaseAgentRunner implements PiRunner {
           cwd,
         );
         sandboxTools = buildSandboxTools(handle, cwd, {
-          ...(this.options.auditSink ? { auditSink: this.options.auditSink } : {}),
+          ...(this.options.auditSink
+            ? { auditSink: this.options.auditSink }
+            : {}),
           runId,
           // The packet's repo token is a live secret: every exec ledger string
           // must redact it, not just the well-known token patterns.
