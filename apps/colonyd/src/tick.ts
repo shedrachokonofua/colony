@@ -332,6 +332,7 @@ async function advanceMrOpenTasks(
     );
 
   for (const { scope, task } of candidates) {
+    if (ctx.draining.isDraining()) return;
     let mr;
     try {
       mr = await ctx.provider.mergeRequests.get(
@@ -538,6 +539,7 @@ async function advanceScopePlanning(
   dispatch: RunDispatcher,
 ): Promise<void> {
   for (const scope of ctx.store.listScopes()) {
+    if (ctx.draining.isDraining()) return;
     if (scope.status === "draft") {
       const activeArchitect = ctx.store
         .runsForScope(scope.id)
@@ -612,6 +614,7 @@ async function dispatchImplementers(
 ): Promise<void> {
   const ready = ctx.store.readyTasks();
   for (const task of ready) {
+    if (ctx.draining.isDraining()) return;
     if (ctx.store.activeRunCount("implement") >= ctx.env.maxConcurrent) break;
     if (!hasModelSlot(ctx, "developer")) continue;
     const scope = ctx.store.getScope(task.scope_id);
@@ -679,6 +682,7 @@ async function validateScopes(
   dispatch: RunDispatcher,
 ): Promise<void> {
   for (const scope of ctx.store.listScopes()) {
+    if (ctx.draining.isDraining()) return;
     if (scope.status !== "validating") continue;
     // Re-fetch fresh before dispatch (scope may have moved since list).
     const fresh = ctx.store.getScope(scope.id);

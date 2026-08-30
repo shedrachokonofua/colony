@@ -56,6 +56,7 @@ function recoveryApp() {
       oidcRequiredRole: "",
       traceUiBaseUrl: "",
     },
+    draining: { isDraining: () => false },
     requestTick() {
       ticks += 1;
     },

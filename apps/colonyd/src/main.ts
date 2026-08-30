@@ -18,6 +18,11 @@ import {
   createRunEventSink,
 } from "./agent-runtime.js";
 import type { ColonydContext } from "./context.js";
+import {
+  createDrainController,
+  type DrainController,
+  type DrainDeps,
+} from "./drain.js";
 import { buildApp } from "./http.js";
 import { consoleLogger } from "./logging.js";
 import { abortRuns, awaitPendingRuns } from "./runs/registry.js";
@@ -44,8 +49,10 @@ export interface ColonydHandle {
   readonly ctx: ColonydContext;
   /** Run one tick (single-flight guarded). Exported for tests. */
   tick(): Promise<void>;
-  /** Graceful shutdown: stop timer + server, abort runs, close store. */
+  /** Graceful shutdown: stop timer + server, drain runs, close store. */
   shutdown(): Promise<void>;
+  /** Bounded drain state machine; `shutdown()` awaits `drain.wait()`. */
+  readonly drain: DrainController;
 }
 
 export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
@@ -135,6 +142,25 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     }
   };
 
+  const drainDeps: DrainDeps = {
+    now: () => Date.now(),
+    sleep: (ms) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, ms);
+      return promise;
+    },
+    pollMs: 250,
+    timeoutMs: environment.COLONY_DRAIN_TIMEOUT_MS,
+    activeRunIds: () => [...ctx.store.activeRuns().map((r) => r.id)],
+    // In-flight run handlers record their own canceled/failed results from
+    // the abort; the controller only needs to stop them.
+    abortAll: async (ids) => {
+      await abortRuns(ids);
+    },
+    awaitSettled: awaitPendingRuns,
+  };
+  const drain = createDrainController(drainDeps);
+
   const ctx: ColonydContext = {
     store,
     provider,
@@ -160,6 +186,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     requestTick: () => {
       void runTick();
     },
+    draining: drain,
   };
 
   let interval: ReturnType<typeof setInterval> | undefined;
@@ -183,17 +210,25 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    drain.beginDrain();
     clearInterval(interval);
     if (server) {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      const { promise, resolve } = Promise.withResolvers<void>();
+      server.close(() => resolve());
+      await promise;
     }
-    await abortRuns([...ctx.store.activeRuns().map((r) => r.id)]);
-    await awaitPendingRuns();
+    const outcome = await drain.wait();
+    if (outcome === "aborted") {
+      // Cap elapsed with runs still alive: abort the remainder (once — the
+      // drain controller never aborts), then let handlers record the result.
+      await abortRuns([...ctx.store.activeRuns().map((r) => r.id)]);
+      await awaitPendingRuns();
+    }
     store.close();
     await shutdownTelemetry();
   };
 
-  return { ctx, tick: runTick, shutdown };
+  return { ctx, tick: runTick, shutdown, drain };
 }
 
 const isDirectRun =

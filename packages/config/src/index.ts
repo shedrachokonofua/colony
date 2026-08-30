@@ -40,6 +40,11 @@ const envSchema = z.object({
   COLONYD_PORT: z.coerce.number().int().default(4400),
   COLONYD_DB_PATH: z.string().default("data/colonyd.db"),
   COLONYD_TICK_MS: z.coerce.number().int().default(15_000),
+  /** Graceful-drain cap on shutdown (ms). In-flight runs get this long to finish
+   * before the remainder are aborted. The deployed pod's terminationGracePeriodSeconds
+   * must be >= COLONY_DRAIN_TIMEOUT_MS + 60s; that setting lives in the aether IaC repo
+   * (tofu/home/kubernetes/colony.tf), not here. */
+  COLONY_DRAIN_TIMEOUT_MS: z.coerce.number().int().default(600_000),
   COLONYD_MAX_CONCURRENT: z.coerce.number().int().default(1),
   COLONYD_MAX_ATTEMPTS: z.coerce.number().int().default(3),
   /** Single-token mode: use GITLAB_TOKEN directly in packet credentials. */
