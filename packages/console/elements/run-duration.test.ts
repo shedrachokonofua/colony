@@ -2,7 +2,7 @@
 // static duration, running runs tick once a second via the shared ticker,
 // and the interval is torn down on disconnect.
 // @ts-nocheck
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { sharedDom } from "./test-dom.js";
 
 // Element modules self-register into globalThis.customElements at import
@@ -10,6 +10,16 @@ import { sharedDom } from "./test-dom.js";
 // window must be installed before they load.
 sharedDom();
 
+// Replaced module-wide below; restored in afterAll so later suites in the
+// same bun process get the real clock and timers back.
+const RealDate = globalThis.Date;
+const realSetInterval = globalThis.setInterval;
+const realClearInterval = globalThis.clearInterval;
+afterAll(() => {
+  globalThis.Date = RealDate;
+  globalThis.setInterval = realSetInterval;
+  globalThis.clearInterval = realClearInterval;
+});
 const clock = { now: Date.parse("2026-01-01T00:00:10.000Z") };
 globalThis.Date = class extends Date {
   static now() {
