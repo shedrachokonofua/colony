@@ -283,8 +283,9 @@ test.describe("console mobile", () => {
     await page.goto("/?demo=1#/project/Operator%20console");
     await assertMobileViewport(page);
 
-    // Renders fully offline: the brief previews as Markdown, the editor
-    // opens on demand prefilled, and the scope list is present.
+    // Renders fully offline: the scope list is present, and on the Settings
+    // tab the brief previews as Markdown with the editor opening prefilled.
+    await page.getByRole("tab", { name: "Settings" }).click();
     await expect(page.locator(".knowledge-preview")).toBeVisible({
       timeout: 15000,
     });
@@ -292,6 +293,7 @@ test.describe("console mobile", () => {
     await expect(page.locator('textarea[name="project-context"]')).toBeVisible({
       timeout: 15000,
     });
+    await page.getByRole("tab", { name: "Scopes" }).click();
     await expect(page.locator(".scope-card").first()).toBeVisible({
       timeout: 15000,
     });

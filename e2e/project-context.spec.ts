@@ -59,22 +59,24 @@ test.describe("project context in the console", () => {
       timeout: 15000,
     });
 
-    // The editor is behind an Edit brief button (the always-open textarea
-    // is not the default view); reveal it and confirm it prefills from the
-    // stored document.
+    // The scope created above shows up as a board-identical card with a chip
+    // on the default Scopes tab.
+    const card = page
+      .locator(".scope-card", { hasText: `ctx-${stamp}` })
+      .first();
+    await expect(card).toBeVisible({ timeout: 15000 });
+    await expect(card.locator(".chip").first()).toContainText("planning");
+
+    // The editor lives on the Settings tab behind an Edit brief button (the
+    // always-open textarea is not the default view); reveal it and confirm it
+    // prefills from the stored document.
+    await page.getByRole("tab", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Edit brief" }).click();
     const textarea = page.locator('textarea[name="project-context"]');
     await expect(textarea).toBeVisible({ timeout: 15000 });
     await expect(textarea).toHaveValue(
       "Prefer bun over npm. Postgres runs on :5433.",
     );
-
-    // The scope created above shows up as a board-identical card with a chip.
-    const card = page
-      .locator(".scope-card", { hasText: `ctx-${stamp}` })
-      .first();
-    await expect(card).toBeVisible({ timeout: 15000 });
-    await expect(card.locator(".chip").first()).toContainText("planning");
 
     // Typing and saving persists through PUT /projects/:name/context.
     const typed = `Architecture decision record ${stamp}: use bun workspaces.`;
@@ -94,10 +96,12 @@ test.describe("project context in the console", () => {
 
     // A reload re-reads the persisted text through GET /projects/:name.
     await page.reload();
+    await page.getByRole("tab", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Edit brief" }).click();
     const textareaAfter = page.locator('textarea[name="project-context"]');
     await expect(textareaAfter).toHaveValue(typed, { timeout: 15000 });
 
+    await page.getByRole("tab", { name: "Scopes" }).click();
     // Cards on the project page navigate to the scope sheet like the board's do.
     await card.click();
     await expect.poll(() => page.url(), { timeout: 15000 }).toMatch(/#\/col-/);

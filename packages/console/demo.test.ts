@@ -120,12 +120,14 @@ describe("demoWorld", () => {
 });
 
 describe("DEMO mode flag", () => {
-  it("freezes the mode the page loaded with", () => {
-    // This process imported demo.js with bun's empty search string.
-    expect(DEMO).toBe(false);
-    withSearch("?demo=1");
-    expect(new URLSearchParams(globalThis.location.search).has("demo")).toBe(
-      true,
-    );
+  it("freezes the mode the page loaded with", async () => {
+    // DEMO snapshots location.search at first import and never re-reads it.
+    // Other suites in this process may have imported demo.js under their own
+    // seeded location, so assert the freeze itself: flipping the search and
+    // re-importing still yields the frozen value.
+    withSearch(DEMO ? "" : "?demo=1");
+    // Dynamic import on purpose: the test exercises the module-cache freeze.
+    const again = await import("./demo.js");
+    expect(again.DEMO).toBe(DEMO);
   });
 });

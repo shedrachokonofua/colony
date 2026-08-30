@@ -39,8 +39,18 @@ test.describe("console projects (demo)", () => {
     await expect(page.locator(".project-card").first()).toBeVisible({
       timeout: 15000,
     });
-    const page2Names = await page.locator(".project-card").allTextContents();
-    expect(page2Names.join()).not.toEqual(page1Names.join());
+    // The card set repaints asynchronously after the hash change; poll until
+    // the rendered rows differ from page 1.
+    await expect
+      .poll(
+        () =>
+          page
+            .locator(".project-card")
+            .allTextContents()
+            .then((names) => names.join()),
+        { timeout: 15000 },
+      )
+      .not.toEqual(page1Names.join());
 
     // 3. Homepage back/forward/refresh preserve the page.
     await page.goBack();
@@ -172,9 +182,14 @@ test.describe("console projects (demo)", () => {
     await expect(
       page.locator(".board-title", { hasText: "Operator console" }),
     ).toBeVisible({ timeout: 15000 });
-    // The stored brief renders as Markdown, not as an open editor.
+    await expect(page.locator(".scope-card").first()).toBeVisible({
+      timeout: 15000,
+    });
+    // The stored brief renders as Markdown on the Settings tab, not as an
+    // open editor.
+    await page.getByRole("tab", { name: "Settings" }).click();
     const knowledge = page
-      .locator(".project-rail .card", { hasText: "Project knowledge" })
+      .locator(".project-settings .card", { hasText: "Project knowledge" })
       .first();
     await expect(knowledge.locator(".knowledge-preview")).toContainText(
       "no-build lit-html",
@@ -189,9 +204,6 @@ test.describe("console projects (demo)", () => {
       /no-build lit-html/,
       { timeout: 15000 },
     );
-    await expect(page.locator(".scope-card").first()).toBeVisible({
-      timeout: 15000,
-    });
 
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
@@ -263,16 +275,17 @@ test.describe("console projects (live)", () => {
       page.locator(".board-title", { hasText: freshName }),
     ).toBeVisible({ timeout: 15000 });
 
-    // 3. Project page: scopes in a multi-card rack, rail with brief preview.
+    // 3. Project page: scopes rack by default, Settings tab with brief preview.
     await page.goto(`/#/project/${encodeURIComponent(name)}`);
     await expect(page.locator(".board-title", { hasText: name })).toBeVisible({
       timeout: 15000,
     });
-    await expect(page.locator(".project-rail")).toBeVisible({
+    await page.getByRole("tab", { name: "Settings" }).click();
+    await expect(page.locator(".project-settings")).toBeVisible({
       timeout: 15000,
     });
     const knowledgeCard = page
-      .locator(".project-rail .card", { hasText: "Project knowledge" })
+      .locator(".project-settings .card", { hasText: "Project knowledge" })
       .first();
     await expect(knowledgeCard).toBeVisible();
     await expect(knowledgeCard.getByText("Workspace brief")).toBeVisible();
@@ -371,9 +384,10 @@ test.describe("console projects (live)", () => {
       timeout: 15000,
     });
 
-    // 6. The project rail shows the file list after mutations.
+    // 6. The Settings tab shows the file list after mutations.
     await page.goto(`/#/project/${encodeURIComponent(name)}`);
-    const rail = page.locator(".project-rail").first();
+    await page.getByRole("tab", { name: "Settings" }).click();
+    const rail = page.locator(".project-settings").first();
     await expect(rail).toBeVisible({ timeout: 15000 });
     await expect(rail.getByText("AGENTS.md").first()).toBeVisible({
       timeout: 15000,
@@ -454,9 +468,10 @@ test.describe("console projects (mobile)", () => {
     expect(cardTracks.length, `cards grid: ${cardCols}`).toBe(1);
     await assertNoHorizontalOverflow(page);
 
-    // Project page: scopes rack and rail stack below.
+    // Project page: scopes rack by default; Settings tab stacks its cards.
     await page.goto(`/#/project/${encodeURIComponent(name)}`);
-    await expect(page.locator(".project-rail").first()).toBeVisible({
+    await page.getByRole("tab", { name: "Settings" }).click();
+    await expect(page.locator(".project-settings").first()).toBeVisible({
       timeout: 15000,
     });
     await expect(page.getByText("No brief yet.").first()).toBeVisible({
@@ -464,12 +479,13 @@ test.describe("console projects (mobile)", () => {
     });
     const layoutCols = await page.evaluate(() => {
       const el = document.querySelector(
-        ".project-layout",
+        ".project-settings",
       ) as HTMLElement | null;
       return el ? getComputedStyle(el).gridTemplateColumns : "";
     });
     const layoutTracks = layoutCols.trim().split(/\s+/).filter(Boolean);
-    expect(layoutTracks.length, `layout grid: ${layoutCols}`).toBe(1);
+    expect(layoutTracks.length, `settings grid: ${layoutCols}`).toBe(1);
+    await page.getByRole("tab", { name: "Scopes" }).click();
     // The scopes rack stacks to one column on mobile.
     const rackCols = await page.evaluate(() => {
       const el = document.querySelector(".rack") as HTMLElement | null;

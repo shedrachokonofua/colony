@@ -1275,8 +1275,12 @@ test.describe("desktop console", () => {
     await expect(
       page.locator(".board-title", { hasText: "Operator console" }),
     ).toBeVisible({ timeout: 15000 });
-    // The stored brief renders as Markdown; the editor opens on demand and
-    // still prefills from the stored document.
+    await expect(page.locator(".scope-card").first()).toBeVisible({
+      timeout: 15000,
+    });
+    // Knowledge lives on the Settings tab; the stored brief renders as
+    // Markdown there, and the editor opens on demand prefilled.
+    await page.getByRole("tab", { name: "Settings" }).click();
     await expect(page.locator(".knowledge-preview")).toContainText(
       /no-build lit-html/,
       { timeout: 15000 },
@@ -1286,6 +1290,7 @@ test.describe("desktop console", () => {
       /no-build lit-html/,
       { timeout: 15000 },
     );
+    await page.getByRole("tab", { name: "Scopes" }).click();
     await expect(page.locator(".scope-card").first()).toBeVisible({
       timeout: 15000,
     });
