@@ -22,3 +22,6 @@ logs/
 data/
 test-results/
 playwright-report/
+
+# Vendored console UI deps: script-managed (bun run vendor:ui), never hand-edited.
+/packages/console/vendor/
