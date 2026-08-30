@@ -238,9 +238,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }),
   );
 
-  app.get("/", (c) =>
-    uiResponse("index.html", acceptsGzip(c)) ?? c.notFound(),
-  );
+  app.get("/", (c) => uiResponse("index.html", acceptsGzip(c)) ?? c.notFound());
   app.get("/ui/*", (c) => {
     const rel = c.req.path.replace(/^\/ui\/?/, "");
     if (!rel || rel === "config") return c.notFound();

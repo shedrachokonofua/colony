@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { beforeAll, describe, expect, it } from "bun:test";
-import type { Hono } from "hono";
 import { Store } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
-import { buildApp, uiGzipCache, type Env } from "../src/http.js";
+import { buildApp, uiGzipCache } from "../src/http.js";
 
 const staticDir = dirname(
   createRequire(import.meta.url).resolve("@colony/console/package.json"),
@@ -39,7 +38,7 @@ function fakeCtx(): ColonydContext {
   };
 }
 
-function gzipApp(): Hono<Env> {
+function gzipApp(): ReturnType<typeof buildApp> {
   return buildApp(fakeCtx());
 }
 
@@ -116,6 +115,8 @@ describe("UI gzip serving", () => {
     expect(Buffer.from(await second.arrayBuffer())).toEqual(marker);
 
     // Serving does not grow the cache for an already-compressed path.
-    expect([...uiGzipCache.keys()].filter((k) => k.endsWith("pagination.js"))).toHaveLength(1);
+    expect(
+      [...uiGzipCache.keys()].filter((k) => k.endsWith("pagination.js")),
+    ).toHaveLength(1);
   });
 });
