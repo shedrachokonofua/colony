@@ -122,7 +122,10 @@ describe("poll", () => {
       refreshes += 1;
     };
     const realHidden = Object.getOwnPropertyDescriptor(document, "hidden");
-    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    Object.defineProperty(document, "hidden", {
+      value: true,
+      configurable: true,
+    });
     try {
       await new Promise((resolve) => setTimeout(resolve, 2600));
       expect(refreshes).toBe(0);

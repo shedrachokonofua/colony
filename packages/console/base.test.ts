@@ -60,8 +60,9 @@ describe("ColonyElement", () => {
     const el = document.createElement("div");
     const proto = ColonyElement.prototype;
     expect(proto.createRenderRoot.call(el)).toBe(el);
-    expect(ColonyElement.prototype instanceof (await import("lit")).LitElement)
-      .toBe(true);
+    expect(
+      ColonyElement.prototype instanceof (await import("lit")).LitElement,
+    ).toBe(true);
   });
 
   it("renders into the host element with no shadow root", async () => {
@@ -72,7 +73,8 @@ describe("ColonyElement", () => {
         this.msg = "hello";
       }
       render() {
-        return html`<p class="probe">${this.msg}</p>${nothing}`;
+        return html`<p class="probe">${this.msg}</p>
+          ${nothing}`;
       }
     }
     customElements.define("base-probe-element", Probe);
