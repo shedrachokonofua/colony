@@ -546,10 +546,6 @@ body {
   gap: 0.4rem;
 }
 
-.project-scopes .card-head {
-  margin: 0.4rem 0 0.55rem;
-}
-
 .rack-single {
   grid-template-columns: 1fr;
 }
@@ -680,22 +676,51 @@ body {
   text-decoration: underline;
 }
 
-/* ---------- Project layout + rail ---------- */
+/* ---------- Project tabs + settings ---------- */
 
-.project-layout {
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 0.45rem 0.8rem;
+  font: 600 0.85rem var(--body);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--navy);
+  border-bottom-color: var(--navy);
+}
+
+.project-desc {
+  margin: -0.3rem 0 0;
+  max-width: 60ch;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.project-settings {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 21rem;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
   gap: 1.25rem;
   align-items: start;
 }
 
-.project-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.project-rail .card-body {
+.project-settings .card-body {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
@@ -1774,7 +1799,7 @@ pre.runlog {
 @media (max-width: 900px) {
   .board,
   .sheet-cols,
-  .project-layout {
+  .project-settings {
     grid-template-columns: 1fr;
   }
 

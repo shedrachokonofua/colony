@@ -7,6 +7,10 @@ export function knowledgeText(
   file_count: number | null | undefined,
 ): string;
 
+export function projectDescription(
+  context_doc: string | null | undefined,
+): string;
+
 export function repoSummaryText(
   repositories:
     | Array<{

@@ -61,6 +61,19 @@ function knowledgeText(context_doc, file_count) {
   return `${brief} · ${n} reference file${n === 1 ? "" : "s"}`;
 }
 
+/** First non-heading paragraph of the brief, flattened to one plain line. */
+function projectDescription(context_doc) {
+  const doc = String(context_doc ?? "");
+  for (const block of doc.split(/\n\s*\n/)) {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+    if (lines.length) return lines.join(" ");
+  }
+  return "";
+}
+
 function resolveComposerProject(fixedProject, formValue) {
   const fixed = fixedProject != null ? String(fixedProject).trim() : "";
   if (fixed) return fixed;
@@ -107,6 +120,7 @@ const state = {
   projectsPage: null,
   filesPage: null,
   projectFiles: null,
+  projectTab: "scopes",
   briefOpen: false,
   confirmFile: null,
   replaceFileId: null,
@@ -937,6 +951,12 @@ function setConfirm(kind) {
 
 function toggle(key) {
   state[key] = !state[key];
+  paint();
+}
+
+function setProjectTab(tab) {
+  state.projectTab = tab;
+  state.briefOpen = false;
   paint();
 }
 
@@ -1804,6 +1824,8 @@ function renderProjectPage() {
   const chips = Object.entries(counts).filter(([, n]) => n > 0);
   const base = projectHref(page.project.name);
   const scopes = page.scopes ?? [];
+  const description = projectDescription(page.project.context_doc);
+  const tab = state.projectTab;
   return html`
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
@@ -1817,6 +1839,9 @@ function renderProjectPage() {
           >New scope</a
         >
       </header>
+      ${description
+        ? html`<p class="project-desc">${description}</p>`
+        : nothing}
       <p class="project-meta mono">
         <span
           >${page.project.scope_count}
@@ -1834,32 +1859,48 @@ function renderProjectPage() {
             )}
           </p>`
         : nothing}
-      <div class="project-layout">
-        <section class="project-scopes">
-          <p class="card-head">Scopes</p>
-          ${page.total > 0 && scopes.length === 0
-            ? html`<div class="rack-empty">
-                <p>Past the last page.</p>
-                <a class="btn btn-solid" href=${hrefForPage(base, 1)}
-                  >Back to page 1</a
-                >
-                <a class="btn btn-quiet" href="#/">All projects</a>
-              </div>`
-            : scopes.length
-              ? html`<div class="rack">
-                  ${repeat(scopes, (scope) => scope.id, scopeCard)}
+      <nav class="tabs" role="tablist" aria-label="Project sections">
+        ${[
+          ["scopes", "Scopes"],
+          ["settings", "Settings"],
+        ].map(
+          ([id, label]) =>
+            html`<button
+              class="tab"
+              role="tab"
+              aria-selected=${tab === id}
+              @click=${() => setProjectTab(id)}
+            >
+              ${label}
+            </button>`,
+        )}
+      </nav>
+      ${tab === "settings"
+        ? html`<div class="project-settings">${renderProjectRail()}</div>`
+        : html`<section class="project-scopes">
+            ${page.total > 0 && scopes.length === 0
+              ? html`<div class="rack-empty">
+                  <p>Past the last page.</p>
+                  <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                    >Back to page 1</a
+                  >
+                  <a class="btn btn-quiet" href="#/">All projects</a>
                 </div>`
-              : html`<p class="rack-empty">No scopes in this project yet.</p>`}
-          ${renderPager({
-            base,
-            page: page.page,
-            total: page.total,
-            items: scopes.length,
-            label: "Project scope pages",
-          })}
-        </section>
-        <aside class="project-rail">${renderProjectRail()}</aside>
-      </div>
+              : scopes.length
+                ? html`<div class="rack">
+                    ${repeat(scopes, (scope) => scope.id, scopeCard)}
+                  </div>`
+                : html`<p class="rack-empty">
+                    No scopes in this project yet.
+                  </p>`}
+            ${renderPager({
+              base,
+              page: page.page,
+              total: page.total,
+              items: scopes.length,
+              label: "Project scope pages",
+            })}
+          </section>`}
     </div>
   `;
 }
@@ -3181,6 +3222,7 @@ window.addEventListener("hashchange", () => {
   state.projectsPage = null;
   state.filesPage = null;
   state.projectFiles = null;
+  state.projectTab = "scopes";
   state.briefOpen = false;
   state.confirmFile = null;
   state.replaceFileId = null;

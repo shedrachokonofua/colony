@@ -18,6 +18,19 @@ export function knowledgeText(context_doc, file_count) {
   return `${brief} · ${n} reference file${n === 1 ? "" : "s"}`;
 }
 
+/** First non-heading paragraph of the brief, flattened to one plain line. */
+export function projectDescription(context_doc) {
+  const doc = String(context_doc ?? "");
+  for (const block of doc.split(/\n\s*\n/)) {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"));
+    if (lines.length) return lines.join(" ");
+  }
+  return "";
+}
+
 export function repoSummaryText(repositories) {
   const repos = distinctRepos(repositories);
   if (repos.length === 0) return "No connected repositories";

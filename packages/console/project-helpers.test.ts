@@ -3,6 +3,7 @@ import {
   buildNewProjectPayload,
   distinctRepos,
   knowledgeText,
+  projectDescription,
   repoSummaryText,
   resolveComposerProject,
 } from "./project-helpers.js";
@@ -16,6 +17,29 @@ describe("knowledgeText", () => {
   it("knowledge line: No brief when context_doc empty/null", () => {
     expect(knowledgeText(null, 0)).toBe("No brief · 0 reference files");
     expect(knowledgeText("", 2)).toBe("No brief · 2 reference files");
+  });
+});
+
+describe("projectDescription", () => {
+  it("returns the first paragraph flattened to one line", () => {
+    expect(projectDescription("Line one.\nLine two.\n\nSecond para.")).toBe(
+      "Line one. Line two.",
+    );
+  });
+
+  it("skips heading lines", () => {
+    expect(projectDescription("# Colony\n\nThe actual description.")).toBe(
+      "The actual description.",
+    );
+    expect(projectDescription("# Title\nBody under heading.")).toBe(
+      "Body under heading.",
+    );
+  });
+
+  it("empty for null/blank/heading-only briefs", () => {
+    expect(projectDescription(null)).toBe("");
+    expect(projectDescription("   \n\n")).toBe("");
+    expect(projectDescription("# Only a heading")).toBe("");
   });
 });
 
