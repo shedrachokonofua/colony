@@ -36,17 +36,19 @@ export async function runArchitect(
   const leaseTtlMs =
     options.leaseTtlMs ?? architect.ceilings.timeoutMs + 5 * 60_000;
 
-  // The span must exist first so its trace id can ride on the run row.
-  // Its run_id is a pre-row correlation id: the store mints the row below
-  // and links the two through trace_id.
+  // The span must exist first so its trace id can ride on the run row:
+  // mint the run id before either exists and hand it to both, so the span's
+  // colony.run_id equals the store row id.
+  const runId = crypto.randomUUID();
   const runSpan = startColonyRunSpan({
     scope_id: scope.id,
     task_id: null,
-    run_id: crypto.randomUUID(),
+    run_id: runId,
     kind: "architect",
     model_id: architect.model.id,
   });
   const run = ctx.store.startRun({
+    id: runId,
     scope_id: scope.id,
     kind: "architect",
     lease_ttl_ms: leaseTtlMs,
