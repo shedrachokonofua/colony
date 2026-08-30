@@ -62,7 +62,9 @@ export class ValidationCard extends ColonyElement {
       .pop();
     const evidence = latest ? parseEvidence(latest.evidence_json) : null;
     const results = Array.isArray(evidence?.results) ? evidence.results : [];
-    const failedCount = results.filter((result) => result.exit_code !== 0).length;
+    const failedCount = results.filter(
+      (result) => result.exit_code !== 0,
+    ).length;
     const failed = Boolean(latest && latest.status === "failed");
     const running = Boolean(latest && latest.status === "running");
     const summary =

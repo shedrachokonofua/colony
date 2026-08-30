@@ -122,10 +122,7 @@ export class TaskDrawer extends ColonyElement {
           .join(", ")}`
       : "no dependencies";
     return html`<aside class="drawer" role="dialog" aria-label="Planned task">
-      ${this.#drawerHead(
-        { state: "proposed" },
-        `plan #${index}`,
-      )}
+      ${this.#drawerHead({ state: "proposed" }, `plan #${index}`)}
       <div class="drawer-body">
         <p class="task-title">${planTask.title}</p>
         <p class="task-meta">${deps}</p>
@@ -168,7 +165,9 @@ export class TaskDrawer extends ColonyElement {
       <div class="drawer-body">
         <p class="task-title">${task.title}</p>
         <p class="task-meta">
-          ${task.attempt ? `attempt ${task.attempt}` : "first attempt"}${retryWait}
+          ${task.attempt
+            ? `attempt ${task.attempt}`
+            : "first attempt"}${retryWait}
         </p>
         ${task.blocked_reason
           ? html`<p class="wait-inline">${task.blocked_reason}</p>`
@@ -245,13 +244,14 @@ export class TaskDrawer extends ColonyElement {
             ? nothing
             : html`<p class="note">No runs on this task yet.</p>`}
           ${runs.map(
-            (run) => html`<run-line .run=${run} .config=${this.config}></run-line>
-              ${run === liveRun
-                ? html`<run-feed
-                    .feed=${this.runEvents}
-                    .run=${run}
-                  ></run-feed>`
-                : nothing}`,
+            (run) =>
+              html`<run-line .run=${run} .config=${this.config}></run-line>
+                ${run === liveRun
+                  ? html`<run-feed
+                      .feed=${this.runEvents}
+                      .run=${run}
+                    ></run-feed>`
+                  : nothing}`,
           )}
         </div>
       </div>
@@ -279,12 +279,18 @@ export class TaskDrawer extends ColonyElement {
     const buttons = [];
     if (task.state === "blocked") {
       buttons.push(
-        html`<button class="btn btn-solid" @click=${() => this.#action("unblock")}>
+        html`<button
+          class="btn btn-solid"
+          @click=${() => this.#action("unblock")}
+        >
           Unblock
         </button>`,
       );
     }
-    if (task.state === "mr_open" && this.detail?.scope?.approvals === "manual") {
+    if (
+      task.state === "mr_open" &&
+      this.detail?.scope?.approvals === "manual"
+    ) {
       buttons.push(
         task.merge_approved_sha
           ? html`<button class="btn" disabled>
@@ -308,7 +314,10 @@ export class TaskDrawer extends ColonyElement {
     if (task.state === "running") {
       buttons.push(
         this.confirm === "stop"
-          ? html`<button class="btn btn-solid" @click=${() => this.#action("stop")}>
+          ? html`<button
+              class="btn btn-solid"
+              @click=${() => this.#action("stop")}
+            >
               Confirm stop and retry
             </button>`
           : html`<button
@@ -321,7 +330,10 @@ export class TaskDrawer extends ColonyElement {
     }
     if (task.state === "canceled") {
       buttons.push(
-        html`<button class="btn btn-solid" @click=${() => this.#action("restore")}>
+        html`<button
+          class="btn btn-solid"
+          @click=${() => this.#action("restore")}
+        >
           Restore task
         </button>`,
       );
@@ -340,7 +352,10 @@ export class TaskDrawer extends ColonyElement {
     if (!["merged", "canceled"].includes(task.state)) {
       buttons.push(
         this.confirm === "cancel"
-          ? html`<button class="btn btn-rev" @click=${() => this.#action("cancel")}>
+          ? html`<button
+              class="btn btn-rev"
+              @click=${() => this.#action("cancel")}
+            >
               Confirm permanent cancel
             </button>`
           : html`<button

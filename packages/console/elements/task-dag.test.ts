@@ -85,9 +85,7 @@ describe("task-dag", () => {
     const groups = [...el.querySelectorAll("g.node.dag-node")];
     expect(groups[0].getAttribute("data-state")).toBe("merged");
     expect(groups[0].querySelector(".ntitle")?.textContent).toBe("First");
-    expect(groups[0].querySelector(".nstate")?.textContent).toContain(
-      "merged",
-    );
+    expect(groups[0].querySelector(".nstate")?.textContent).toContain("merged");
     expect(groups[0].querySelector(".nid")?.textContent).toBe("#0");
     expect(groups[1].getAttribute("data-state")).toBe("mr_open");
     expect(groups[1].querySelector(".nid")?.textContent).toBe("#1");
@@ -101,7 +99,11 @@ describe("task-dag", () => {
     expect(groups[1].classList.contains("is-selected")).toBe(true);
     el.selectedTaskId = null;
     await el.updateComplete;
-    expect([...el.querySelectorAll("g.node.dag-node")][1].classList.contains("is-selected")).toBe(false);
+    expect(
+      [...el.querySelectorAll("g.node.dag-node")][1].classList.contains(
+        "is-selected",
+      ),
+    ).toBe(false);
   });
 
   it("labels a node live with its running run's kind and duration", async () => {
@@ -166,7 +168,10 @@ describe("task-dag", () => {
         ],
       }),
     );
-    planning.detail = { ...planning.detail, scope: { ...SCOPE, plan_json: null } };
+    planning.detail = {
+      ...planning.detail,
+      scope: { ...SCOPE, plan_json: null },
+    };
     await planning.updateComplete;
     expect(planning.querySelector("p.note")?.textContent).toContain(
       "Architect is drawing the plan.",
@@ -213,10 +218,7 @@ describe("task-dag selection", () => {
         new window.KeyboardEvent("keydown", { key, bubbles: true }),
       );
     }
-    expect(seen).toEqual([
-      { taskId: "col-x.1" },
-      { taskId: "col-x.1" },
-    ]);
+    expect(seen).toEqual([{ taskId: "col-x.1" }, { taskId: "col-x.1" }]);
     seen.length = 0;
     hit.dispatchEvent(
       new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }),

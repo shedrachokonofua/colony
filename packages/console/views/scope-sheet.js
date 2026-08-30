@@ -173,7 +173,9 @@ export class ScopeSheet extends ColonyElement {
         </div>
       </header>
       ${this.error
-        ? html`<div class="banner banner-error" role="alert">${this.error}</div>`
+        ? html`<div class="banner banner-error" role="alert">
+            ${this.error}
+          </div>`
         : nothing}
       ${wait ? html`<div class="banner banner-wait">${wait}</div>` : nothing}
       <section class="card dag-card" id="draw">
@@ -189,10 +191,7 @@ export class ScopeSheet extends ColonyElement {
       </section>
       <div class="sheet-cols">
         <div class="sheet-col">
-          <goal-card
-            .scope=${scope}
-            .goalOpen=${this.goalOpen}
-          ></goal-card>
+          <goal-card .scope=${scope} .goalOpen=${this.goalOpen}></goal-card>
           <activity-card .audit=${this.audit ?? []}></activity-card>
         </div>
         <div class="sheet-col">

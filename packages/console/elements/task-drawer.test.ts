@@ -15,6 +15,11 @@ sharedDom();
 await import("./task-drawer.js");
 await import("./run-line.js");
 
+const PLANNED = [
+  { title: "Planned first", depends_on: [], spec: "first spec" },
+  { title: "Planned second", depends_on: [0], spec: "second spec" },
+];
+
 const SCOPE = {
   id: "col-x",
   goal: "g",
@@ -63,6 +68,17 @@ function makeDrawer(taskValue, detail = null) {
   el.config = { gitlab_base_url: "https://gitlab.example" };
   document.body.append(el);
   return el;
+}
+
+function makePlanDrawer(taskValue, planTasks = PLANNED) {
+  const planning = {
+    ...SCOPE,
+    status: "planning",
+    plan_json: planTasks
+      ? JSON.stringify({ summary: "s", tasks: planTasks })
+      : null,
+  };
+  return makeDrawer(taskValue, { scope: planning, runs: [] });
 }
 
 afterEach(() => {
@@ -170,7 +186,7 @@ describe("task-drawer structure", () => {
     await el.updateComplete;
     expect([...el.querySelectorAll("run-line")].length).toBe(2);
     expect(el.querySelector("run-feed")?.run.id).toBe("r2");
-expect(el.textContent).not.toContain("No runs on this task yet.");
+    expect(el.textContent).not.toContain("No runs on this task yet.");
   });
 
   it("shows the empty runs note before the task has run", async () => {
@@ -208,12 +224,7 @@ describe("task-drawer events", () => {
 
   it("every action button bubbles colony-task-action with the task id", async () => {
     const cases = [
-      [
-        "blocked",
-        task("col-x.b", { state: "blocked" }),
-        "unblock",
-        "Unblock",
-      ],
+      ["blocked", task("col-x.b", { state: "blocked" }), "unblock", "Unblock"],
       [
         "running",
         task("col-x.r", { state: "running" }),
@@ -271,10 +282,10 @@ describe("task-drawer events", () => {
   });
 
   it("manual merge approval is a two-step confirm then approve-merge", async () => {
-    const el = makeDrawer(
-      task("col-x.m", { state: "mr_open", mr_iid: 4 }),
-      { scope: SCOPE, runs: [] },
-    );
+    const el = makeDrawer(task("col-x.m", { state: "mr_open", mr_iid: 4 }), {
+      scope: SCOPE,
+      runs: [],
+    });
     await el.scope; // no-op await; scope is already set
     const seen = eventsOf(el);
     await el.updateComplete;
@@ -355,7 +366,10 @@ describe("task-drawer events", () => {
     expect(seen).toEqual([
       [
         "colony-feedback",
-        { path: "/tasks/col-x.1/request-changes", body: { feedback: "please redo" } },
+        {
+          path: "/tasks/col-x.1/request-changes",
+          body: { feedback: "please redo" },
+        },
       ],
       [
         "colony-feedback",
@@ -368,6 +382,46 @@ describe("task-drawer events", () => {
     const el = makeDrawer(task("col-x.1", { state: "canceled" }));
     await el.updateComplete;
     expect(el.querySelector("form.feedback")).toBeNull();
+  });
+});
+
+describe("task-drawer proposed-task (plan:<i>) drawer", () => {
+  it("renders the monolith's planned-task drawer for a plan: selection", async () => {
+    const el = makePlanDrawer({ id: "plan:1" });
+    const seen = eventsOf(el);
+    await el.updateComplete;
+    const aside = el.querySelector("aside.drawer");
+    expect(aside?.getAttribute("aria-label")).toBe("Planned task");
+    const chip = el.querySelector(".drawer-head .chip");
+    expect(chip?.textContent).toBe("proposed");
+    expect(chip?.getAttribute("data-kind")).toBe("proposed");
+    expect(el.querySelector(".drawer-id")?.textContent).toBe("plan #1");
+    expect(el.querySelector(".task-title")?.textContent).toBe("Planned second");
+    expect(el.querySelector(".task-meta")?.textContent).toContain("#0");
+    expect(el.querySelector("pre.spec.spec-tall")?.textContent).toBe(
+      "second spec",
+    );
+    expect(el.textContent).toContain("approve or reject the plan");
+    // No task-only chrome on a proposed drawer.
+    expect(el.querySelector("form.feedback")).toBeNull();
+    expect(el.querySelector(".task-actions")).toBeNull();
+    el.querySelector("button.drawer-close").click();
+    expect(seen).toEqual([["colony-close-drawer", {}]]);
+  });
+
+  it("renders nothing when the plan node index or plan is gone", async () => {
+    const el = makePlanDrawer({ id: "plan:9" });
+    await el.updateComplete;
+    expect(el.querySelector("aside.drawer")).toBeNull();
+    const planless = makePlanDrawer({ id: "plan:0" }, null);
+    await planless.updateComplete;
+    expect(planless.querySelector("aside.drawer")).toBeNull();
+  });
+
+  it("says a proposed task with no deps has none", async () => {
+    const el = makePlanDrawer({ id: "plan:0" });
+    await el.updateComplete;
+    expect(el.querySelector(".task-meta")?.textContent).toBe("no dependencies");
   });
 });
 
@@ -446,8 +500,8 @@ describe("task-drawer draft keying (defect 3)", () => {
     await el.updateComplete;
     el.task = task("a");
     await el.updateComplete;
-    expect(
-      el.querySelectorAll("form.feedback textarea")[0].value,
-    ).toBe("typed by hand");
+    expect(el.querySelectorAll("form.feedback textarea")[0].value).toBe(
+      "typed by hand",
+    );
   });
 });

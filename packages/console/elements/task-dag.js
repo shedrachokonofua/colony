@@ -107,12 +107,14 @@ export class TaskDag extends ColonyElement {
             <div class="node-html dag-label" xmlns="http://www.w3.org/1999/xhtml">
               <span class="ntitle">${node.title}</span>
               <span class="nstate"
-                >${node.state}${live
-                  ? ` · ${KIND_LABEL[live.kind] || live.kind}${(() => {
-                      const ms = runDurationMs(live, now);
-                      return ms === null ? "" : ` ${formatDuration(ms)}`;
-                    })()}`
-                  : ""}<span class="nid">#${nodeTail(node)}</span></span
+                >${node.state}${
+                  live
+                    ? ` · ${KIND_LABEL[live.kind] || live.kind}${(() => {
+                        const ms = runDurationMs(live, now);
+                        return ms === null ? "" : ` ${formatDuration(ms)}`;
+                      })()}`
+                    : ""
+                }<span class="nid">#${nodeTail(node)}</span></span
               >
             </div>
           </foreignObject>

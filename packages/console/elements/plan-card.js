@@ -43,7 +43,12 @@ export function planMarkdown(scope, plan) {
     const deps = (task.depends_on || []).length
       ? ` (depends on ${task.depends_on.join(", ")})`
       : "";
-    parts.push("", `## Task ${index}: ${task.title}${deps}`, "", task.spec || "");
+    parts.push(
+      "",
+      `## Task ${index}: ${task.title}${deps}`,
+      "",
+      task.spec || "",
+    );
   });
   return parts.join("\n");
 }
@@ -186,12 +191,13 @@ export class PlanCard extends ColonyElement {
           ? html`<div class="runs runs-inline">
               ${architectRuns.map(
                 (run) =>
-                  html`<run-line .run=${run} .config=${this.config}></run-line>${run.status === "running"
-                    ? html`<run-feed
-                        .feed=${this.scopeRunEvents}
-                        .run=${run}
-                      ></run-feed>`
-                    : nothing}`,
+                  html`<run-line .run=${run} .config=${this.config}></run-line
+                    >${run.status === "running"
+                      ? html`<run-feed
+                          .feed=${this.scopeRunEvents}
+                          .run=${run}
+                        ></run-feed>`
+                      : nothing}`,
               )}
             </div>`
           : nothing}
