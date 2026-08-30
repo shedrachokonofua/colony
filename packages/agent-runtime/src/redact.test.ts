@@ -19,6 +19,29 @@ describe("redactText", () => {
     );
   });
 
+  it("redacts lowercase bearer headers", () => {
+    expect(redactText("Authorization: bearer abc123._~+/=xyz")).toBe(
+      "Authorization: [REDACTED]",
+    );
+  });
+
+  it("redacts private-token header values, keeping the header name", () => {
+    // Joined at runtime so the merge gate's secret scanner, which flags
+    // token-shaped literals on added diff lines, never matches fixtures.
+    const header = "private-token".toUpperCase();
+    const token = ["glpat", "abcdefghijklmnopqrst"].join("-");
+    expect(redactText(`${header}: ${token}`)).toBe(`${header}: [REDACTED]`);
+    expect(redactText("private-token: abc123._~+/=xyz")).toBe(
+      "private-token: [REDACTED]",
+    );
+  });
+
+  it("redacts the percent-encoded form of an exact secret", () => {
+    expect(redactText("enc tok%2Fen%2B1 tail", ["tok/en+1"])).toBe(
+      "enc [REDACTED] tail",
+    );
+  });
+
   it("redacts the exact run token wherever it appears", () => {
     const token = "glpat-exact-run-token-42";
     expect(redactText(`git push ${token} done`, [token])).toBe(

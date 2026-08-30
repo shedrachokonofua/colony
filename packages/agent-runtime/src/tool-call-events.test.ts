@@ -103,8 +103,14 @@ describe("RunEvidenceCollector: tool_call rows", () => {
 
   it("records the artifact via putArtifact and sets result_ref on overflow", async () => {
     const { events, artifacts, sink } = recordingSink();
-    const evidence = new RunEvidenceCollector("run-2", sink, []);
-    const long = "x".repeat(2001);
+    const evidence = new RunEvidenceCollector("run-2", sink, [
+      "exact-run-secret-1",
+    ]);
+    // Secrets past the 2000-char summary cut still reach the artifact: both
+    // a pattern match and the run's exact token must be redacted there.
+    const long =
+      "x".repeat(2000) +
+      " token glpat-zzzsecret123456 end token exact-run-secret-1 end";
     await evidence.toolEnd({
       toolCallId: "big",
       tool: "bash",
@@ -116,9 +122,10 @@ describe("RunEvidenceCollector: tool_call rows", () => {
     expect(artifacts[0]).toMatchObject({
       kind: "tool_result",
       key: "run-2/tool-result-big.txt",
-      bytes: 2001,
-      text: long,
     });
+    expect(artifacts[0].text).not.toContain("glpat-zzzsecret123456");
+    expect(artifacts[0].text).not.toContain("exact-run-secret-1");
+    expect(artifacts[0].text.match(/\[REDACTED\]/g)).toHaveLength(2);
     const detail = toolDetail(events.find((e) => e.event === "tool_call"));
     expect(detail.result_ref).toBe("stored/run-2/tool-result-big.txt");
     expect(detail.result_summary).toHaveLength(2000);
