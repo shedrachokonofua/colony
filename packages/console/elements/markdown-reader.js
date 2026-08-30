@@ -14,6 +14,14 @@ export class MarkdownReader extends ColonyElement {
     this.markdown = "";
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    // The host is the wrapper: .md carries the monolith's typography hooks
+    // (styles.css .md h2, .md p, ...), and innerHTML writes must never wipe
+    // it, so it lives on the element itself.
+    this.classList.add("md");
+  }
+
   updated(changed) {
     super.updated(changed);
     // Render only on an actual markdown change: a poll that re-sends the

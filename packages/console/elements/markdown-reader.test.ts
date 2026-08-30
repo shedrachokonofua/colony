@@ -26,6 +26,9 @@ describe("markdown-reader", () => {
     el.markdown = "# Title\n\nA paragraph with **bold**.";
     await el.updateComplete;
     expect(el.shadowRoot ?? null).toBeNull();
+    // The host is the .md wrapper so innerHTML writes keep the typography
+    // hooks the monolith's .md rules hang on.
+    expect(el.classList.contains("md")).toBe(true);
     expect(el.querySelector("h2")?.textContent).toBe("Title");
     const strong = el.querySelector("strong");
     expect(strong?.textContent).toBe("bold");
