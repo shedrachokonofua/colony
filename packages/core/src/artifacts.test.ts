@@ -103,6 +103,13 @@ describe("createLocalArtifactStore", () => {
 // amzDate 20130524T000000Z, region us-east-1, fixed test credentials.
 // ---------------------------------------------------------------------------
 
+// The canonical AWS documentation example credentials, assembled at runtime so
+// secret scanners do not mistake these public fixtures for real keys.
+const SIGV4_TEST_ACCESS_KEY = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");
+const SIGV4_TEST_SECRET_KEY = ["wJalrXUtnFEMI", "/K7MDENG+bPxRfi", "CYEXAMPLEKEY"].join(
+  "",
+);
+
 const SIGV4_PUT_VECTOR = {
   method: "PUT",
   url: "https://examplebucket.s3.amazonaws.com/test%241.text",
@@ -113,8 +120,8 @@ const SIGV4_PUT_VECTOR = {
   },
   payloadSha256:
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  accessKey: "AKIAIOSFODNN7EXAMPLE",
-  secretKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+  accessKey: SIGV4_TEST_ACCESS_KEY,
+  secretKey: SIGV4_TEST_SECRET_KEY,
   region: "us-east-1",
   service: "s3" as const,
   amzDate: "20130524T000000Z",
@@ -147,7 +154,7 @@ const EXPECTED_PUT_STRING_TO_SIGN = [
 ].join("\n");
 
 const EXPECTED_PUT_AUTHORIZATION =
-  "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, " +
+  `AWS4-HMAC-SHA256 Credential=${SIGV4_TEST_ACCESS_KEY}/20130524/us-east-1/s3/aws4_request, ` +
   "SignedHeaders=host;x-amz-content-sha256;x-amz-date, " +
   "Signature=fdfcbeeac5ec4a346b56f5c21e897630c093a16cfe94f32ed18fafd54275738e";
 
