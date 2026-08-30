@@ -8,6 +8,7 @@ import {
   routeProjectFilesName,
   routeProjectName,
   projectHref,
+  projectFilesHref,
   hashQueryProject,
 } from "./router.js";
 import {
@@ -155,7 +156,6 @@ export class ColonyApp extends ColonyElement {
     this.auth = null;
     this.currentRoute = { name: "list", params: {} };
     this.viewModule = null;
-    this._loadAuth = loadAuth;
     this.#parseRoute();
   }
 
@@ -1067,13 +1067,19 @@ export class ColonyApp extends ColonyElement {
     this.reader = null;
   }
 
+  /**
+   * Pagination targets fixed clean bases (never the current hash, which may
+   * already carry ?page=N): the monolith paged #/ (projects), the project
+   * sheet, and the manage-files page. Page 1 drops the query so Previous
+   * from page 2 navigates back for real.
+   */
   _page(page, surface) {
     const pageNo = Math.max(1, Number(page) || 1);
     const base =
-      surface === "projects"
-        ? location.hash
-        : surface === "project"
-          ? projectHref(this.currentRoute.params.name ?? "")
+      surface === "project"
+        ? projectHref(this.currentRoute.params.name ?? "")
+        : surface === "files"
+          ? projectFilesHref(this.currentRoute.params.name ?? "")
           : "#/";
     this._navigate(hrefForPage(base, pageNo));
   }
@@ -1092,6 +1098,7 @@ export class ColonyApp extends ColonyElement {
         .config=${this.config}
         .auth=${this.auth}
         .oidc=${this.oidc}
+        .detail=${this.detail}
       ></colony-topbar>
       ${this.error
         ? html`<div class="banner banner-error" role="alert">

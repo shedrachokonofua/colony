@@ -1,4 +1,12 @@
 import { ColonyElement, html, nothing } from "./base.js";
+import {
+  projectHref,
+  routeIsManageFiles,
+  routeIsNew,
+  routeIsNewProject,
+  routeProjectName,
+  routeScopeId,
+} from "./router.js";
 
 // Ported from the monolith's BRAND_MARK so the topbar and the sign-in card
 // render the identical three-cell mark.
@@ -31,8 +39,8 @@ export class ColonyTopbar extends ColonyElement {
     config: { state: true },
     auth: { state: true },
     oidc: { state: true },
+    detail: { state: true },
     _draftActor: { state: true },
-    _route: { state: true },
   };
 
   constructor() {
@@ -41,16 +49,15 @@ export class ColonyTopbar extends ColonyElement {
     this.config = null;
     this.auth = null;
     this.oidc = null;
+    this.detail = null;
     this._draftActor = "";
-    this._route = { scopeId: null, projectName: null, isNew: false };
   }
 
-  /**
-   * Breadcrumbs depend on the URL, not on shell props; read the hash at
-   * render time so paint-after-navigation is always current.
-   */
   connectedCallback() {
     super.connectedCallback();
+    // Crumbs read the URL live at render; this listener only forces the
+    // re-render, because the shell's re-render does not change any topbar
+    // property on a pure navigation.
     window.addEventListener("hashchange", this);
   }
 
@@ -60,17 +67,7 @@ export class ColonyTopbar extends ColonyElement {
   }
 
   handleEvent() {
-    this._route = this.#readRoute();
-  }
-
-  #readRoute() {
-    const hash = location.hash.replace(/^#\/?/, "");
-    const project = hash.match(/^project\/([^/?]+)/);
-    return {
-      scopeId: project || /^new/.test(hash) ? null : hash || null,
-      projectName: project ? decodeURIComponent(project[1]) : null,
-      isNew: /^new(?:-project)?(?:$|\?)/.test(hash),
-    };
+    this.requestUpdate();
   }
 
   /** Changes commit on change/Enter (like the monolith's saveActor). */
@@ -92,10 +89,16 @@ export class ColonyTopbar extends ColonyElement {
   }
 
   render() {
-    const { scopeId, projectName, isNew } = this._route;
-    const projectHref = projectName
-      ? `#/project/${encodeURIComponent(projectName)}`
-      : "#/";
+    // The monolith read the route at every render; router.js owns the parsing
+    // so the topbar cannot drift from it.
+    const scopeId = routeScopeId();
+    const projectName = routeProjectName();
+    const isNew = routeIsNew();
+    const isNewProject = routeIsNewProject();
+    const isFiles = routeIsManageFiles();
+    const scopeProject = scopeId
+      ? this.detail?.scope?.project_name || null
+      : null;
     const account = this.oidc
       ? this.auth
         ? html`<div class="sign account">
@@ -132,14 +135,31 @@ export class ColonyTopbar extends ColonyElement {
           ? html`<span class="crumb-sep">/</span>
               <a
                 class="crumb"
-                href=${projectHref}
-                @click=${(e) => this.#navigate(e, projectHref)}
+                href=${projectHref(projectName)}
+                @click=${(e) => this.#navigate(e, projectHref(projectName))}
                 >${projectName}</a
               >`
           : nothing}
         ${isNew
           ? html`<span class="crumb-sep">/</span>
               <span class="crumb">new scope</span>`
+          : nothing}
+        ${isNewProject
+          ? html`<span class="crumb-sep">/</span>
+              <span class="crumb">new project</span>`
+          : nothing}
+        ${isFiles
+          ? html`<span class="crumb-sep">/</span>
+              <span class="crumb">files</span>`
+          : nothing}
+        ${scopeProject
+          ? html`<span class="crumb-sep">/</span>
+              <a
+                class="crumb"
+                href=${projectHref(scopeProject)}
+                @click=${(e) => this.#navigate(e, projectHref(scopeProject))}
+                >${scopeProject}</a
+              >`
           : nothing}
         ${scopeId
           ? html`<span class="crumb-sep">/</span>

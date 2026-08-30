@@ -152,6 +152,53 @@ describe("poll", () => {
 
 // -- hashchange ------------------------------------------------------------
 
+// -- Pagination -------------------------------------------------------------
+
+describe("pagination (_page)", () => {
+  it("pages the projects list from the clean #/ base, not the current hash", () => {
+    // Deep link straight onto page 2, then page forward: the old base was
+    // location.hash, producing the unparseable #/?page=2?page=3.
+    withHash("#/?page=2");
+    const app = makeShell();
+    app._page(3, "projects");
+    expect(globalThis.location.hash).toBe("#/?page=3");
+  });
+
+  it("Previous from page 2 navigates back to the bare list hash", () => {
+    // hrefForPage(base, 1) returns base itself, so the base must differ from
+    // the paginated hash or _navigate no-ops and the pager sticks.
+    withHash("#/?page=2");
+    const app = makeShell();
+    app._page(1, "projects");
+    expect(globalThis.location.hash).toBe("#/");
+  });
+
+  it("pages a project sheet from its projectHref base", () => {
+    withHash("#/project/My%20%26%20Co?page=1");
+    const app = makeShell();
+    app.currentRoute = { name: "project", params: { name: "My & Co" } };
+    app._page(2, "project");
+    expect(globalThis.location.hash).toBe("#/project/My%20%26%20Co?page=2");
+  });
+
+  it("pages the manage-files surface to its own route, not the list", () => {
+    withHash("#/project/Acme/files");
+    const app = makeShell();
+    app.currentRoute = { name: "files", params: { name: "Acme" } };
+    app._page(2, "files");
+    expect(globalThis.location.hash).toBe("#/project/Acme/files?page=2");
+  });
+
+  it("clamps out-of-range page numbers to 1", () => {
+    withHash("#/");
+    const app = makeShell();
+    app._page(0, "projects");
+    expect(globalThis.location.hash).toBe("#/");
+  });
+});
+
+// -- hashchange ------------------------------------------------------------
+
 describe("hashchange handler", () => {
   it("resets transient surface state and re-parses the route", async () => {
     const app = makeShell();
