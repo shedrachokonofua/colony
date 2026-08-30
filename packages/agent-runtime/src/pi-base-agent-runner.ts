@@ -389,7 +389,18 @@ export class PiBaseAgentRunner implements PiRunner {
           buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
           cwd,
         );
-        sandboxTools = buildSandboxTools(handle, cwd);
+        sandboxTools = buildSandboxTools(handle, cwd, {
+          ...(this.options.auditSink
+            ? { auditSink: this.options.auditSink }
+            : {}),
+          runId,
+          // The packet's repo token is a live secret: every exec ledger string
+          // must redact it, not just the well-known token patterns.
+          runToken: packetRepo(request.packet)?.credentials?.token,
+          // Ledger emission is best-effort: a sink that throws must be
+          // visible in the run logs, never swallowed silently.
+          logger: this.options.logger,
+        });
       }
       const deadline =
         Date.now() + (this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);

@@ -28,6 +28,7 @@ import { validateDecompositionEnvelope } from "./envelope-validation.js";
 import type { AgentRunEnvironment, AgentRuntimePacket } from "./adapter.js";
 import type { CredentialBroker } from "./credential-broker.js";
 import { permissiveCredentialBroker } from "./credential-broker.js";
+import type { RunAuditSink } from "./audit-sink.js";
 import type { PiRunRequest } from "./pi-adapter.js";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { WebToolsConfig } from "./web-tools.js";
@@ -79,6 +80,8 @@ export interface PiRunnerBaseOptions {
   readonly runTimeoutMs?: number;
   readonly scratchDir?: string;
   readonly engine?: SandboxEngine;
+  /** Audit sink for run events and the artifact ledger; noop when unset. */
+  readonly auditSink?: RunAuditSink;
 }
 
 export type PiModelResolver = (
