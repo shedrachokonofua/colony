@@ -10,7 +10,6 @@ import { sharedDom } from "./test-dom.js";
 // window must be installed before they load.
 sharedDom();
 
-
 // Replaced module-wide below; restored in afterAll so later suites in the
 // same bun process get the real clock and timers back.
 const RealDate = globalThis.Date;
