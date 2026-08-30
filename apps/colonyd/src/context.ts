@@ -1,5 +1,5 @@
 import type { ColonyConfig } from "@colony/config";
-import type { Store } from "@colony/core";
+import type { ArtifactStore, Store } from "@colony/core";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { ProviderAdapter } from "@colony/provider";
 import type { AgentWiring } from "./agent-runtime.js";
@@ -14,6 +14,8 @@ export interface ColonydContext {
   readonly config: ColonyConfig;
   readonly agents: AgentWiring;
   readonly logger: Logger;
+  /** Durable artifact storage built from config.artifacts. */
+  readonly artifacts: ArtifactStore;
   readonly gateExecutor?: GateExecutor;
   /** Test seam: overrides the credential-free validation command runner. */
   readonly validateExecutor?: ValidateExecutor;

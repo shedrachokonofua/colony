@@ -1,10 +1,11 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { Store } from "@colony/core";
+import { createLocalArtifactStore } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp, uiGzipCache } from "../src/http.js";
 
@@ -21,6 +22,9 @@ function fakeCtx(): ColonydContext {
       hitlMode: "yolo",
     } as ColonydContext["config"],
     agents: {} as ColonydContext["agents"],
+    artifacts: createLocalArtifactStore(
+      mkdtempSync(join(tmpdir(), "colonyd-artifacts-")),
+    ),
     logger: { info() {}, warn() {}, error() {} },
     env: {
       gitlabBaseUrl: "https://gitlab.home.shdr.ch",

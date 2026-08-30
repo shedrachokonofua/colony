@@ -20,6 +20,7 @@ function stubConfig(): ColonyConfig {
     },
     hitlMode: "gated",
     reviewMode: "off",
+    artifacts: { kind: "local", local: { dir: "data/artifacts" } },
     oauthProviderKeys: [],
     forAgent: () => {
       throw new Error("stub forAgent not used");

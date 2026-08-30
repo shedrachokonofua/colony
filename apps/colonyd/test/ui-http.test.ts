@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { SCOPE_STATUSES, type ScopeStatus, Store } from "@colony/core";
+import { createLocalArtifactStore } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import { isInfraError } from "../src/tick.js";
@@ -25,6 +26,9 @@ function fakeCtx(store: Store, traceUiBaseUrl = ""): ColonydContext {
       hitlMode: "yolo",
     } as ColonydContext["config"],
     agents: {} as ColonydContext["agents"],
+    artifacts: createLocalArtifactStore(
+      mkdtempSync(join(tmpdir(), "colonyd-artifacts-")),
+    ),
     logger: { info() {}, warn() {}, error() {} },
     env: {
       gitlabBaseUrl: "https://gitlab.home.shdr.ch",

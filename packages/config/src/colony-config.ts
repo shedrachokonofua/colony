@@ -172,6 +172,52 @@ const reviewSchema = z
 
 export type ReviewMode = "off" | "required";
 
+// ---------------------------------------------------------------------------
+// Artifact store backends.
+// ---------------------------------------------------------------------------
+
+const localArtifactsSchema = z
+  .object({
+    /** Directory (relative to the colonyd cwd) for stored artifact bytes. */
+    dir: z.string().min(1).default("data/artifacts"),
+  })
+  .strict();
+
+export type LocalArtifactsConfig = z.infer<typeof localArtifactsSchema>;
+
+export const s3ArtifactsSchema = z
+  .object({
+    /** S3 endpoint origin, path-style (e.g. "http://minio.home:9000"). */
+    endpoint: z.string().min(1),
+    bucket: z.string().min(1),
+    /** Defaults to "us-east-1" at resolution when omitted. */
+    region: z.string().min(1).optional(),
+    /** Env var carrying the access key; must resolve at boot. */
+    access_key_env: z.string().min(1),
+    /** Env var carrying the secret key; must resolve at boot. */
+    secret_key_env: z.string().min(1),
+    /** Optional key prefix; keys are stored as `<prefix>/<key>`. */
+    prefix: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type S3ArtifactBackendConfig = z.infer<typeof s3ArtifactsSchema>;
+
+/** Post-resolution artifacts config; the discriminator is `kind`. */
+export type ResolvedArtifactsConfig =
+  | { readonly kind: "local"; readonly local: LocalArtifactsConfig }
+  | { readonly kind: "s3"; readonly s3: S3ArtifactBackendConfig };
+
+export const DEFAULT_ARTIFACTS_DIR = "data/artifacts";
+
+const artifactsSchema = z
+  .object({
+    kind: z.enum(["local", "s3"]).default("local"),
+    local: localArtifactsSchema.optional(),
+    s3: s3ArtifactsSchema.optional(),
+  })
+  .strict();
+
 export const colonyConfigFileSchema = z
   .object({
     agent_runtime: z.enum(["fake", "pi"]).default("fake"),
@@ -190,6 +236,7 @@ export const colonyConfigFileSchema = z
     allow_literal_keys: z.boolean().default(false),
     hitl: hitlSchema,
     review: reviewSchema,
+    artifacts: artifactsSchema.optional(),
     providers: z.record(z.string().min(1), providerSchema).default({}),
     agents: z
       .object({
@@ -269,6 +316,8 @@ export interface ColonyConfig {
   };
   readonly hitlMode: HitlMode;
   readonly reviewMode: ReviewMode;
+  /** Where run artifacts live; absent section means local `data/artifacts`. */
+  readonly artifacts: ResolvedArtifactsConfig;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
   readonly oauthProviderKeys: readonly string[];
   forAgent(role: AgentRole): ResolvedAgentConfig;
@@ -310,6 +359,7 @@ export class ColonyConfigError extends Error {
       | "UNRESOLVED_AGENT_PROVIDER"
       | "UNRESOLVED_AGENT_MODEL"
       | "UNRESOLVED_API_KEY"
+      | "UNRESOLVED_ARTIFACT_CREDENTIAL"
       | "LITERAL_KEY_NOT_ALLOWED",
     message: string,
     readonly details?: Readonly<Record<string, unknown>>,
@@ -382,6 +432,8 @@ export function loadColonyConfig(
     .filter(([, p]) => p.auth.kind === "oauth")
     .map(([k]) => k);
 
+  const artifacts = resolveArtifacts(file.artifacts, env);
+
   return {
     agentRuntime,
     sandbox: {
@@ -390,6 +442,7 @@ export function loadColonyConfig(
     },
     hitlMode: file.hitl.mode,
     reviewMode: file.review.mode,
+    artifacts,
     oauthProviderKeys,
     forAgent(role) {
       const agentEntry = file.agents[role];
@@ -494,6 +547,54 @@ function resolveSandboxEngine(
     );
   }
   return parsed.data;
+}
+
+/**
+ * Validate the artifacts section against the resolved kind and the process
+ * env. Local defaults apply when the whole section is absent. S3 sections
+ * must carry the s3 sub-config and both credential env vars must resolve,
+ * mirroring the api_key env resolution: fail at boot, never at first put.
+ */
+function resolveArtifacts(
+  section:
+    | {
+        kind: "local" | "s3";
+        local?: LocalArtifactsConfig;
+        s3?: S3ArtifactBackendConfig;
+      }
+    | undefined,
+  env: Readonly<Record<string, string | undefined>>,
+): ResolvedArtifactsConfig {
+  if (section === undefined) {
+    return { kind: "local", local: { dir: DEFAULT_ARTIFACTS_DIR } };
+  }
+  if (section.kind === "local") {
+    return {
+      kind: "local",
+      local: section.local ?? { dir: DEFAULT_ARTIFACTS_DIR },
+    };
+  }
+  if (!section.s3) {
+    throw new ColonyConfigError(
+      "VALIDATION",
+      "artifacts.kind is 's3' but the artifacts.s3 section is missing",
+      { field: "artifacts.s3" },
+    );
+  }
+  for (const field of ["access_key_env", "secret_key_env"] as const) {
+    const envVar = section.s3[field];
+    if (!env[envVar]) {
+      throw new ColonyConfigError(
+        "UNRESOLVED_ARTIFACT_CREDENTIAL",
+        `artifacts.s3.${field} env var ${envVar} is unset`,
+        { field: `artifacts.s3.${field}`, envVar },
+      );
+    }
+  }
+  return {
+    kind: "s3",
+    s3: { ...section.s3, region: section.s3.region ?? "us-east-1" },
+  };
 }
 
 function readYamlFile(path: string): unknown {

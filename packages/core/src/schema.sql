@@ -108,6 +108,13 @@ CREATE TABLE IF NOT EXISTS run_events (
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 
+CREATE TABLE IF NOT EXISTS run_artifacts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), kind TEXT NOT NULL, key TEXT NOT NULL, ref TEXT NOT NULL, sha256 TEXT, bytes INTEGER, content_type TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
+CREATE TRIGGER IF NOT EXISTS run_artifacts_no_update BEFORE UPDATE ON run_artifacts
+  BEGIN SELECT RAISE(ABORT,'run_artifacts is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS run_artifacts_no_delete BEFORE DELETE ON run_artifacts
+  BEGIN SELECT RAISE(ABORT,'run_artifacts is append-only'); END;
+CREATE INDEX IF NOT EXISTS idx_run_artifacts_run ON run_artifacts(run_id, id);
+
 CREATE TABLE IF NOT EXISTS project_files (
   id TEXT PRIMARY KEY,
   project_name TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
