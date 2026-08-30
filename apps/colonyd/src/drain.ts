@@ -30,6 +30,9 @@ export interface DrainController {
 
 export function createDrainController(deps: DrainDeps): DrainController {
   let draining = false;
+  // Memoized abort+settle sequence: `abortAll` fires at most once per
+  // controller, even if `wait()` is awaited concurrently or re-entered.
+  let aborting: Promise<void> | undefined;
   return {
     beginDrain(): void {
       draining = true;
@@ -42,8 +45,11 @@ export function createDrainController(deps: DrainDeps): DrainController {
         // drained, not aborted.
         if (deps.activeRunIds().length === 0) return "drained";
         if (deps.now() - start >= deps.timeoutMs) {
-          await deps.abortAll(deps.activeRunIds());
-          await deps.awaitSettled();
+          aborting ??= (async () => {
+            await deps.abortAll(deps.activeRunIds());
+            await deps.awaitSettled();
+          })();
+          await aborting;
           return "aborted";
         }
         await deps.sleep(deps.pollMs);
