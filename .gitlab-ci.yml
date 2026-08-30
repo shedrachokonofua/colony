@@ -48,7 +48,9 @@ unit-tests:
   stage: unit
   extends: .with-deps
   script:
-    - nix develop --command bun run test:unit
+    # timeout guards a bun-at-exit hang (leaked handle keeps the process
+    # alive after the summary): fail in 10 minutes, not at the 1h job wall.
+    - nix develop --command bash -c 'timeout -k 15 600 bun run test:unit'
 
 e2e-tests:
   stage: e2e
@@ -56,7 +58,7 @@ e2e-tests:
   variables:
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
   script:
-    - nix develop --command bash -c 'export COLONY_TEST_CHROMIUM_PATH="$(command -v chromium)"; npm test && npm run test:e2e'
+    - nix develop --command bash -c 'export COLONY_TEST_CHROMIUM_PATH="$(command -v chromium)"; timeout -k 15 1800 npm test && timeout -k 15 1800 npm run test:e2e'
 
 build:colonyd:
   stage: build

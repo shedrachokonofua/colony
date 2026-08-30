@@ -104,6 +104,12 @@ providers:
         # model's 262144-token context between prompt and completion.
         max_tokens: 32768
         cost: { input: 0, output: 0 }
+      - id: antigravity/gemini-3.7-flash
+        name: gemini-3.7-flash
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 65535
+        cost: { input: 0, output: 0 }
 
 agents:
   # Budgets sized from observed run durations (12h window, 2026-08-18):

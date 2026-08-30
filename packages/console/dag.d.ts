@@ -30,6 +30,20 @@ export interface DagLayout {
   height: number;
 }
 
+export interface PlanTask {
+  title: string;
+  spec?: string;
+  depends_on?: number[];
+}
+
+export interface Plan {
+  summary?: string;
+  acceptance?: Array<{ description?: string; command?: string }>;
+  tasks: PlanTask[];
+}
+
+export function parsePlan(raw: string | null | undefined): Plan | null;
+
 export function layoutDag(nodes: DagNode[], edges: DagEdge[]): DagLayout;
 
 export function graphModel(detail: DagDetail | null | undefined): {
