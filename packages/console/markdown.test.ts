@@ -1,5 +1,4 @@
 // @ts-nocheck
-import { Window } from "happy-dom";
 import { describe, expect, it } from "bun:test";
 import {
   escapeHtml,
@@ -103,9 +102,6 @@ describe("mdInline", () => {
 });
 
 describe("mdFragment", () => {
-  const win = new Window({ url: "https://console.local/?demo=1#/" });
-  globalThis.document = win.document;
-
   it("parses rendered markdown into detached template content", () => {
     const frag = mdFragment("# Hi\n\n- one");
     expect(frag.querySelectorAll("h2")).toHaveLength(1);
