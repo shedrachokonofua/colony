@@ -44,6 +44,29 @@ agents:
     model: sonnet-4
 `;
 
+/**
+ * Minimal one-model fixture config. Fixture ids keep production model ids
+ * out of tests; `extraLine` adds one mapping to the model entry.
+ */
+function fixtureConfig(modelId: string, extraLine?: string): string {
+  const extra = extraLine ? `\n        ${extraLine}` : "";
+  return `
+agent_runtime: pi
+providers:
+  anthropic:
+    api: anthropic-messages
+    auth:
+      kind: api_key
+      value: ANTHROPIC_API_KEY
+    models:
+      - id: ${modelId}${extra}
+agents:
+  reviewer:
+    provider: anthropic
+    model: ${modelId}
+`;
+}
+
 describe("loadColonyConfig", () => {
   it("resolves an api_key auth via env var", () => {
     const path = tempConfig(VALID_YAML);
@@ -198,6 +221,49 @@ agents:
     } else {
       throw new Error("expected api_key");
     }
+  });
+
+  it("parses max_parallel_runs and exposes it via modelParallelLimit", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(fixtureConfig("model-a", "max_parallel_runs: 2")),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.modelParallelLimit("model-a")).toBe(2);
+    expect(cfg.forAgent("reviewer").model.maxParallelRuns).toBe(2);
+    expect(cfg.forAgent("reviewer").model.id).toBe("model-a");
+  });
+
+  it("rejects non-positive and non-integer max_parallel_runs", () => {
+    for (const value of ["0", "-1", "1.5"]) {
+      let thrown: unknown;
+      try {
+        loadColonyConfig({
+          path: tempConfig(
+            fixtureConfig("model-a", `max_parallel_runs: ${value}`),
+          ),
+          env: { ANTHROPIC_API_KEY: "x" },
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(ColonyConfigError);
+      const err = thrown as ColonyConfigError;
+      expect(err.code).toBe("VALIDATION");
+      const issues = err.details?.issues as { path: PropertyKey[] }[];
+      expect(
+        issues.some((issue) => issue.path.includes("max_parallel_runs")),
+      ).toBe(true);
+    }
+  });
+
+  it("returns null from modelParallelLimit when unset or unknown", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(fixtureConfig("model-a")),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.modelParallelLimit("model-a")).toBeNull();
+    expect(cfg.modelParallelLimit("no-such-model")).toBeNull();
+    expect(cfg.forAgent("reviewer").model.maxParallelRuns).toBeUndefined();
   });
 
   it("rejects api_key when env var is missing", () => {

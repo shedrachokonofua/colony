@@ -96,6 +96,8 @@ const modelSchema = z
     input: z.array(z.enum(["text", "image"])).optional(),
     context_window: z.number().int().positive().optional(),
     max_tokens: z.number().int().positive().optional(),
+    /** Cap on concurrently RUNNING runs for this model entry; absent = unlimited. */
+    max_parallel_runs: z.number().int().positive().optional(),
     cost: modelCostSchema.optional(),
   })
   .strict();
@@ -278,6 +280,7 @@ export interface ResolvedModelConfig {
   readonly reasoning?: boolean;
   readonly contextWindow?: number;
   readonly maxTokens?: number;
+  readonly maxParallelRuns?: number;
   readonly cost?: {
     readonly input: number;
     readonly output: number;
@@ -321,6 +324,11 @@ export interface ColonyConfig {
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
   readonly oauthProviderKeys: readonly string[];
   forAgent(role: AgentRole): ResolvedAgentConfig;
+  /**
+   * Configured cap on concurrently RUNNING runs for a provider model entry
+   * id; null = unlimited/not configured.
+   */
+  modelParallelLimit(modelId: string): number | null;
   /** Lookup-by-key for the admin API; returns null when not present. */
   getProvider(key: string): {
     readonly api: PiApiKind;
@@ -434,6 +442,20 @@ export function loadColonyConfig(
 
   const artifacts = resolveArtifacts(file.artifacts, env);
 
+  // Collected once at load so lookups never re-scan the file shape. First
+  // entry wins when several providers declare the same model id.
+  const modelParallelLimits = new Map<string, number>();
+  for (const provider of Object.values(file.providers)) {
+    for (const model of provider.models) {
+      if (
+        model.max_parallel_runs !== undefined &&
+        !modelParallelLimits.has(model.id)
+      ) {
+        modelParallelLimits.set(model.id, model.max_parallel_runs);
+      }
+    }
+  }
+
   return {
     agentRuntime,
     sandbox: {
@@ -502,6 +524,9 @@ export function loadColonyConfig(
           maxTurns: agentEntry.max_turns ?? defaults.maxTurns,
         },
       };
+    },
+    modelParallelLimit(modelId) {
+      return modelParallelLimits.get(modelId) ?? null;
     },
     getProvider(key) {
       const provider = file.providers[key];
@@ -642,6 +667,7 @@ function toResolvedModel(
     reasoning: model.reasoning,
     contextWindow: model.context_window,
     maxTokens: model.max_tokens,
+    maxParallelRuns: model.max_parallel_runs ?? undefined,
     cost: model.cost
       ? {
           input: model.cost.input,

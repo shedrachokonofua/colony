@@ -26,6 +26,7 @@ function stubConfig(): ColonyConfig {
       throw new Error("stub forAgent not used");
     },
     getProvider: () => null,
+    modelParallelLimit: () => null,
   };
 }
 
