@@ -77,7 +77,13 @@ describe("createRunAuditSink", () => {
     const sink = createRunAuditSink(store, artifacts);
     // A key escaping the backend root is rejected before any bytes move.
     await expect(
-      sink.putArtifact(runId, "tool_output", "../escape.txt", new Uint8Array(4), "text/plain"),
+      sink.putArtifact(
+        runId,
+        "tool_output",
+        "../escape.txt",
+        new Uint8Array(4),
+        "text/plain",
+      ),
     ).resolves.toBeUndefined();
     expect(store.listRunArtifacts(runId).total).toBe(0);
   });
@@ -86,7 +92,13 @@ describe("createRunAuditSink", () => {
     const { artifacts } = wiredSink();
     const sink = createRunAuditSink(artifacts as never, artifacts);
     await expect(
-      sink.putArtifact("missing-run", "tool_output", "k.txt", new Uint8Array(4), "text/plain"),
+      sink.putArtifact(
+        "missing-run",
+        "tool_output",
+        "k.txt",
+        new Uint8Array(4),
+        "text/plain",
+      ),
     ).resolves.toBeUndefined();
   });
 
@@ -132,9 +144,17 @@ describe("createRunAuditSink", () => {
   });
 
   it("noopRunAuditSink is inert", async () => {
-    expect(() => noopRunAuditSink.appendEvent("r", "command", {})).not.toThrow();
+    expect(() =>
+      noopRunAuditSink.appendEvent("r", "command", {}),
+    ).not.toThrow();
     await expect(
-      noopRunAuditSink.putArtifact("r", "k", "k", new Uint8Array(0), "text/plain"),
+      noopRunAuditSink.putArtifact(
+        "r",
+        "k",
+        "k",
+        new Uint8Array(0),
+        "text/plain",
+      ),
     ).resolves.toBeUndefined();
     expect(() =>
       noopRunAuditSink.recordArtifactRef("r", "k", "k", "r"),
