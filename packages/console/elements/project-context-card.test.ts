@@ -155,6 +155,77 @@ describe("project-context-card editor", () => {
   });
 });
 
+describe("project-context-card files and manage-files link", () => {
+  const FILES = [
+    { filename: "notes.md", media_type: "text/markdown", byte_size: 120 },
+    { filename: "spec.txt", media_type: "text/plain", byte_size: 40 },
+  ];
+
+  it("lists each file with its name, media type, and size", async () => {
+    const el = makeCard({ files: FILES });
+    await el.updateComplete;
+    const rows = el.querySelectorAll(".card-body .file-list li");
+    expect(rows.length).toBe(2);
+    expect(rows[0].textContent).toContain("notes.md");
+    expect(rows[0].textContent).toContain("text/markdown");
+    expect(rows[0].textContent).toContain("120 B");
+  });
+
+  it("omits the file list when the project has none", async () => {
+    const el = makeCard({ files: [] });
+    await el.updateComplete;
+    expect(el.querySelector(".file-list")).toBeNull();
+  });
+
+  it("links to the manage-files route — the only path to that surface", async () => {
+    const el = makeCard();
+    await el.updateComplete;
+    const link = [...el.querySelectorAll(".card-body a")].find((a) =>
+      a.textContent.trim() === "Manage files",
+    );
+    expect(link.getAttribute("href")).toBe("#/project/Operator%20console/files");
+  });
+
+  it("the Manage files link bubbles colony-navigate and survives editing", async () => {
+    for (const editing of [false, true]) {
+      const el = makeCard({ editing });
+      const seen = [];
+      el.addEventListener("colony-navigate", (event) =>
+        seen.push(event.detail),
+      );
+      await el.updateComplete;
+      const link = [...el.querySelectorAll(".card-body a")].find(
+        (a) => a.textContent.trim() === "Manage files",
+      );
+      link.click();
+      expect(seen).toEqual([
+        { href: "#/project/Operator%20console/files" },
+      ]);
+    }
+  });
+});
+
+describe("project-context-card save status", () => {
+  it("acknowledges a save in flight and a completed one", async () => {
+    const saving = makeCard({ editing: true, saveStatus: "saving" });
+    await saving.updateComplete;
+    expect(saving.querySelector(".pc-status")?.textContent).toBe("Saving…");
+    expect(saving.querySelector(".pc-status.is-saved")).toBeNull();
+
+    const saved = makeCard({ editing: true, saveStatus: "saved" });
+    await saved.updateComplete;
+    expect(saved.querySelector(".pc-status.is-saved")?.textContent).toBe(
+      "Saved.",
+    );
+  });
+
+  it("shows no status before a save is attempted", async () => {
+    const el = makeCard({ editing: true, saveStatus: null });
+    await el.updateComplete;
+    expect(el.querySelector(".pc-status")).toBeNull();
+  });
+});
+
 describe("project-context-card draft vs poll (defect 1)", () => {
   it("an unfocused editor adopts a changed contextDoc from the poll", async () => {
     const el = makeCard({ contextDoc: "orig", editing: true });
