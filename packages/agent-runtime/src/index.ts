@@ -8,6 +8,13 @@ export * from "./runtime-bindings.js";
 export * from "./skill-registry.js";
 export * from "./tool-materialization.js";
 
+export {
+  createRunAuditSink,
+  noopRunAuditSink,
+  type RunAuditSink,
+} from "./audit-sink.js";
+export { redactText, redactValue } from "./redact.js";
+
 // Re-export pi-runner-common helpers needed by the run paths. The large
 // LLM-side dependencies stay behind the per-runner subpath modules.
 export {

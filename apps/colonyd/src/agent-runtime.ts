@@ -14,6 +14,7 @@ import type {
 import type { Store } from "@colony/core";
 import type { TaskCostModelV1 } from "@colony/schemas";
 import type { SandboxEngine } from "@colony/sandbox";
+import type { RunAuditSink } from "@colony/agent-runtime";
 
 /**
  * Per-session architect size gate source: colonyd rebuilds the offline cost
@@ -108,6 +109,7 @@ export async function createAgentWiring(
   config: ColonyConfig,
   onRunEvent?: RunEventSink,
   taskCost?: AgentTaskCostSource,
+  auditSink?: RunAuditSink,
 ): Promise<AgentWiring> {
   if (config.agentRuntime === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
@@ -159,6 +161,7 @@ export async function createAgentWiring(
         runTimeoutMs: reviewerConfig.ceilings.timeoutMs,
         thinkingLevel: reviewerConfig.thinkingLevel,
         logger: reviewerLogger,
+        ...(auditSink ? { auditSink } : {}),
         engine,
         ...(webTools ? { webTools } : {}),
       }),
@@ -180,6 +183,7 @@ export async function createAgentWiring(
         runTimeoutMs: architectConfig.ceilings.timeoutMs,
         thinkingLevel: architectConfig.thinkingLevel,
         logger: architectLogger,
+        ...(auditSink ? { auditSink } : {}),
         engine,
         critique: ARCHITECT_CRITIQUE,
         ...(taskCost ? { architectSizeGate: taskCost.provider } : {}),
@@ -199,6 +203,7 @@ export async function createAgentWiring(
         runTimeoutMs: developerConfig.ceilings.timeoutMs,
         thinkingLevel: developerConfig.thinkingLevel,
         logger: developerLogger,
+        ...(auditSink ? { auditSink } : {}),
         engine,
         ...(webTools ? { webTools } : {}),
       }),

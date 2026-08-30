@@ -10,6 +10,8 @@ import {
   type LsOperations,
 } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import { DEFAULT_EXEC_TIMEOUT_MS, type SandboxHandle } from "@colony/sandbox";
+import type { RunAuditSink } from "./audit-sink.js";
+import { redactText } from "./redact.js";
 
 /**
  * Sandbox-delegated tools for agent runs. `bash`, `find`, and `ls` keep the SDK's
@@ -37,7 +39,15 @@ const MAX_TOOL_OUTPUT_BYTES = 128 * 1024;
 interface ExecCapture {
   readonly output: Buffer;
   readonly exitCode: number | null;
+  readonly stdoutBytes: number;
+  readonly stderrBytes: number;
 }
+
+/** ANSI escape / control sequences, stripped from the ledger tail. */
+const ANSI_PATTERN = /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u001B[PX^_].*?\u001B\\|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+/** Only the human-readable tail and strings in the ledger are redacted. */
+const LEDGER_TAIL_CHARS = 1000;
 
 /**
  * Relativize an absolute path against the run workspace so the handle resolves
@@ -48,7 +58,7 @@ function toWorkspaceRelative(base: string, absolutePath: string): string {
   return rel === "" ? "." : rel;
 }
 
-/** Run a command through the handle and capture stdout/stderr as one buffer. */
+/** Run a command through the handle and capture stdout/stderr plus byte counts. */
 async function execCapture(
   handle: SandboxHandle,
   command: string,
@@ -57,21 +67,80 @@ async function execCapture(
     readonly env?: NodeJS.ProcessEnv;
     readonly timeoutMs?: number;
     readonly signal?: AbortSignal;
+    readonly ledger?: ExecLedger;
+    /** Exact secrets redacted from ledger strings; regex patterns always apply. */
+    readonly secrets?: readonly string[];
   } = {},
 ): Promise<ExecCapture> {
-  const chunks: Buffer[] = [];
-  const output = await runWithSignal(
-    handle,
-    {
-      command,
-      cwd: options.cwd,
-      env: toEnvRecord(options.env),
-      timeoutMs: options.timeoutMs,
-    },
-    options.signal,
-    (data) => chunks.push(Buffer.from(data)),
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  const startedAt = Date.now();
+  try {
+    const output = await runWithSignal(
+      handle,
+      {
+        command,
+        cwd: options.cwd,
+        env: toEnvRecord(options.env),
+        timeoutMs: options.timeoutMs,
+      },
+      options.signal,
+      (data, kind) => {
+        const buffer = Buffer.from(data);
+        if (kind === "stderr") stderrChunks.push(buffer);
+        else stdoutChunks.push(buffer);
+      },
+    );
+    const stdout = Buffer.concat(stdoutChunks);
+    const stderr = Buffer.concat(stderrChunks);
+    options.ledger?.command({
+      command: redactText(command, options.secrets),
+      cwd: options.cwd === undefined ? undefined : redactText(options.cwd, options.secrets),
+      exit_code: output.exitCode,
+      duration_ms: Date.now() - startedAt,
+      stdout_bytes: stdout.byteLength,
+      stderr_bytes: stderr.byteLength,
+      truncated_tail: outputTail(stdout, stderr, options.secrets ?? []),
+    });
+    return {
+      output: Buffer.concat([stdout, stderr]),
+      exitCode: output.exitCode,
+      stdoutBytes: stdout.byteLength,
+      stderrBytes: stderr.byteLength,
+    };
+  } catch {
+    // Abort/timeout path: no completed exec, nothing to ledger.
+    return { output: Buffer.alloc(0), exitCode: null, stdoutBytes: 0, stderrBytes: 0 };
+  }
+}
+
+/**
+ * Last `LEDGER_TAIL_CHARS` chars of combined stdout+stderr, ANSI-stripped and
+ * redacted. Byte counts above are the raw captured lengths; only this
+ * human-readable tail is cleaned.
+ */
+function outputTail(stdout: Buffer, stderr: Buffer, secrets: readonly string[]): string {
+  const combined = stripAnsi(
+    `${stdout.toString("utf8")}${stderr.toString("utf8")}`,
   );
-  return { output: Buffer.concat(chunks), exitCode: output.exitCode };
+  return redactText(combined.slice(-LEDGER_TAIL_CHARS), secrets);
+}
+
+function stripAnsi(text: string): string {
+  return text.replaceAll(ANSI_PATTERN, "");
+}
+
+/** One `command` run event per sandbox exec, emitted at the exec boundary. */
+interface ExecLedger {
+  readonly command: (detail: {
+    command: string;
+    cwd: string | undefined;
+    exit_code: number | null;
+    duration_ms: number;
+    stdout_bytes: number;
+    stderr_bytes: number;
+    truncated_tail: string;
+  }) => void;
 }
 
 function toEnvRecord(
@@ -100,7 +169,7 @@ function runWithSignal(
     timeoutMs?: number;
   },
   signal: AbortSignal | undefined,
-  onData: (data: string) => void,
+  onData: (data: string, kind: "stdout" | "stderr") => void,
 ): Promise<{ exitCode: number | null; timedOut?: boolean }> {
   if (signal?.aborted) {
     return Promise.reject(new Error("aborted"));
@@ -108,7 +177,7 @@ function runWithSignal(
   const exec = () =>
     handle.exec(request, (event) => {
       if (event.kind === "stdout" || event.kind === "stderr") {
-        onData(event.data);
+        onData(event.data, event.kind);
       }
     });
   if (!signal) return exec();
@@ -140,8 +209,11 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function bashOperations(handle: SandboxHandle, base: string): BashOperations {
-  return {
+function bashOperations(
+  handle: SandboxHandle,
+  base: string,
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
+): BashOperations {  return {
     exec: async (command, cwd, { onData, signal, timeout, env }) => {
       const result = await runWithSignal(
         handle,
@@ -152,7 +224,7 @@ function bashOperations(handle: SandboxHandle, base: string): BashOperations {
           timeoutMs: timeout !== undefined ? timeout * 1000 : undefined,
         },
         signal,
-        (data) => onData(Buffer.from(data)),
+        (data, kind) => onData(Buffer.from(data), kind),
       );
       if (result.timedOut) {
         // The shim's `timeout:<seconds>` contract renders as "Command timed
@@ -172,8 +244,11 @@ function bashOperations(handle: SandboxHandle, base: string): BashOperations {
  * Mirrors the SDK tool's shape (path plus optional window) because the role
  * prompts tell agents to read before editing.
  */
-function sandboxReadTool(handle: SandboxHandle, base: string): ToolDefinition {
-  const parameters = Type.Object(
+function sandboxReadTool(
+  handle: SandboxHandle,
+  base: string,
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
+): ToolDefinition {  const parameters = Type.Object(
     {
       path: Type.String({
         description: "Workspace-relative path to read.",
@@ -236,8 +311,11 @@ function sandboxReadTool(handle: SandboxHandle, base: string): ToolDefinition {
  * The SDK's write tool rejects an operations seam outright ("writes the local
  * filesystem natively"), so a sandboxed run needs Colony's own.
  */
-function sandboxWriteTool(handle: SandboxHandle, base: string): ToolDefinition {
-  const parameters = Type.Object(
+function sandboxWriteTool(
+  handle: SandboxHandle,
+  base: string,
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
+): ToolDefinition {  const parameters = Type.Object(
     {
       path: Type.String({ description: "Workspace-relative path to write." }),
       content: Type.String({ description: "Full file content." }),
@@ -261,6 +339,7 @@ function sandboxWriteTool(handle: SandboxHandle, base: string): ToolDefinition {
       if (parent && parent !== "." && parent !== "/") {
         const { exitCode } = await execCapture(
           handle,
+          execOptions,
           `mkdir -p ${shellQuote(parent)}`,
         );
         if (exitCode !== 0) {
@@ -289,8 +368,11 @@ function sandboxWriteTool(handle: SandboxHandle, base: string): ToolDefinition {
  * `oldText` must appear exactly once, so an ambiguous edit fails loudly instead
  * of silently patching the wrong occurrence.
  */
-function sandboxEditTool(handle: SandboxHandle, base: string): ToolDefinition {
-  const parameters = Type.Object(
+function sandboxEditTool(
+  handle: SandboxHandle,
+  base: string,
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
+): ToolDefinition {  const parameters = Type.Object(
     {
       path: Type.String({ description: "Workspace-relative path to edit." }),
       edits: Type.Array(
@@ -352,12 +434,16 @@ function sandboxEditTool(handle: SandboxHandle, base: string): ToolDefinition {
   };
 }
 
-function findOperations(handle: SandboxHandle, base: string): FindOperations {
-  const rel = (p: string) => toWorkspaceRelative(base, p);
+function findOperations(
+  handle: SandboxHandle,
+  base: string,
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
+): FindOperations {  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     exists: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
+        execOptions,
         `test -e ${shellQuote(rel(absolutePath))}`,
       );
       return exitCode === 0;
@@ -366,6 +452,7 @@ function findOperations(handle: SandboxHandle, base: string): FindOperations {
       const relSearch = rel(searchPath);
       const { output, exitCode } = await execCapture(
         handle,
+        execOptions,
         `find ${shellQuote(relSearch)} -type f`,
       );
       if (exitCode !== 0) return [];
@@ -391,8 +478,11 @@ function findOperations(handle: SandboxHandle, base: string): FindOperations {
  * runs ripgrep on the local filesystem with no seam to redirect, so Colony runs
  * the search in the workspace instead.
  */
-function sandboxGrepTool(handle: SandboxHandle, base: string): ToolDefinition {
-  const parameters = Type.Object(
+function sandboxGrepTool(
+  handle: SandboxHandle,
+  base: string,
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
+): ToolDefinition {  const parameters = Type.Object(
     {
       pattern: Type.String({ description: "Extended regular expression." }),
       path: Type.Optional(
@@ -425,6 +515,7 @@ function sandboxGrepTool(handle: SandboxHandle, base: string): ToolDefinition {
       const flags = params.case_sensitive === false ? "-rInE" : "-rnIE";
       const { output, exitCode } = await execCapture(
         handle,
+        execOptions,
         `grep ${flags} -- ${shellQuote(params.pattern)} ${shellQuote(target)} || true`,
       );
       const text = output.subarray(0, MAX_TOOL_OUTPUT_BYTES).toString("utf8");
@@ -446,12 +537,16 @@ function sandboxGrepTool(handle: SandboxHandle, base: string): ToolDefinition {
   };
 }
 
-function lsOperations(handle: SandboxHandle, base: string): LsOperations {
-  const rel = (p: string) => toWorkspaceRelative(base, p);
+function lsOperations(
+  handle: SandboxHandle,
+  base: string,
+  execOptions: { ledger?: ExecLedger; secrets?: readonly string[] },
+): LsOperations {  const rel = (p: string) => toWorkspaceRelative(base, p);
   return {
     exists: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
+        execOptions,
         `test -e ${shellQuote(rel(absolutePath))}`,
       );
       return exitCode === 0;
@@ -459,6 +554,7 @@ function lsOperations(handle: SandboxHandle, base: string): LsOperations {
     stat: async (absolutePath) => {
       const { exitCode } = await execCapture(
         handle,
+        execOptions,
         `test -d ${shellQuote(rel(absolutePath))}`,
       );
       return { isDirectory: () => exitCode === 0 };
@@ -466,6 +562,7 @@ function lsOperations(handle: SandboxHandle, base: string): LsOperations {
     readdir: async (absolutePath) => {
       const { output, exitCode } = await execCapture(
         handle,
+        execOptions,
         `ls -1 ${shellQuote(rel(absolutePath))}`,
       );
       if (exitCode !== 0) {
@@ -522,18 +619,41 @@ function globToRegExp(glob: string): RegExp {
  * `customTools` under `restrictToolNames`. The SDK-backed tools keep their
  * canonical schemas via the `operations` seam; `read` and `grep` are Colony's,
  * because the SDK offers no seam for them.
+ *
+ * `audit` receives one `command` run event per exec regardless of which tool
+ * triggered it (independent of SDK tool semantics); `runToken` is redacted
+ * from the ledger alongside the well-known token patterns.
  */
 export function buildSandboxTools(
   handle: SandboxHandle,
   cwd: string,
+  audit?: {
+    readonly auditSink?: RunAuditSink;
+    readonly runId?: string;
+    readonly runToken?: string;
+  },
 ): readonly ToolDefinition[] {
+  const ledger: ExecLedger | undefined =
+    audit?.auditSink && audit.runId
+      ? {
+          command: (detail) => {
+            try {
+              audit.auditSink!.appendEvent(audit.runId!, "command", detail);
+            } catch {
+              // The ledger must never break an exec.
+            }
+          },
+        }
+      : undefined;
+  const secrets = audit?.runToken ? [audit.runToken] : [];
+  const execOptions = { ledger, secrets };
   return [
-    createBashTool(cwd, { operations: bashOperations(handle, cwd) }),
-    createFindTool(cwd, { operations: findOperations(handle, cwd) }),
-    createLsTool(cwd, { operations: lsOperations(handle, cwd) }),
-    sandboxReadTool(handle, cwd),
-    sandboxGrepTool(handle, cwd),
-    sandboxWriteTool(handle, cwd),
-    sandboxEditTool(handle, cwd),
+    createBashTool(cwd, { operations: bashOperations(handle, cwd, execOptions) }),
+    createFindTool(cwd, { operations: findOperations(handle, cwd, execOptions) }),
+    createLsTool(cwd, { operations: lsOperations(handle, cwd, execOptions) }),
+    sandboxReadTool(handle, cwd, execOptions),
+    sandboxGrepTool(handle, cwd, execOptions),
+    sandboxWriteTool(handle, cwd, execOptions),
+    sandboxEditTool(handle, cwd, execOptions),
   ];
 }
