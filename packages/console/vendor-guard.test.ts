@@ -28,7 +28,7 @@ function walkJsFiles(dir: string): string[] {
   return out;
 }
 
-/** Mirrors the specifier grammar the vendor guard's sibling tests use. */
+/** Double- or single-quoted specifiers: console sources are hand-written. */
 const SPECIFIER =
   /(?:^|[^\w$.])(?:import|export)\b[\s\S]*?\bfrom\s*["']([^"']+)["']|(?:^|[^\w$.])import\s*["']([^"']+)["']/g;
 
