@@ -1,7 +1,8 @@
 // <task-drawer>: the operator's per-task panel, ported from the monolith's
-// renderDrawer (app.js). Property-down: task, scope, runEvents, and the
-// config needed for trace links. Events-up: colony-task-action,
-// colony-close-drawer, colony-open-reader, colony-feedback.
+// renderDrawer and renderPlanTaskDrawer (app.js). Property-down: task,
+// scope, detail, runEvents, and config. Events-up: colony-task-action,
+// colony-close-drawer, colony-open-reader, colony-feedback. A task id of
+// `plan:<i>` selects the monolith's proposed-task drawer instead.
 //
 // Amend/feedback drafts are keyed by task id in a Map (defect 3): switching
 // away stashes the texts under the old task's id, opening another task
@@ -41,7 +42,7 @@ export class TaskDrawer extends ColonyElement {
     _feedbackDraft: { state: true },
     _drafts: { state: true },
     // The confirm kind the shell armed (merge/stop/cancel) renders the
-    // drawer's two-step buttons; see taskActionButtons.
+    // drawer's two-step buttons; see #actionButtons.
     confirm: { type: String },
   };
 
