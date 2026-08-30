@@ -43,11 +43,14 @@ export class RunFeed extends ColonyElement {
     }
     return html`<ul class="runlog">
       ${feed.rows.slice(-40).map(
-        (row) => html`<li>
-          <span class="when">${rel(row.at)}</span>
-          <span class="ev">${row.event}</span>
-          ${rowDetail(row) ? html`<span class="evd">${rowDetail(row)}</span>` : nothing}
-        </li>`,
+        (row) =>
+          html`<li>
+            <span class="when">${rel(row.at)}</span>
+            <span class="ev">${row.event}</span>
+            ${rowDetail(row)
+              ? html`<span class="evd">${rowDetail(row)}</span>`
+              : nothing}
+          </li>`,
       )}
     </ul>`;
   }

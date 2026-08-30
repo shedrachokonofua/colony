@@ -5,7 +5,10 @@
 import { ColonyElement, html, nothing } from "../base.js";
 import { KIND_LABEL } from "../kind-label.js";
 import { traceHref } from "../trace-link.js";
-import { costPredictionLines, parseCostPrediction } from "../cost-prediction.js";
+import {
+  costPredictionLines,
+  parseCostPrediction,
+} from "../cost-prediction.js";
 import "./run-duration.js";
 
 function shortSha(sha) {
@@ -60,9 +63,7 @@ export class RunLine extends ColonyElement {
       <i></i>
       <div>
         <p class="kind">
-          <span class="kind-label"
-            >${KIND_LABEL[run.kind] || run.kind}</span
-          >
+          <span class="kind-label">${KIND_LABEL[run.kind] || run.kind}</span>
           ${run.status}${verdict}
         </p>
         <p class="meta">
@@ -73,7 +74,9 @@ export class RunLine extends ColonyElement {
             .finishedAt=${run.finished_at ?? null}
           ></run-duration>
           ${predictionLine
-            ? html`<span class="cost-prediction-line"> · ${predictionLine}</span>`
+            ? html`<span class="cost-prediction-line">
+                · ${predictionLine}</span
+              >`
             : nothing}${run.error ? ` · ${run.error}` : ""}
         </p>
         ${traceUrl
