@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "bun:test";
-import type { Run, RunEvent } from "@colony/core";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Store, type Run, type RunEvent } from "@colony/core";
 import {
   collectRunModelIds,
   formatColonyModelsTrailer,
@@ -20,6 +20,16 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+let store: Store;
+
+beforeEach(() => {
+  store = new Store(join(tempDir("colony-prov-"), "test.db"));
+});
+
+afterEach(() => {
+  store.close();
 });
 
 function tempDir(prefix: string): string {
@@ -190,6 +200,35 @@ describe("collectRunModelIds", () => {
     const runs = [run("r1", null)];
     const ids = collectRunModelIds(runs, () => []);
     expect(ids).toEqual([]);
+  });
+
+  it("reads early fallback events beyond the feed page window from a real store", () => {
+    const scope = store.createScope({
+      goal: "prov busy run",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    const runRow = store.startRun({
+      scope_id: scope.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+      model_id: "fallback-b",
+    });
+    // The fallback event predates 249 tool_call rows: listRunEvents'
+    // newest-200 window hides it, obscuring model-a from provenance.
+    store.appendRunEvent(runRow.id, "pi_model_fallback", {
+      from: "model-a",
+      to: "fallback-b",
+    });
+    for (let i = 1; i <= 249; i++) {
+      store.appendRunEvent(runRow.id, "tool_call", { seq: i });
+    }
+
+    const ids = collectRunModelIds([runRow], (rid) =>
+      store.listRunEventsByName(rid, "pi_model_fallback"),
+    );
+    // fallback-b (run.model_id + event.to), model-a (event.from)
+    expect(ids).toEqual(["fallback-b", "model-a"]);
   });
 });
 
