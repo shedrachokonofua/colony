@@ -14,7 +14,7 @@
     "vendor:ui": "bun run scripts/vendor-ui.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test apps packages scripts",
-    "test:unit": "bun test apps packages scripts --path-ignore-patterns='**/*.integration.test.ts'",
+    "test:unit": "git ls-files 'apps/**/*.test.ts' 'packages/**/*.test.ts' 'scripts/*.test.ts' | grep -v '\\.integration\\.test\\.ts$' | xargs bun test",
     "test:e2e": "playwright test",
     "lint": "prettier --check .",
     "format": "prettier --write ."
