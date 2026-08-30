@@ -611,6 +611,47 @@ describe("Store", () => {
     expect(store.getRun(finished.id)!.model_id).toBe("m2");
   });
 
+  it("counts active runs by model", () => {
+    const scopeId = seededScope();
+    const start = (modelId?: string) =>
+      store.startRun({
+        scope_id: scopeId,
+        kind: "implement",
+        lease_ttl_ms: 1000,
+        ...(modelId === undefined ? {} : { model_id: modelId }),
+      });
+
+    start("m1");
+    start("m1");
+    start("m2");
+    start();
+
+    expect(store.activeRunCountByModel("m1")).toBe(2);
+    expect(store.activeRunCountByModel("m2")).toBe(1);
+    expect(store.activeRunCountByModel("m3")).toBe(0);
+
+    const [m1First] = store
+      .activeRuns("implement")
+      .filter((r) => r.model_id === "m1");
+    store.finishRun(m1First!.id, "succeeded", {});
+    expect(store.activeRunCountByModel("m1")).toBe(1);
+  });
+
+  it("activeRunCountByModel follows setRunModel fallback rewrites", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 1000,
+      model_id: "m1",
+    });
+
+    expect(store.activeRunCountByModel("m1")).toBe(1);
+    store.setRunModel(run.id, "m2");
+    expect(store.activeRunCountByModel("m1")).toBe(0);
+    expect(store.activeRunCountByModel("m2")).toBe(1);
+  });
+
   it("counts active runs by kind", () => {
     const scopeId = seededScope();
     store.startRun({
