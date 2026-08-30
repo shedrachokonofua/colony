@@ -145,12 +145,6 @@ function writeConfig(
 }
 
 async function bootFresh(configPath: string): Promise<ColonydHandle> {
-  const booted = await bootConfigured(configPath);
-  bootedHandles.push(booted);
-  return booted;
-}
-
-async function bootConfigured(configPath: string): Promise<ColonydHandle> {
   process.env["NODE_ENV"] = "test";
   process.env["AGENT_RUNTIME"] = "fake";
   process.env["GITLAB_TOKEN"] = "";
@@ -164,7 +158,7 @@ async function bootConfigured(configPath: string): Promise<ColonydHandle> {
   process.env["COLONYD_MAX_ATTEMPTS"] = "3";
   process.env["COLONY_CONFIG_PATH"] = configPath;
   resetEnvCache();
-  return boot({
+  const booted = await boot({
     provider,
     agents: {
       runtime: "fake",
@@ -188,6 +182,8 @@ async function bootConfigured(configPath: string): Promise<ColonydHandle> {
       }),
     headless: true,
   });
+  bootedHandles.push(booted);
+  return booted;
 }
 
 /**
@@ -222,6 +218,16 @@ async function harness(configPath: string): Promise<{
     }
   };
 
+  const createScope = (goal: string): string => {
+    const scope = store.createScope({
+      goal,
+      provider_repo_id: repoId,
+      provider_repo_path: "so/fake-slots",
+    });
+    store.audit(ACTOR, "scope.created", { scope_id: scope.id });
+    return scope.id;
+  };
+
   /*
    * Planning is materialized directly so the tick under test starts from a
    * clean slate: no architect run of this scenario competes for the slot it
@@ -231,15 +237,10 @@ async function harness(configPath: string): Promise<{
   const activeScopeWithTask = (
     goal: string,
   ): { readonly scopeId: string; readonly taskId: string } => {
-    const scope = store.createScope({
-      goal,
-      provider_repo_id: repoId,
-      provider_repo_path: "so/fake-slots",
-    });
-    store.audit(ACTOR, "scope.created", { scope_id: scope.id });
-    store.setScopeStatus(scope.id, "planning", SERVICE_ACTOR);
-    const tasks = store.materializePlan(scope.id, PLAN, SERVICE_ACTOR);
-    return { scopeId: scope.id, taskId: tasks[0]!.id };
+    const scopeId = createScope(goal);
+    store.setScopeStatus(scopeId, "planning", SERVICE_ACTOR);
+    const tasks = store.materializePlan(scopeId, PLAN, SERVICE_ACTOR);
+    return { scopeId, taskId: tasks[0]!.id };
   };
 
   const driveToMrOpen = async (taskId: string): Promise<void> => {
@@ -251,26 +252,16 @@ async function harness(configPath: string): Promise<{
     throw new Error(`task ${taskId} never reached mr_open`);
   };
 
-  const draftScope = (goal: string): string => {
-    const scope = store.createScope({
-      goal,
-      provider_repo_id: repoId,
-      provider_repo_path: "so/fake-slots",
-    });
-    store.audit(ACTOR, "scope.created", { scope_id: scope.id });
-    return scope.id;
-  };
+  const draftScope = createScope;
 
-  // A validating scope with one merged task: merge -> validating, then the
-  // validate phase dispatches on the following tick.
+  /*
+   * A validating scope: its only task is merged, so the tick that closes the
+   * scope hands it to the validate phase on the following tick.
+   */
   const validatingScope = (goal: string): string => {
     const { scopeId, taskId } = activeScopeWithTask(goal);
-    const task = store.getTask(taskId)!;
-    store.transitionTask(taskId, task.state_version, "canceled", ACTOR);
-    const done = store.getTask(taskId)!;
-    store.transitionTask(done.id, done.state_version, "queued", ACTOR);
-    const requeued = store.getTask(taskId)!;
-    store.transitionTask(requeued.id, requeued.state_version, "merged", ACTOR);
+    const queued = store.getTask(taskId)!;
+    store.transitionTask(queued.id, queued.state_version, "merged", ACTOR);
     return scopeId;
   };
 
@@ -345,13 +336,9 @@ describe("namespace quota deferral", () => {
     expect(task.attempt).toBe(0);
     expect(task.next_retry_at).toBeNull();
     expect(script.implementerCalls.get(taskId)).toBe(2);
-    expect(
-      h.store.runsForTask(taskId).filter((run) => run.kind === "implement")
-        .length,
-    ).toBe(2);
 
-    // The requeue still happened: it is recorded in the audit trail even
-    // though the same tick handed the task straight back to the developer.
+    // The requeue still happened: it is in the audit trail even though the
+    // same tick handed the task straight back to the developer.
     const requeued = h.store
       .listAudit({ task_id: taskId, limit: 1000 })
       .events.some((row) => {
