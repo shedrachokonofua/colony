@@ -122,6 +122,21 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
 const INFRA_FAILURE =
   /^process_restart$|^liveness_watchdog_no_progress$|^zero_output_stall$|\b(?:429|50[234])\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|workspace_provision_failed|RBAC: denied creating|timed out .* waiting for (?:backing pod of )?Sandbox CR|Sandbox CR .* failed:/i;
 
+/**
+ * Rejection marker the k8s engine raises when the namespace ResourceQuota
+ * refuses the Sandbox CR: the cluster is saturated, not the task. Carried
+ * through the run's error so the tick can defer instead of penalising.
+ */
+export const SANDBOX_QUOTA_EXHAUSTED = "sandbox_quota_exhausted";
+
+/**
+ * A quota rejection is a scheduling condition, not a failure: the task stays
+ * eligible and the next tick retries it once capacity exists.
+ */
+export function isQuotaDeferred(error: string | null | undefined): boolean {
+  return typeof error === "string" && error.includes(SANDBOX_QUOTA_EXHAUSTED);
+}
+
 /** Exported for tests: classify a run error as infrastructure-caused. */
 export function isInfraError(error: string | null | undefined): boolean {
   return typeof error === "string" && INFRA_FAILURE.test(error);
@@ -146,7 +161,11 @@ export function hasModelSlot(ctx: ColonydContext, role: AgentRole): boolean {
   return ctx.store.activeRunCountByModel(modelId) < limit;
 }
 
-function lastImplementFailureWasInfra(
+/**
+ * Why a failed implement run should not consume an attempt: either the
+ * platform broke underneath it, or the cluster refused to schedule it.
+ */
+function lastImplementFailureWasDeferred(
   ctx: ColonydContext,
   taskId: string,
 ): boolean {
@@ -154,7 +173,8 @@ function lastImplementFailureWasInfra(
     .runsForTask(taskId)
     .filter((r) => r.kind === "implement")
     .at(-1);
-  return last?.status === "failed" && isInfraError(last.error);
+  if (last?.status !== "failed") return false;
+  return isInfraError(last.error) || isQuotaDeferred(last.error);
 }
 
 function retryOrFailTask(
@@ -164,8 +184,15 @@ function retryOrFailTask(
 ): void {
   const task = ctx.store.getTask(taskId);
   if (!task || task.state !== "running") return;
-  const infra = lastImplementFailureWasInfra(ctx, taskId);
+  const infra = lastImplementFailureWasDeferred(ctx, taskId);
   const attempt = infra ? task.attempt : task.attempt + 1;
+  if (infra && !isQuotaDeferred(lastImplementError(ctx, taskId))) {
+    ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
+      scope_id: task.scope_id,
+      task_id: task.id,
+      detail: { reason },
+    });
+  }
   if (infra) {
     ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
       scope_id: task.scope_id,
@@ -185,17 +212,34 @@ function retryOrFailTask(
     );
     return;
   }
+  // A slot or quota deferral is not a failure: the task is immediately
+  // eligible again, so it must not carry a backoff penalty.
+  const deferred = isQuotaDeferred(lastImplementError(ctx, taskId));
   ctx.store.transitionTask(
     task.id,
     task.state_version,
     "queued",
     SERVICE_ACTOR,
-    {
-      attempt,
-      next_retry_at: new Date(
-        Date.now() + retryBackoffMs(attempt),
-      ).toISOString(),
-    },
+    deferred
+      ? { attempt }
+      : {
+          attempt,
+          next_retry_at: new Date(
+            Date.now() + retryBackoffMs(attempt),
+          ).toISOString(),
+        },
+  );
+}
+
+function lastImplementError(
+  ctx: ColonydContext,
+  taskId: string,
+): string | null {
+  return (
+    ctx.store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement")
+      .at(-1)?.error ?? null
   );
 }
 

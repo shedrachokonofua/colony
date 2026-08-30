@@ -110,6 +110,18 @@ export class SandboxRbacError extends Error {
 }
 
 /**
+ * Provisioning refused for a reason the caller can act on without a stack:
+ * the namespace ResourceQuota has no room. The message carries the
+ * `sandbox_quota_exhausted:` marker so the tick can defer the task.
+ */
+export class SandboxError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxError";
+  }
+}
+
+/**
  * Internal adapter seam implemented by both the real Kubernetes client and the
  * faked client used in unit tests. This is intentionally transport-agnostic so
  * the engine never touches `@kubernetes/client-node` directly.
