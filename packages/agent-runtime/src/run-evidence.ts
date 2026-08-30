@@ -109,9 +109,11 @@ export interface UsageMessageSlice {
 export interface ToolCallObserved {
   readonly toolCallId: string;
   readonly tool: string;
-  readonly args: unknown;
+  /** Fallback when no paired start observation exists (blocked/aborted calls). */
+  readonly args?: unknown;
   readonly isError: boolean;
-  readonly startedAtMs: number;
+  /** Fallback start time when no paired `toolStart` was observed. */
+  readonly startedAtMs?: number;
   readonly endedAtMs: number;
   /** Raw textual result BEFORE truncation; overflow goes to the artifact sink. */
   readonly resultText: string;
@@ -136,7 +138,7 @@ const percentile = (sorted: readonly number[], p: number): number => {
 export class RunEvidenceCollector {
   private readonly toolStarts = new Map<
     string,
-    { at: number; intent?: string }
+    { at: number; args: unknown; intent?: string }
   >();
   private readonly perTool = new Map<string, number[]>();
   private readonly perToolErrors = new Map<string, number>();
@@ -162,10 +164,18 @@ export class RunEvidenceCollector {
     private readonly secrets: readonly string[],
   ) {}
 
-  /** Observe `tool_execution_start`: wall clock + intent for the pairing. */
-  toolStart(toolCallId: string, intent?: string): void {
+  /**
+   * Observe `tool_execution_start`: wall clock, validated args, and intent.
+   * The end event carries none of these, so the pairing lives here.
+   */
+  toolStart(
+    toolCallId: string,
+    args: unknown,
+    intent?: string,
+  ): void {
     this.toolStarts.set(toolCallId, {
       at: Date.now(),
+      args,
       ...(intent !== undefined ? { intent: intent } : {}),
     });
   }
@@ -178,6 +188,9 @@ export class RunEvidenceCollector {
    * per call no matter how many seams observe it.
    */
   async toolEnd(input: ToolCallObserved): Promise<void> {
+    const start = this.toolStarts.get(input.toolCallId);
+    this.toolStarts.delete(input.toolCallId);
+    const startedAtMs = start?.at ?? input.startedAtMs ?? input.endedAtMs;
     this.toolTotal += 1;
     if (input.isError) {
       this.toolErrorTotal += 1;
@@ -187,7 +200,7 @@ export class RunEvidenceCollector {
     // A tool that threw still owns its latency window even though the loop
     // does not timestamp it.
     const durations = this.perTool.get(input.tool) ?? [];
-    durations.push(Math.max(0, input.endedAtMs - input.startedAtMs));
+    durations.push(Math.max(0, input.endedAtMs - startedAtMs));
     this.perTool.set(input.tool, durations);
 
     let resultRef: string | undefined;
@@ -208,16 +221,14 @@ export class RunEvidenceCollector {
         // throws must not take the run down — the row simply has no ref.
       }
     }
-    const start = this.toolStarts.get(input.toolCallId);
-    this.toolStarts.delete(input.toolCallId);
     const detail: ToolCallDetail = {
       tool_call_id: input.toolCallId,
       tool: input.tool,
       ...(start?.intent ? { intent: start.intent } : {}),
-      args: redactValue(input.args, this.secrets),
-      started_at: new Date(input.startedAtMs).toISOString(),
+      args: redactValue(start?.args ?? input.args, this.secrets),
+      started_at: new Date(startedAtMs).toISOString(),
       ended_at: new Date(input.endedAtMs).toISOString(),
-      duration_ms: Math.max(0, input.endedAtMs - input.startedAtMs),
+      duration_ms: Math.max(0, input.endedAtMs - startedAtMs),
       is_error: input.isError,
       result_summary: redactText(
         input.resultText.slice(0, RESULT_SUMMARY_CHARS),
@@ -313,9 +324,18 @@ export class RunEvidenceCollector {
     };
   }
 
-  private emit(event: string, detail: Record<string, unknown>): void {
+  /** Append the run's single `run_summary` row; call once at run end. */
+  runSummary(): void {
+    this.emit("run_summary", this.summary());
+  }
+
+  private emit(event: string, detail: object): void {
     try {
-      this.sink?.appendEvent(this.runId, event, detail);
+      this.sink?.appendEvent(
+        this.runId,
+        event,
+        detail as Record<string, unknown>,
+      );
     } catch {
       // appendEvent is contractually non-throwing; a foreign sink that does
       // must still never reach the run path.

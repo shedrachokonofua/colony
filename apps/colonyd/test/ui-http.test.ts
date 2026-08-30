@@ -219,7 +219,7 @@ describe("operator console", () => {
       kind: "implement",
       lease_ttl_ms: 60_000,
     });
-    store.appendRunEvent(run.id, "pi_tool_call", {
+    store.appendRunEvent(run.id, "tool_call", {
       tool: "bash",
       isError: false,
     });
@@ -232,7 +232,7 @@ describe("operator console", () => {
     };
     const rows = page.events;
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.event).toBe("pi_tool_call");
+    expect(rows[0]?.event).toBe("tool_call");
     expect(JSON.parse(rows[0]!.detail_json).tool).toBe("bash");
 
     const missing = await app.request("/runs/nope/events", {

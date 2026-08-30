@@ -364,7 +364,7 @@ describe("Store", () => {
       lease_ttl_ms: 60_000,
     });
     for (let i = 1; i <= 250; i++) {
-      store.appendRunEvent(run.id, "pi_tool_call", { seq: i });
+      store.appendRunEvent(run.id, "tool_call", { seq: i });
     }
 
     const page = store.listRunEvents(run.id);

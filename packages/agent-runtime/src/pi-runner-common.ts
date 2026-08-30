@@ -32,6 +32,7 @@ import type { RunAuditSink } from "./audit-sink.js";
 import type { PiRunRequest } from "./pi-adapter.js";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { WebToolsConfig } from "./web-tools.js";
+import { RunEvidenceCollector, toolResultText } from "./run-evidence.js";
 
 export interface PiRunnerLogger {
   info?(fields: Record<string, unknown>, message: string): void;
@@ -89,6 +90,8 @@ export type PiModelResolver = (
 ) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
+  /** Evidence collector fed by the guard subscription; noop when unset. */
+  readonly evidence?: RunEvidenceCollector;
   /**
    * Fired when the model returns `zeroOutputStallTurns` consecutive
    * assistant messages with zero output tokens and no tool activity - a
@@ -604,9 +607,21 @@ export function installRunGuards(
     if (event.type === "tool_execution_start") {
       inFlightTools += 1;
       zeroOutputTurns = 0;
+      options.evidence?.toolStart(event.toolCallId, event.args, event.intent);
     }
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
+      // The end event is the sole carrier of the result; the collector is
+      // keyed by toolCallId, so firing here (and only here) yields exactly
+      // one tool_call row per call.
+      const { text, isErrorText } = toolResultText(event.result);
+      void options.evidence?.toolEnd({
+        toolCallId: event.toolCallId,
+        tool: event.toolName,
+        isError: isErrorText || event.isError === true,
+        endedAtMs: Date.now(),
+        resultText: text,
+      });
     }
     armWatchdog();
     if (event.type === "turn_end") {
@@ -617,6 +632,17 @@ export function installRunGuards(
       const messageUsd = usage?.cost.total ?? 0;
       const messageCompletedAt = performance.now();
       usdSpent += messageUsd;
+      // Extended evidence row: keeps every key the feed consumers read. The
+      // logger line stays as-is (colonyd mirrors it as its own pi_usage row).
+      options.evidence?.usage({
+        usage,
+        provider: event.message.provider,
+        model: event.message.model,
+        stopReason: event.message.stopReason,
+        errorMessage: event.message.errorMessage,
+        duration: event.message.duration,
+        ttft: event.message.ttft,
+      });
       options.logger?.info?.(
         {
           runId,

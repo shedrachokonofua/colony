@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL REFERENCES runs(id),
   at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  event TEXT NOT NULL,                       -- e.g. 'pi_tool_call', 'run_limit_exceeded'
+  event TEXT NOT NULL,                       -- e.g. 'tool_call', 'run_limit_exceeded'
   detail_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
