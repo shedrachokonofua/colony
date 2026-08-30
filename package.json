@@ -11,6 +11,7 @@
   },
   "scripts": {
     "dev": "bun --watch apps/colonyd/src/main.ts",
+    "vendor:ui": "bun run scripts/vendor-ui.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test apps packages scripts",
     "test:unit": "bun test apps packages scripts --path-ignore-patterns='**/*.integration.test.ts'",
@@ -21,6 +22,8 @@
   "devDependencies": {
     "@playwright/test": "1.62.1",
     "@types/bun": "^1.3.14",
+    "happy-dom": "^16.0.0",
+    "lit": "3.3.3",
     "prettier": "3.8.3",
     "typescript": "^5.7.2"
   }
