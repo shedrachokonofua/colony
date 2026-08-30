@@ -3,13 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import type { ColonyConfig } from "@colony/config";
-import {
-  createLocalArtifactStore,
-  Store,
-  type ArchitectDecompositionV2,
-} from "@colony/core";
+import { createLocalArtifactStore, Store } from "@colony/core";
 import { FakeAgentRuntimeAdapter } from "@colony/agent-runtime";
 import { FakeProviderAdapter } from "@colony/provider";
+import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import type { ColonydContext } from "../src/context.js";
 import { createDrainController, type DrainDeps } from "../src/drain.js";
 import { buildApp } from "../src/http.js";
@@ -78,7 +75,7 @@ const PLAN: ArchitectDecompositionV2 = {
 };
 
 /** Store seeded with a planning scope carrying a queued task. */
-function seededStore(): { store: Store; scopeId: string; taskId: string } {
+function seededStore(): { store: Store; taskId: string } {
   const dir = mkdtempSync(join(tmpdir(), "colonyd-drain-"));
   dirs.push(dir);
   const store = new Store(join(dir, "test.db"));
@@ -89,11 +86,14 @@ function seededStore(): { store: Store; scopeId: string; taskId: string } {
   });
   store.setScopeStatus(scope.id, "planning", "svc:colonyd");
   const [task] = store.materializePlan(scope.id, PLAN, "svc:colonyd");
-  return { store, scopeId: scope.id, taskId: task.id };
+  return { store, taskId: task.id };
 }
 
 /** Offline colonyd context over fakes; every dispatch settles instantly. */
-function offlineCtx(store: Store, isDraining: () => boolean): ColonydContext {
+async function offlineCtx(
+  store: Store,
+  isDraining: () => boolean,
+): Promise<ColonydContext> {
   const config = {
     agentRuntime: "fake",
     sandbox: { engine: "in-process", kubernetes: {} },
@@ -125,8 +125,11 @@ function offlineCtx(store: Store, isDraining: () => boolean): ColonydContext {
           },
   });
   const provider = new FakeProviderAdapter();
-  const repo = provider.repos.create({ path: "fake/repo", namespace: null });
-  provider.branches.create(
+  const repo = await provider.repos.create({
+    name: "repo",
+    path: "fake/repo",
+  });
+  await provider.branches.create(
     { id: repo.id, path: "fake/repo" },
     "main",
     "m".repeat(40),
@@ -221,7 +224,7 @@ describe("createDrainController", () => {
 describe("tick dispatch gate while draining", () => {
   it("dispatches queued implement work when not draining (baseline)", async () => {
     const { store, taskId } = seededStore();
-    const ctx = offlineCtx(store, () => false);
+    const ctx = await offlineCtx(store, () => false);
     await tick(ctx);
     await awaitPendingRuns();
     // The implement dispatch happened: a run row exists for the task.
@@ -231,7 +234,7 @@ describe("tick dispatch gate while draining", () => {
 
   it("no phase dispatches a new run while draining", async () => {
     const { store, taskId } = seededStore();
-    const ctx = offlineCtx(store, () => true);
+    const ctx = await offlineCtx(store, () => true);
     const before = store.db.prepare("SELECT COUNT(*) n FROM runs").get() as {
       n: number;
     };
@@ -256,7 +259,7 @@ describe("GET /ready", () => {
     dirs.push(dir);
     const store = new Store(join(dir, "test.db"));
     const gate = { draining: false };
-    const app = buildApp(offlineCtx(store, () => gate.draining));
+    const app = buildApp(await offlineCtx(store, () => gate.draining));
 
     const before = await app.request("/ready");
     expect(before.status).toBe(200);
