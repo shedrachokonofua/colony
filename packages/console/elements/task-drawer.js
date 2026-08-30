@@ -78,6 +78,8 @@ export class TaskDrawer extends ColonyElement {
 
   // Amend/feedback textareas are plain (not live()): lit only writes .value
   // when the binding changes, so keystrokes survive the 2.5s poll repaint.
+  // The @input handlers keep the per-task drafts current for willUpdate's
+  // stash; the submit forms read the DOM like the monolith's submitFeedback.
   #amendInput(event) {
     this._amendDraft = event.target.value;
   }
@@ -138,7 +140,11 @@ export class TaskDrawer extends ColonyElement {
         </div>
         <button
           class="goal-toggle"
-          @click=${() => this.#emit("colony-open-reader", { title: task.title, markdown: task.spec })}
+          @click=${() =>
+            this.#emit("colony-open-reader", {
+              title: task.title,
+              markdown: task.spec,
+            })}
         >
           Expand spec
         </button>
@@ -149,7 +155,9 @@ export class TaskDrawer extends ColonyElement {
               @submit=${(event) => {
                 event.preventDefault();
                 this.#feedback(`/tasks/${task.id}/request-changes`, {
-                  feedback: this._feedbackDraft,
+                  feedback: String(
+                    new FormData(event.target).get("feedback") ?? "",
+                  ),
                 });
               }}
             >
@@ -169,7 +177,9 @@ export class TaskDrawer extends ColonyElement {
               @submit=${(event) => {
                 event.preventDefault();
                 this.#feedback(`/tasks/${task.id}/amend-spec`, {
-                  feedback: this._amendDraft,
+                  feedback: String(
+                    new FormData(event.target).get("feedback") ?? "",
+                  ),
                 });
               }}
             >

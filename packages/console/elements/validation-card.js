@@ -8,7 +8,6 @@ import {
   isoDuration,
   runDurationMs,
 } from "../duration.js";
-import "./run-duration.js";
 
 function parseEvidence(raw) {
   if (!raw) return null;
@@ -90,10 +89,6 @@ export class ValidationCard extends ColonyElement {
                 const ms = runDurationMs(latest, Date.now());
                 if (ms === null) return nothing;
                 return html` ·
-                  <run-duration
-                    .startedAt=${latest.started_at}
-                    .finishedAt=${latest.finished_at ?? null}
-                  ></run-duration>
                   <time
                     class="dur"
                     datetime=${isoDuration(ms)}
