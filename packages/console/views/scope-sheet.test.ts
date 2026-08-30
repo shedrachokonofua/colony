@@ -309,3 +309,59 @@ describe("scope-sheet abandon flow (defect 2)", () => {
     expect(el.querySelector(".sheet-head-side .btn-rev")).toBeNull();
   });
 });
+
+describe("scope-sheet goal and proposed-task surfaces", () => {
+  it("forwards its error down to <goal-card> so the goal column can show it", async () => {
+    const el = makeSheet(detail(), { error: "boom" });
+    await el.updateComplete;
+    const card = el.querySelector("goal-card");
+    expect(card?.error).toBe("boom");
+    expect(card?.querySelector(".banner-error")?.textContent?.trim()).toBe(
+      "boom",
+    );
+  });
+
+  it("leaves goal-card without an error banner when the sheet has none", async () => {
+    const el = makeSheet(detail());
+    await el.updateComplete;
+    expect(el.querySelector("goal-card .banner-error")).toBeNull();
+  });
+
+  it("opens the proposed-task drawer for a plan: selection", async () => {
+    const world = detail();
+    world.tasks = [];
+    world.deps = [];
+    world.scope = {
+      ...SCOPE_CLOSED,
+      plan_json: JSON.stringify({ summary: "s", tasks: PLANNED }),
+    };
+    const el = makeSheet(world, {
+      selectedTaskId: "plan:0",
+      drawerOpen: true,
+    });
+    await el.updateComplete;
+    const drawer = el.querySelector("task-drawer");
+    expect(drawer?.task.id).toBe("plan:0");
+    // <task-drawer> renders the monolith's proposed-task drawer from the plan.
+    expect(drawer?.querySelector(".task-title")?.textContent).toBe(
+      "Planned first",
+    );
+    expect(drawer?.querySelector(".drawer-id")?.textContent).toContain(
+      "plan #0",
+    );
+  });
+
+  it("tells <task-dag> whether the drawer is open, so a closed drawer un-highlights the node", async () => {
+    const el = makeSheet(detail(), {
+      selectedTaskId: "col-x.1",
+      drawerOpen: true,
+    });
+    await el.updateComplete;
+    const dag = el.querySelector("task-dag");
+    expect(dag?.drawerOpen).toBe(true);
+
+    el.drawerOpen = false;
+    await el.updateComplete;
+    expect(el.querySelector("task-dag")?.drawerOpen).toBe(false);
+  });
+});

@@ -76,7 +76,9 @@ export function graphModel(detail) {
   };
 }
 
-function parsePlan(raw) {
+// The scope's plan_json is the same document the DAG falls back to and the
+// plan/task surfaces read, so one parser serves all of them.
+export function parsePlan(raw) {
   if (!raw) return null;
   try {
     const plan = JSON.parse(raw);

@@ -8,27 +8,17 @@
 // away stashes the texts under the old task's id, opening another task
 // loads its own (or empty) texts, so a draft typed for task A can never
 // surface under task B — and returning to A restores it.
-import { ColonyElement, html, nothing } from "../base.js";
+import { ColonyElement, html, nothing, repeat } from "../base.js";
 import {
   costPredictionLines,
   parseCostPrediction,
 } from "../cost-prediction.js";
+import { parsePlan } from "../dag.js";
 import "./run-feed.js";
 import "./run-line.js";
 
 function shortSha(sha) {
   return sha && sha.length >= 7 ? sha.slice(0, 7) : "—";
-}
-
-function parsePlan(raw) {
-  if (!raw) return null;
-  try {
-    const plan = JSON.parse(raw);
-    if (!plan || !Array.isArray(plan.tasks)) return null;
-    return plan;
-  } catch {
-    return null;
-  }
 }
 
 export class TaskDrawer extends ColonyElement {
@@ -244,7 +234,9 @@ export class TaskDrawer extends ColonyElement {
           ${runs.length
             ? nothing
             : html`<p class="note">No runs on this task yet.</p>`}
-          ${runs.map(
+          ${repeat(
+            runs,
+            (run) => run.id,
             (run) =>
               html`<run-line .run=${run} .config=${this.config}></run-line>
                 ${run === liveRun

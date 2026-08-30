@@ -2,7 +2,10 @@
 // monolith's renderDag (app.js): longest-path layout from ../dag.js, bezier
 // edges with an arrow marker, and node boxes carrying title, state, live run
 // label + duration, and the proposed flag while a plan is unapproved. Node
-// hits dispatch colony-select-task on click and on Enter/Space.
+// hits dispatch colony-select-task on click and on Enter/Space. The host owns
+// the drawer, so drawerOpen decides whether a selection is actually shown:
+// closing the drawer un-highlights the node, as the monolith does. Hosts that
+// keep no drawer leave it open and see the plain selection highlight.
 import {
   ColonyElement,
   classMap,
@@ -30,12 +33,14 @@ export class TaskDag extends ColonyElement {
   static properties = {
     detail: { type: Object },
     selectedTaskId: { type: String },
+    drawerOpen: { type: Boolean },
   };
 
   constructor() {
     super();
     this.detail = null;
     this.selectedTaskId = null;
+    this.drawerOpen = true;
   }
 
   #select(taskId) {
@@ -90,7 +95,7 @@ export class TaskDag extends ColonyElement {
       (node) => {
         const box = pos.get(node.id);
         const live = liveRunFor(detail, node.id);
-        const selected = this.selectedTaskId === node.id;
+        const selected = this.selectedTaskId === node.id && this.drawerOpen;
         return svg`<g
           class=${classMap({
             "g-node": true,

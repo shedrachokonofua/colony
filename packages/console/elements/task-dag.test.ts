@@ -239,3 +239,27 @@ describe("task-dag selection", () => {
     expect(seen).toEqual([{ taskId: "plan:1" }]);
   });
 });
+
+describe("task-dag selection follows the drawer", () => {
+  it("keeps the highlight only while the host says the drawer is open", async () => {
+    const el = makeDag(detail(), "col-x.1");
+    await el.updateComplete;
+    const nodeSelected = () =>
+      [...el.querySelectorAll("g.node.dag-node")][1].classList.contains(
+        "is-selected",
+      );
+
+    // Hosts that never open a drawer would not pass drawerOpen at all, so the
+    // element's default keeps the plain selection highlight.
+    expect(el.drawerOpen).toBe(true);
+    expect(nodeSelected()).toBe(true);
+
+    el.drawerOpen = false;
+    await el.updateComplete;
+    expect(nodeSelected()).toBe(false);
+
+    el.drawerOpen = true;
+    await el.updateComplete;
+    expect(nodeSelected()).toBe(true);
+  });
+});

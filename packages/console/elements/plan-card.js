@@ -5,20 +5,10 @@
 // colony-select-task {taskId:"plan:<i>"} per plan task row, and
 // colony-feedback for the replan textarea.
 import { ColonyElement, classMap, html, nothing, repeat } from "../base.js";
+import { parsePlan } from "../dag.js";
 import { rel } from "../rel-time.js";
 import "./run-feed.js";
 import "./run-line.js";
-
-function parsePlan(raw) {
-  if (!raw) return null;
-  try {
-    const plan = JSON.parse(raw);
-    if (!plan || !Array.isArray(plan.tasks)) return null;
-    return plan;
-  } catch {
-    return null;
-  }
-}
 
 function parseAuditDetail(raw) {
   if (!raw) return {};
@@ -189,7 +179,9 @@ export class PlanCard extends ColonyElement {
           : nothing}
         ${architectRuns.length
           ? html`<div class="runs runs-inline">
-              ${architectRuns.map(
+              ${repeat(
+                architectRuns,
+                (run) => run.id,
                 (run) =>
                   html`<run-line .run=${run} .config=${this.config}></run-line
                     >${run.status === "running"

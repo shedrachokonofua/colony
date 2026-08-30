@@ -129,9 +129,17 @@ export class ScopeSheet extends ColonyElement {
         </button>`;
   }
 
+  // The drawer resolves a selection from the approved tasks, and — the
+  // monolith's renderSheet fallback — from a `plan:<i>` id while the plan is
+  // still unapproved: <task-drawer> renders those as the proposed-task drawer
+  // from the bare id plus detail.
   #drawerTask(detail) {
     if (!detail || !this.selectedTaskId) return null;
-    return detail.tasks.find((task) => task.id === this.selectedTaskId) || null;
+    const task = detail.tasks.find((task) => task.id === this.selectedTaskId);
+    if (task) return task;
+    return this.selectedTaskId.startsWith("plan:")
+      ? { id: this.selectedTaskId }
+      : null;
   }
 
   render() {
@@ -186,12 +194,17 @@ export class ScopeSheet extends ColonyElement {
           <task-dag
             .detail=${detail}
             .selectedTaskId=${this.selectedTaskId}
+            .drawerOpen=${this.drawerOpen}
           ></task-dag>
         </div>
       </section>
       <div class="sheet-cols">
         <div class="sheet-col">
-          <goal-card .scope=${scope} .goalOpen=${this.goalOpen}></goal-card>
+          <goal-card
+            .scope=${scope}
+            .goalOpen=${this.goalOpen}
+            .error=${this.error ?? ""}
+          ></goal-card>
           <activity-card .audit=${this.audit ?? []}></activity-card>
         </div>
         <div class="sheet-col">
