@@ -59,7 +59,7 @@ import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import { createSubagentTool } from "./subagent-tool.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
 import { buildSandboxTools } from "./sandbox-tools.js";
-import { RunEvidenceCollector, toolResultText } from "./run-evidence.js";
+import { RunEvidenceCollector } from "./run-evidence.js";
 import {
   buildSandboxLaunchProfile,
   type SandboxEngine,
@@ -623,6 +623,7 @@ export class PiBaseAgentRunner implements PiRunner {
         maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
         logger: this.options.logger,
         evidence,
+        rejectionToolName: submitTool.name,
         onFailure: (reason) => {
           failureReason ??= reason;
         },
@@ -700,18 +701,9 @@ export class PiBaseAgentRunner implements PiRunner {
           context.args,
           context.isError,
         );
-        // Rejection evidence: a submit call that threw (or its structured-
-        // output validation failed) keeps the session open, so surface the
-        // refusal verbatim on its own row. The subscribe-stream toolEnd row
-        // already carries the thrown text as result_summary/error_detail.
-        if (
-          evidence &&
-          context.isError &&
-          context.toolCall.name === submitTool.name
-        ) {
-          const { text } = toolResultText(context.result);
-          evidence.completionRejected(text, submitTool.name);
-        }
+        // Rejection evidence lives in the guard subscription's end-event
+        // seam (see pi-runner-common): it is the only path that sees TypeBox
+        // argument-validation refusals, which never reach afterToolCall.
         this.options.logger?.info?.(
           {
             runId,

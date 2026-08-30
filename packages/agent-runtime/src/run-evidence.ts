@@ -25,12 +25,22 @@ export interface ToolCallDetail {
   readonly error_detail?: string;
 }
 
-/** Extended `pi_usage` row: legacy token fields plus the new evidence keys. */
+/**
+ * Extended `pi_usage` row: the fields the legacy logger-fed row carried
+ * (`inputTokens`…`turnDurationSeconds`) plus the new evidence keys. The row is
+ * sink-emitted; the logger line was renamed (`pi_turn_usage`) so this event
+ * has exactly one path into `run_events`.
+ */
 export interface PiUsageDetail {
-  readonly input: number | undefined;
-  readonly output: number | undefined;
-  readonly cacheRead: number | undefined;
-  readonly cacheWrite: number | undefined;
+  readonly inputTokens: number | undefined;
+  readonly outputTokens: number | undefined;
+  readonly cacheReadTokens: number | undefined;
+  readonly cacheWriteTokens: number | undefined;
+  /** This turn's cost and the run's cumulative cost, in USD. */
+  readonly messageUsd: number | undefined;
+  readonly usdSpent: number | undefined;
+  /** Wall clock since the previous assistant message, computed by guards. */
+  readonly turnDurationSeconds: number | undefined;
   readonly total_tokens: number | undefined;
   readonly context_tokens: number | undefined;
   readonly reasoning_tokens: number | undefined;
@@ -103,6 +113,8 @@ export interface UsageMessageSlice {
   readonly duration?: number;
   /** Time to first token in ms (AssistantMessage.ttft). */
   readonly ttft?: number;
+  /** Inter-message wall clock, computed by the guard subscription. */
+  readonly turnDurationSeconds?: number;
 }
 
 /** One `tool_execution_end` observation, before any persistence decision. */
@@ -147,6 +159,8 @@ export class RunEvidenceCollector {
   private toolTotal = 0;
   private toolErrorTotal = 0;
   private turns = 0;
+  /** Serializes async emits so `run_summary` cannot overtake a `tool_call`. */
+  private emitChain: Promise<void> = Promise.resolve();
   private totals = {
     input: 0,
     output: 0,
@@ -203,6 +217,21 @@ export class RunEvidenceCollector {
     durations.push(Math.max(0, input.endedAtMs - startedAtMs));
     this.perTool.set(input.tool, durations);
 
+    this.emitChain = this.emitChain.then(() =>
+      this.persistToolCall(input, start, startedAtMs),
+    );
+    return this.emitChain;
+  }
+
+  /**
+   * Book one `tool_call` row; runs serialized on the emit chain because the
+   * artifact storage await must not reorder rows between calls.
+   */
+  private async persistToolCall(
+    input: ToolCallObserved,
+    start: { at: number; args: unknown; intent?: string } | undefined,
+    startedAtMs: number,
+  ): Promise<void> {
     let resultRef: string | undefined;
     if (this.sink && input.resultText.length > RESULT_SUMMARY_CHARS) {
       try {
@@ -260,10 +289,13 @@ export class RunEvidenceCollector {
       costTotal: this.totals.costTotal + (cost?.total ?? 0),
     };
     const detail: PiUsageDetail = {
-      input: usage?.input,
-      output: usage?.output,
-      cacheRead: usage?.cacheRead,
-      cacheWrite: usage?.cacheWrite,
+      inputTokens: usage?.input,
+      outputTokens: usage?.output,
+      cacheReadTokens: usage?.cacheRead,
+      cacheWriteTokens: usage?.cacheWrite,
+      messageUsd: cost?.total,
+      usdSpent: this.totals.costTotal,
+      turnDurationSeconds: message.turnDurationSeconds,
       total_tokens: usage?.totalTokens,
       context_tokens: usage?.contextTokens,
       reasoning_tokens: usage?.reasoningTokens,
@@ -324,9 +356,19 @@ export class RunEvidenceCollector {
     };
   }
 
-  /** Append the run's single `run_summary` row; call once at run end. */
+  /** Append the run's single `run_summary` row once every earlier row is in. */
   runSummary(): void {
-    this.emit("run_summary", this.summary());
+    this.emitChain = this.emitChain.then(() => {
+      this.emit("run_summary", this.summary());
+    });
+  }
+
+  /**
+   * Drain all pending emits; the guard unsubscribe calls this right before
+   * run finalization reads the feed. Resolves even when a sink threw.
+   */
+  async settle(): Promise<void> {
+    await this.emitChain.catch(() => {});
   }
 
   private emit(event: string, detail: object): void {

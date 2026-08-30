@@ -93,6 +93,11 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   /** Evidence collector fed by the guard subscription; noop when unset. */
   readonly evidence?: RunEvidenceCollector;
   /**
+   * Submit tool whose failed calls emit `completion_rejected`. Undefined on
+   * guard install sites without an evidence collector (subagents, critics).
+   */
+  readonly rejectionToolName?: string;
+  /**
    * Fired when the model returns `zeroOutputStallTurns` consecutive
    * assistant messages with zero output tokens and no tool activity - a
    * provider that rate-limits by going silent instead of erroring (observed
@@ -622,6 +627,18 @@ export function installRunGuards(
         endedAtMs: Date.now(),
         resultText: text,
       });
+      // Rejected submission evidence: submit-tool executes that threw (the
+      // schema/mechanical validators throw deliberately) and upstream argument
+      // validation failures (the loop emits the TypeBox message as the end
+      // event's result, never reaching afterToolCall) both surface here. The
+      // end event is the one seam that carries every rejection verbatim.
+      if (
+        options.rejectionToolName !== undefined &&
+        event.toolName === options.rejectionToolName &&
+        (isErrorText || event.isError === true)
+      ) {
+        options.evidence?.completionRejected(text, event.toolName);
+      }
     }
     armWatchdog();
     if (event.type === "turn_end") {
@@ -632,8 +649,11 @@ export function installRunGuards(
       const messageUsd = usage?.cost.total ?? 0;
       const messageCompletedAt = performance.now();
       usdSpent += messageUsd;
-      // Extended evidence row: keeps every key the feed consumers read. The
-      // logger line stays as-is (colonyd mirrors it as its own pi_usage row).
+      // Extended evidence row: keeps the legacy logger row's fields plus the
+      // new evidence keys, emitted through the audit sink. The logger line is
+      // renamed so `pi_usage` reaches `run_events` through this path only —
+      // colonyd's roleLogger mirrors every logger message into `run_events`
+      // under its message string, so keeping the old name would double-emit.
       options.evidence?.usage({
         usage,
         provider: event.message.provider,
@@ -642,6 +662,7 @@ export function installRunGuards(
         errorMessage: event.message.errorMessage,
         duration: event.message.duration,
         ttft: event.message.ttft,
+        turnDurationSeconds: (messageCompletedAt - previousMessageAt) / 1_000,
       });
       options.logger?.info?.(
         {
@@ -654,7 +675,8 @@ export function installRunGuards(
           turnDurationSeconds: (messageCompletedAt - previousMessageAt) / 1_000,
           cacheWriteTokens: usage?.cacheWrite,
         },
-        "pi_usage",
+        // Was "pi_usage": that name is now owned by the sink row above.
+        "pi_turn_usage",
       );
       previousMessageAt = messageCompletedAt;
       if ((usage?.output ?? 0) === 0) {
@@ -699,6 +721,10 @@ export function installRunGuards(
     unsubscribed = true;
     clearTimeout(watchdog);
     unsubscribe();
+    // The collector serializes its emits; settle() drains every pending
+    // tool_call row (artifact storage awaits) so the feed is complete — and
+    // run_summary ordered after them — before finalization reads it.
+    void options.evidence?.settle();
   };
 }
 

@@ -145,7 +145,7 @@ describe("RunEvidenceCollector: tool_call rows", () => {
 });
 
 describe("RunEvidenceCollector: extended pi_usage", () => {
-  it("emits every extended usage key on the completed turn", () => {
+  it("emits the legacy fields plus every extended usage key on the completed turn", () => {
     const { events, sink } = recordingSink();
     const evidence = new RunEvidenceCollector("run-4", sink, []);
     evidence.usage({
@@ -162,6 +162,7 @@ describe("RunEvidenceCollector: extended pi_usage", () => {
           output: 0.02,
           cacheRead: 0.001,
           cacheWrite: 0.002,
+          total: 0.033,
         },
       },
       provider: "test-gateway",
@@ -169,14 +170,18 @@ describe("RunEvidenceCollector: extended pi_usage", () => {
       stopReason: "toolUse",
       duration: 1234,
       ttft: 321,
+      turnDurationSeconds: 4.5,
     });
     const [usage] = events;
     expect(usage?.event).toBe("pi_usage");
     expect(usage?.detail).toEqual({
-      input: 100,
-      output: 50,
-      cacheRead: 10,
-      cacheWrite: 20,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 20,
+      messageUsd: 0.033,
+      usdSpent: 0.033,
+      turnDurationSeconds: 4.5,
       total_tokens: 180,
       context_tokens: 170,
       reasoning_tokens: 12,
@@ -266,6 +271,7 @@ describe("RunEvidenceCollector: run_summary aggregation", () => {
       resultText: "boom",
     });
     evidence.runSummary();
+    await evidence.settle();
     const summary = events.find((e) => e.event === "run_summary")
       ?.detail as unknown as RunSummaryDetail;
     expect(summary.turns).toBe(1);
@@ -310,6 +316,7 @@ describe("installRunGuards evidence wiring", () => {
     const agent = fakeAgent();
     const unsubscribe = installRunGuards(agent as never, "run-8", {
       evidence,
+      rejectionToolName: "submit_implementer_completion",
       livenessTimeoutMs: 0,
       maxTurns: 100,
     });
@@ -346,7 +353,7 @@ describe("installRunGuards evidence wiring", () => {
     });
     agent.emit({ type: "agent_end", messages: [] });
     unsubscribe();
-    await Bun.sleep(0);
+    await evidence.settle();
     const toolRows = events.filter((e) => e.event === "tool_call");
     expect(toolRows).toHaveLength(1);
     expect(toolDetail(toolRows[0])).toMatchObject({
@@ -358,5 +365,93 @@ describe("installRunGuards evidence wiring", () => {
     expect(typeof toolDetail(toolRows[0]).duration_ms).toBe("number");
     expect(events.some((e) => e.event === "pi_usage")).toBe(true);
     expect(events.some((e) => e.event === "run_summary")).toBe(true);
+  });
+
+  it("emits completion_rejected from the end event for rejected submit calls", async () => {
+    const { events, sink } = recordingSink();
+    const evidence = new RunEvidenceCollector("run-9", sink, []);
+    const agent = fakeAgent();
+    const unsubscribe = installRunGuards(agent as never, "run-9", {
+      evidence,
+      rejectionToolName: "submit_implementer_completion",
+      livenessTimeoutMs: 0,
+      maxTurns: 100,
+    });
+    agent.emit({
+      type: "tool_execution_start",
+      toolCallId: "s1",
+      toolName: "submit_implementer_completion",
+      args: { branch: "main" },
+    });
+    agent.emit({
+      type: "tool_execution_end",
+      toolCallId: "s1",
+      toolName: "submit_implementer_completion",
+      result: {
+        content: [
+          {
+            type: "text",
+            text: "Envelope failed schema validation:\n  - head_sha: required",
+          },
+        ],
+      },
+      isError: true,
+    });
+    // A failed non-submit tool call must not emit a rejection row.
+    agent.emit({
+      type: "tool_execution_start",
+      toolCallId: "b1",
+      toolName: "bash",
+      args: { command: "make" },
+    });
+    agent.emit({
+      type: "tool_execution_end",
+      toolCallId: "b1",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "make: *** No rule" }] },
+      isError: true,
+    });
+    unsubscribe();
+    await evidence.settle();
+    const rejections = events.filter((e) => e.event === "completion_rejected");
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]?.detail).toMatchObject({
+      tool: "submit_implementer_completion",
+      message: "Envelope failed schema validation:\n  - head_sha: required",
+    });
+  });
+
+  it("orders run_summary after every tool_call row without timers", async () => {
+    const { events, sink } = recordingSink();
+    const evidence = new RunEvidenceCollector("run-10", sink, []);
+    const agent = fakeAgent();
+    const unsubscribe = installRunGuards(agent as never, "run-10", {
+      evidence,
+      livenessTimeoutMs: 0,
+      maxTurns: 100,
+    });
+    // An overflowing result makes toolEnd await the (already resolved)
+    // artifact promise; without the serialized emit chain run_summary would
+    // overtake the tool_call row in the feed.
+    agent.emit({
+      type: "tool_execution_start",
+      toolCallId: "big",
+      toolName: "bash",
+      args: { command: "dump" },
+    });
+    agent.emit({
+      type: "tool_execution_end",
+      toolCallId: "big",
+      toolName: "bash",
+      result: { content: [{ type: "text", text: "x".repeat(2500) }] },
+      isError: false,
+    });
+    agent.emit({ type: "agent_end", messages: [] });
+    unsubscribe();
+    await evidence.settle();
+    const order = events.map((e) => e.event);
+    expect(order.indexOf("run_summary")).toBeGreaterThan(
+      order.indexOf("tool_call"),
+    );
   });
 });
