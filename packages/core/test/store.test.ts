@@ -393,9 +393,13 @@ describe("Store", () => {
       kind: "implement",
       lease_ttl_ms: 60_000,
     });
-    for (let i = 0; i < 1200; i++) {
-      store.appendRunEvent(run.id, "tick", { seq: i });
-    }
+    // One transaction: 1200 individual inserts each fsync and can blow the
+    // test timeout on slow disks.
+    store.db.transaction(() => {
+      for (let i = 0; i < 1200; i++) {
+        store.appendRunEvent(run.id, "tick", { seq: i });
+      }
+    })();
     expect(store.listRunEvents(run.id, { limit: 5000 }).events).toHaveLength(
       1000,
     );
