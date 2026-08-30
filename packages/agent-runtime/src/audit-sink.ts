@@ -76,15 +76,13 @@ export function createRunAuditSink(
     },
     async putArtifact(runId, kind, key, data, contentType) {
       try {
-        const { ref } = await artifacts.put(key, data, {
+        const { ref, bytes } = await artifacts.put(key, data, {
           contentType,
         });
         const sha256 = createHash("sha256").update(data).digest("hex");
-        // The row and the resolved value describe exactly the bytes hashed
-        // above. The backend's own count is backend-dependent (the S3 backend
-        // reads a response header that can disagree with the payload), so it
-        // is never trusted here.
-        const bytes = data.byteLength;
+        // The row and the resolved value describe exactly the bytes both were
+        // derived from: the backend reports the stored count and the hash is
+        // taken over the handed-in bytes.
         try {
           store.recordRunArtifact(runId, {
             kind,

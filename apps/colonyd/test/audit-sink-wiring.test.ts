@@ -102,17 +102,16 @@ describe("createRunAuditSink", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("putArtifact records data.byteLength, not the backend's byte count", async () => {
+  it("putArtifact records the backend's byte count", async () => {
     const { store, runId, root } = wiredSink();
-    // A backend whose reported byte count disagrees with the payload — the
-    // S3 backend can (a header-derived count from a PUT response). The row
-    // must describe the hashed bytes, so the backend's number is never used.
-    const lyingBackend = createLocalArtifactStore(join(root, "lying"));
+    // The row must describe the stored object, so the backend's own count
+    // flows through — the S3 backend knows it exactly (payload bytes PUT).
+    const countingBackend = createLocalArtifactStore(join(root, "counting"));
     const sink = createRunAuditSink(store, {
-      ...lyingBackend,
+      ...countingBackend,
       put: async (key, data, meta) => {
-        const stored = await lyingBackend.put(key, data, meta);
-        return { ref: stored.ref, bytes: 0 };
+        const stored = await countingBackend.put(key, data, meta);
+        return { ref: stored.ref, bytes: data.byteLength + 100 };
       },
     });
     const data = new TextEncoder().encode("payload-of-seventeen-bytes");
@@ -120,14 +119,14 @@ describe("createRunAuditSink", () => {
     const result = await sink.putArtifact(
       runId,
       "tool_output",
-      "runs/x/lying.txt",
+      "runs/x/counted.txt",
       data,
       "text/plain",
     );
     expect(result).toBeDefined();
-    expect(result!.bytes).toBe(data.byteLength);
+    expect(result!.bytes).toBe(data.byteLength + 100);
     const row = store.listRunArtifacts(runId).items[0]!;
-    expect(row.bytes).toBe(data.byteLength);
+    expect(row.bytes).toBe(data.byteLength + 100);
     expect(row.sha256).toBe(createHash("sha256").update(data).digest("hex"));
   });
 
