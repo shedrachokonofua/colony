@@ -16,8 +16,10 @@ import {
   type AgentRuntimePacket,
 } from "@colony/agent-runtime";
 import { FakeProviderAdapter } from "@colony/provider";
+import type { Run } from "@colony/core";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { boot, type ColonydHandle } from "../src/main.js";
+import type { ColonydContext } from "../src/context.js";
 import { SERVICE_ACTOR } from "../src/context.js";
 import { awaitPendingRuns } from "../src/runs/registry.js";
 import type { GateFailure } from "../src/runs/merge-gate.js";
@@ -36,7 +38,8 @@ const PLAN: ArchitectDecompositionV2 = {
 let dir: string;
 let provider: FakeProviderAdapter;
 let repoId: string;
-let handle: ColonydHandle;
+/** Every daemon booted here, shut down after the last case. */
+const bootedHandles: ColonydHandle[] = [];
 
 /** Scripted fake runtime state shared with the scenarios. */
 const script = {
@@ -136,6 +139,12 @@ function writeConfig(
 }
 
 async function bootFresh(configPath: string): Promise<ColonydHandle> {
+  const booted = await bootConfigured(configPath);
+  bootedHandles.push(booted);
+  return booted;
+}
+
+async function bootConfigured(configPath: string): Promise<ColonydHandle> {
   process.env["NODE_ENV"] = "test";
   process.env["AGENT_RUNTIME"] = "fake";
   process.env["GITLAB_TOKEN"] = "";
@@ -175,61 +184,77 @@ async function bootFresh(configPath: string): Promise<ColonydHandle> {
   });
 }
 
-/** Reboot the daemon against another config, same fake provider. */
-async function reboot(configPath: string): Promise<void> {
-  await handle?.shutdown();
-  handle = await bootFresh(configPath);
-}
-
-async function settle(): Promise<void> {
-  for (let round = 0; round < 4; round += 1) {
-    await awaitPendingRuns();
-  }
-}
-
 /**
- * An active scope with one queued task. Planning is materialized directly so
- * the tick under test starts from a clean slate: no architect run of our own
- * competes for the slot the scenario asserts on.
+ * Boot a daemon against one config and return the whole scenario surface.
+ * Each case gets its own config: `boot()` reads `COLONY_CONFIG_PATH` at call
+ * time, so the case writes its YAML then boots against it.
  */
-function activeScopeWithTask(goal: string): {
-  readonly scopeId: string;
-  readonly taskId: string;
-} {
-  const scope = handle.ctx.store.createScope({
-    goal,
-    provider_repo_id: repoId,
-    provider_repo_path: "so/fake-slots",
-  });
-  handle.ctx.store.audit(ACTOR, "scope.created", { scope_id: scope.id });
-  handle.ctx.store.setScopeStatus(scope.id, "planning", SERVICE_ACTOR);
-  const tasks = handle.ctx.store.materializePlan(scope.id, PLAN, SERVICE_ACTOR);
-  return { scopeId: scope.id, taskId: tasks[0]!.id };
-}
+async function harness(configPath: string): Promise<{
+  settle(): Promise<void>;
+  tick(): Promise<void>;
+  /** An active scope holding one queued task. */
+  activeScopeWithTask(goal: string): {
+    readonly scopeId: string;
+    readonly taskId: string;
+  };
+  /** Drive one task to `mr_open`, settling every tick on the way. */
+  driveToMrOpen(taskId: string): Promise<void>;
+  totalImplementerCalls(): number;
+  /** The single implement run holding a slot. */
+  theRunningImplement(): Run;
+  store: ColonydContext["store"];
+}> {
+  const booted = await bootFresh(configPath);
+  const store = booted.ctx.store;
+  const settle = async (): Promise<void> => {
+    for (let round = 0; round < 4; round += 1) {
+      await awaitPendingRuns();
+    }
+  };
 
-/**
- * Drive one task to `mr_open`: `queued -> running -> mr_open` takes two
- * ticks (dispatch, then the run's own transitions), and an approval-gated
- * merge never fires while review is required.
- */
-async function driveToMrOpen(taskId: string): Promise<void> {
-  for (let i = 0; i < 10; i += 1) {
-    if (handle.ctx.store.getTask(taskId)!.state === "mr_open") return;
-    await handle.tick();
-    await settle();
-  }
-  throw new Error(`task ${taskId} never reached mr_open`);
-}
+  /*
+   * Planning is materialized directly so the tick under test starts from a
+   * clean slate: no architect run of this scenario competes for the slot it
+   * asserts on. (Architect and developer share the capped model here, so a
+   * planning tick would otherwise consume the very slot under test.)
+   */
+  const activeScopeWithTask = (
+    goal: string,
+  ): { readonly scopeId: string; readonly taskId: string } => {
+    const scope = store.createScope({
+      goal,
+      provider_repo_id: repoId,
+      provider_repo_path: "so/fake-slots",
+    });
+    store.audit(ACTOR, "scope.created", { scope_id: scope.id });
+    store.setScopeStatus(scope.id, "planning", SERVICE_ACTOR);
+    const tasks = store.materializePlan(scope.id, PLAN, SERVICE_ACTOR);
+    return { scopeId: scope.id, taskId: tasks[0]!.id };
+  };
 
-function totalImplementerCalls(): number {
-  return [...script.implementerCalls.values()].reduce((a, b) => a + b, 0);
-}
+  const driveToMrOpen = async (taskId: string): Promise<void> => {
+    for (let i = 0; i < 10; i += 1) {
+      if (store.getTask(taskId)!.state === "mr_open") return;
+      await booted.tick();
+      await settle();
+    }
+    throw new Error(`task ${taskId} never reached mr_open`);
+  };
 
-/** The single implement run holding a slot. */
-function theRunningImplement() {
-  const runs = handle.ctx.store.activeRuns("implement");
-  expect(runs).toHaveLength(1);
-  return runs[0]!;
+  return {
+    settle,
+    tick: () => booted.tick(),
+    activeScopeWithTask,
+    driveToMrOpen,
+    totalImplementerCalls: () =>
+      [...script.implementerCalls.values()].reduce((a, b) => a + b, 0),
+    theRunningImplement: () => {
+      const runs = store.activeRuns("implement");
+      expect(runs).toHaveLength(1);
+      return runs[0]!;
+    },
+    store,
+  };
 }
 
 beforeAll(() => {
@@ -237,12 +262,14 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
-  await handle?.shutdown();
+  for (const booted of bootedHandles) await booted.shutdown();
   rmSync(dir, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
-  await handle?.shutdown();
+  // Each case boots its own colonyd; retire the previous ones first so their
+  // telemetry registrations and tick intervals do not outlive the case.
+  for (const booted of bootedHandles.splice(0)) await booted.shutdown();
   script.implementerCalls.clear();
   script.reviewerCalls = 0;
   provider = new FakeProviderAdapter();
@@ -251,66 +278,63 @@ beforeEach(async () => {
     path: "so/fake-slots",
   });
   repoId = repo.id;
-  handle = await bootFresh(writeConfig("no-limits.yaml"));
 });
 
 describe("per-model dispatch slots", () => {
   it("caps concurrent implement runs and hands the freed slot to the waiter", async () => {
-    await reboot(writeConfig("capped.yaml", { developerLimit: 1 }));
+    const h = await harness(writeConfig("capped.yaml", { developerLimit: 1 }));
 
-    const first = activeScopeWithTask("cap A");
-    const second = activeScopeWithTask("cap B");
+    const first = h.activeScopeWithTask("cap A");
+    const second = h.activeScopeWithTask("cap B");
 
-    await handle.tick();
-    expect(totalImplementerCalls()).toBe(1);
+    await h.tick();
+    expect(h.totalImplementerCalls()).toBe(1);
 
-    const dispatched = theRunningImplement();
+    const dispatched = h.theRunningImplement();
     const waiterId =
       dispatched.task_id === first.taskId ? second.taskId : first.taskId;
 
     // The deferred task is untouched: deferral is not a failure.
-    const waiter = handle.ctx.store.getTask(waiterId)!;
+    const waiter = h.store.getTask(waiterId)!;
     expect(waiter.state).toBe("queued");
     expect(waiter.attempt).toBe(0);
     expect(waiter.next_retry_at).toBeNull();
 
-    // Finish the first run: the freed slot goes to the waiter. (The same
-    // two ready tasks dispatch together when no cap is set — case 4.)
-    await settle();
-    expect(handle.ctx.store.getTask(dispatched.task_id!)!.state).toBe(
-      "mr_open",
-    );
-    await handle.tick();
-    expect(totalImplementerCalls()).toBe(2);
-    expect(handle.ctx.store.getTask(waiterId)!.state).toBe("running");
-    await settle();
+    // Finish the first run: the freed slot goes to the waiter. (The same two
+    // ready tasks dispatch together when no cap is set — case 4.)
+    await h.settle();
+    expect(h.store.getTask(dispatched.task_id!)!.state).toBe("mr_open");
+    await h.tick();
+    expect(h.totalImplementerCalls()).toBe(2);
+    expect(h.store.getTask(waiterId)!.state).toBe("running");
+    await h.settle();
   }, 30_000);
 
   it("frees a capped slot as soon as the run falls back to another model", async () => {
-    await reboot(writeConfig("capped.yaml", { developerLimit: 1 }));
+    const h = await harness(writeConfig("capped.yaml", { developerLimit: 1 }));
 
-    const first = activeScopeWithTask("fallback A");
-    const second = activeScopeWithTask("fallback B");
+    const first = h.activeScopeWithTask("fallback A");
+    const second = h.activeScopeWithTask("fallback B");
 
-    await handle.tick();
-    expect(totalImplementerCalls()).toBe(1);
-    const dispatched = theRunningImplement();
+    await h.tick();
+    expect(h.totalImplementerCalls()).toBe(1);
+    const dispatched = h.theRunningImplement();
     expect(dispatched.model_id).toBe("model-a");
     const waiterId =
       dispatched.task_id === first.taskId ? second.taskId : first.taskId;
 
     // pi_model_fallback sink rewrite: the run no longer holds model-a's slot.
-    handle.ctx.store.setRunModel(dispatched.id, "model-b");
+    h.store.setRunModel(dispatched.id, "model-b");
 
     // Same tick — the waiter does not wait for the run to finish.
-    await handle.tick();
-    expect(totalImplementerCalls()).toBe(2);
-    expect(handle.ctx.store.getTask(waiterId)!.state).toBe("running");
-    await settle();
+    await h.tick();
+    expect(h.totalImplementerCalls()).toBe(2);
+    expect(h.store.getTask(waiterId)!.state).toBe("running");
+    await h.settle();
   }, 30_000);
 
   it("gates review dispatch on the reviewer model's own slot", async () => {
-    await reboot(
+    const h = await harness(
       writeConfig("review.yaml", {
         developerLimit: 1,
         reviewerLimit: 1,
@@ -318,11 +342,11 @@ describe("per-model dispatch slots", () => {
       }),
     );
 
-    // Host task at mr_open; a review run we never let finish holds
-    // model-b's only slot for the rest of the scenario.
-    const host = activeScopeWithTask("review host");
-    await driveToMrOpen(host.taskId);
-    const inFlight = handle.ctx.store.startRun({
+    // Host task at mr_open; a review run we never let finish holds model-b's
+    // only slot for the rest of the scenario.
+    const host = h.activeScopeWithTask("review host");
+    await h.driveToMrOpen(host.taskId);
+    const inFlight = h.store.startRun({
       scope_id: host.scopeId,
       task_id: host.taskId,
       kind: "review",
@@ -330,52 +354,50 @@ describe("per-model dispatch slots", () => {
       lease_ttl_ms: 30 * 60_000,
       model_id: "model-b",
     });
-    expect(handle.ctx.store.activeRunCountByModel("model-b")).toBe(1);
+    expect(h.store.activeRunCountByModel("model-b")).toBe(1);
 
     // A second task at mr_open whose review is due, plus a ready implement
     // task on model-a (whose cap freed when the last implement run landed).
-    const underReview = activeScopeWithTask("review A");
-    await driveToMrOpen(underReview.taskId);
-    const ready = activeScopeWithTask("review B");
+    const underReview = h.activeScopeWithTask("review A");
+    await h.driveToMrOpen(underReview.taskId);
+    const ready = h.activeScopeWithTask("review B");
 
     // One tick: the implement run dispatches, the review run does not —
     // model-b is saturated by the host's in-flight review.
-    await handle.tick();
-    expect(handle.ctx.store.getTask(ready.taskId)!.state).toBe("running");
+    await h.tick();
+    expect(h.store.getTask(ready.taskId)!.state).toBe("running");
     expect(script.reviewerCalls).toBe(0);
     expect(
-      handle.ctx.store
+      h.store
         .runsForTask(underReview.taskId)
         .filter((run) => run.kind === "review"),
     ).toHaveLength(0);
 
     // Free model-b: the next tick dispatches the deferred review.
-    handle.ctx.store.finishRun(inFlight.id, "succeeded", {
+    h.store.finishRun(inFlight.id, "succeeded", {
       evidence_json: JSON.stringify({ verdict: "approve", head_sha: SHA_A }),
     });
-    expect(handle.ctx.store.activeRunCountByModel("model-b")).toBe(0);
+    expect(h.store.activeRunCountByModel("model-b")).toBe(0);
 
-    await handle.tick();
-    const reviews = handle.ctx.store
+    await h.tick();
+    const reviews = h.store
       .runsForTask(underReview.taskId)
       .filter((run) => run.kind === "review");
     expect(reviews).toHaveLength(1);
-    await settle();
+    await h.settle();
     expect(script.reviewerCalls).toBe(1);
-    expect(handle.ctx.store.getRun(reviews[0]!.id)!.status).toBe(
-      "succeeded",
-    );
+    expect(h.store.getRun(reviews[0]!.id)!.status).toBe("succeeded");
   }, 30_000);
 
   it("dispatches every ready task when no model cap is configured", async () => {
-    await reboot(writeConfig("no-limits.yaml"));
+    const h = await harness(writeConfig("no-limits.yaml"));
 
-    activeScopeWithTask("uncapped A");
-    activeScopeWithTask("uncapped B");
+    h.activeScopeWithTask("uncapped A");
+    h.activeScopeWithTask("uncapped B");
 
-    await handle.tick();
-    expect(totalImplementerCalls()).toBe(2);
-    expect(handle.ctx.store.activeRuns("implement")).toHaveLength(2);
-    await settle();
+    await h.tick();
+    expect(h.totalImplementerCalls()).toBe(2);
+    expect(h.store.activeRuns("implement")).toHaveLength(2);
+    await h.settle();
   }, 30_000);
 });
