@@ -608,13 +608,11 @@ async function scenarioRestart(port: number): Promise<void> {
       "GET",
       `/audit?task_id=${encodeURIComponent(taskId ?? "")}&limit=500`,
     );
-    const audit = Array.isArray(auditResponse.body)
-      ? (auditResponse.body as {
-          at: string;
-          action: string;
-          detail_json: string;
-        }[])
-      : [];
+    const audit = (
+      auditResponse.body as {
+        events: { at: string; action: string; detail_json: string }[];
+      }
+    ).events;
     const requeued = audit.some((row) => {
       if (row.action !== "task.transition" || row.at < killedAt) return false;
       const detail = JSON.parse(row.detail_json) as {
@@ -1039,7 +1037,11 @@ async function scenarioReviewLoop(port: number): Promise<void> {
       if (auditResponse.status !== 200) {
         throw new Error(`GET /audit -> ${auditResponse.status}`);
       }
-      const audit = (auditResponse.body as { id: number; action: string }[])
+      const audit = (
+        auditResponse.body as {
+          events: { id: number; action: string }[];
+        }
+      ).events
         .slice()
         .sort((a, b) => a.id - b.id);
       const actions = audit.map((row) => row.action);
