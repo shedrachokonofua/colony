@@ -218,6 +218,7 @@ describe("project-page settings rail", () => {
   it("composes <project-context-card> and the deduped repo list", async () => {
     const el = makePage(pageOf({ scopes: [] }), {
       editing: true,
+      tab: "settings",
       contextDoc: "# Brief\n\nOperator-facing console.",
     });
     await el.updateComplete;
@@ -235,9 +236,62 @@ describe("project-page settings rail", () => {
     );
   });
 
+  it("hands the files and save status down to the card", async () => {
+    const el = makePage(pageOf({ scopes: [] }), {
+      tab: "settings",
+      files: [{ filename: "notes.md", media_type: "text/markdown", byte_size: 12 }],
+      saveStatus: "saved",
+      editing: true,
+    });
+    await el.updateComplete;
+    const card = el.querySelector("project-context-card");
+    expect(card.files.length).toBe(1);
+    expect(card.saveStatus).toBe("saved");
+    expect(card.querySelector(".file-list li").textContent).toContain(
+      "notes.md",
+    );
+    expect(card.querySelector(".pc-status.is-saved")).toBeTruthy();
+  });
+});
+
+describe("project-page settings tab", () => {
+  it("shows the scopes rack and hides the rail while the Scopes tab is active", async () => {
+    const el = makePage(pageOf({ scopes: [scope("col-a")] }));
+    await el.updateComplete;
+    expect(el.tab).toBe("scopes");
+    expect(el.querySelector(".project-scopes")).toBeTruthy();
+    expect(el.querySelector(".project-settings")).toBeNull();
+  });
+
+  it("swaps to the rail on the Settings tab, hiding the scope rack", async () => {
+    const el = makePage(pageOf({ scopes: [scope("col-a")] }), {
+      tab: "settings",
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".project-scopes")).toBeNull();
+    expect(el.querySelector(".project-settings")).toBeTruthy();
+  });
+
+  it("each tab bubbles colony-toggle with its id and marks aria-selected", async () => {
+    const el = makePage(pageOf({ scopes: [] }));
+    const seen = [];
+    el.addEventListener("colony-toggle", (event) => seen.push(event.detail));
+    await el.updateComplete;
+    const tabs = [...el.querySelectorAll(".tabs .tab")];
+    expect(tabs.map((t) => t.textContent.trim())).toEqual([
+      "Scopes",
+      "Settings",
+    ]);
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+    expect(tabs[1].getAttribute("aria-selected")).toBe("false");
+    tabs[1].click();
+    expect(seen).toEqual([{ key: "projectTab", value: "settings" }]);
+  });
+
   it("shows the empty repo note when none are connected", async () => {
     const el = makePage(
       pageOf({ project: { ...PROJECT, repositories: [] }, scopes: [] }),
+      { tab: "settings" },
     );
     await el.updateComplete;
     expect(el.querySelector(".repo-list")).toBeNull();

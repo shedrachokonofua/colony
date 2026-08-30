@@ -213,6 +213,24 @@ describe("project-list navigation", () => {
     ]);
   });
 
+  it("a modified click keeps the anchor and does not navigate", async () => {
+    // A cmd/ctrl/shift-click must open a new tab without rewriting the
+    // current one, so the handler defers to the anchor's href.
+    const el = makeList(pageOf([project("My Project")]));
+    const seen = eventsOf(el);
+    await el.updateComplete;
+    const card = el.querySelector(".project-card");
+    card.dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true, metaKey: true }),
+    );
+    card.dispatchEvent(
+      new window.MouseEvent("click", { bubbles: true, shiftKey: true }),
+    );
+    expect(seen).toEqual([]);
+    // The href still carries the destination for the browser to open.
+    expect(card.getAttribute("href")).toBe("#/project/My%20Project");
+  });
+
   it("escapes a project name that needs encoding", async () => {
     const el = makeList(pageOf([project("a/b?c")]));
     await el.updateComplete;

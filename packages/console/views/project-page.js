@@ -1,8 +1,13 @@
-// <project-page>: a project's own page — breadcrumbs, head, brief card,
-// scope list, and the settings rail. Ported from renderProjectPage +
-// renderProjectRail (app.js). Property-down: projectPage {name, project,
-// scopes, total, offset, page}, contextDoc, files, editing, config, error.
-// Events-up: colony-page {page, surface:"project"} and colony-navigate.
+// <project-page>: a project's own page — breadcrumbs, head, scope list, and
+// the settings rail. Ported from renderProjectPage + renderProjectRail
+// (app.js). Property-down: projectPage {name, project, scopes, total,
+// offset, page}, contextDoc, files, editing, saveStatus, tab, config, error.
+// Events-up: colony-page {page, surface:"project"}, colony-navigate, and
+// colony-toggle {key:"projectTab", value} from the Scopes/Settings tabs.
+//
+// The monolith gates the rail behind a Scopes/Settings tab switcher; here
+// the tab is a property the shell drives, so the rail's visibility is the
+// shell's call rather than state the view owns.
 import { ColonyElement, html, nothing, repeat } from "../base.js";
 import { rel } from "../rel-time.js";
 import { hrefForPage, pageCount } from "../pagination.js";
@@ -26,9 +31,16 @@ export class ProjectPage extends ColonyElement {
     contextDoc: { type: String },
     files: { type: Array },
     editing: { type: Boolean },
+    saveStatus: { type: String },
+    tab: { type: String },
     config: { type: Object },
     error: { type: String },
   };
+
+  static TABS = [
+    ["scopes", "Scopes"],
+    ["settings", "Settings"],
+  ];
 
   constructor() {
     super();
@@ -36,6 +48,8 @@ export class ProjectPage extends ColonyElement {
     this.contextDoc = "";
     this.files = [];
     this.editing = false;
+    this.saveStatus = null;
+    this.tab = "scopes";
     this.config = null;
     this.error = "";
   }
@@ -87,6 +101,24 @@ export class ProjectPage extends ColonyElement {
     this.#emit("colony-page", { page, surface: "project" });
   }
 
+  /** The monolith's Scopes/Settings switcher (app.js). */
+  #tabs() {
+    return html`<nav class="tabs" role="tablist" aria-label="Project sections">
+      ${ProjectPage.TABS.map(
+        ([id, label]) =>
+          html`<button
+            class="tab"
+            role="tab"
+            aria-selected=${this.tab === id}
+            @click=${() =>
+              this.#emit("colony-toggle", { key: "projectTab", value: id })}
+          >
+            ${label}
+          </button>`,
+      )}
+    </nav>`;
+  }
+
   #repoUrl(path) {
     const base = String(this.config?.gitlab_base_url ?? "").replace(/\/$/, "");
     return base && path ? `${base}/${path}` : "";
@@ -126,7 +158,9 @@ export class ProjectPage extends ColonyElement {
       <project-context-card
         .project=${project}
         .contextDoc=${this.contextDoc ?? ""}
+        .files=${this.files ?? []}
         .editing=${this.editing}
+        .saveStatus=${this.saveStatus}
       ></project-context-card>
       <aside class="card">
         <p class="card-head">Connected repositories</p>
@@ -203,33 +237,36 @@ export class ProjectPage extends ColonyElement {
               )}
             </p>`
           : nothing}
-        <section class="project-scopes">
-          ${page.total > 0 && scopes.length === 0
-            ? html`<div class="rack-empty">
-                <p>Past the last page.</p>
-                <a class="btn btn-solid" href=${hrefForPage(base, 1)}
-                  >Back to page 1</a
-                >
-                <a class="btn btn-quiet" href="#/">All projects</a>
-              </div>`
-            : scopes.length
-              ? html`<div class="rack">
-                  ${repeat(
-                    scopes,
-                    (scope) => scope.id,
-                    (s) => this.#scopeCard(s),
-                  )}
-                </div>`
-              : html`<p class="rack-empty">No scopes in this project yet.</p>`}
-        </section>
-        ${this.#pager({
-          base,
-          page: page.page,
-          total: page.total,
-          items: scopes.length,
-          label: "Project scope pages",
-        })}
-        ${this.#rail()}
+        ${this.#tabs()}
+        ${this.tab === "settings"
+          ? this.#rail()
+          : html`<section class="project-scopes"
+              >${page.total > 0 && scopes.length === 0
+                ? html`<div class="rack-empty">
+                    <p>Past the last page.</p>
+                    <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                      >Back to page 1</a
+                    >
+                    <a class="btn btn-quiet" href="#/">All projects</a>
+                  </div>`
+                : scopes.length
+                  ? html`<div class="rack">
+                      ${repeat(
+                        scopes,
+                        (scope) => scope.id,
+                        (s) => this.#scopeCard(s),
+                      )}
+                    </div>`
+                  : html`<p class="rack-empty">
+                      No scopes in this project yet.
+                    </p>`}</section
+            >${this.#pager({
+              base,
+              page: page.page,
+              total: page.total,
+              items: scopes.length,
+              label: "Project scope pages",
+            })}`}
       </div>`;
   }
 }

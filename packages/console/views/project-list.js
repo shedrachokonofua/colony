@@ -51,6 +51,19 @@ function pager({ base, page, total, items, label }) {
   </nav>`;
 }
 
+/** Card links route through colony-navigate; modified clicks keep the anchor. */
+function navigate(event, href) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+  event.preventDefault();
+  event.currentTarget.dispatchEvent(
+    new CustomEvent("colony-navigate", {
+      bubbles: true,
+      composed: true,
+      detail: { href },
+    }),
+  );
+}
+
 function projectCard(project) {
   const counts = project.status_counts ?? {};
   const chips = Object.entries(counts).filter(([, n]) => n > 0);
@@ -59,14 +72,7 @@ function projectCard(project) {
   return html`<a
     class="card project-card project-row"
     href=${projectHref(project.name)}
-    @click=${(event) =>
-      event.currentTarget.dispatchEvent(
-        new CustomEvent("colony-navigate", {
-          bubbles: true,
-          composed: true,
-          detail: { href: projectHref(project.name) },
-        }),
-      )}
+    @click=${(event) => navigate(event, projectHref(project.name))}
   >
     <span class="project-card-name">${project.name}</span>
     <span class="project-card-meta">
