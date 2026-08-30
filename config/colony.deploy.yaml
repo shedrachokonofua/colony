@@ -15,6 +15,14 @@ sandbox:
     namespace: colony-sandboxes
     image: registry.gitlab.home.shdr.ch/so/colony/sandbox:latest
 
+# Run-audit artifact store. The deployed pod's image rootfs is not writable
+# by uid 1000; the PVC at /var/lib/colonyd is. The default (data/artifacts,
+# relative to cwd /workspace) crashed boot on 2026-08-30 — keep this absolute.
+artifacts:
+  kind: local
+  local:
+    dir: /var/lib/colonyd/artifacts
+
 hitl:
   mode: yolo
 
