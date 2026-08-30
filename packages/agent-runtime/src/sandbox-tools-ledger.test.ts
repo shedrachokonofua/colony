@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunAuditSink } from "./audit-sink.js";
 import { buildSandboxTools } from "./sandbox-tools.js";
-import { buildSandboxLaunchProfile } from "@colony/sandbox";
+import { toolText } from "./sandbox-wiring.test.js";
+import { buildSandboxLaunchProfile, type SandboxHandle } from "@colony/sandbox";
 import { createInProcessEngine } from "@colony/sandbox-in-process";
 import { afterEach, describe, expect, it } from "bun:test";
 
@@ -203,5 +204,92 @@ describe("exec command ledger", () => {
     } finally {
       await handle.destroy();
     }
+  });
+
+  it("logs swallowed ledger sink failures via the runner logger", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "colony-ledger-log-"));
+    scratchDirs.push(workspace);
+    const engine = createInProcessEngine();
+    const handle = await engine.provision(
+      buildSandboxLaunchProfile("developer"),
+      workspace,
+    );
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const tools = Object.fromEntries(
+      buildSandboxTools(handle, workspace, {
+        auditSink: recordingSink(true).sink,
+        runId: "run-ledger-logged",
+        logger: {
+          warn: (fields, message) => warnings.push({ fields, message }),
+        },
+      }).map((tool) => [tool.name, tool]),
+    );
+    try {
+      await runTool(tools["bash"], { command: "echo logged-swallow" });
+      expect(warnings.length).toBe(1);
+      expect(warnings[0]!.message).toBe("sandbox_ledger_append_event_failed");
+      expect(warnings[0]!.fields["runId"]).toBe("run-ledger-logged");
+    } finally {
+      await handle.destroy();
+    }
+  });
+
+  it("propagates non-abort exec failures out of probe helpers", async () => {
+    // A probe helper (find/ls exists, grep) shells out through execCapture.
+    // A handle failure (exec after destroy, engine IO error) must surface as
+    // a rejection, not masquerade as a completed run with empty output
+    // ("not found" / "no matches").
+    const broken: SandboxHandle = {
+      exec: () => Promise.reject(new Error("exec after destroy")),
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new Error("unused")),
+      destroy: () => Promise.resolve(),
+    };
+    const tools = Object.fromEntries(
+      buildSandboxTools(broken, "/workspace").map((tool) => [tool.name, tool]),
+    );
+    await expect(
+      runTool(tools["grep"], { pattern: "anything" }),
+    ).rejects.toThrow("exec after destroy");
+    await expect(
+      runTool(tools["find"], { pattern: "**/*.ts" }),
+    ).rejects.toThrow("exec after destroy");
+  });
+
+  it("keeps the bash seam's mid-exec abort semantics", async () => {
+    // Only the bash operations seam forwards the tool's AbortSignal; a
+    // mid-exec abort (run timeout, cancellation) must still surface as the
+    // shim's "Command aborted" tool error, never a silent empty success.
+    const controller = new AbortController();
+    const { promise, reject } = Promise.withResolvers<{
+      exitCode: number | null;
+      timedOut?: boolean;
+    }>();
+    const pending: SandboxHandle = {
+      exec: () => {
+        controller.signal.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+        return promise;
+      },
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new Error("unused")),
+      destroy: () => Promise.resolve(),
+    };
+    const tools = Object.fromEntries(
+      buildSandboxTools(pending, "/workspace").map((tool) => [tool.name, tool]),
+    );
+    const bashExec = tools["bash"].execute as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    const pendingExec = bashExec(
+      "b-abort",
+      { command: "sleep 999" },
+      controller.signal,
+    );
+    // The stub's exec promise settles only when the signal aborts — no
+    // wall-clock wait is needed; abort deterministically settles it.
+    controller.abort();
+    await expect(pendingExec).rejects.toThrow("Command aborted");
   });
 });

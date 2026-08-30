@@ -102,6 +102,35 @@ describe("createRunAuditSink", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("putArtifact records data.byteLength, not the backend's byte count", async () => {
+    const { store, runId, root } = wiredSink();
+    // A backend whose reported byte count disagrees with the payload — the
+    // S3 backend can (a header-derived count from a PUT response). The row
+    // must describe the hashed bytes, so the backend's number is never used.
+    const lyingBackend = createLocalArtifactStore(join(root, "lying"));
+    const sink = createRunAuditSink(store, {
+      ...lyingBackend,
+      put: async (key, data, meta) => {
+        const stored = await lyingBackend.put(key, data, meta);
+        return { ref: stored.ref, bytes: 0 };
+      },
+    });
+    const data = new TextEncoder().encode("payload-of-seventeen-bytes");
+
+    const result = await sink.putArtifact(
+      runId,
+      "tool_output",
+      "runs/x/lying.txt",
+      data,
+      "text/plain",
+    );
+    expect(result).toBeDefined();
+    expect(result!.bytes).toBe(data.byteLength);
+    const row = store.listRunArtifacts(runId).items[0]!;
+    expect(row.bytes).toBe(data.byteLength);
+    expect(row.sha256).toBe(createHash("sha256").update(data).digest("hex"));
+  });
+
   it("appendEvent persists events and swallows store failures", () => {
     const { store, artifacts, runId } = wiredSink();
     const sink = createRunAuditSink(store, artifacts);
