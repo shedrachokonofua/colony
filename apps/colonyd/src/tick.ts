@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import type { AgentRole } from "@colony/config";
 import type { Run, Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
@@ -125,6 +125,25 @@ const INFRA_FAILURE =
 /** Exported for tests: classify a run error as infrastructure-caused. */
 export function isInfraError(error: string | null | undefined): boolean {
   return typeof error === "string" && INFRA_FAILURE.test(error);
+}
+
+/**
+ * True when the role's primary provider model has a free dispatch slot.
+ *
+ * The cap is read from config alone, so a config without `max_parallel_runs`
+ * is unlimited: an unresolvable role (lazy/fake configs omitting it) also
+ * counts as free rather than stalling the whole pipeline on a config gap.
+ */
+export function hasModelSlot(ctx: ColonydContext, role: AgentRole): boolean {
+  let modelId: string;
+  try {
+    modelId = ctx.config.forAgent(role).model.id;
+  } catch {
+    return true;
+  }
+  const limit = ctx.config.modelParallelLimit(modelId);
+  if (limit === null) return true;
+  return ctx.store.activeRunCountByModel(modelId) < limit;
 }
 
 function lastImplementFailureWasInfra(
@@ -391,6 +410,7 @@ async function advanceMrOpenTasks(
         ) {
           continue;
         }
+        if (!hasModelSlot(ctx, "reviewer")) continue;
         dispatch(runReview(ctx, scope, task, headSha));
         continue;
       }
@@ -490,6 +510,7 @@ async function advanceScopePlanning(
         .runsForScope(scope.id)
         .some((r) => r.kind === "architect" && r.status === "running");
       if (activeArchitect) continue;
+      if (!hasModelSlot(ctx, "architect")) continue;
       ctx.store.setScopeStatus(scope.id, "planning", SERVICE_ACTOR);
       dispatch(runArchitect(ctx, ctx.store.getScope(scope.id)!));
       continue;
@@ -500,6 +521,7 @@ async function advanceScopePlanning(
         .runsForScope(scope.id)
         .some((r) => r.kind === "architect" && r.status === "running");
       if (activeArchitect) continue;
+      if (!hasModelSlot(ctx, "architect")) continue;
 
       const lastArchitect = ctx.store
         .runsForScope(scope.id)
@@ -558,6 +580,7 @@ async function dispatchImplementers(
   const ready = ctx.store.readyTasks();
   for (const task of ready) {
     if (ctx.store.activeRunCount("implement") >= ctx.env.maxConcurrent) break;
+    if (!hasModelSlot(ctx, "developer")) continue;
     const scope = ctx.store.getScope(task.scope_id);
     if (!scope || scope.status !== "active") continue;
     const current = ctx.store.getTask(task.id);
@@ -637,6 +660,9 @@ async function validateScopes(
       .activeRuns("validate")
       .some((r) => r.scope_id === scope.id);
     if (running) continue;
+    // Validate runs are credential-free (model_id: null), so the slot is
+    // keyed on the pipeline's primary role.
+    if (!hasModelSlot(ctx, "developer")) continue;
     dispatch(runValidation(ctx, fresh));
   }
 }
