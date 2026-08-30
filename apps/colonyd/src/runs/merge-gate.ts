@@ -237,10 +237,15 @@ async function executeMergeGate(
 
     let mergeResult: ProviderMergeRequest;
     try {
+      // Merge subject names the merged work; the Colony-Models provenance
+      // line rides below as a proper git trailer, not as the subject.
       const provenance = buildScopeProvenance(ctx, scope, task);
+      const subject = `merge: ${task.title} (${task.id}, MR !${mr.iid})`;
       mergeResult = await ctx.provider.mergeRequests.merge(repo, mr.id, {
         sha: headSha,
-        ...(provenance ? { merge_commit_message: provenance } : {}),
+        merge_commit_message: provenance
+          ? `${subject}\n\n${provenance}\n`
+          : subject,
       });
     } catch (mergeError) {
       let observed: ProviderMergeRequest | undefined;
