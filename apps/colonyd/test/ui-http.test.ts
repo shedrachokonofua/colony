@@ -223,10 +223,10 @@ describe("operator console", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(res.status).toBe(200);
-    const rows = (await res.json()) as {
-      event: string;
-      detail_json: string;
-    }[];
+    const page = (await res.json()) as {
+      events: { event: string; detail_json: string }[];
+    };
+    const rows = page.events;
     expect(rows).toHaveLength(1);
     expect(rows[0]?.event).toBe("pi_tool_call");
     expect(JSON.parse(rows[0]!.detail_json).tool).toBe("bash");

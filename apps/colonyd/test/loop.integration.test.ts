@@ -382,8 +382,8 @@ describe("colonyd fake end-to-end loop", () => {
     };
     expect(passedEvidence.passed).toBe(true);
     const validatedAudit = handle.ctx.store
-      .listAudit({ scope_id: scopeId, limit: 1000 }).events
-      .filter((row) => row.action === "scope.validated");
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .events.filter((row) => row.action === "scope.validated");
     expect(validatedAudit.length).toBeGreaterThanOrEqual(1);
 
     const tasks = handle.ctx.store.listTasks(scopeId);
@@ -394,14 +394,14 @@ describe("colonyd fake end-to-end loop", () => {
 
     // A merged before B ever dispatched: audit row order proves it.
     const firstRunningB = handle.ctx.store
-      .listAudit({ task_id: taskB!.id, limit: 1000 }).events
-      .find(
+      .listAudit({ task_id: taskB!.id, limit: 1000 })
+      .events.find(
         (row) =>
           row.action === "task.transition" && transitionTo(row) === "running",
       );
     const mergedA = handle.ctx.store
-      .listAudit({ task_id: taskA!.id, limit: 1000 }).events
-      .find(
+      .listAudit({ task_id: taskA!.id, limit: 1000 })
+      .events.find(
         (row) =>
           row.action === "task.transition" && transitionTo(row) === "merged",
       );
@@ -411,8 +411,8 @@ describe("colonyd fake end-to-end loop", () => {
     // Audit contains task.transition rows for every hop of both tasks.
     for (const task of tasks) {
       const hops = handle.ctx.store
-        .listAudit({ task_id: task.id, limit: 1000 }).events
-        .filter((row) => row.action === "task.transition")
+        .listAudit({ task_id: task.id, limit: 1000 })
+        .events.filter((row) => row.action === "task.transition")
         .sort((x, y) => x.id - y.id)
         .map((row) => {
           const detail = JSON.parse(row.detail_json) as Record<string, unknown>;
@@ -508,8 +508,8 @@ describe("colonyd fake end-to-end loop", () => {
     expect(passedGate).toBeTruthy();
     // No duplicate MRs were opened for the task.
     const auditMrOpened = handle.ctx.store
-      .listAudit({ task_id: taskA.id, limit: 1000 }).events
-      .filter((row) => row.action === "mr.opened");
+      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .events.filter((row) => row.action === "mr.opened");
     expect(auditMrOpened).toHaveLength(1);
   }, 30_000);
 
@@ -590,8 +590,8 @@ describe("colonyd fake end-to-end loop", () => {
     expect(taskA.state).toBe("merged");
     expect(
       handle.ctx.store
-        .listAudit({ task_id: taskA.id, limit: 100 }).events
-        .some((row) => row.action === "gate.merge_timeout_reconciled"),
+        .listAudit({ task_id: taskA.id, limit: 100 })
+        .events.some((row) => row.action === "gate.merge_timeout_reconciled"),
     ).toBe(true);
   }, 30_000);
 
@@ -691,8 +691,8 @@ describe("colonyd fake end-to-end loop", () => {
     expect(a.state).toBe("queued");
     expect(a.attempt).toBe(1);
     const changes = handle.ctx.store
-      .listAudit({ task_id: taskA.id, limit: 1000 }).events
-      .filter((row) => row.action === "review.changes_requested");
+      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .events.filter((row) => row.action === "review.changes_requested");
     expect(changes).toHaveLength(1);
 
     handle.ctx.store.clearRetryDelay(taskA.id);
@@ -705,8 +705,8 @@ describe("colonyd fake end-to-end loop", () => {
     expect(scope.status).toBe("done");
 
     const audit = handle.ctx.store
-      .listAudit({ task_id: taskA.id, limit: 1000 }).events
-      .slice()
+      .listAudit({ task_id: taskA.id, limit: 1000 })
+      .events.slice()
       .sort((x, y) => x.id - y.id)
       .map((row) => row.action);
     const requested = audit.indexOf("review.changes_requested");
@@ -782,8 +782,8 @@ describe("colonyd fake end-to-end loop", () => {
 
     // Audit records the failure.
     const failedAudit = handle.ctx.store
-      .listAudit({ scope_id: scopeId, limit: 1000 }).events
-      .filter((row) => row.action === "scope.validation_failed");
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .events.filter((row) => row.action === "scope.validation_failed");
     expect(failedAudit.length).toBeGreaterThanOrEqual(1);
 
     // Flip the fake to pass, then revalidate via the HTTP endpoint.
@@ -797,8 +797,8 @@ describe("colonyd fake end-to-end loop", () => {
     const body = (await res.json()) as { status: string };
     expect(body.status).toBe("validating");
     const revalidateAudit = handle.ctx.store
-      .listAudit({ scope_id: scopeId, limit: 1000 }).events
-      .filter((row) => row.action === "scope.revalidate_requested");
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .events.filter((row) => row.action === "scope.revalidate_requested");
     expect(revalidateAudit.length).toBeGreaterThanOrEqual(1);
 
     // Settle the re-triggered validation run.
