@@ -199,6 +199,10 @@ async function harness(configPath: string): Promise<{
   };
   /** Drive one task to `mr_open`, settling every tick on the way. */
   driveToMrOpen(taskId: string): Promise<void>;
+  /** A `draft` scope: the next planning tick dispatches its architect run. */
+  draftScope(goal: string): string;
+  /** A `validating` scope: the next tick dispatches its validate run. */
+  validatingScope(goal: string): string;
   totalImplementerCalls(): number;
   /** The single implement run holding a slot. */
   theRunningImplement(): Run;
@@ -241,11 +245,36 @@ async function harness(configPath: string): Promise<{
     throw new Error(`task ${taskId} never reached mr_open`);
   };
 
+  const draftScope = (goal: string): string => {
+    const scope = store.createScope({
+      goal,
+      provider_repo_id: repoId,
+      provider_repo_path: "so/fake-slots",
+    });
+    store.audit(ACTOR, "scope.created", { scope_id: scope.id });
+    return scope.id;
+  };
+
+  // A validating scope with one merged task: merge -> validating, then the
+  // validate phase dispatches on the following tick.
+  const validatingScope = (goal: string): string => {
+    const { scopeId, taskId } = activeScopeWithTask(goal);
+    const task = store.getTask(taskId)!;
+    store.transitionTask(taskId, task.state_version, "canceled", ACTOR);
+    const done = store.getTask(taskId)!;
+    store.transitionTask(done.id, done.state_version, "queued", ACTOR);
+    const requeued = store.getTask(taskId)!;
+    store.transitionTask(requeued.id, requeued.state_version, "merged", ACTOR);
+    return scopeId;
+  };
+
   return {
     settle,
     tick: () => booted.tick(),
     activeScopeWithTask,
     driveToMrOpen,
+    draftScope,
+    validatingScope,
     totalImplementerCalls: () =>
       [...script.implementerCalls.values()].reduce((a, b) => a + b, 0),
     theRunningImplement: () => {
@@ -387,6 +416,74 @@ describe("per-model dispatch slots", () => {
     await h.settle();
     expect(script.reviewerCalls).toBe(1);
     expect(h.store.getRun(reviews[0]!.id)!.status).toBe("succeeded");
+  }, 30_000);
+
+  it("defers architect and validate dispatch, never the paths that spend no model slot", async () => {
+    const h = await harness(writeConfig("capped.yaml", { developerLimit: 1 }));
+
+    // Occupy model-a's only slot: architect and validate key off the same
+    // model as the developer in this config.
+    const holder = h.draftScope("holds model-a");
+    h.store.startRun({
+      scope_id: holder,
+      kind: "architect",
+      lease_ttl_ms: 30 * 60_000,
+      model_id: "model-a",
+    });
+    expect(h.store.activeRunCountByModel("model-a")).toBe(1);
+
+    const draft = h.draftScope("deferred planning");
+    const validating = h.validatingScope("deferred validation");
+    // A planning scope whose architect run already landed: the tick that
+    // materializes the approved plan spends no model slot.
+    const replanScope = h.draftScope("ready to materialize");
+    const landed = h.store.startRun({
+      scope_id: replanScope,
+      kind: "architect",
+      lease_ttl_ms: 30 * 60_000,
+      model_id: "model-a",
+    });
+    h.store.finishRun(landed.id, "succeeded", {
+      envelope_json: JSON.stringify(PLAN),
+    });
+    h.store.setScopeStatus(replanScope, "planning", SERVICE_ACTOR);
+    h.store.setScopePlan(replanScope, JSON.stringify(PLAN));
+
+    await h.tick();
+
+    // Deferred: both model-backed dispatches wait for a free slot.
+    expect(h.store.getScope(draft)!.status).toBe("draft");
+    expect(
+      h.store.runsForScope(draft).filter((run) => run.kind === "architect"),
+    ).toHaveLength(0);
+    expect(h.store.getScope(validating)!.status).toBe("validating");
+    expect(
+      h.store.runsForScope(validating).filter((run) => run.kind === "validate"),
+    ).toHaveLength(0);
+
+    // Not deferred: materializing an approved plan spends no model slot, so
+    // a saturated model must not stall the pipeline behind it.
+    expect(h.store.getScope(replanScope)!.status).toBe("active");
+    expect(h.store.listTasks(replanScope)).toHaveLength(1);
+
+    // Free the slot: both deferred dispatches go out on the next tick.
+    const holding = h.store
+      .runsForScope(holder)
+      .find((run) => run.kind === "architect")!;
+    h.store.finishRun(holding.id, "failed", { error: "fixture release" });
+    // Retire the holder: it is still `draft`, so the planning phase would
+    // hand it the slot the scenario just freed.
+    h.store.setScopeStatus(holder, "abandoned", SERVICE_ACTOR);
+    expect(h.store.activeRunCountByModel("model-a")).toBe(0);
+
+    await h.tick();
+    expect(
+      h.store.runsForScope(draft).filter((run) => run.kind === "architect"),
+    ).toHaveLength(1);
+    expect(
+      h.store.runsForScope(validating).filter((run) => run.kind === "validate"),
+    ).toHaveLength(1);
+    await h.settle();
   }, 30_000);
 
   it("dispatches every ready task when no model cap is configured", async () => {

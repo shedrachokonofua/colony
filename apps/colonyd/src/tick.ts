@@ -546,7 +546,6 @@ async function advanceScopePlanning(
         .runsForScope(scope.id)
         .some((r) => r.kind === "architect" && r.status === "running");
       if (activeArchitect) continue;
-      if (!hasModelSlot(ctx, "architect")) continue;
 
       const lastArchitect = ctx.store
         .runsForScope(scope.id)
@@ -555,6 +554,7 @@ async function advanceScopePlanning(
 
       if (lastArchitect?.status === "succeeded" && !scope.plan_json) {
         // Replan requested: the operator rejected the plan with feedback.
+        if (!hasModelSlot(ctx, "architect")) continue;
         dispatch(runArchitect(ctx, scope));
         continue;
       }
@@ -588,6 +588,7 @@ async function advanceScopePlanning(
           });
           continue;
         }
+        if (!hasModelSlot(ctx, "architect")) continue;
         dispatch(runArchitect(ctx, scope));
       }
     }
