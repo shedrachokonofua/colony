@@ -46,7 +46,7 @@ export class ProjectFiles extends ColonyElement {
     const last = Math.max(1, pageCount(total, PAGE_SIZE));
     const from = (page - 1) * PAGE_SIZE + 1;
     const to = Math.min((page - 1) * PAGE_SIZE + items, total);
-    return html`<nav class="pager" aria-label=${label}>
+    return html`<nav class="board-pager" aria-label=${label}>
       <a
         class="btn btn-quiet"
         href=${hrefForPage(base, Math.max(1, page - 1))}

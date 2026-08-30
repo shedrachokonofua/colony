@@ -200,7 +200,7 @@ describe("project-page pagination", () => {
     expect(paged.querySelector(".pager-range")?.textContent).toBe(
       "51–52 of 100",
     );
-    const links = [...paged.querySelectorAll(".pager a")];
+    const links = [...paged.querySelectorAll(".board-pager a")];
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
       "#/project/Operator%20console?page=2",
       "#/project/Operator%20console?page=4",

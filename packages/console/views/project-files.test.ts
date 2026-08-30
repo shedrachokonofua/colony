@@ -248,7 +248,7 @@ describe("project-files navigation", () => {
     const el = makeFiles(pageOf({ total: 100, page: 3 }));
     const seen = eventsOf(el);
     await el.updateComplete;
-    const links = [...el.querySelectorAll(".pager a")];
+    const links = [...el.querySelectorAll(".board-pager a")];
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
       "#/project/Operator%20console/files?page=2",
       "#/project/Operator%20console/files?page=4",

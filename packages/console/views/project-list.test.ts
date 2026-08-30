@@ -43,7 +43,7 @@ function makeList(page = null, props = {}) {
 }
 
 function pagerLink(el, label) {
-  return [...el.querySelectorAll(".pager a")].find(
+  return [...el.querySelectorAll(".board-pager a")].find(
     (a) => a.textContent.trim() === label,
   );
 }
@@ -139,11 +139,11 @@ describe("project-list pagination", () => {
   it("hides the pager until the list spans more than one page", async () => {
     const el = makeList(pageOf([project("Alpha")]));
     await el.updateComplete;
-    expect(el.querySelector(".pager")).toBeNull();
+    expect(el.querySelector(".board-pager")).toBeNull();
 
     const paged = makeList(pageOf([project("Alpha")], { total: 30, page: 2 }));
     await paged.updateComplete;
-    expect(paged.querySelector(".pager")).toBeTruthy();
+    expect(paged.querySelector(".board-pager")).toBeTruthy();
     expect(paged.querySelector(".pager-range")?.textContent).toBe(
       "26–26 of 30",
     );
@@ -179,7 +179,7 @@ describe("project-list pagination", () => {
   it("carries the pager hrefs, so a reload lands on the same page", async () => {
     const el = makeList(pageOf([project("Alpha")], { total: 100, page: 3 }));
     await el.updateComplete;
-    const hrefs = [...el.querySelectorAll(".pager a")].map((a) =>
+    const hrefs = [...el.querySelectorAll(".board-pager a")].map((a) =>
       a.getAttribute("href"),
     );
     expect(hrefs).toEqual(["#/?page=2", "#/?page=4"]);

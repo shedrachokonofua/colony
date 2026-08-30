@@ -34,7 +34,7 @@ function pager({ base, page, total, items, label }) {
       }),
     );
   };
-  return html`<nav class="pager" aria-label=${label}>
+  return html`<nav class="board-pager" aria-label=${label}>
     <a
       class="btn btn-quiet"
       href=${hrefForPage(base, Math.max(1, page - 1))}
@@ -115,7 +115,7 @@ export class ProjectList extends ColonyElement {
             ${this.error}
           </div>`
         : nothing}
-      <div class="project-list board" id="draw">
+      <div class="project-index board" id="draw">
         <div class="board-head">
           <h1 class="board-title">Projects</h1>
           <div class="board-head-actions">
