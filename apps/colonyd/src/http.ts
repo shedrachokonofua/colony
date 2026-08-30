@@ -30,8 +30,13 @@ const UI_MIME: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-/** Compressed variants of UI text assets, keyed by absolute file path. */
-export const uiGzipCache = new Map<string, Buffer>();
+/** Compressed variants of UI text assets, keyed by absolute file path;
+ *  each entry records the (mtimeMs, size) it was compressed from so an
+ *  edited file recompresses instead of serving stale bytes. */
+export const uiGzipCache = new Map<
+  string,
+  { mtimeMs: number; size: number; compressed: Buffer }
+>();
 
 const GZIPPABLE_UI_EXTS: Record<string, true> = {
   ".js": true,
@@ -1242,13 +1247,18 @@ function uiResponse(relPath: string, acceptsGzip = false): Response | null {
   };
   if (gzippable) headers["vary"] = "accept-encoding";
   if (gzippable && acceptsGzip) {
-    let compressed = uiGzipCache.get(full);
-    if (!compressed) {
-      compressed = gzipSync(readFileSync(full));
-      uiGzipCache.set(full, compressed);
+    const st = statSync(full);
+    let entry = uiGzipCache.get(full);
+    if (!entry || entry.mtimeMs !== st.mtimeMs || entry.size !== st.size) {
+      entry = {
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+        compressed: gzipSync(readFileSync(full)),
+      };
+      uiGzipCache.set(full, entry);
     }
     headers["content-encoding"] = "gzip";
-    return new Response(compressed, { headers });
+    return new Response(entry.compressed, { headers });
   }
   return new Response(readFileSync(full), { headers });
 }
