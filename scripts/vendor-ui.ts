@@ -8,7 +8,8 @@
  * and @lit-labs/ssr-dom-shim from root node_modules into
  * packages/console/vendor/<package>/..., rewriting every specifier to a
  * vendored relative path (with .js), so a browser resolves the whole
- * closure from /ui/vendor/ alone — no import map, no bare-specifier 404s.
+ * closure from /ui/vendor/ alone — the page's import map maps bare
+ * specifiers onto these trees, so no bundler and no bare-specifier 404s.
  *
  * Only production ESM is vendored: package roots and their real
  * subdirectories, excluding development/ (dev/SSR variants) and node/
@@ -20,9 +21,9 @@
  *
  * Idempotent: re-running refreshes the vendored package trees in place and
  * prunes stale files inside them from previous runs. The legacy pre-bundled
- * packages/console/vendor/lit-html.js (still what app.js imports; switching
- * the console onto these trees is a later task in this scope) and VENDOR.md
- * sit outside those trees and are never touched.
+ * packages/console/vendor/lit-html.js is deleted: app.js imports lit
+ * through bare specifiers resolved by the import map in index.html.
+ * VENDOR.md sits outside those trees and is regenerated in place.
  *
  * Usage: bun run vendor:ui
  */
@@ -254,9 +255,9 @@ function vendorReadme(versions: { pkg: string; version: string }[]): string {
     "",
     "`lit@" + lit.version + "` and its runtime packages, copied from root",
     "`node_modules` by `bun run vendor:ui` (scripts/vendor-ui.ts) so the",
-    "no-build console can import lit from `/ui/vendor/` with no bundler, no",
-    "CDN and no import map: every specifier inside the trees is rewritten to",
-    "a vendored relative path.",
+    "no-build console can import lit from `/ui/vendor/` with no bundler and",
+    "no CDN: the page's import map maps bare specifiers to these trees and",
+    "every specifier inside them is rewritten to a vendored relative path.",
     "",
     "| Package | Version |",
     "| ------- | ------- |",
@@ -270,9 +271,9 @@ function vendorReadme(versions: { pkg: string; version: string }[]): string {
     "bun run vendor:ui",
     "```",
     "",
-    "The legacy pre-bundled `vendor/lit-html.js` that `app.js` imports is not",
-    "part of these trees; switching the console onto them is a later task in",
-    "this scope.",
+    "The legacy pre-bundled `vendor/lit-html.js` was removed from the tree",
+    "once the console switched to these packages (see the import map in",
+    "`packages/console/index.html`); keep it deleted after regenerating.",
     "",
   ].join("\n");
 }
