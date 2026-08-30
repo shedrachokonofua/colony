@@ -63,8 +63,7 @@ providers:
         reasoning: true
         context_window: 1048576
         max_tokens: 131072
-        # Cap on concurrently RUNNING runs across this model's pooled
-        # credentials (5 keys); keeps per-credential concurrency sane.
+        # Caps concurrently RUNNING runs across this entry's pooled credentials (5 keys).
         max_parallel_runs: 3
         cost: { input: 0, output: 0 }
       # Temporary CodeBuddy Hy4 trial route. This endpoint is stream-only and
@@ -74,8 +73,7 @@ providers:
         reasoning: true
         context_window: 1048576
         max_tokens: 64000
-        # Cap on concurrently RUNNING runs on the single CodeBuddy trial
-        # credential behind this route.
+        # Caps concurrently RUNNING runs on the single CodeBuddy trial credential.
         max_parallel_runs: 1
         cost: { input: 0, output: 0 }
       - id: kimi/k3
