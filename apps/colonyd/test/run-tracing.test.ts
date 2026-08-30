@@ -252,7 +252,13 @@ describe("run tracing with the pi runtime and an in-memory exporter", () => {
     const root = findRunSpan(seam.exporter.getFinishedSpans(), scope.id);
     expect(root).toBeTruthy();
     expect(root!.attributes["colony.task_id"]).toBe("");
-    expect(typeof root!.attributes["colony.run_id"]).toBe("string");
+    // The span is started before the run row exists, so its colony.run_id
+    // must be the id later minted into the runs row, not a throwaway uuid.
+    const runRow = handle.ctx.store
+      .runsForScope(scope.id)
+      .find((entry) => entry.kind === "architect");
+    expect(runRow).toBeTruthy();
+    expect(root!.attributes["colony.run_id"]).toBe(runRow!.id);
     expect(root!.attributes["colony.run.kind"]).toBe("architect");
     expect(root!.attributes["colony.model.id"]).toBe("test-model");
     expect(root!.attributes["colony.run.status"]).toBe("succeeded");

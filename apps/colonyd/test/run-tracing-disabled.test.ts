@@ -74,6 +74,12 @@ describe("run tracing disabled", () => {
     expect(run).toBeTruthy();
     expect(run!.status).toBe("succeeded");
     expect(run!.trace_id).toBeNull();
+    // Even with tracing off, the audit trail must reference the row id that
+    // the (skipped) span would have carried: one id minted before both.
+    const startRows = handle.ctx.store
+      .listAudit({ run_id: run!.id })
+      .events.filter((row) => row.action === "run.start");
+    expect(startRows).toHaveLength(1);
 
     const app = buildApp(handle.ctx);
     const res = await app.request(`/scopes/${scope.id}`, {

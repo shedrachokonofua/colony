@@ -55,7 +55,6 @@ export async function runArchitect(
     model_id: architect.model.id,
     trace_id: runSpan?.traceId ?? null,
   });
-  const runId = run.id;
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
     run_id: runId,

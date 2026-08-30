@@ -193,7 +193,6 @@ async function dispatchValidation(
     base_sha: baseSha,
     trace_id: runSpan?.traceId ?? null,
   });
-  const runId = run.id;
 
   try {
     baseSha = (await ctx.provider.commits.get(repo, scope.default_branch)).sha;

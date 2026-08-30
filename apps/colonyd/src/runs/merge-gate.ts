@@ -128,7 +128,6 @@ export async function runMergeGate(
     base_sha: headSha,
     trace_id: runSpan?.traceId ?? null,
   });
-  const runId = run.id;
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
     task_id: task.id,
