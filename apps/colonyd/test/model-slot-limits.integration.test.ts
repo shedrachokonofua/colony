@@ -21,6 +21,7 @@ import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { boot, type ColonydHandle } from "../src/main.js";
 import type { ColonydContext } from "../src/context.js";
 import { SERVICE_ACTOR } from "../src/context.js";
+import { SANDBOX_QUOTA_EXHAUSTED } from "../src/tick.js";
 import { awaitPendingRuns } from "../src/runs/registry.js";
 import type { GateFailure } from "../src/runs/merge-gate.js";
 import type { ValidateResult } from "../src/runs/validate.js";
@@ -46,6 +47,8 @@ const script = {
   /** task id -> implementer run invocations observed */
   implementerCalls: new Map<string, number>(),
   reviewerCalls: 0,
+  /** Error the developer adapter raises instead of returning an envelope. */
+  implementerError: undefined as string | undefined,
 };
 
 function fakeAgents(): FakeAgentRuntimeAdapter {
@@ -70,6 +73,9 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         taskId,
         (script.implementerCalls.get(taskId) ?? 0) + 1,
       );
+      if (script.implementerError !== undefined) {
+        throw new Error(script.implementerError);
+      }
       const branch = `colony/${taskId}`;
       // The fake provider needs the branch to exist so envelope fact
       // verification (branch head == head_sha) passes.
@@ -301,12 +307,83 @@ beforeEach(async () => {
   for (const booted of bootedHandles.splice(0)) await booted.shutdown();
   script.implementerCalls.clear();
   script.reviewerCalls = 0;
+  script.implementerError = undefined;
   provider = new FakeProviderAdapter();
   const repo = await provider.repos.create({
     name: "fake-slots",
     path: "so/fake-slots",
   });
   repoId = repo.id;
+});
+
+/**
+ * A quota refusal is a scheduling condition, not a failure: the task must
+ * come back with its attempt budget and its eligibility untouched.
+ */
+describe("namespace quota deferral", () => {
+  it("requeues a quota-refused task with its attempt untouched and no backoff", async () => {
+    const h = await harness(writeConfig("no-limits.yaml"));
+    const { taskId } = h.activeScopeWithTask("quota refused");
+
+    // The engine never got its sandbox: the namespace ResourceQuota refused
+    // the CR, so the run fails fast carrying the marker.
+    script.implementerError = `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`;
+
+    await h.tick();
+    await h.settle();
+    const failed = h.store
+      .runsForTask(taskId)
+      .find((run) => run.kind === "implement")!;
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toContain(SANDBOX_QUOTA_EXHAUSTED);
+
+    // No backoff means the very next tick both requeues and redispatches:
+    // the task never sits still waiting for capacity to return.
+    script.implementerError = undefined;
+    await h.tick();
+    const task = h.store.getTask(taskId)!;
+    expect(task.attempt).toBe(0);
+    expect(task.next_retry_at).toBeNull();
+    expect(script.implementerCalls.get(taskId)).toBe(2);
+    expect(
+      h.store.runsForTask(taskId).filter((run) => run.kind === "implement")
+        .length,
+    ).toBe(2);
+
+    // The requeue still happened: it is recorded in the audit trail even
+    // though the same tick handed the task straight back to the developer.
+    const requeued = h.store
+      .listAudit({ task_id: taskId, limit: 1000 })
+      .events.some((row) => {
+        const detail = JSON.parse(row.detail_json) as {
+          from?: string;
+          to?: string;
+        };
+        return (
+          row.action === "task.transition" &&
+          detail.from === "running" &&
+          detail.to === "queued"
+        );
+      });
+    expect(requeued).toBe(true);
+    await h.settle();
+  }, 30_000);
+
+  it("still charges an attempt for a failure that is not a quota refusal", async () => {
+    const h = await harness(writeConfig("no-limits.yaml"));
+    const { taskId } = h.activeScopeWithTask("agent failure");
+
+    script.implementerError = "envelope invalid";
+
+    await h.tick();
+    await h.settle();
+    await h.tick();
+    const task = h.store.getTask(taskId)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(1);
+    expect(task.next_retry_at).toBeTruthy();
+    await h.settle();
+  }, 30_000);
 });
 
 describe("per-model dispatch slots", () => {
