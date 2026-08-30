@@ -1398,7 +1398,10 @@ export class Store {
     return { items, total: n, limit, offset };
   }
 
-  getRunArtifact(runId: string, artifactId: string): RunArtifactRow | undefined {
+  getRunArtifact(
+    runId: string,
+    artifactId: string,
+  ): RunArtifactRow | undefined {
     // bun:sqlite yields null (not undefined) for a missing row; normalize so
     // the declared `| undefined` contract holds.
     const row = this.db

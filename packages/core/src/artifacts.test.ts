@@ -197,7 +197,9 @@ describe("sigv4Sign", () => {
 
 describe("encodeS3Key", () => {
   it("keeps unreserved characters and encodes per RFC3986", () => {
-    expect(encodeS3Key("runs/r1/a b~c(d)e.f")).toBe("runs/r1/a%20b~c%28d%29e.f");
+    expect(encodeS3Key("runs/r1/a b~c(d)e.f")).toBe(
+      "runs/r1/a%20b~c%28d%29e.f",
+    );
     expect(encodeS3Key("a+b")).toBe("a%2Bb");
     expect(encodeS3Key("unicode/é.txt")).toBe("unicode/%C3%A9.txt");
   });
@@ -266,7 +268,9 @@ describe("createS3ArtifactStore", () => {
     expect(got).toEqual(bytes);
     expect(calls[0]!.init.method).toBe("GET");
     const headers = calls[0]!.init.headers as Record<string, string>;
-    expect(headers["x-amz-content-sha256"]).toBe(sha256HexOf(new Uint8Array(0)));
+    expect(headers["x-amz-content-sha256"]).toBe(
+      sha256HexOf(new Uint8Array(0)),
+    );
     // A second GET with a 404 answer comes back as undefined, not a throw.
     const missing = stubFetch(new Response("nope", { status: 404 }));
     expect(

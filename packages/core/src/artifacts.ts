@@ -321,7 +321,9 @@ async function signedFetch(
 // ---------------------------------------------------------------------------
 
 /** Build the store matching the resolved artifacts config. */
-export function createArtifactStore(cfg: ResolvedArtifactsConfig): ArtifactStore {
+export function createArtifactStore(
+  cfg: ResolvedArtifactsConfig,
+): ArtifactStore {
   return cfg.kind === "s3"
     ? createS3ArtifactStore(cfg.s3)
     : createLocalArtifactStore(cfg.local.dir);

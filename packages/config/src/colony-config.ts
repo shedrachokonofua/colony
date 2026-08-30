@@ -216,7 +216,7 @@ const artifactsSchema = z
     local: localArtifactsSchema.optional(),
     s3: s3ArtifactsSchema.optional(),
   })
-  .strict()
+  .strict();
 
 export const colonyConfigFileSchema = z
   .object({

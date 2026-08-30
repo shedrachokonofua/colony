@@ -475,7 +475,9 @@ describe("artifacts config", () => {
 
   it("resolves a local section with an explicit dir", () => {
     const cfg = loadColonyConfig({
-      path: tempConfig(`${VALID_YAML}\nartifacts:\n  kind: local\n  local:\n    dir: /var/colony/artifacts\n`),
+      path: tempConfig(
+        `${VALID_YAML}\nartifacts:\n  kind: local\n  local:\n    dir: /var/colony/artifacts\n`,
+      ),
       env: { ANTHROPIC_API_KEY: "x" },
     });
     expect(cfg.artifacts).toEqual({
@@ -504,12 +506,11 @@ describe("artifacts config", () => {
   });
 
   it("rejects an s3 section missing the s3 block", () => {
-    expect(
-      () =>
-        loadColonyConfig({
-          path: tempConfig(`${VALID_YAML}\nartifacts:\n  kind: s3\n`),
-          env: { ANTHROPIC_API_KEY: "x" },
-        }),
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(`${VALID_YAML}\nartifacts:\n  kind: s3\n`),
+        env: { ANTHROPIC_API_KEY: "x" },
+      }),
     ).toThrow(/artifacts.s3 section is missing/);
   });
 
@@ -543,14 +544,13 @@ describe("artifacts config", () => {
   });
 
   it("rejects unknown artifacts keys (strict schema)", () => {
-    expect(
-      () =>
-        loadColonyConfig({
-          path: tempConfig(
-            `${VALID_YAML}\nartifacts:\n  kind: local\n  bucket: nope\n`,
-          ),
-          env: { ANTHROPIC_API_KEY: "x" },
-        }),
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(
+          `${VALID_YAML}\nartifacts:\n  kind: local\n  bucket: nope\n`,
+        ),
+        env: { ANTHROPIC_API_KEY: "x" },
+      }),
     ).toThrow(/colony config validation failed/);
   });
 });

@@ -139,7 +139,10 @@ describe("GET /runs/:id/artifacts", () => {
     const runId = createRun(store, "bad query");
     const bad = await app.request(`/runs/${runId}/artifacts?limit=0`, ACTOR);
     expect(bad.status).toBe(400);
-    const huge = await app.request(`/runs/${runId}/artifacts?limit=1001`, ACTOR);
+    const huge = await app.request(
+      `/runs/${runId}/artifacts?limit=1001`,
+      ACTOR,
+    );
     expect(huge.status).toBe(400);
   });
 });
@@ -200,9 +203,7 @@ describe("GET /runs/:id/artifacts/:artifact_id", () => {
       error: { code: string; message: string; ref: string };
     };
     expect(body.error.code).toBe("ARTIFACT_REMOTE");
-    expect(body.error.ref).toBe(
-      "http://minio.home:9000/colony/runs/r/out.bin",
-    );
+    expect(body.error.ref).toBe("http://minio.home:9000/colony/runs/r/out.bin");
     // No network call was made to serve this request.
     expect(calls).toHaveLength(0);
   });
@@ -210,10 +211,7 @@ describe("GET /runs/:id/artifacts/:artifact_id", () => {
   it("404s when the run or the artifact row is unknown", async () => {
     const { app, store } = setup();
     const runId = createRun(store, "not found");
-    const missingRun = await app.request(
-      `/runs/nope/artifacts/ra-abc`,
-      ACTOR,
-    );
+    const missingRun = await app.request(`/runs/nope/artifacts/ra-abc`, ACTOR);
     expect(missingRun.status).toBe(404);
     const missingRow = await app.request(
       `/runs/${runId}/artifacts/ra-missing`,
@@ -228,9 +226,13 @@ describe("GET /runs/:id/artifacts/:artifact_id", () => {
     const artifacts = createLocalArtifactStore(dir);
     const { app, store } = setup(artifacts);
     const runId = createRun(store, "vanished");
-    const stored = await artifacts.put("gone.txt", new TextEncoder().encode("x"), {
-      contentType: "text/plain",
-    });
+    const stored = await artifacts.put(
+      "gone.txt",
+      new TextEncoder().encode("x"),
+      {
+        contentType: "text/plain",
+      },
+    );
     const row = store.recordRunArtifact(runId, {
       kind: "file",
       key: "gone.txt",

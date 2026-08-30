@@ -26,7 +26,9 @@ function fakeCtx(store: Store, traceUiBaseUrl = ""): ColonydContext {
       hitlMode: "yolo",
     } as ColonydContext["config"],
     agents: {} as ColonydContext["agents"],
-    artifacts: createLocalArtifactStore(mkdtempSync(join(tmpdir(), "colonyd-artifacts-"))),
+    artifacts: createLocalArtifactStore(
+      mkdtempSync(join(tmpdir(), "colonyd-artifacts-")),
+    ),
     logger: { info() {}, warn() {}, error() {} },
     env: {
       gitlabBaseUrl: "https://gitlab.home.shdr.ch",

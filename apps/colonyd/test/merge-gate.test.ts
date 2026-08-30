@@ -127,7 +127,9 @@ describe("runMergeGate success evidence", () => {
       provider: new FakeProviderAdapter(),
       config: { reviewMode: "required", hitlMode: "yolo" },
       agents: {},
-      artifacts: createLocalArtifactStore(mkdtempSync(join(tmpdir(), "colonyd-artifacts-"))),
+      artifacts: createLocalArtifactStore(
+        mkdtempSync(join(tmpdir(), "colonyd-artifacts-")),
+      ),
       logger: { info() {}, warn() {}, error() {} },
       gateExecutor: undefined, // real deterministic executor over file:// clone
       env: {
