@@ -1300,5 +1300,7 @@ function safeEqual(a: string, b: string): boolean {
 
 /** Requests that never produce an HTTP server span. */
 function isExcludedFromHttpSpans(path: string): boolean {
-  return path === "/health" || path === "/ready" || staticUiAsset(path) !== null;
+  return (
+    path === "/health" || path === "/ready" || staticUiAsset(path) !== null
+  );
 }
