@@ -161,20 +161,14 @@ export function hasModelSlot(ctx: ColonydContext, role: AgentRole): boolean {
   return ctx.store.activeRunCountByModel(modelId) < limit;
 }
 
-/**
- * Why a failed implement run should not consume an attempt: either the
- * platform broke underneath it, or the cluster refused to schedule it.
- */
-function lastImplementFailureWasDeferred(
+function lastImplementRun(
   ctx: ColonydContext,
   taskId: string,
-): boolean {
-  const last = ctx.store
+): Run | undefined {
+  return ctx.store
     .runsForTask(taskId)
     .filter((r) => r.kind === "implement")
     .at(-1);
-  if (last?.status !== "failed") return false;
-  return isInfraError(last.error) || isQuotaDeferred(last.error);
 }
 
 function retryOrFailTask(
@@ -184,16 +178,15 @@ function retryOrFailTask(
 ): void {
   const task = ctx.store.getTask(taskId);
   if (!task || task.state !== "running") return;
-  const infra = lastImplementFailureWasDeferred(ctx, taskId);
-  const attempt = infra ? task.attempt : task.attempt + 1;
-  if (infra && !isQuotaDeferred(lastImplementError(ctx, taskId))) {
-    ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
-      scope_id: task.scope_id,
-      task_id: task.id,
-      detail: { reason },
-    });
-  }
-  if (infra) {
+  // Deferred failures are the platform's fault, not the agent's: the
+  // platform broke underneath the run, or the cluster refused to schedule
+  // it. Neither may consume the task's attempt budget.
+  const last = lastImplementRun(ctx, taskId);
+  const deferred =
+    last?.status === "failed" &&
+    (isInfraError(last.error) || isQuotaDeferred(last.error));
+  const attempt = deferred ? task.attempt : task.attempt + 1;
+  if (deferred) {
     ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
       scope_id: task.scope_id,
       task_id: task.id,
@@ -212,15 +205,15 @@ function retryOrFailTask(
     );
     return;
   }
-  // A slot or quota deferral is not a failure: the task is immediately
-  // eligible again, so it must not carry a backoff penalty.
-  const deferred = isQuotaDeferred(lastImplementError(ctx, taskId));
+  // A saturated cluster is immediately eligible again once capacity exists,
+  // so a quota deferral carries no backoff penalty.
+  const quotaDeferred = isQuotaDeferred(last?.error);
   ctx.store.transitionTask(
     task.id,
     task.state_version,
     "queued",
     SERVICE_ACTOR,
-    deferred
+    quotaDeferred
       ? { attempt }
       : {
           attempt,
@@ -228,18 +221,6 @@ function retryOrFailTask(
             Date.now() + retryBackoffMs(attempt),
           ).toISOString(),
         },
-  );
-}
-
-function lastImplementError(
-  ctx: ColonydContext,
-  taskId: string,
-): string | null {
-  return (
-    ctx.store
-      .runsForTask(taskId)
-      .filter((r) => r.kind === "implement")
-      .at(-1)?.error ?? null
   );
 }
 
