@@ -379,23 +379,24 @@ export class ColonyApp extends ColonyElement {
 
   /** First hit of a view module is async; keep the shell's loading state brief. */
   #loadViewModule() {
-    const viewFile = VIEW_ROUTES[this.currentRoute.name];
+    // Capture the route now: the import settles later, and reading
+    // this.currentRoute in the callback would label a module with whatever
+    // route is current by then (a hashchange mid-flight mislabels it).
+    const route = this.currentRoute.name;
+    const viewFile = VIEW_ROUTES[route];
     if (!viewFile) {
       this.viewModule = null;
       return;
     }
-    if (this.viewModule?.route === this.currentRoute.name) return;
-    this.viewModule = { route: this.currentRoute.name, loading: true };
+    if (this.viewModule?.route === route) return;
+    this.viewModule = { route, loading: true };
     import(viewFile)
       .then((module) => {
-        this.viewModule = {
-          route: this.currentRoute.name,
-          module,
-          loading: false,
-        };
+        if (this.currentRoute.name !== route) return;
+        this.viewModule = { route, module, loading: false };
       })
       .catch(() => {
-        this.viewModule = null;
+        if (this.currentRoute.name === route) this.viewModule = null;
       });
   }
 
