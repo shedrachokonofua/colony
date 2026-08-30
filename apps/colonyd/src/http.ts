@@ -94,6 +94,11 @@ const runEventsQuery = z.object({
   limit: z.coerce.number().int().positive().max(1000).optional(),
 });
 
+const runArtifactsQuery = z.object({
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+
 const scopesQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
@@ -1120,6 +1125,48 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     });
     if (!parsed.success) return badBody(c, parsed.error.message);
     return c.json(ctx.store.listRunEvents(run.id, parsed.data));
+  });
+
+  app.get("/runs/:id/artifacts", (c) => {
+    const run = ctx.store.getRun(c.req.param("id"));
+    if (!run) return notFound(c, "run");
+    const parsed = runArtifactsQuery.safeParse({
+      limit: c.req.query("limit"),
+      offset: c.req.query("offset"),
+    });
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    return c.json(ctx.store.listRunArtifacts(run.id, parsed.data));
+  });
+
+  // Local backend: stream the stored bytes with their content type. Remote
+  // backends answer ARTIFACT_REMOTE with the ref — no proxying/presigning.
+  app.get("/runs/:id/artifacts/:artifact_id", async (c) => {
+    const run = ctx.store.getRun(c.req.param("id"));
+    if (!run) return notFound(c, "run");
+    const row = ctx.store.getRunArtifact(run.id, c.req.param("artifact_id"));
+    if (!row) return notFound(c, "artifact");
+    const url = ctx.artifacts.getUrl(row.ref);
+    if (url === undefined) {
+      const bytes = await ctx.artifacts.get(row.ref);
+      if (bytes === undefined) return notFound(c, "artifact");
+      return new Response(bytes, {
+        headers: {
+          "content-type": row.content_type ?? "application/octet-stream",
+          "content-length": String(bytes.byteLength),
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+    return c.json(
+      {
+        error: {
+          code: "ARTIFACT_REMOTE",
+          message: `artifact bytes live on the remote artifact backend; fetch the ref directly`,
+          ref: url,
+        },
+      },
+      200,
+    );
   });
 
   app.get("/audit", (c) => {

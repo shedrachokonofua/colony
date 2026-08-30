@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { ColonydContext } from "../src/context.js";
 import type { Scope, Store, Task } from "@colony/core";
 import { Store as ColonyStore } from "@colony/core";
+import { createLocalArtifactStore } from "@colony/core";
 import { FakeProviderAdapter } from "@colony/provider";
 import { defaultGateExecutor, runMergeGate } from "../src/runs/merge-gate.js";
 
@@ -126,6 +127,7 @@ describe("runMergeGate success evidence", () => {
       provider: new FakeProviderAdapter(),
       config: { reviewMode: "required", hitlMode: "yolo" },
       agents: {},
+      artifacts: createLocalArtifactStore(mkdtempSync(join(tmpdir(), "colonyd-artifacts-"))),
       logger: { info() {}, warn() {}, error() {} },
       gateExecutor: undefined, // real deterministic executor over file:// clone
       env: {

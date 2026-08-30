@@ -159,6 +159,19 @@ export interface RunEvent {
   readonly detail_json: string;
 }
 
+/** One row of run_artifacts: durable, append-only artifact metadata. */
+export interface RunArtifactRow {
+  readonly id: string;
+  readonly run_id: string;
+  readonly kind: string;
+  readonly key: string;
+  readonly ref: string;
+  readonly sha256: string | null;
+  readonly bytes: number | null;
+  readonly content_type: string | null;
+  readonly created_at: string;
+}
+
 /** Ascending-by-id cursor page; newest page by default. */
 export interface RunEventPage {
   readonly events: RunEvent[];
@@ -211,6 +224,11 @@ export function nowIso(date: Date = new Date()): string {
 /** `pf-` + 12 lowercase hex, matching the `col-<hex>` id style. */
 export function projectFileId(): string {
   return `pf-${randomBytes(6).toString("hex")}`;
+}
+
+/** `ra-` + 12 lowercase hex, matching the `col-<hex>` id style. */
+export function runArtifactId(): string {
+  return `ra-${randomBytes(6).toString("hex")}`;
 }
 
 /** Lowercase hex sha256 of the UTF-8 content. */
@@ -1314,6 +1332,78 @@ export class Store {
         .get(runId, oldest) as { one: number } | null | undefined;
       return row !== null && row !== undefined;
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Run artifacts (append-only)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Record one artifact row after its bytes were stored via an
+   * ArtifactStore. The table is append-only (triggers abort UPDATE/DELETE);
+   * a re-upload of the same key appends a new row, never rewrites one.
+   */
+  recordRunArtifact(
+    runId: string,
+    input: {
+      kind: string;
+      key: string;
+      ref: string;
+      sha256?: string;
+      bytes?: number;
+      contentType?: string;
+    },
+  ): RunArtifactRow {
+    const id = runArtifactId();
+    this.db
+      .prepare(
+        `INSERT INTO run_artifacts (id, run_id, kind, key, ref, sha256, bytes, content_type)
+         VALUES (@id, @runId, @kind, @key, @ref, @sha256, @bytes, @contentType)`,
+      )
+      .run(
+        named({
+          id,
+          runId,
+          kind: input.kind,
+          key: input.key,
+          ref: input.ref,
+          sha256: input.sha256 ?? null,
+          bytes: input.bytes ?? null,
+          contentType: input.contentType ?? null,
+        }),
+      );
+    const row = this.getRunArtifact(runId, id);
+    if (!row) throw new Error(`run artifact insert lost: ${id}`);
+    return row;
+  }
+
+  /**
+   * One page of a run's artifacts, ascending by id (creation order);
+   * `total` counts the whole run. Default 200, clamp 1..1000.
+   */
+  listRunArtifacts(
+    runId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): { items: RunArtifactRow[]; total: number; limit: number; offset: number } {
+    const limit = clampPageLimit(opts.limit);
+    const offset = Math.max(0, opts.offset ?? 0);
+    const items = this.db
+      .prepare(
+        `SELECT * FROM run_artifacts WHERE run_id = ? ORDER BY id LIMIT ? OFFSET ?`,
+      )
+      .all(runId, limit, offset) as RunArtifactRow[];
+    const { n } = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM run_artifacts WHERE run_id = ?`)
+      .get(runId) as { n: number };
+    return { items, total: n, limit, offset };
+  }
+
+  getRunArtifact(runId: string, artifactId: string): RunArtifactRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT * FROM run_artifacts WHERE run_id = ? AND id = ?`,
+      )
+      .get(runId, artifactId) as RunArtifactRow | undefined;
   }
 
   // ---------------------------------------------------------------------

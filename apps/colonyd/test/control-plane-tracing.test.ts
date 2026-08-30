@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import type { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
 import { resetEnvCache } from "@colony/config";
 import { Store } from "@colony/core";
+import { createLocalArtifactStore } from "@colony/core";
 import {
   isTracingEnabled,
   registerInMemorySpanExporter,
@@ -83,6 +84,7 @@ function appWith(traceUiBaseUrl = "") {
       hitlMode: "yolo",
     } as ColonydContext["config"],
     agents: {} as ColonydContext["agents"],
+    artifacts: createLocalArtifactStore(mkdtempSync(join(tmpdir(), "colonyd-artifacts-"))),
     logger: { info() {}, warn() {}, error() {} },
     env: {
       gitlabBaseUrl: "https://gitlab.example.com",

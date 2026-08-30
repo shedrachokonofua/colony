@@ -1037,7 +1037,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(5);
+        expect(LATEST_SCHEMA_VERSION).toBe(6);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),

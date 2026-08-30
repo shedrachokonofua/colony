@@ -2,7 +2,12 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { serve } from "@hono/node-server";
 import { env, loadColonyConfig } from "@colony/config";
-import { buildTaskCostModel, Store, type Run } from "@colony/core";
+import {
+  buildTaskCostModel,
+  createArtifactStore,
+  Store,
+  type Run,
+} from "@colony/core";
 import { startTelemetryFromEnv } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
@@ -60,6 +65,8 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     (await createEngine(config.sandbox.engine, config));
 
   const store = new Store(environment.COLONYD_DB_PATH);
+
+  const artifacts = createArtifactStore(config.artifacts);
 
   const provider =
     options.provider ??
@@ -127,6 +134,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     provider,
     config,
     agents,
+    artifacts,
     logger,
     gateExecutor: options.gateExecutor,
     validateExecutor: options.validateExecutor,

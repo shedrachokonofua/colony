@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Store } from "@colony/core";
+import { createLocalArtifactStore } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import { createOidcVerifier } from "../src/oidc.js";
@@ -116,6 +117,7 @@ function oidcApp() {
       hitlMode: "yolo",
     } as ColonydContext["config"],
     agents: {} as ColonydContext["agents"],
+    artifacts: createLocalArtifactStore(mkdtempSync(join(tmpdir(), "colonyd-artifacts-"))),
     logger: { info() {}, warn() {}, error() {} },
     oidcVerifier: verifier,
     env: {
