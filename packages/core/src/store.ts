@@ -1241,6 +1241,16 @@ export class Store {
     return row.n;
   }
 
+  /** Count in-flight runs attributed to a model. Follows runs.model_id as the fallback sink rewrites it. */
+  activeRunCountByModel(modelId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM runs WHERE status = 'running' AND model_id = ?`,
+      )
+      .get(modelId) as { n: number };
+    return row.n;
+  }
+
   activeRuns(kind?: Run["kind"]): Run[] {
     return (
       kind
