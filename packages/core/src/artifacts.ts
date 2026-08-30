@@ -83,13 +83,14 @@ export function createLocalArtifactStore(dir: string): ArtifactStore {
     return full;
   };
   return {
-    async put(key, data, meta) {
+    // `meta.contentType` is implicit in the filesystem layout; the caller
+    // records it in run_artifacts so the HTTP route can serve it.
+    async put(key, data) {
       assertSafeArtifactKey(key);
       const bytes = await toBytes(data);
       const full = underRoot(key);
       mkdirSync(dirname(full), { recursive: true });
       writeFileSync(full, bytes);
-      void meta;
       return { ref: key, bytes: bytes.byteLength };
     },
     async get(ref) {
