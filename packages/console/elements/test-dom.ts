@@ -29,6 +29,15 @@ export function sharedDom() {
   globalThis.document = win.document;
   globalThis.customElements = win.customElements;
   globalThis.HTMLElement = win.HTMLElement;
+  // Elements dispatch CustomEvent with the unqualified global constructor,
+  // but happy-dom only propagates events constructed in its own realm
+  // across element boundaries. Alias the realm's constructor so the
+  // elements' colony-* events bubble to (test) listeners as they do in a
+  // real browser, where the two are the same constructor.
+  globalThis.CustomEvent = win.CustomEvent;
+  // Same realm rule for FormData over the window's inputs (the feedback
+  // forms read their textarea through new FormData(form)).
+  globalThis.FormData = win.FormData;
   dom = { window: win, document: win.document };
   return dom;
 }
