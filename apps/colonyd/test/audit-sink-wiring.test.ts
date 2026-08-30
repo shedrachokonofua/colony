@@ -111,7 +111,10 @@ describe("createRunAuditSink", () => {
       ...countingBackend,
       put: async (key, data, meta) => {
         const stored = await countingBackend.put(key, data, meta);
-        return { ref: stored.ref, bytes: data.byteLength + 100 };
+        // 99 deliberately disagrees with the 26 payload bytes: if the sink
+        // recomputed the size from `data` (the old workaround), the row would
+        // say 26. Only the backend's count may land.
+        return { ref: stored.ref, bytes: 99 };
       },
     });
     const data = new TextEncoder().encode("payload-of-seventeen-bytes");
@@ -124,9 +127,9 @@ describe("createRunAuditSink", () => {
       "text/plain",
     );
     expect(result).toBeDefined();
-    expect(result!.bytes).toBe(data.byteLength + 100);
+    expect(result!.bytes).toBe(99);
     const row = store.listRunArtifacts(runId).items[0]!;
-    expect(row.bytes).toBe(data.byteLength + 100);
+    expect(row.bytes).toBe(99);
     expect(row.sha256).toBe(createHash("sha256").update(data).digest("hex"));
   });
 
