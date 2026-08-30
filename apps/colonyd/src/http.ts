@@ -84,6 +84,13 @@ const acceptanceBody = z
 const auditQuery = z.object({
   scope_id: z.string().optional(),
   task_id: z.string().optional(),
+  run_id: z.string().optional(),
+  before_id: z.coerce.number().int().nonnegative().optional(),
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+});
+
+const runEventsQuery = z.object({
+  before_id: z.coerce.number().int().nonnegative().optional(),
   limit: z.coerce.number().int().positive().max(1000).optional(),
 });
 
@@ -1107,13 +1114,20 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.get("/runs/:id/events", (c) => {
     const run = ctx.store.getRun(c.req.param("id"));
     if (!run) return notFound(c, "run");
-    return c.json(ctx.store.listRunEvents(run.id));
+    const parsed = runEventsQuery.safeParse({
+      before_id: c.req.query("before_id"),
+      limit: c.req.query("limit"),
+    });
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    return c.json(ctx.store.listRunEvents(run.id, parsed.data));
   });
 
   app.get("/audit", (c) => {
     const parsed = auditQuery.safeParse({
       scope_id: c.req.query("scope_id"),
       task_id: c.req.query("task_id"),
+      run_id: c.req.query("run_id"),
+      before_id: c.req.query("before_id"),
       limit: c.req.query("limit"),
     });
     if (!parsed.success) return badBody(c, parsed.error.message);
