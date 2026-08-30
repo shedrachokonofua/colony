@@ -64,6 +64,14 @@ providers:
         context_window: 1048576
         max_tokens: 131072
         cost: { input: 0, output: 0 }
+      # Temporary CodeBuddy Hy4 trial route. This endpoint is stream-only and
+      # requires a leading system message; Pi's OpenAI transport satisfies both.
+      - id: codebuddy/hy4-preview
+        name: hy4-preview
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 64000
+        cost: { input: 0, output: 0 }
       - id: kimi/k3
         name: kimi-k3
         reasoning: true
@@ -100,13 +108,18 @@ providers:
 agents:
   # Budgets sized from observed run durations (12h window, 2026-08-18):
   # implement 20-26 min at the old 30 min cap, review 10-23 min, plan 8-25 min.
+  # 2026-08-30: developer raised to 400 turns / 90 min — post latency-routing
+  # agents run ~5.7 turns/min, so 250 turns exhausted near minute 44 on large
+  # tasks; turns bind before wall clock, which stays the divergence backstop.
+  # Use Hy4 as the coder during CodeBuddy's launch trial. GLM-5.3-Flash is
+  # first fallback so runs survive endpoint, quota, or promotion expiry.
   developer:
     provider: openai_compatible
-    model: glm-5.3-flash
-    fallback_models: [deepseek-v4-flash, muse-spark, qwen3.8-27b]
-    thinking_level: medium
-    timeout_ms: 3600000
-    max_turns: 250
+    model: hy4-preview
+    fallback_models: [glm-5.3-flash, deepseek-v4-flash, muse-spark, qwen3.8-27b]
+    thinking_level: high
+    timeout_ms: 5400000
+    max_turns: 400
   reviewer:
     provider: openai_compatible
     model: kimi-k3
