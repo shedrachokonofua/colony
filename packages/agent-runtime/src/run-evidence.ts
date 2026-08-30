@@ -235,13 +235,17 @@ export class RunEvidenceCollector {
     let resultRef: string | undefined;
     if (this.sink && input.resultText.length > RESULT_SUMMARY_CHARS) {
       try {
+        // The artifact carries the whole result, so it gets the same
+        // redaction as the summary row: the 2000-char cut must not turn
+        // into a verbatim storage bypass for provider tokens.
+        const safeText = redactText(input.resultText, this.secrets);
         // putArtifact stores the bytes AND records the run_artifacts row;
         // a missing row always means missing bytes, never half a record.
         const stored = await this.sink.putArtifact(
           this.runId,
           "tool_result",
           `${this.runId}/tool-result-${input.toolCallId}.txt`,
-          new TextEncoder().encode(input.resultText),
+          new TextEncoder().encode(safeText),
           "text/plain",
         );
         resultRef = stored?.ref;

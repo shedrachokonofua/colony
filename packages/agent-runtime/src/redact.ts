@@ -11,8 +11,10 @@ export const REDACTED = "[REDACTED]";
 const GITLAB_TOKEN = /glpat-[A-Za-z0-9_-]+/g;
 /** OpenAI-style `sk-…` secret keys. */
 const SK_TOKEN = /sk-[A-Za-z0-9_-]{8,}/g;
-/** HTTP Authorization bearer headers. */
-const BEARER_TOKEN = /Bearer [A-Za-z0-9._~+/=-]+/g;
+/** HTTP Authorization bearer headers; the scheme is case-insensitive. */
+const BEARER_TOKEN = /bearer [A-Za-z0-9._~+/=-]+/gi;
+/** `PRIVATE-TOKEN:` headers; the header name survives, the value is redacted. */
+const PRIVATE_TOKEN_HEADER = /(private-token:)[ \t]*[A-Za-z0-9._~+/=-]+/gi;
 
 /**
  * Replace the well-known token patterns plus any caller-supplied exact
@@ -24,10 +26,15 @@ export function redactText(text: string, secrets?: readonly string[]): string {
     let redacted = text
       .replaceAll(GITLAB_TOKEN, REDACTED)
       .replaceAll(SK_TOKEN, REDACTED)
-      .replaceAll(BEARER_TOKEN, REDACTED);
+      .replaceAll(BEARER_TOKEN, REDACTED)
+      .replaceAll(PRIVATE_TOKEN_HEADER, "$1 [REDACTED]");
     if (secrets) {
       for (const secret of secrets) {
-        if (secret) redacted = redacted.split(secret).join(REDACTED);
+        if (secret) {
+          redacted = redacted.split(secret).join(REDACTED);
+          // Headers and URLs carry the percent-encoded form of the secret.
+          redacted = redacted.split(encodeURIComponent(secret)).join(REDACTED);
+        }
       }
     }
     return redacted;
