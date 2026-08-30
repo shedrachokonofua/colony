@@ -14,6 +14,7 @@ import {
   POD_WORKSPACE_DIR,
   SANDBOX_GROUP,
   SANDBOX_ID_LABEL,
+  SandboxError,
   SandboxRbacError,
   buildSandboxCustomResource,
   resolveSandboxApiVersion,
@@ -547,6 +548,66 @@ describe("createKubernetesEngine", () => {
     expect(rbac.message).toContain("colony-sandboxes");
     expect(rbac.message).toMatch(/RBAC/);
     expect(rbac.message).toContain("sandboxtemplates/sandboxclaims");
+  });
+
+  it("fails fast with a quota marker when the namespace ResourceQuota refuses the CR", async () => {
+    const client: KubernetesSandboxClient = {
+      async discoverGroupVersions() {
+        return [{ name: SANDBOX_GROUP, versions: [{ version: "v1beta1" }] }];
+      },
+      async createSandbox(): Promise<unknown> {
+        const err = new Error(
+          "admission webhook denied the request: exceeded quota",
+        ) as unknown as {
+          code: number;
+          statusCode: number;
+          body: unknown;
+        };
+        err.code = 403;
+        err.statusCode = 403;
+        err.body = {
+          message:
+            'sandboxes.agents.x-k8s.io "colony-x" is forbidden: ' +
+            "exceeded quota: colony-sandboxes, requested: pods=1, used: pods=20, limited: pods=20",
+        };
+        throw err;
+      },
+      async listSandboxes() {
+        return [];
+      },
+      async getSandbox() {
+        return { ready: true };
+      },
+      async deleteSandbox(): Promise<void> {},
+      async listPods() {
+        return [];
+      },
+      async execPod(): Promise<never> {
+        throw new Error("no pod (quota refused before provision)");
+      },
+    };
+
+    const engine = createKubernetesEngine({
+      client,
+      namespace: "colony-sandboxes",
+      pollIntervalMs: 5,
+      provisionTimeoutMs: 2000,
+    });
+    const profile = buildSandboxLaunchProfile("developer");
+
+    let error: unknown;
+    try {
+      await engine.provision(profile, "/workspace");
+      throw new Error("expected provision to reject");
+    } catch (err) {
+      error = err;
+    }
+    // A saturated namespace is not an RBAC misconfiguration: the error must
+    // be distinguishable from the forbidden case that never admits.
+    expect(error).not.toBeInstanceOf(SandboxRbacError);
+    expect(error).toBeInstanceOf(SandboxError);
+    expect((error as Error).message).toContain("exceeded quota");
+    expect((error as Error).message).toContain("colony-sandboxes");
   });
 
   it("deletes the just-created Sandbox CR when the readiness wait fails", async () => {
