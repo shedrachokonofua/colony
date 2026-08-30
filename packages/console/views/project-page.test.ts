@@ -92,9 +92,7 @@ describe("project-page head", () => {
     const el = makePage();
     await el.updateComplete;
     const link = el.querySelector(".board-head a.btn-solid");
-    expect(link?.getAttribute("href")).toBe(
-      "#/new?project=Operator%20console",
-    );
+    expect(link?.getAttribute("href")).toBe("#/new?project=Operator%20console");
     expect(link?.textContent.trim()).toBe("New scope");
   });
 
@@ -135,13 +133,15 @@ describe("project-page scope rack", () => {
     expect(cards[0].querySelector(".chip")?.getAttribute("data-kind")).toBe(
       "active",
     );
-    expect(cards[0].querySelector(".scope-goal")?.textContent).toBe("Scope col-a");
+    expect(cards[0].querySelector(".scope-goal")?.textContent).toBe(
+      "Scope col-a",
+    );
     expect(cards[0].querySelector(".scope-meta .mono")?.textContent).toBe(
       "col-a",
     );
-    expect(cards[0].querySelector(".scope-meta span:nth-child(2)")?.textContent).toBe(
-      "so/colony",
-    );
+    expect(
+      cards[0].querySelector(".scope-meta span:nth-child(2)")?.textContent,
+    ).toBe("so/colony");
   });
 
   it("clicking a scope card bubbles colony-navigate to the scope sheet", async () => {
@@ -230,7 +230,9 @@ describe("project-page settings rail", () => {
     // The duplicate so/colony path is listed once.
     const repos = [...el.querySelectorAll(".repo-list li a")];
     expect(repos.length).toBe(1);
-    expect(repos[0].getAttribute("href")).toBe("https://gitlab.example/so/colony");
+    expect(repos[0].getAttribute("href")).toBe(
+      "https://gitlab.example/so/colony",
+    );
   });
 
   it("shows the empty repo note when none are connected", async () => {

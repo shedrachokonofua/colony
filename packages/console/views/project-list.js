@@ -23,7 +23,8 @@ function pager({ base, page, total, items, label }) {
   // truth on refresh); the colony-page event is what the shell routes, and
   // _navigate no-ops when the hash already matches.
   const step = (target) => (event) => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
     event.preventDefault();
     event.currentTarget.dispatchEvent(
       new CustomEvent("colony-page", {

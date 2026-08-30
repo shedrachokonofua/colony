@@ -24,7 +24,14 @@ function project(name, overrides = {}) {
 }
 
 function pageOf(items, overrides = {}) {
-  return { items, total: items.length, limit: 25, offset: 0, page: 1, ...overrides };
+  return {
+    items,
+    total: items.length,
+    limit: 25,
+    offset: 0,
+    page: 1,
+    ...overrides,
+  };
 }
 
 function makeList(page = null, props = {}) {
@@ -86,9 +93,9 @@ describe("project-list structure", () => {
     expect(cards[0].querySelector(".project-card-repos")?.textContent).toBe(
       "1 connected repo · so/alpha",
     );
-    expect(
-      cards[0].querySelector(".project-card-knowledge")?.textContent,
-    ).toBe("Brief · 3 reference files");
+    expect(cards[0].querySelector(".project-card-knowledge")?.textContent).toBe(
+      "Brief · 3 reference files",
+    );
     // status chips only for non-zero counts
     const kinds = [...cards[0].querySelectorAll(".chip")].map((c) =>
       c.getAttribute("data-kind"),

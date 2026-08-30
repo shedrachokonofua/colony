@@ -73,14 +73,16 @@ export class ProjectPage extends ColonyElement {
 
   /** Crumb links route through colony-navigate; modified clicks keep the anchor. */
   #nav(event, href) {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
     event.preventDefault();
     this.#emit("colony-navigate", { href });
   }
 
   /** Pager clicks route through colony-page; modified clicks keep the anchor. */
   #page(event, page) {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
     event.preventDefault();
     this.#emit("colony-page", { page, surface: "project" });
   }
@@ -128,18 +130,19 @@ export class ProjectPage extends ColonyElement {
       ></project-context-card>
       <aside class="card">
         <p class="card-head">Connected repositories</p>
-        <div class="card-body">${repos.length
-          ? html`<ul class="repo-list">
-              ${repos.map(
-                (repo) =>
-                  html`<li>
-                    <a href=${this.#repoUrl(repo.repo_path)}
-                      >${repo.repo_path}</a
-                    >
-                  </li>`,
-              )}
-            </ul>`
-          : html`<p class="note">No connected repositories</p>`}
+        <div class="card-body">
+          ${repos.length
+            ? html`<ul class="repo-list">
+                ${repos.map(
+                  (repo) =>
+                    html`<li>
+                      <a href=${this.#repoUrl(repo.repo_path)}
+                        >${repo.repo_path}</a
+                      >
+                    </li>`,
+                )}
+              </ul>`
+            : html`<p class="note">No connected repositories</p>`}
         </div>
       </aside>
     </div>`;
@@ -191,17 +194,17 @@ export class ProjectPage extends ColonyElement {
           updated ${rel(page.project.updated_at)}
         </p>
         ${chips.length
-          ? html`<p class="project-counts"
-              >${chips.map(
+          ? html`<p class="project-counts">
+              ${chips.map(
                 ([status, count]) =>
                   html`<span class="chip" data-kind=${status}
                     >${status} ${count}</span
                   >`,
-              )}</p
-            >`
+              )}
+            </p>`
           : nothing}
-        <section class="project-scopes"
-          >${page.total > 0 && scopes.length === 0
+        <section class="project-scopes">
+          ${page.total > 0 && scopes.length === 0
             ? html`<div class="rack-empty">
                 <p>Past the last page.</p>
                 <a class="btn btn-solid" href=${hrefForPage(base, 1)}
@@ -210,13 +213,15 @@ export class ProjectPage extends ColonyElement {
                 <a class="btn btn-quiet" href="#/">All projects</a>
               </div>`
             : scopes.length
-              ? html`<div class="rack"
-                  >${repeat(scopes, (scope) => scope.id, (s) =>
-                    this.#scopeCard(s),
-                  )}</div
-                >`
-              : html`<p class="rack-empty">No scopes in this project yet.</p>`}</section
-        >
+              ? html`<div class="rack">
+                  ${repeat(
+                    scopes,
+                    (scope) => scope.id,
+                    (s) => this.#scopeCard(s),
+                  )}
+                </div>`
+              : html`<p class="rack-empty">No scopes in this project yet.</p>`}
+        </section>
         ${this.#pager({
           base,
           page: page.page,

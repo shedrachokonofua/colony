@@ -35,7 +35,10 @@ export class ProjectContextCard extends ColonyElement {
     // Adopt a new doc from the server unless the operator is typing in the
     // textarea: an unfocused editor is showing a value nobody is editing, so
     // a poll may refresh it, but a focused one is the operator's draft.
-    if (changed.has("contextDoc") && this.contextDoc !== changed.get("contextDoc")) {
+    if (
+      changed.has("contextDoc") &&
+      this.contextDoc !== changed.get("contextDoc")
+    ) {
       if (!this._focused) this._contextDraft = this.contextDoc ?? "";
     }
   }
@@ -54,53 +57,66 @@ export class ProjectContextCard extends ColonyElement {
     });
   }
 
+  #editor() {
+    return html`<form class="project-context" @submit=${(e) => this.#submit(e)}>
+      <textarea
+        name="project-context"
+        class="mono"
+        placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
+        .value=${this._contextDraft}
+        @input=${(event) => {
+          this._contextDraft = event.target.value;
+        }}
+        @focus=${() => {
+          this._focused = true;
+        }}
+        @blur=${() => {
+          this._focused = false;
+        }}
+      ></textarea>
+      <div class="pc-actions">
+        <button class="btn" type="submit">Save context</button>
+        <button
+          class="btn btn-quiet"
+          type="button"
+          @click=${() => this.#emit("colony-toggle", { key: "briefOpen" })}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>`;
+  }
+
+  #editButton(doc) {
+    return html`<button
+      class="btn btn-quiet"
+      @click=${() => this.#emit("colony-toggle", { key: "briefOpen" })}
+    >
+      ${doc ? "Edit brief" : "Add brief"}
+    </button>`;
+  }
+
+  #preview(doc) {
+    return doc
+      ? html`<div class="knowledge-preview">
+          <markdown-reader .markdown=${doc}></markdown-reader>
+        </div>`
+      : html`<p class="note">No brief yet.</p>`;
+  }
+
   render() {
     const project = this.project;
     if (!project) return nothing;
     const doc = this.contextDoc ?? "";
+    // The child part sits flush against its parent's tags: a newline between
+    // `<div>` and `${…}` leaves a text node lit cannot remove when the branch
+    // swaps under happy-dom, which blows up the update. The short local keeps
+    // the `>${body}</div>` pair on one line, and prettier with it.
+    const body = this.editing ? this.#editor() : this.#preview(doc);
+    const action = this.editing ? nothing : this.#editButton(doc);
     return html`<aside class="card">
-      <p class="card-head">Project knowledge ${this.editing
-        ? nothing
-        : html`<button
-            class="btn btn-quiet"
-            @click=${() => this.#emit("colony-toggle", { key: "briefOpen" })}
-          >
-            ${doc ? "Edit brief" : "Add brief"}
-          </button>`}</p>
-      <div class="card-body">${this.editing
-        ? html`<form class="project-context" @submit=${(e) => this.#submit(e)}>
-              <textarea
-                name="project-context"
-                class="mono"
-                placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
-                .value=${this._contextDraft}
-                @input=${(event) => {
-                  this._contextDraft = event.target.value;
-                }}
-                @focus=${() => {
-                  this._focused = true;
-                }}
-                @blur=${() => {
-                  this._focused = false;
-                }}
-              ></textarea>
-              <div class="pc-actions">
-                <button class="btn" type="submit">Save context</button>
-                <button
-                  class="btn btn-quiet"
-                  type="button"
-                  @click=${() =>
-                    this.#emit("colony-toggle", { key: "briefOpen" })}
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>`
-        : doc
-          ? html`<div class="knowledge-preview">
-                <markdown-reader .markdown=${doc}></markdown-reader>
-              </div>`
-          : html`<p class="note">No brief yet.</p>`}</div>
+      <p class="card-head">Project knowledge ${action}</p>
+      <div class="card-body">${body}</div>
     </aside>`;
   }
 }

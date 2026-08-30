@@ -51,18 +51,18 @@ describe("project-context-card preview", () => {
   it("offers Add brief with no doc and Edit brief once one exists", async () => {
     const empty = makeCard();
     await empty.updateComplete;
-    expect(
-      empty.querySelector(".card-head button")?.textContent.trim(),
-    ).toBe("Add brief");
+    expect(empty.querySelector(".card-head button")?.textContent.trim()).toBe(
+      "Add brief",
+    );
     expect(empty.querySelector(".card-body p.note")?.textContent).toBe(
       "No brief yet.",
     );
 
     const filled = makeCard({ contextDoc: "# Brief" });
     await filled.updateComplete;
-    expect(
-      filled.querySelector(".card-head button")?.textContent.trim(),
-    ).toBe("Edit brief");
+    expect(filled.querySelector(".card-head button")?.textContent.trim()).toBe(
+      "Edit brief",
+    );
     expect(filled.querySelector("p.note")).toBeNull();
   });
 
@@ -116,8 +116,27 @@ describe("project-context-card editor", () => {
       new window.Event("submit", { bubbles: true, cancelable: true }),
     );
     expect(seen).toEqual([
-      ["colony-save-context", { project: "Operator console", context_doc: "# Edited" }],
+      [
+        "colony-save-context",
+        { project: "Operator console", context_doc: "# Edited" },
+      ],
     ]);
+  });
+
+  it("leaving the editor removes the form and restores the preview", async () => {
+    // Regression: the card's child parts sit flush against their tags. A
+    // newline around a child part leaves a text node lit cannot remove when
+    // the branch swaps, which crashes the update under happy-dom.
+    const el = makeCard({ contextDoc: "# Brief", editing: true });
+    await el.updateComplete;
+    expect(el.querySelector("form.project-context")).toBeTruthy();
+    el.editing = false;
+    await el.updateComplete;
+    expect(el.querySelector("form.project-context")).toBeNull();
+    expect(el.querySelector(".knowledge-preview markdown-reader")).toBeTruthy();
+    el.editing = true;
+    await el.updateComplete;
+    expect(el.querySelector("form.project-context")).toBeTruthy();
   });
 
   it("an empty submit sends the empty string, which Save turns into null", async () => {

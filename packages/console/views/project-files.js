@@ -35,7 +35,8 @@ export class ProjectFiles extends ColonyElement {
 
   /** Crumb / back links route through colony-navigate; modified clicks keep it. */
   #nav(event, href) {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
     event.preventDefault();
     this.#emit("colony-navigate", { href });
   }
@@ -63,7 +64,8 @@ export class ProjectFiles extends ColonyElement {
   }
 
   #page(event, page) {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
     event.preventDefault();
     this.#emit("colony-page", { page, surface: "files" });
   }
@@ -72,6 +74,39 @@ export class ProjectFiles extends ColonyElement {
    * controls and the inline replace form. */
   #fileRow(file) {
     const replacing = this.replaceFileId === file.id;
+    // Each conditional part sits flush against its parent's tags: a newline
+    // between `<div>` and `${…}` leaves a text node lit cannot remove when the
+    // branch swaps under happy-dom, which blows up the update.
+    const action =
+      this.confirmFile === file.id
+        ? html`<button
+            class="btn btn-rev"
+            @click=${() =>
+              this.#emit("colony-file-delete", { fileId: file.id })}
+          >
+            Confirm delete
+          </button>`
+        : html`<button
+            class="btn btn-quiet"
+            @click=${() =>
+              this.#emit("colony-file-confirm", { fileId: file.id })}
+          >
+            Delete
+          </button>`;
+    const toggle = html`<button
+      class="btn btn-quiet"
+      @click=${() =>
+        this.#emit("colony-file-replace-toggle", { fileId: file.id })}
+    >
+      ${replacing ? "Cancel replace" : "Replace"}
+    </button>`;
+    // Conditional parts are locals so each `${…}` sits flush against its
+    // parent's tag: a newline between a child part and a tag leaves a text
+    // node lit cannot remove when the branch swaps under happy-dom, which
+    // crashes the update. prettier-ignore keeps that pairing from being
+    // re-wrapped.
+    const form = replacing ? this.#replaceForm(file) : nothing;
+    // prettier-ignore
     return html`<div class="file-row">
       <div class="file-row-main">
         <span class="file-row-name">${file.filename}</span>
@@ -79,62 +114,42 @@ export class ProjectFiles extends ColonyElement {
           >${file.media_type} · ${file.byte_size} bytes</span
         >
       </div>
+      <div class="create-actions">${action}${toggle}</div>
+      ${form}</div>`;
+  }
+
+  #replaceForm(file) {
+    return html`<form
+      class="composer"
+      @submit=${(event) => {
+        event.preventDefault();
+        const form = new FormData(event.target);
+        this.#emit("colony-file-replace", {
+          fileId: file.id,
+          media_type: String(form.get("media_type") ?? ""),
+          content: String(form.get("content") ?? ""),
+        });
+      }}
+    >
+      <label class="field">
+        <span>Media type</span>
+        <select name="media_type">
+          ${MEDIA_TYPES.map(
+            (type) =>
+              html`<option value=${type} ?selected=${file.media_type === type}>
+                ${type}
+              </option>`,
+          )}
+        </select>
+      </label>
+      <label class="field">
+        <span>Content</span>
+        <textarea name="content" rows="8"></textarea>
+      </label>
       <div class="create-actions">
-        ${this.confirmFile === file.id
-          ? html`<button
-              class="btn btn-rev"
-              @click=${() => this.#emit("colony-file-delete", { fileId: file.id })}
-            >
-              Confirm delete
-            </button>`
-          : html`<button
-              class="btn btn-quiet"
-              @click=${() => this.#emit("colony-file-confirm", { fileId: file.id })}
-            >
-              Delete
-            </button>`}
-        <button
-          class="btn btn-quiet"
-          @click=${() =>
-            this.#emit("colony-file-replace-toggle", { fileId: file.id })}
-        >
-          ${replacing ? "Cancel replace" : "Replace"}
-        </button>
+        <button class="btn" type="submit">Replace file</button>
       </div>
-      ${replacing
-        ? html`<form
-            class="composer"
-            @submit=${(event) => {
-              event.preventDefault();
-              const form = new FormData(event.target);
-              this.#emit("colony-file-replace", {
-                fileId: file.id,
-                media_type: String(form.get("media_type") ?? ""),
-                content: String(form.get("content") ?? ""),
-              });
-            }}
-          >
-            <label class="field">
-              <span>Media type</span>
-              <select name="media_type">
-                ${MEDIA_TYPES.map(
-                  (type) =>
-                    html`<option value=${type} ?selected=${file.media_type === type}
-                      >${type}</option
-                    >`,
-                )}
-              </select>
-            </label>
-            <label class="field">
-              <span>Content</span>
-              <textarea name="content" rows="8"></textarea>
-            </label>
-            <div class="create-actions">
-              <button class="btn" type="submit">Replace file</button>
-            </div>
-          </form>`
-        : nothing}
-    </div>`;
+    </form>`;
   }
 
   render() {
@@ -161,12 +176,13 @@ export class ProjectFiles extends ColonyElement {
           <a
             class="btn btn-quiet"
             href=${projectHref(page.project.name)}
-            @click=${(event) => this.#nav(event, projectHref(page.project.name))}
+            @click=${(event) =>
+              this.#nav(event, projectHref(page.project.name))}
             >Back to project</a
           >
         </header>
-        <section class="project-files"
-          >${page.total > 0 && files.length === 0
+        <section class="project-files">
+          ${page.total > 0 && files.length === 0
             ? html`<div class="rack-empty">
                 <p>Past the last page.</p>
                 <a class="btn btn-solid" href=${hrefForPage(base, 1)}
@@ -174,9 +190,13 @@ export class ProjectFiles extends ColonyElement {
                 >
               </div>`
             : files.length
-              ? repeat(files, (file) => file.id, (file) => this.#fileRow(file))
-              : html`<p class="rack-empty">No reference files yet.</p>`}</section
-        >
+              ? repeat(
+                  files,
+                  (file) => file.id,
+                  (file) => this.#fileRow(file),
+                )
+              : html`<p class="rack-empty">No reference files yet.</p>`}
+        </section>
         ${this.#pager({
           base,
           page: page.page,

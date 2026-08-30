@@ -174,15 +174,30 @@ describe("project-files replace flow", () => {
     ]);
   });
 
+  it("closing the replace form removes it again", async () => {
+    // Regression: the row's conditional parts sit flush against their tags.
+    // A newline around a child part leaves a text node lit cannot remove
+    // when the branch swaps, which crashes the update under happy-dom.
+    const el = makeFiles();
+    await el.updateComplete;
+    el.replaceFileId = "f1";
+    await el.updateComplete;
+    expect(el.querySelector(".file-row form.composer")).toBeTruthy();
+    el.replaceFileId = null;
+    await el.updateComplete;
+    expect(el.querySelector(".file-row form.composer")).toBeNull();
+    expect(rowButton(el, "f1", "Replace")).toBeTruthy();
+  });
+
   it("a text/plain file preselects text/plain", async () => {
     const el = makeFiles(
       pageOf({ files: [file("f1", { media_type: "text/plain" })] }),
       { replaceFileId: "f1" },
     );
     await el.updateComplete;
-    expect(
-      el.querySelector('.file-row select[name="media_type"]')?.value,
-    ).toBe("text/plain");
+    expect(el.querySelector('.file-row select[name="media_type"]')?.value).toBe(
+      "text/plain",
+    );
   });
 });
 
