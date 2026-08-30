@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   ArtifactKeyError,
   createArtifactStore,
@@ -239,10 +239,17 @@ const S3_CFG = {
 };
 
 describe("createS3ArtifactStore", () => {
+  beforeEach(() => {
+    process.env["S3_ACCESS_KEY"] = "test-access-9f";
+    process.env["S3_SECRET_KEY"] = "test-secret-7a";
+  });
+  afterEach(() => {
+    delete process.env["S3_ACCESS_KEY"];
+    delete process.env["S3_SECRET_KEY"];
+  });
+
   it("PUTs to <endpoint>/<bucket>/<key> with SigV4 headers", async () => {
-    const { fetchImpl, calls } = stubFetch(
-      new Response(null, { status: 200, headers: { "content-length": "3" } }),
-    );
+    const { fetchImpl, calls } = stubFetch(new Response(null, { status: 200 }));
     const store = createS3ArtifactStore(S3_CFG, fetchImpl);
     const put = await store.put("runs/r1/out.bin", new Uint8Array([9, 9, 9]), {
       contentType: "application/octet-stream",
@@ -254,7 +261,7 @@ describe("createS3ArtifactStore", () => {
     expect((calls[0]!.init.method as string).toUpperCase()).toBe("PUT");
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers["authorization"]).toMatch(
-      /^AWS4-HMAC-SHA256 Credential=S3_ACCESS_KEY\/\d{8}\/us-east-1\/s3\/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/,
+      /^AWS4-HMAC-SHA256 Credential=test-access-9f\/\d{8}\/us-east-1\/s3\/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/,
     );
     expect(headers["x-amz-content-sha256"]).toBe(
       sha256HexOf(new Uint8Array([9, 9, 9])),
@@ -264,6 +271,24 @@ describe("createS3ArtifactStore", () => {
       "http://minio.home:9000/colony-artifacts/runs/r1/out.bin",
     );
     expect(put.bytes).toBe(3);
+  });
+
+  it("sends every header it signs except host", async () => {
+    const { fetchImpl, calls } = stubFetch(new Response(null, { status: 200 }));
+    const store = createS3ArtifactStore(S3_CFG, fetchImpl);
+    await store.put("runs/r1/out.bin", new Uint8Array([9, 9, 9]), {
+      contentType: "application/octet-stream",
+    });
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    const signedHeaders = headers["authorization"]
+      ?.match(/SignedHeaders=([^,]+)/)?.[1]
+      ?.split(";");
+    expect(signedHeaders).toBeDefined();
+    const sent = Object.keys(headers).map((k) => k.toLowerCase());
+    for (const name of signedHeaders!) {
+      if (name === "host") continue;
+      expect(sent).toContain(name);
+    }
   });
 
   it("GETs the ref and returns 404 as undefined", async () => {

@@ -124,6 +124,10 @@ export function createS3ArtifactStore(
 ): ArtifactStore {
   const region = cfg.region ?? "us-east-1";
   const endpoint = cfg.endpoint.replace(/\/+$/, "");
+  // Credential env vars are guaranteed to resolve at boot (config validation
+  // rejects unresolved ones), so resolve them exactly once, here.
+  const accessKey = process.env[cfg.access_key_env] ?? "";
+  const secretKey = process.env[cfg.secret_key_env] ?? "";
   const prefix = cfg.prefix ? `${cfg.prefix.replace(/\/+$/, "")}/` : "";
   const refFor = (key: string): string =>
     `${endpoint}/${cfg.bucket}/${encodeS3Key(prefix + key)}`;
@@ -137,8 +141,8 @@ export function createS3ArtifactStore(
         fetchImpl,
         { url: refFor(key), method: "PUT", body: bytes },
         {
-          accessKey: cfg.access_key_env,
-          secretKey: cfg.secret_key_env,
+          accessKey,
+          secretKey,
           region,
           payloadSha256,
           extraHeaders: { "content-type": meta.contentType },
@@ -147,10 +151,11 @@ export function createS3ArtifactStore(
       if (!res.ok) {
         throw new ArtifactStoreError(`s3 put failed: ${res.status}`);
       }
-      const header = res.headers.get("content-length");
+      // A PUT response carries no body; the only trustworthy size is the
+      // payload itself.
       return {
         ref: refFor(key),
-        bytes: header ? Number(header) : bytes.byteLength,
+        bytes: bytes.byteLength,
       };
     },
     async get(ref) {
@@ -158,8 +163,8 @@ export function createS3ArtifactStore(
         fetchImpl,
         { url: ref, method: "GET" },
         {
-          accessKey: cfg.access_key_env,
-          secretKey: cfg.secret_key_env,
+          accessKey,
+          secretKey,
           region,
           payloadSha256: EMPTY_SHA256,
         },
@@ -294,6 +299,7 @@ async function signedFetch(
   const headers: Record<string, string> = {
     ...opts.extraHeaders,
     "x-amz-content-sha256": opts.payloadSha256,
+    "x-amz-date": amzDate,
   };
   const { authorization } = sigv4Sign({
     method: req.method,
