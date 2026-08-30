@@ -1145,7 +1145,7 @@ export class Store {
       error?: string;
     } = {},
   ): Run {
-    this.db
+    const finished = this.db
       .prepare(
         `UPDATE runs SET status = @status, head_sha = @head_sha,
          envelope_json = @envelope_json, evidence_json = @evidence_json,
@@ -1165,16 +1165,21 @@ export class Store {
       );
     const run = this.getRun(runId);
     if (!run) throw new Error(`run lost after finish: ${runId}`);
-    this.audit("svc:colonyd", "run.finished", {
-      run_id: run.id,
-      scope_id: run.scope_id,
-      task_id: run.task_id,
-      detail: {
+    // Only a matched UPDATE moved the row to terminal. A no-op (the run was
+    // already finished) must not append a second run.finished row that
+    // contradicts the runs row's terminal status.
+    if (finished.changes === 1) {
+      this.audit("svc:colonyd", "run.finished", {
         run_id: run.id,
-        status,
-        ...(patch.error === undefined ? {} : { error: patch.error }),
-      },
-    });
+        scope_id: run.scope_id,
+        task_id: run.task_id,
+        detail: {
+          run_id: run.id,
+          status,
+          ...(patch.error === undefined ? {} : { error: patch.error }),
+        },
+      });
+    }
     return run;
   }
 

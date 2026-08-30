@@ -442,6 +442,27 @@ describe("Store", () => {
     });
   });
 
+  it("does not write a second run.finished row when already terminal", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    store.finishRun(run.id, "succeeded");
+    // A second finish is a no-op on the runs row; the audit trail must not
+    // grow a contradicting run.finished row for the skipped transition.
+    store.finishRun(run.id, "failed", { error: "late_failure" });
+
+    const row = store.getRun(run.id);
+    expect(row!.status).toBe("succeeded");
+    const rows = store
+      .listAudit({ run_id: run.id })
+      .events.filter((entry) => entry.action === "run.finished");
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.detail_json).status).toBe("succeeded");
+  });
+
   it("writes run.finished audit rows for lease expiry and orphan sweeps", () => {
     const scopeId = seededScope();
     const leased = store.startRun({
