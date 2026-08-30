@@ -246,7 +246,11 @@ test.describe("console mobile", () => {
     await expect(page.locator(".crumbs")).toBeHidden({ timeout: 15000 });
     // The homepage no longer has a side rail.
     await expect(page.locator(".board-side")).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "New scope" })).toBeVisible();
+    // The index's primary action is New project; New scope lives on the
+    // project page.
+    await expect(
+      page.locator(".board-head").getByRole("link", { name: "New project" }),
+    ).toBeVisible();
     await expect(page.locator(".rack-empty, .project-row").first()).toBeVisible(
       {
         timeout: 15000,
@@ -279,7 +283,12 @@ test.describe("console mobile", () => {
     await page.goto("/?demo=1#/project/Operator%20console");
     await assertMobileViewport(page);
 
-    // Renders fully offline: editor prefilled, scope list present.
+    // Renders fully offline: the brief previews as Markdown, the editor
+    // opens on demand prefilled, and the scope list is present.
+    await expect(page.locator(".knowledge-preview")).toBeVisible({
+      timeout: 15000,
+    });
+    await page.getByRole("button", { name: "Edit brief" }).click();
     await expect(page.locator('textarea[name="project-context"]')).toBeVisible({
       timeout: 15000,
     });
@@ -288,8 +297,9 @@ test.describe("console mobile", () => {
     });
     await expect(page.getByRole("link", { name: "New scope" })).toBeVisible();
 
+    // The scopes rack collapses to a single column.
     const cols = await page.evaluate(() => {
-      const el = document.querySelector(".rack-single") as HTMLElement | null;
+      const el = document.querySelector(".rack") as HTMLElement | null;
       return el ? getComputedStyle(el).gridTemplateColumns : "";
     });
     const tracks = cols.trim().split(/\s+/).filter(Boolean);
@@ -313,10 +323,9 @@ test.describe("console mobile", () => {
       timeout: 15000,
     });
 
-    const newScopeLink = page.getByRole("link", { name: "New scope" });
-    await expect(newScopeLink).toBeVisible({ timeout: 15000 });
-    await newScopeLink.tap();
-
+    // The unprojected composer is reached by route; the index only offers
+    // New project.
+    await page.goto("/#/new");
     await expect(page).toHaveURL(/#\/new/, { timeout: 15000 });
     const titleInput = page.locator('input[name="title"]');
     const goalInput = page.locator('textarea[name="goal"]');

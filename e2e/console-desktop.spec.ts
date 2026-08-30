@@ -165,10 +165,12 @@ test.describe("desktop console", () => {
     }
 
     // New scope form: fill Title/Project/Goal/path=so/console-e2e, submit → hash routes to #/<scopeId>
+    // The index's only primary action is New project (New scope lives on the
+    // project page); the unprojected composer is reached by its route.
     const unique = `Board E2E ${Date.now()}`;
     const project = `e2e-board-${Date.now()}`;
     const goal = `${unique} goal: searchable substring alpha-${Date.now()}`;
-    await page.getByRole("link", { name: "New scope" }).click();
+    await page.goto("/#/new");
     await expect(page).toHaveURL(/#\/new$/);
     await expect(page.getByText("Open a scope")).toBeVisible();
     await page.locator('input[name="title"]').fill(unique);
@@ -1273,6 +1275,13 @@ test.describe("desktop console", () => {
     await expect(
       page.locator(".board-title", { hasText: "Operator console" }),
     ).toBeVisible({ timeout: 15000 });
+    // The stored brief renders as Markdown; the editor opens on demand and
+    // still prefills from the stored document.
+    await expect(page.locator(".knowledge-preview")).toContainText(
+      /no-build lit-html/,
+      { timeout: 15000 },
+    );
+    await page.getByRole("button", { name: "Edit brief" }).click();
     await expect(page.locator('textarea[name="project-context"]')).toHaveValue(
       /no-build lit-html/,
       { timeout: 15000 },
