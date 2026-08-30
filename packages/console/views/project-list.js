@@ -105,7 +105,9 @@ export class ProjectList extends ColonyElement {
 
   render() {
     const page = this.projectsPage;
-    const rows = page?.items ?? [];
+    // The shell's projectsPage carries {projects, total, offset, page} —
+    // the shape /projects returns. Not the generic {items} page.
+    const rows = page?.projects ?? [];
     const total = page?.total ?? 0;
     const items = rows.length;
     const pageNo = page?.page ?? 1;

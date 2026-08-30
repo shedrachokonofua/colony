@@ -23,11 +23,12 @@ function project(name, overrides = {}) {
   };
 }
 
-function pageOf(items, overrides = {}) {
+// The shell's projectsPage shape (colony-app.js), which is /projects'
+// own {projects, total, ...} — not the generic {items, total} page.
+function pageOf(projects, overrides = {}) {
   return {
-    items,
-    total: items.length,
-    limit: 25,
+    projects,
+    total: projects.length,
     offset: 0,
     page: 1,
     ...overrides,
@@ -102,6 +103,21 @@ describe("project-list structure", () => {
     );
     expect(kinds).toEqual(["active", "done"]);
     expect(cards[1].querySelectorAll(".chip").length).toBe(0);
+  });
+
+  it("reads the shell's projects key, not a generic items page", async () => {
+    // Regression: the view read page.items, which every producer of
+    // projectsPage omits, so a real 30-project page rendered the
+    // past-the-last-page state on the homepage.
+    const el = makeList({
+      projects: [project("Alpha")],
+      total: 30,
+      offset: 0,
+      page: 1,
+    });
+    await el.updateComplete;
+    expect(el.querySelectorAll(".project-card").length).toBe(1);
+    expect(el.querySelector(".rack-empty")).toBeNull();
   });
 
   it("renders the empty state when the project total is zero", async () => {
