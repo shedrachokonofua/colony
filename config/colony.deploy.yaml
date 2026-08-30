@@ -108,9 +108,11 @@ providers:
 agents:
   # Budgets sized from observed run durations (12h window, 2026-08-18):
   # implement 20-26 min at the old 30 min cap, review 10-23 min, plan 8-25 min.
-  # 2026-08-30: developer raised to 400 turns / 90 min — post latency-routing
-  # agents run ~5.7 turns/min, so 250 turns exhausted near minute 44 on large
-  # tasks; turns bind before wall clock, which stays the divergence backstop.
+  # 2026-08-30: developer 400 turns / 3 h. Hy4 measures ~47.6 tok/s with 6 s
+  # TTFT (~2.3 turns/min), so 400 turns needs ~3 h; on GLM-Flash (~5.7
+  # turns/min) turns bind near minute 70. Turns are the divergence guard;
+  # the stall/liveness watchdogs cover hangs; the clock is the outer bound.
+  # Revert to 5400000 if the coder returns to a GLM-Flash-class model.
   # Use Hy4 as the coder during CodeBuddy's launch trial. GLM-5.3-Flash is
   # first fallback so runs survive endpoint, quota, or promotion expiry.
   developer:
@@ -118,7 +120,7 @@ agents:
     model: hy4-preview
     fallback_models: [glm-5.3-flash, deepseek-v4-flash, muse-spark, qwen3.8-27b]
     thinking_level: high
-    timeout_ms: 5400000
+    timeout_ms: 10800000
     max_turns: 400
   reviewer:
     provider: openai_compatible
