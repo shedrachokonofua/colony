@@ -397,6 +397,9 @@ export class PiBaseAgentRunner implements PiRunner {
           // The packet's repo token is a live secret: every exec ledger string
           // must redact it, not just the well-known token patterns.
           runToken: packetRepo(request.packet)?.credentials?.token,
+          // Ledger emission is best-effort: a sink that throws must be
+          // visible in the run logs, never swallowed silently.
+          logger: this.options.logger,
         });
       }
       const deadline =

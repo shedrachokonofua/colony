@@ -12,6 +12,7 @@ import {
 import { DEFAULT_EXEC_TIMEOUT_MS, type SandboxHandle } from "@colony/sandbox";
 import type { RunAuditSink } from "./audit-sink.js";
 import { redactText } from "./redact.js";
+import type { PiRunnerLogger } from "./pi-runner-common.js";
 
 /**
  * Sandbox-delegated tools for agent runs. `bash`, `find`, and `ls` keep the SDK's
@@ -36,6 +37,11 @@ import { redactText } from "./redact.js";
 /** Cap on bytes returned by Colony's own read/grep tools. */
 const MAX_TOOL_OUTPUT_BYTES = 128 * 1024;
 
+/**
+ * Raw captured exec output: per-stream byte counts plus the arrival-ordered
+ * chunk list, so the combined buffer and the ledger tail reproduce the
+ * interleaving the run actually saw (stderr before later stdout stays first).
+ */
 interface ExecCapture {
   readonly output: Buffer;
   readonly exitCode: number | null;
@@ -74,8 +80,7 @@ async function execCapture(
     };
   } = {},
 ): Promise<ExecCapture> {
-  const stdoutChunks: Buffer[] = [];
-  const stderrChunks: Buffer[] = [];
+  const chunks: { kind: "stdout" | "stderr"; buffer: Buffer }[] = [];
   const startedAt = Date.now();
   try {
     const output = await runWithSignal(
@@ -88,51 +93,55 @@ async function execCapture(
       },
       options.signal,
       (data, kind) => {
-        const buffer = Buffer.from(data);
-        if (kind === "stderr") stderrChunks.push(buffer);
-        else stdoutChunks.push(buffer);
+        chunks.push({ kind, buffer: Buffer.from(data) });
       },
     );
-    const stdout = Buffer.concat(stdoutChunks);
-    const stderr = Buffer.concat(stderrChunks);
+    const stdout = Buffer.concat(
+      chunks.filter((c) => c.kind === "stdout").map((c) => c.buffer),
+    );
+    const stderr = Buffer.concat(
+      chunks.filter((c) => c.kind === "stderr").map((c) => c.buffer),
+    );
     emitLedger(
       options.execOptions,
       command,
       options.cwd,
       output.exitCode,
       Date.now() - startedAt,
-      stdout,
-      stderr,
+      chunks,
     );
     return {
-      output: Buffer.concat([stdout, stderr]),
+      output: Buffer.concat(chunks.map((c) => c.buffer)),
       exitCode: output.exitCode,
       stdoutBytes: stdout.byteLength,
       stderrBytes: stderr.byteLength,
     };
-  } catch {
-    // Abort path: no completed exec, nothing to ledger.
-    return {
-      output: Buffer.alloc(0),
-      exitCode: null,
-      stdoutBytes: 0,
-      stderrBytes: 0,
-    };
+  } catch (err) {
+    // Abort paths (pre-aborted signal, mid-exec cancel) leave no completed
+    // exec to capture; anything else is a real failure and propagates.
+    if (err instanceof Error && err.message === "aborted") {
+      return {
+        output: Buffer.alloc(0),
+        exitCode: null,
+        stdoutBytes: 0,
+        stderrBytes: 0,
+      };
+    }
+    throw err;
   }
 }
 
 /**
- * Last `LEDGER_TAIL_CHARS` chars of combined stdout+stderr, ANSI-stripped and
- * redacted. Byte counts above are the raw captured lengths; only this
- * human-readable tail is cleaned.
+ * Last `LEDGER_TAIL_CHARS` chars of the arrival-ordered combined output,
+ * ANSI-stripped and redacted. Byte counts above are the raw captured lengths;
+ * only this human-readable tail is cleaned.
  */
 function outputTail(
-  stdout: Buffer,
-  stderr: Buffer,
+  chunks: readonly { kind: "stdout" | "stderr"; buffer: Buffer }[],
   secrets: readonly string[],
 ): string {
   const combined = stripAnsi(
-    `${stdout.toString("utf8")}${stderr.toString("utf8")}`,
+    chunks.map((chunk) => chunk.buffer.toString("utf8")).join(""),
   );
   return redactText(combined.slice(-LEDGER_TAIL_CHARS), secrets);
 }
@@ -164,8 +173,7 @@ function emitLedger(
   cwd: string | undefined,
   exitCode: number | null,
   durationMs: number,
-  stdout: Buffer,
-  stderr: Buffer,
+  chunks: readonly { kind: "stdout" | "stderr"; buffer: Buffer }[],
 ): void {
   const secrets = execOptions?.secrets ?? [];
   execOptions?.ledger?.command({
@@ -173,9 +181,13 @@ function emitLedger(
     cwd: cwd === undefined ? undefined : redactText(cwd, secrets),
     exit_code: exitCode,
     duration_ms: durationMs,
-    stdout_bytes: stdout.byteLength,
-    stderr_bytes: stderr.byteLength,
-    truncated_tail: outputTail(stdout, stderr, secrets),
+    stdout_bytes: chunks
+      .filter((chunk) => chunk.kind === "stdout")
+      .reduce((total, chunk) => total + chunk.buffer.byteLength, 0),
+    stderr_bytes: chunks
+      .filter((chunk) => chunk.kind === "stderr")
+      .reduce((total, chunk) => total + chunk.buffer.byteLength, 0),
+    truncated_tail: outputTail(chunks, secrets),
   });
 }
 
@@ -252,8 +264,7 @@ function bashOperations(
 ): BashOperations {
   return {
     exec: async (command, cwd, { onData, signal, timeout, env }) => {
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
+      const chunks: { kind: "stdout" | "stderr"; buffer: Buffer }[] = [];
       const startedAt = Date.now();
       const result = await runWithSignal(
         handle,
@@ -266,8 +277,7 @@ function bashOperations(
         signal,
         (data, kind) => {
           const buffer = Buffer.from(data);
-          if (kind === "stderr") stderrChunks.push(buffer);
-          else stdoutChunks.push(buffer);
+          chunks.push({ kind, buffer });
           onData(buffer);
         },
       );
@@ -277,8 +287,7 @@ function bashOperations(
         toWorkspaceRelative(base, cwd),
         result.exitCode,
         Date.now() - startedAt,
-        Buffer.concat(stdoutChunks),
-        Buffer.concat(stderrChunks),
+        chunks,
       );
       if (result.timedOut) {
         // The shim's `timeout:<seconds>` contract renders as "Command timed
@@ -682,7 +691,8 @@ function globToRegExp(glob: string): RegExp {
  *
  * `audit` receives one `command` run event per exec regardless of which tool
  * triggered it (independent of SDK tool semantics); `runToken` is redacted
- * from the ledger alongside the well-known token patterns.
+ * from the ledger alongside the well-known token patterns, and sink failures
+ * are logged via `logger` (best-effort: never into the run path).
  */
 export function buildSandboxTools(
   handle: SandboxHandle,
@@ -691,6 +701,7 @@ export function buildSandboxTools(
     readonly auditSink?: RunAuditSink;
     readonly runId?: string;
     readonly runToken?: string;
+    readonly logger?: PiRunnerLogger;
   },
 ): readonly ToolDefinition[] {
   const ledger: ExecLedger | undefined =
@@ -699,8 +710,16 @@ export function buildSandboxTools(
           command: (detail) => {
             try {
               audit.auditSink!.appendEvent(audit.runId!, "command", detail);
-            } catch {
-              // The ledger must never break an exec.
+            } catch (err) {
+              // The ledger must never break an exec; say why it went missing.
+              audit.logger?.warn?.(
+                {
+                  runId: audit.runId,
+                  event: "command",
+                  error: err instanceof Error ? err.message : String(err),
+                },
+                "sandbox_ledger_append_event_failed",
+              );
             }
           },
         }

@@ -73,9 +73,11 @@ describe("exec command ledger", () => {
       // Output with ANSI escapes plus the run's own token: the tail must be
       // clean and redacted while the command itself is redacted too. The bash
       // shim throws on non-zero exit, so probe the exit through the ledger.
+      const stdoutPayload = "a\u001B[31mANSI\u001B[0mb\n";
+      const stderrPayload = "e\u001B[32mRR\u001B[0mf\n";
       try {
         await runTool(tools["bash"], {
-          command: `printf 'a\\033[31mANSI\\033[0mb\\n'; echo glpat-run-secret-token-xyz; echo out; echo err 1>&2; exit 3`,
+          command: `printf 'a\\033[31mANSI\\033[0mb\\n'; echo glpat-run-secret-token-xyz; echo out; printf 'e\\033[32mRR\\033[0mf\\n' 1>&2; exit 3`,
         });
         throw new Error("expected bash exit 3 to surface as a tool error");
       } catch (err) {
@@ -93,16 +95,24 @@ describe("exec command ledger", () => {
         "glpat-run-secret-token-xyz",
       );
       expect(detail["exit_code"]).toBe(3);
+      // Byte counts are the RAW captured stdout/stderr lengths, computed
+      // before any redaction: a regression that redacts first (or swaps the
+      // counters) flips these exact integers.
+      expect(detail["stdout_bytes"]).toBe(
+        Buffer.byteLength(`${stdoutPayload}glpat-run-secret-token-xyz\nout\n`),
+      );
+      expect(detail["stderr_bytes"]).toBe(Buffer.byteLength(stderrPayload));
+      // The exec ran in the workspace root ("." is the workspace-relative
+      // form of the run cwd the tools were built with).
+      expect(String(detail["cwd"])).toBe(".");
 
       const tail = String(detail["truncated_tail"]);
       expect(tail).not.toContain("\u001B");
       expect(tail).toContain("aANSIb");
       expect(tail).toContain("[REDACTED]");
       expect(tail).toContain("out");
-      expect(tail).toContain("err");
+      expect(tail).toContain("eRRf");
       expect(typeof detail["duration_ms"]).toBe("number");
-      expect(detail["stdout_bytes"]).toBeGreaterThan(0);
-      expect(detail["stderr_bytes"]).toBeGreaterThan(0);
     } finally {
       await handle.destroy();
     }
@@ -135,15 +145,29 @@ describe("exec command ledger", () => {
         content: "ledger body",
       });
 
+      // Arrival order, not stream-partitioned order: stderr is emitted (and
+      // arrives) before the later stdout line; the sleep makes the pipe
+      // arrival gap deterministic. Stream-partitioned output would always
+      // append stderr after stdout.
+      await runTool(tools["bash"], {
+        command: "echo err-first 1>&2; sleep 0.2; echo out-later",
+      });
+
       const commandEvents = events.filter((e) => e.event === "command");
       // bash + write's mkdir: every exec exactly once, regardless of which
       // tool triggered it.
-      expect(commandEvents.length).toBe(2);
+      expect(commandEvents.length).toBe(3);
       expect(String(commandEvents[1]!.detail["command"])).toContain("mkdir -p");
       const big = String(commandEvents[0]!.detail["truncated_tail"]);
       expect(big.length).toBe(1000);
       // The final line of `seq 1 400` ends the captured output.
       expect(big.endsWith("400\n")).toBe(true);
+      // Arrival order, not stream-partitioned order: the stderr line appears
+      // where it was emitted, before the later stdout line.
+      const interleaved = String(commandEvents[2]!.detail["truncated_tail"]);
+      expect(interleaved.indexOf("err-first")).toBeLessThan(
+        interleaved.indexOf("out-later"),
+      );
       for (const event of commandEvents) {
         expect(event.runId).toBe("run-ledger-cap");
         expect(typeof event.detail["stdout_bytes"]).toBe("number");
