@@ -28,6 +28,7 @@ function inRunSpanContext<T>(
 
 export interface ReviewRunOptions {
   readonly leaseTtlMs?: number;
+  readonly startModelId?: string;
 }
 
 /**
@@ -53,6 +54,7 @@ export async function runReview(
     path: scope.provider_repo_path,
   };
   const reviewerConfig = ctx.config.forAgent("reviewer");
+  const modelId = options.startModelId ?? reviewerConfig.model.id;
   const leaseTtlMs =
     options.leaseTtlMs ?? reviewerConfig.ceilings.timeoutMs + 5 * 60_000;
 
@@ -65,7 +67,7 @@ export async function runReview(
     task_id: task.id,
     run_id: runId,
     kind: "review",
-    model_id: reviewerConfig.model.id,
+    model_id: modelId,
   });
   const run = ctx.store.startRun({
     id: runId,
@@ -74,7 +76,7 @@ export async function runReview(
     kind: "review",
     lease_ttl_ms: leaseTtlMs,
     base_sha: headSha,
-    model_id: reviewerConfig.model.id,
+    model_id: modelId,
     trace_id: runSpan?.traceId ?? null,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
@@ -99,6 +101,7 @@ export async function runReview(
     headSha,
     abortController,
     runSpan,
+    options.startModelId,
   );
   trackRun(runId, execution, () => {
     abortController.abort();
@@ -123,6 +126,7 @@ async function executeReview(
   headSha: string,
   abortController: AbortController,
   runSpan: ColonyRunSpan | undefined,
+  startModelId: string | undefined,
 ): Promise<void> {
   const reviewer = ctx.agents.reviewer;
   if (!reviewer) {
@@ -176,6 +180,7 @@ async function executeReview(
       reviewer.startRun(full, {
         role: "reviewer",
         runId,
+        startModelId,
         traceContext: runSpan?.spanContext,
       }),
     );

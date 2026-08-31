@@ -25,6 +25,7 @@ export interface ArchitectRunOptions {
   readonly leaseTtlMs?: number;
   readonly mode?: "initial" | "extension";
   readonly extension?: ArchitectExtensionInput;
+  readonly startModelId?: string;
 }
 /**
  * Execute one architect run for a scope already transitioned to `planning`.
@@ -41,6 +42,7 @@ export async function runArchitect(
     path: scope.provider_repo_path,
   };
   const architect = ctx.config.forAgent("architect");
+  const modelId = options.startModelId ?? architect.model.id;
   const leaseTtlMs =
     options.leaseTtlMs ?? architect.ceilings.timeoutMs + 5 * 60_000;
 
@@ -53,14 +55,14 @@ export async function runArchitect(
     task_id: null,
     run_id: runId,
     kind: "architect",
-    model_id: architect.model.id,
+    model_id: modelId,
   });
   const run = ctx.store.startRun({
     id: runId,
     scope_id: scope.id,
     kind: "architect",
     lease_ttl_ms: leaseTtlMs,
-    model_id: architect.model.id,
+    model_id: modelId,
     trace_id: runSpan?.traceId ?? null,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
@@ -157,6 +159,7 @@ async function executeArchitect(
       ctx.agents.architect.startRun(full, {
         role: "architect",
         runId,
+        startModelId: options.startModelId,
         traceContext: runSpan?.spanContext,
       }),
     );

@@ -38,6 +38,7 @@ function inRunSpanContext<T>(
 
 export interface ImplementRunOptions {
   readonly leaseTtlMs?: number;
+  readonly startModelId?: string;
 }
 
 /**
@@ -58,6 +59,7 @@ export async function runImplement(
     path: scope.provider_repo_path,
   };
   const developer = ctx.config.forAgent("developer");
+  const modelId = options.startModelId ?? developer.model.id;
   const leaseTtlMs =
     options.leaseTtlMs ?? developer.ceilings.timeoutMs + 5 * 60_000;
 
@@ -70,7 +72,7 @@ export async function runImplement(
     task_id: task.id,
     run_id: runId,
     kind: "implement",
-    model_id: developer.model.id,
+    model_id: modelId,
   });
   const run = ctx.store.startRun({
     id: runId,
@@ -78,7 +80,7 @@ export async function runImplement(
     task_id: task.id,
     kind: "implement",
     lease_ttl_ms: leaseTtlMs,
-    model_id: developer.model.id,
+    model_id: modelId,
     trace_id: runSpan?.traceId ?? null,
   });
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
@@ -102,6 +104,7 @@ export async function runImplement(
     leaseTtlMs,
     abortController,
     runSpan,
+    options.startModelId,
   );
   trackRun(runId, execution, () => {
     abortController.abort();
@@ -126,6 +129,7 @@ async function executeImplement(
   leaseTtlMs: number,
   abortController: AbortController,
   runSpan: ColonyRunSpan | undefined,
+  startModelId: string | undefined,
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {
@@ -180,11 +184,11 @@ async function executeImplement(
         credentials: minted ? { token: minted.token } : undefined,
       },
     };
-
     const metadata = await inRunSpanContext(runSpan, () =>
       ctx.agents.developer.startRun(full, {
         role: "developer",
         runId,
+        startModelId,
         traceContext: runSpan?.spanContext,
       }),
     );
