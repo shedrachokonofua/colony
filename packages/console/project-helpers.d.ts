@@ -37,6 +37,7 @@ export interface DerivedRunningRow {
   runModel: string;
   startedAt: string | null;
   isRunning: boolean;
+  run: RunningRowInput["run"];
 }
 
 export function deriveRunningRow(

@@ -71,6 +71,7 @@ export function deriveRunningRow(entry) {
     runModel,
     startedAt,
     isRunning,
+    run,
   };
 }
 

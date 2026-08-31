@@ -17,6 +17,12 @@ import {
   parseProjectTab,
   serializeProjectTabHref,
 } from "./project-helpers.js";
+import {
+  hrefForPage,
+  outOfRange,
+  pageCount,
+  pageFromHash,
+} from "./pagination.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
@@ -122,7 +128,7 @@ const state = {
   projectFiles: null,
   projectRunning: null,
   pendingSelectTaskId: null,
-  projectTab: parseProjectTab(location.hash),
+  projectTab: hashQueryTab(),
   showArchived: false,
   briefOpen: false,
   confirmFile: null,
@@ -1976,10 +1982,12 @@ function renderProjectList() {
 
 function renderRunningRow(entry) {
   const row = deriveRunningRow(entry);
-  const durationLabel = row.startedAt
-    ? durationAriaLabel(row.startedAt)
-    : undefined;
-  const durationText = row.startedAt ? formatDuration(row.startedAt) : "—";
+  const nowMs = Date.now();
+  const runMs = row.hasRun && row.run ? runDurationMs(row.run, nowMs) : null;
+  const durationLabel =
+    row.hasRun && row.run ? durationAriaLabel(row.run, nowMs) : undefined;
+  const durationText = runMs !== null ? formatDuration(runMs) : "—";
+  const durationIso = runMs !== null ? isoDuration(runMs) : undefined;
   const runKind = row.runKind ? (KIND_LABEL[row.runKind] ?? row.runKind) : "";
   const runInfo = [runKind, row.runModel].filter(Boolean).join(" · ");
 
@@ -2020,7 +2028,7 @@ function renderRunningRow(entry) {
             live: row.isRunning,
           })}
           aria-label=${durationLabel || nothing}
-          title=${row.startedAt ? isoDuration(row.startedAt) : nothing}
+          title=${durationIso || nothing}
           >${durationText}</span
         >
       </div>
@@ -3504,7 +3512,7 @@ window.addEventListener("hashchange", () => {
   state.filesPage = null;
   state.projectFiles = null;
   state.projectRunning = null;
-  state.projectTab = parseProjectTab(location.hash);
+  state.projectTab = hashQueryTab();
   state.showArchived = false;
   state.briefOpen = false;
   state.confirmFile = null;
@@ -3532,10 +3540,12 @@ function hasVisibleRunningRun() {
     // surface through the rendered sheet so a single check covers them.
     if (runs.some((run) => run.status === "running")) return true;
   }
-  const runningList = state.projectRunning;
-  if (Array.isArray(runningList)) {
-    if (runningList.some((entry) => entry?.run?.status === "running")) {
-      return true;
+  if (state.projectTab === "running" && state.projectPage) {
+    const runningList = state.projectRunning;
+    if (Array.isArray(runningList)) {
+      if (runningList.some((entry) => entry?.run?.status === "running")) {
+        return true;
+      }
     }
   }
   return false;
