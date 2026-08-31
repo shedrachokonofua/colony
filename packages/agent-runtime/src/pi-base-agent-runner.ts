@@ -611,9 +611,13 @@ export class PiBaseAgentRunner implements PiRunner {
       const JIGGLE_BACKOFF_MS = 15_000;
       // Quota exhaustion (weekly caps, frequency limits with a distant reset)
       // never recovers inside a jiggle window: fail over immediately instead
-      // of burning wake cycles against a benched provider.
+      // of burning wake cycles against a benched provider. "No deployments
+      // available" is litellm's cooldown wrapper - once a leg is benched every
+      // caller sees it instead of the underlying quota error, and waiting out
+      // 300s cooldown windows one empty turn at a time is never better than
+      // moving to the fallback (the next run returns to the primary anyway).
       const QUOTA_ERROR_RE =
-        /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at/i;
+        /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at|no deployments available/i;
       const lastAssistantQuotaError = (): string | null => {
         for (const message of [
           ...(session?.agent.state.messages ?? []),
