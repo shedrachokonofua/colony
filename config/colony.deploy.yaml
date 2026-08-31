@@ -47,12 +47,16 @@ providers:
         # generation. Bounding a single response keeps the run acting instead
         # of monologuing.
         max_tokens: 16384
+        max_parallel_runs: 1
         cost: { input: 0, output: 0 }
       - id: router/glm-5.3
         name: glm-5.3
         reasoning: true
         context_window: 1000000
         max_tokens: 131072
+        # z.ai leg carries a weekly usage window; 2 covers architect demand
+        # without letting a burst drain it.
+        max_parallel_runs: 2
         cost: { input: 0, output: 0 }
       # ox-alpha's free stealth preview ended; OpenRouter and aether's own
       # litellm config both confirm the named successor is GLM-5.3-Flash.
@@ -81,24 +85,30 @@ providers:
         reasoning: true
         context_window: 1048576
         max_tokens: 131072
+        # Weekly token window (exhausted 2026-08-30); 2 stops a review
+        # stampede from draining it in one afternoon.
+        max_parallel_runs: 2
         cost: { input: 0, output: 0 }
       - id: router/deepseek-v4-pro
         name: deepseek-v4-pro
         reasoning: true
         context_window: 1048576
         max_tokens: 384000
+        max_parallel_runs: 2
         cost: { input: 0, output: 0 }
       - id: router/deepseek-v4-flash
         name: deepseek-v4-flash
         reasoning: true
         context_window: 1048576
         max_tokens: 384000
+        max_parallel_runs: 3
         cost: { input: 0, output: 0 }
       - id: qwen-cloud/qwen3.8-max
         name: qwen3.8-max
         reasoning: true
         context_window: 1000000
         max_tokens: 131072
+        max_parallel_runs: 1
         cost: { input: 0, output: 0 }
       - id: aether/qwen3.8-27b
         name: qwen3.8-27b
@@ -107,12 +117,27 @@ providers:
         # Operational generation cap; the deployed llama-server shares this
         # model's 262144-token context between prompt and completion.
         max_tokens: 32768
+        # Shares one llama-server with interactive use; never double-book it.
+        max_parallel_runs: 1
         cost: { input: 0, output: 0 }
       - id: antigravity/gemini-3.7-flash
         name: gemini-3.7-flash
         reasoning: true
         context_window: 1048576
         max_tokens: 65535
+        # Single-tenant Antigravity bridge with unmeasured ceilings.
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
+      # Grok 4.6 through the Cursor bridge (separate subscription pool with
+      # headroom). Quality-escalation seat: reviewer first fallback, architect
+      # fallback, developer last resort. The litellm leg drops max_tokens
+      # (Cursor 400s on it).
+      - id: cursor/grok-4.6
+        name: grok-4.6
+        reasoning: true
+        context_window: 262144
+        max_tokens: 65536
+        max_parallel_runs: 4
         cost: { input: 0, output: 0 }
 
 agents:
@@ -135,6 +160,7 @@ agents:
         deepseek-v4-flash,
         muse-spark,
         qwen3.8-27b,
+        grok-4.6,
       ]
     thinking_level: high
     timeout_ms: 10800000
@@ -143,7 +169,7 @@ agents:
     provider: openai_compatible
     model: kimi-k3
     fallback_models:
-      - glm-5.3
+      - grok-4.6
       - qwen3.8-max
       - deepseek-v4-pro
       - qwen3.8-27b
@@ -153,7 +179,7 @@ agents:
   architect:
     provider: openai_compatible
     model: glm-5.3
-    fallback_models: [kimi-k3, deepseek-v4-pro, qwen3.8-27b]
+    fallback_models: [kimi-k3, grok-4.6, deepseek-v4-pro, qwen3.8-27b]
     timeout_ms: 2700000
     max_turns: 200
   memory_consolidator:
