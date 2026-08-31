@@ -132,13 +132,17 @@ agents:
     thinking_level: high
     timeout_ms: 10800000
     max_turns: 400
+  # kimi-k3 owns the review seat. While its weekly quota is exhausted the
+  # first fallback takes the traffic: deepseek-v4-pro (~256 tok/s) ahead of
+  # glm-5.3 (90 tok/s single leg), whose xhigh reviews ran into the 45-min
+  # wall (5 timeouts, several 44-45m finishes on 2026-08-30 evening).
   reviewer:
     provider: openai_compatible
     model: kimi-k3
     fallback_models:
+      - deepseek-v4-pro
       - glm-5.3
       - qwen3.8-max
-      - deepseek-v4-pro
       - qwen3.8-27b
     thinking_level: xhigh
     timeout_ms: 2700000

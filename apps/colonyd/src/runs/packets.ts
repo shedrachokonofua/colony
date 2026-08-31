@@ -312,6 +312,8 @@ function buildReviewBody(task: Task, defaultBranch: string): string {
     "- Verify claimed guarantees hold under the substrate: process trees vs single processes, pipe ordering, path resolution, lockfile/CI sync.",
     "- For shared contracts (schemas, wire protocols, exported test suites): over-specification is as much a defect as under-specification — flag assertions no implementation can honestly guarantee.",
     "- Check the change lands green alone: new workspace packages must be in the lockfile, new files in CI's reach.",
+    "- Do NOT re-run test suites: the MR pipeline already ran them and the merge gate blocks on its result. Targeted single-file test runs and small hand-written probes are fine; full or per-package suite runs are wasted budget.",
+    "- Budget for the verdict: reading and probing should take most of your run, but ALWAYS leave time to submit. A defensible verdict on time beats a perfect one that times out.",
     "Submit reviewer_verdict with the exact head SHA you inspected (`git rev-parse HEAD`).",
     "request_changes requires at least one finding.",
   ].join("\n");
