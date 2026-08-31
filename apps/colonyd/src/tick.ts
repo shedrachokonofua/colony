@@ -32,7 +32,20 @@ export async function tick(ctx: ColonydContext): Promise<void> {
   let tickSpan: { end(): void } | undefined;
   const dispatch: RunDispatcher = (run) => {
     tickSpan ??= startTickSpan();
-    void run;
+    // A dispatched run that rejects must never become an unhandled
+    // rejection: node terminates the process on those (the e2e server died
+    // exactly this way when startRun hit a locked database, 2026-08-31).
+    run.catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      ctx.logger.error({ error: message }, "tick.dispatch_error");
+      try {
+        ctx.store.audit(SERVICE_ACTOR, "tick.dispatch_error", {
+          detail: { error: message },
+        });
+      } catch {
+        // audit failure must not compound the dispatch failure
+      }
+    });
   };
 
   try {

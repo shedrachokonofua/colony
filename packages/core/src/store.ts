@@ -280,6 +280,11 @@ export class Store {
     // foreign_keys is per-connection and MUST be set on every open.
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
+    // Writer contention waits instead of throwing SQLITE_BUSY: under
+    // node:sqlite a colliding write is otherwise a fatal 'database is
+    // locked' throw (crashed the e2e server mid-suite, 2026-08-31; bun's
+    // driver retried quietly). 5s outlasts any tick-vs-HTTP overlap.
+    this.db.exec("PRAGMA busy_timeout = 5000");
     migrate(this.db);
   }
 
