@@ -134,6 +134,7 @@ function oidcApp() {
       oidcRequiredRole: "admin",
       traceUiBaseUrl: "",
     },
+    draining: { isDraining: () => false },
     requestTick() {},
   };
   return buildApp(ctx);

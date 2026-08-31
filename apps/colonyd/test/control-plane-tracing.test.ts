@@ -100,6 +100,7 @@ function appWith(traceUiBaseUrl = "") {
       oidcRequiredRole: "",
       traceUiBaseUrl,
     },
+    draining: { isDraining: () => false },
     requestTick() {},
   };
   return { app: buildApp(ctx), store };

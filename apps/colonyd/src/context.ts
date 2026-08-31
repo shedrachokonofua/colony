@@ -3,6 +3,7 @@ import type { ArtifactStore, Store } from "@colony/core";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { ProviderAdapter } from "@colony/provider";
 import type { AgentWiring } from "./agent-runtime.js";
+import type { DrainController } from "./drain.js";
 import type { Logger } from "./logging.js";
 import type { TokenVerifier } from "./oidc.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
@@ -23,6 +24,8 @@ export interface ColonydContext {
   readonly validateEngine?: SandboxEngine;
   /** Test seam: overrides the verifier built from env.oidcIssuer. */
   readonly oidcVerifier?: TokenVerifier;
+  /** Shutdown drain state: the tick dispatch gate flips the moment drain begins. */
+  readonly draining: Pick<DrainController, "isDraining">;
   readonly env: {
     readonly gitlabBaseUrl: string;
     readonly gitlabToken: string;

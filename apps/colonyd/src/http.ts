@@ -187,8 +187,8 @@ const fileListQuery = z.object({
 export function buildApp(ctx: ColonydContext): Hono<Env> {
   const app = new Hono<Env>();
 
-  // Control-plane tracing: one server span per request. /health and static
-  // /ui/* assets are the only exclusions — everything else, including /
+  // Control-plane tracing: one server span per request. /health, /ready and
+  // static /ui/* assets are the only exclusions — everything else, including /
   // (console shell), /ui/config, the webhook route and all API routes, is
   // traced. Registered first so no handler runs outside a span.
   app.use(async (c, next) => {
@@ -215,6 +215,14 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   });
 
   app.get("/health", (c) => c.json({ ok: true, service: "colonyd" }));
+
+  // Readiness: flips 503 the moment drain begins so a k8s readiness probe
+  // stops routing traffic; /health above stays liveness-only.
+  app.get("/ready", (c) =>
+    ctx.draining.isDraining()
+      ? c.json({ ok: false, draining: true }, 503)
+      : c.json({ ok: true }),
+  );
 
   // Webhook intake — no actor required; secret-checked.
   app.post("/webhook/gitlab", async (c) => {
@@ -1292,5 +1300,7 @@ function safeEqual(a: string, b: string): boolean {
 
 /** Requests that never produce an HTTP server span. */
 function isExcludedFromHttpSpans(path: string): boolean {
-  return path === "/health" || staticUiAsset(path) !== null;
+  return (
+    path === "/health" || path === "/ready" || staticUiAsset(path) !== null
+  );
 }

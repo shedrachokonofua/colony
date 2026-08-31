@@ -18,9 +18,18 @@ import {
   createRunEventSink,
 } from "./agent-runtime.js";
 import type { ColonydContext } from "./context.js";
+import {
+  createDrainController,
+  type DrainController,
+  type DrainDeps,
+} from "./drain.js";
 import { buildApp } from "./http.js";
 import { consoleLogger } from "./logging.js";
-import { abortRuns, awaitPendingRuns } from "./runs/registry.js";
+import {
+  abortRuns,
+  activeTrackedRunIds,
+  awaitPendingRuns,
+} from "./runs/registry.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
 import { tick } from "./tick.js";
@@ -44,8 +53,10 @@ export interface ColonydHandle {
   readonly ctx: ColonydContext;
   /** Run one tick (single-flight guarded). Exported for tests. */
   tick(): Promise<void>;
-  /** Graceful shutdown: stop timer + server, abort runs, close store. */
+  /** Graceful shutdown: stop timer + server, drain runs, close store. */
   shutdown(): Promise<void>;
+  /** Bounded drain state machine; `shutdown()` awaits `drain.wait()`. */
+  readonly drain: DrainController;
 }
 
 export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
@@ -135,6 +146,29 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     }
   };
 
+  const drainDeps: DrainDeps = {
+    now: () => Date.now(),
+    sleep: (ms) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, ms);
+      return promise;
+    },
+    pollMs: 250,
+    timeoutMs: environment.COLONY_DRAIN_TIMEOUT_MS,
+    // Registry ids, not store rows: a DB row can sit 'running' with no
+    // in-process handler (crash recovery paths), and aborting untracked ids
+    // is a no-op that would stall shutdown until the cap. The registry is the
+    // source of truth for work this process can still abort and await.
+    activeRunIds: activeTrackedRunIds,
+    // In-flight run handlers record their own canceled/failed results from
+    // the abort; the controller only needs to stop them.
+    abortAll: async (ids) => {
+      await abortRuns(ids);
+    },
+    awaitSettled: awaitPendingRuns,
+  };
+  const drain = createDrainController(drainDeps);
+
   const ctx: ColonydContext = {
     store,
     provider,
@@ -160,6 +194,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     requestTick: () => {
       void runTick();
     },
+    draining: drain,
   };
 
   let interval: ReturnType<typeof setInterval> | undefined;
@@ -183,17 +218,19 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    drain.beginDrain();
     clearInterval(interval);
     if (server) {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      const { promise, resolve } = Promise.withResolvers<void>();
+      server.close(() => resolve());
+      await promise;
     }
-    await abortRuns([...ctx.store.activeRuns().map((r) => r.id)]);
-    await awaitPendingRuns();
+    await drain.wait();
     store.close();
     await shutdownTelemetry();
   };
 
-  return { ctx, tick: runTick, shutdown };
+  return { ctx, tick: runTick, shutdown, drain };
 }
 
 const isDirectRun =

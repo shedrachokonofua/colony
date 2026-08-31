@@ -66,6 +66,7 @@ function fakeCtx(
       oidcRequiredRole: "",
       traceUiBaseUrl: "",
     },
+    draining: { isDraining: () => false },
     requestTick() {},
   };
 }
