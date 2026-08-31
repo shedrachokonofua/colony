@@ -5,6 +5,7 @@
  */
 
 import { homedir } from "node:os";
+import { pathToFileURL } from "node:url";
 import {
   parseArgs,
   SUBCOMMANDS,
@@ -142,13 +143,23 @@ function usage(err: unknown): number {
   throw err;
 }
 
-const argv = process.argv.slice(2);
-if (argv.includes("--help") || argv.includes("-h")) {
-  process.stdout.write(helpText());
-  process.exit(0);
-} else if (argv.length === 0) {
-  process.stderr.write(helpText());
-  process.exit(2);
-} else {
-  process.exit(await main(argv));
+/** True only when this file is the process entry point, not an import. */
+function isDirectRun(): boolean {
+  return (
+    process.argv[1] !== undefined &&
+    import.meta.url === pathToFileURL(process.argv[1]).href
+  );
+}
+
+if (isDirectRun()) {
+  const argv = process.argv.slice(2);
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(helpText());
+    process.exit(0);
+  } else if (argv.length === 0) {
+    process.stderr.write(helpText());
+    process.exit(2);
+  } else {
+    process.exit(await main(argv));
+  }
 }
