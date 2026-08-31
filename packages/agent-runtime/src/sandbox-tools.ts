@@ -194,7 +194,12 @@ function emitLedger(
 function toEnvRecord(
   env: NodeJS.ProcessEnv | undefined,
 ): Record<string, string> {
-  const record: Record<string, string> = {};
+  // TMPDIR-honoring temp files (mktemp, os.tmpdir(), test scratch DBs) go to
+  // the kata guest's tmpfs: fsync through the VM block layer is the sandbox's
+  // one pathological cost (measured 88x on the SQLite-heavy store suite,
+  // 2026-08-30). Explicit /tmp/... paths are unaffected and stay on disk;
+  // callers may still override TMPDIR per exec.
+  const record: Record<string, string> = { TMPDIR: "/dev/shm" };
   if (env) {
     for (const [name, value] of Object.entries(env)) {
       if (value !== undefined) record[name] = String(value);
