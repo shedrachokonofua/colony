@@ -159,6 +159,8 @@ export class RunEvidenceCollector {
   private toolTotal = 0;
   private toolErrorTotal = 0;
   private turns = 0;
+  /** Terminal-state latch: a run can span many agent_end continuation segments. */
+  private runSummaryEmitted = false;
   /** Serializes async emits so `run_summary` cannot overtake a `tool_call`. */
   private emitChain: Promise<void> = Promise.resolve();
   private totals = {
@@ -362,16 +364,20 @@ export class RunEvidenceCollector {
 
   /** Append the run's single `run_summary` row once every earlier row is in. */
   runSummary(): void {
+    if (this.runSummaryEmitted) return;
+    this.runSummaryEmitted = true;
     this.emitChain = this.emitChain.then(() => {
       this.emit("run_summary", this.summary());
     });
   }
 
   /**
-   * Drain all pending emits; the guard unsubscribe calls this right before
-   * run finalization reads the feed. Resolves even when a sink threw.
+   * Append the final aggregate and drain all pending emits. The guard
+   * unsubscribe calls this once after every continuation segment has ended;
+   * repeated settle calls remain harmless through the summary latch.
    */
   async settle(): Promise<void> {
+    this.runSummary();
     await this.emitChain.catch(() => {});
   }
 

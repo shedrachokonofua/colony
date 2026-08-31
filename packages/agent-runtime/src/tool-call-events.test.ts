@@ -374,6 +374,62 @@ describe("installRunGuards evidence wiring", () => {
     expect(events.some((e) => e.event === "run_summary")).toBe(true);
   });
 
+  it("emits one final summary aggregated across continuation segments", async () => {
+    const { events, sink } = recordingSink();
+    const evidence = new RunEvidenceCollector("run-segments", sink, []);
+    const agent = fakeAgent();
+    const unsubscribe = installRunGuards(agent as never, "run-segments", {
+      evidence,
+      livenessTimeoutMs: 0,
+      maxTurns: 100,
+    });
+    for (const [toolCallId, output] of [
+      ["segment-1", 2],
+      ["segment-2", 4],
+    ] as const) {
+      agent.emit({
+        type: "tool_execution_start",
+        toolCallId,
+        toolName: "bash",
+        args: { command: `echo ${output}` },
+      });
+      agent.emit({
+        type: "tool_execution_end",
+        toolCallId,
+        toolName: "bash",
+        result: { content: [{ type: "text", text: String(output) }] },
+        isError: output === 4,
+      });
+      agent.emit({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          usage: {
+            input: output,
+            output: 1,
+            totalTokens: output + 1,
+            cost: { total: 0 },
+          },
+        },
+      });
+      agent.emit({ type: "agent_end", messages: [] });
+    }
+    unsubscribe();
+    await evidence.settle();
+
+    const summaries = events.filter((e) => e.event === "run_summary");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.detail).toMatchObject({
+      turns: 2,
+      tool_calls: 2,
+      tool_errors: 1,
+      input_tokens: 6,
+      output_tokens: 2,
+      total_tokens: 8,
+      per_tool: { bash: { calls: 2, errors: 1 } },
+    });
+  });
+
   it("emits completion_rejected from the end event for rejected submit calls", async () => {
     const { events, sink } = recordingSink();
     const evidence = new RunEvidenceCollector("run-9", sink, []);

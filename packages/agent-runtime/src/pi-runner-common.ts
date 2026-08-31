@@ -113,8 +113,9 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
    * boundaries), the way Temporal's heartbeat_timeout polices activities:
    * a run that emits nothing for this long is hung in some remote await
    * (LLM fetch, exec socket) that its own cancellation path failed to bound.
-   * Tool executions are exempt while in flight - each exec carries its own
-   * engine-enforced deadline, so tool time is already bounded.
+   * Tool executions are exempt while in flight until TOOL_WEDGE_TIMEOUT_MS;
+   * each exec carries its own engine-enforced deadline, and a missing end
+   * event is treated as a dead transport once that cap expires.
    */
   readonly livenessTimeoutMs?: number;
 }
@@ -550,8 +551,15 @@ export function createSandboxId(prefix: string): string {
 /** Silence budget before a run with no tool in flight is declared hung. */
 export const DEFAULT_LIVENESS_TIMEOUT_MS = 12 * 60_000;
 
-export const LIVENESS_FAILURE_REASON = "liveness_watchdog_no_progress";
+/**
+ * Maximum wall clock for a tool execution that has not produced its end event.
+ * The engine-side exec deadline is 900s; no legitimate exec outlives that, so
+ * a 20-minute in-flight "tool" is a dead transport rather than a long command.
+ */
+export const TOOL_WEDGE_TIMEOUT_MS = 20 * 60_000;
 
+export const LIVENESS_FAILURE_REASON = "liveness_watchdog_no_progress";
+export const TOOL_WEDGE_FAILURE_REASON = "liveness_watchdog_tool_wedge";
 export function installRunGuards(
   agent: Agent,
   runId: string,
@@ -573,22 +581,50 @@ export function installRunGuards(
   // WebSocket that died silently - each burning the whole wall clock while
   // stream-level guards saw nothing. The watchdog bounds every such seam at
   // once because it trusts only observed events, not any transport's own
-  // timeout. Tool time is exempt while in flight: engine-side exec deadlines
-  // bound it, and a quiet-but-legitimate long command must not be killed.
+  // timeout. Tool time is exempt while in flight until the wedge cap: the
+  // engine deadline normally bounds it, but a lost completion event must not
+  // renew this exemption forever.
   const livenessTimeoutMs =
     options.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
   let inFlightTools = 0;
+  let toolFlightStartedAt: number | undefined;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let unsubscribed = false;
   const armWatchdog = (): void => {
     clearTimeout(watchdog);
     if (unsubscribed || livenessTimeoutMs <= 0) return;
+    const now = performance.now();
+    const toolInFlightMs =
+      toolFlightStartedAt === undefined
+        ? 0
+        : Math.max(0, now - toolFlightStartedAt);
+    const delay =
+      inFlightTools > 0 && toolFlightStartedAt !== undefined
+        ? Math.min(
+            livenessTimeoutMs,
+            Math.max(1, TOOL_WEDGE_TIMEOUT_MS - toolInFlightMs),
+          )
+        : livenessTimeoutMs;
     watchdog = setTimeout(() => {
       watchdog = undefined;
-      if (inFlightTools > 0) {
-        // A tool is executing under its own engine deadline; its completion
-        // event will re-arm. Re-arm here too so a tool seam that loses its
-        // completion event entirely still gets caught one budget later.
+      if (inFlightTools > 0 && toolFlightStartedAt !== undefined) {
+        const toolInFlightMs = Math.max(
+          0,
+          performance.now() - toolFlightStartedAt,
+        );
+        if (toolInFlightMs >= TOOL_WEDGE_TIMEOUT_MS) {
+          options.logger?.warn?.(
+            {
+              runId,
+              silenceMs: toolInFlightMs,
+              reason: TOOL_WEDGE_FAILURE_REASON,
+            },
+            "pi_liveness_watchdog",
+          );
+          options.onFailure?.(TOOL_WEDGE_FAILURE_REASON);
+          agent.abort();
+          return;
+        }
         armWatchdog();
         return;
       }
@@ -602,7 +638,7 @@ export function installRunGuards(
       );
       options.onFailure?.(LIVENESS_FAILURE_REASON);
       agent.abort();
-    }, livenessTimeoutMs);
+    }, delay);
   };
   armWatchdog();
 
@@ -615,12 +651,14 @@ export function installRunGuards(
 
   const unsubscribe = agent.subscribe((event) => {
     if (event.type === "tool_execution_start") {
+      if (inFlightTools === 0) toolFlightStartedAt = performance.now();
       inFlightTools += 1;
       zeroOutputTurns = 0;
       options.evidence?.toolStart(event.toolCallId, event.args, event.intent);
     }
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
+      if (inFlightTools === 0) toolFlightStartedAt = undefined;
       // The end event is the sole carrier of the result; the collector is
       // keyed by toolCallId, so firing here (and only here) yields exactly
       // one tool_call row per call.
@@ -718,18 +756,14 @@ export function installRunGuards(
       options.onFailure?.(reason);
       agent.abort();
     }
-    // agent_end closes the run's evidence stream with the aggregate row.
-    if (event.type === "agent_end") {
-      options.evidence?.runSummary();
-    }
   });
   return () => {
     unsubscribed = true;
     clearTimeout(watchdog);
     unsubscribe();
-    // The collector serializes its emits; settle() drains every pending
-    // tool_call row (artifact storage awaits) so the feed is complete — and
-    // run_summary ordered after them — before finalization reads it.
+    // The collector serializes its emits; settle() appends the one
+    // run_summary after pending tool_call rows and drains the chain before
+    // finalization reads it.
     void options.evidence?.settle();
   };
 }
