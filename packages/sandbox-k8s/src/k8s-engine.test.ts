@@ -768,9 +768,9 @@ describe("K8sSandboxHandle exec channel", () => {
         });
         await handle.exec({ command: "true" }, () => undefined);
 
-        // execCalls[0] is the provision-time lost+found cleanup, [1] the tar
-        // transfer; the exec under test follows both.
-        const execCall = client.execCalls[2]!;
+        // The workspace is empty, so provision skips the transfer entirely;
+        // the exec under test is the first pod call.
+        const execCall = client.execCalls[0]!;
         const script = execCall.command[2]!;
         expect(execCall.command[0]).toBe("/bin/sh");
         expect(execCall.command[1]).toBe("-c");
@@ -814,7 +814,7 @@ describe("K8sSandboxHandle exec channel", () => {
       expect(finalEvent.kind).toBe("exit");
       expect(finalEvent.kind === "exit" && finalEvent.exitCode).toBeNull();
 
-      const execCall = client.execCalls[2]!;
+      const execCall = client.execCalls[0]!;
       expect(execCall.wsClosed).toBe(true);
 
       await handle.destroy();
