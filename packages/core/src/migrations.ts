@@ -283,6 +283,12 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   { version: 5, name: "project-files", apply: migrateProjectFiles },
   { version: 6, name: "run-artifacts", apply: migrateRunArtifacts },
+  {
+    version: 7,
+    name: "scope-extension-rounds",
+    apply: (db) =>
+      addColumn(db, "scopes", "extension_rounds", "INTEGER NOT NULL DEFAULT 0"),
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

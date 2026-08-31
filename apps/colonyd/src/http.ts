@@ -13,6 +13,7 @@ import {
   startWebhookSpan,
 } from "@colony/observability";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
+import { ArchitectExtensionEnvelope as architectExtensionEnvelopeSchema } from "@colony/agent-runtime";
 import type { Store } from "@colony/core";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
@@ -611,9 +612,9 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         409,
       );
     }
-    let plan: z.infer<typeof architectDecompositionV2Schema>;
+    let raw: unknown;
     try {
-      plan = architectDecompositionV2Schema.parse(JSON.parse(scope.plan_json));
+      raw = JSON.parse(scope.plan_json);
     } catch (err) {
       return c.json(
         {
@@ -626,6 +627,23 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       );
     }
     try {
+      if (
+        raw &&
+        typeof raw === "object" &&
+        (raw as { kind?: unknown }).kind === "extend"
+      ) {
+        const extension = architectExtensionEnvelopeSchema.parse(raw);
+        if (extension.kind !== "extend") throw new Error("not an extension");
+        const tasks = ctx.store.appendTasks(
+          scope.id,
+          extension.tasks,
+          c.get("actor"),
+          extension.acceptance,
+        );
+        ctx.requestTick();
+        return c.json({ scope: ctx.store.getScope(scope.id), tasks }, 200);
+      }
+      const plan = architectDecompositionV2Schema.parse(raw);
       const tasks = ctx.store.materializePlan(scope.id, plan, c.get("actor"));
       ctx.requestTick();
       return c.json({ scope: ctx.store.getScope(scope.id), tasks }, 200);

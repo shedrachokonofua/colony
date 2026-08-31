@@ -90,6 +90,7 @@ export interface Scope {
   readonly plan_json: string | null;
   readonly blocked_reason: string | null;
   readonly acceptance_json: string | null;
+  readonly extension_rounds: number;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -215,6 +216,12 @@ export interface CreateScopeInput {
   readonly provider_repo_id: string;
   readonly provider_repo_path: string;
   readonly default_branch?: string;
+}
+export interface AppendTaskInput {
+  readonly title: string;
+  readonly spec: string;
+  /** Numeric refs index appended tasks; strings are existing task ids. */
+  readonly depends_on?: readonly (number | string)[];
 }
 
 export function nowIso(date: Date = new Date()): string {
@@ -837,6 +844,19 @@ export class Store {
     return scope;
   }
 
+  /** Atomically consume one of the bounded architect repair rounds. */
+  incrementExtensionRound(
+    scopeId: ScopeId | string,
+    maxRounds = 2,
+  ): Scope | undefined {
+    this.db
+      .prepare(
+        `UPDATE scopes SET extension_rounds = extension_rounds + 1,
+         updated_at = ? WHERE id = ? AND extension_rounds < ?`,
+      )
+      .run(nowIso(), scopeId, maxRounds);
+    return this.getScope(scopeId);
+  }
   /**
    * Materialize an approved architect decomposition: create tasks + deps
    * and move the scope planning -> active. Returns tasks in index order.
@@ -845,6 +865,7 @@ export class Store {
     scopeId: ScopeId | string,
     plan: ArchitectDecompositionV2,
     actor: string,
+
     budgetMs: number = DEFAULT_IMPLEMENTER_BUDGET_MS,
   ): Task[] {
     const scope = this.getScope(scopeId);
@@ -919,6 +940,121 @@ export class Store {
     return ids.map((taskId) => this.getTask(taskId)!);
   }
 
+  /**
+   * Append an extension plan without replacing the existing DAG. Numeric
+   * dependencies index the new tasks; string dependencies name existing ids.
+   * Validation and insertion share one transaction so a rejected cycle cannot
+   * leave a partial repair plan behind.
+   */
+  appendTasks(
+    scopeId: ScopeId | string,
+    tasks: readonly AppendTaskInput[],
+    actor: string,
+    acceptance?: readonly { description: string; command: string }[],
+  ): Task[] {
+    const scope = this.getScope(scopeId);
+    if (!scope) throw new Error(`unknown scope: ${scopeId}`);
+    assertScopeTransition(scope.status, "active");
+    if (tasks.length === 0)
+      throw new Error("extension must add at least one task");
+    const existing = this.listTasks(scope.id);
+    const maxNumber = existing.reduce((max, task) => {
+      const suffix = Number(task.id.split(".").at(-1));
+      return Number.isInteger(suffix) ? Math.max(max, suffix) : max;
+    }, 0);
+    const ids = tasks.map(
+      (_, index) => `${scope.id}.${maxNumber + index + 1}` as TaskId,
+    );
+    const existingIds = new Set<string>(existing.map((task) => task.id));
+    const deps = new Map<string, string[]>();
+    for (const task of existing) deps.set(task.id, this.taskDeps(task.id));
+    for (const [index, task] of tasks.entries()) {
+      const resolved: string[] = [];
+      for (const dependency of task.depends_on ?? []) {
+        if (typeof dependency === "number") {
+          if (
+            !Number.isInteger(dependency) ||
+            dependency < 0 ||
+            dependency >= tasks.length ||
+            dependency === index
+          ) {
+            throw new Error(
+              `task ${index} depends_on invalid index ${dependency}`,
+            );
+          }
+          resolved.push(ids[dependency]!);
+        } else {
+          if (!existingIds.has(dependency)) {
+            throw new Error(
+              `task ${index} depends_on unknown task ${dependency}`,
+            );
+          }
+          resolved.push(dependency);
+        }
+      }
+      deps.set(ids[index]!, resolved);
+    }
+    const remaining = new Set(deps.keys());
+    const indegree = new Map<string, number>();
+    const dependents = new Map<string, string[]>();
+    for (const [node, nodeDeps] of deps) {
+      indegree.set(node, nodeDeps.length);
+      for (const prerequisite of nodeDeps) {
+        const list = dependents.get(prerequisite) ?? [];
+        list.push(node);
+        dependents.set(prerequisite, list);
+      }
+    }
+    while (remaining.size > 0) {
+      const ready = [...remaining].filter(
+        (node) => (indegree.get(node) ?? 0) === 0,
+      );
+      if (ready.length === 0) {
+        throw new Error("extension dependency graph is cyclic");
+      }
+      for (const node of ready) remaining.delete(node);
+      for (const node of ready) {
+        for (const dependent of dependents.get(node) ?? []) {
+          indegree.set(dependent, (indegree.get(dependent) ?? 1) - 1);
+        }
+      }
+    }
+    const insertTask = this.db.prepare(
+      `INSERT INTO tasks (id, scope_id, title, spec, state)
+       VALUES (?, ?, ?, ?, 'queued')`,
+    );
+    const insertDep = this.db.prepare(
+      `INSERT INTO task_deps (task_id, depends_on_task_id) VALUES (?, ?)`,
+    );
+    const apply = this.db.transaction(() => {
+      for (const [index, task] of tasks.entries()) {
+        insertTask.run(ids[index], scope.id, task.title, task.spec);
+        for (const dependency of deps.get(ids[index]!) ?? []) {
+          insertDep.run(ids[index], dependency);
+        }
+      }
+      this.db
+        .prepare(
+          `UPDATE scopes SET status = 'active',
+           acceptance_json = COALESCE(?, acceptance_json),
+           plan_json = NULL, updated_at = ? WHERE id = ?`,
+        )
+        .run(
+          acceptance ? JSON.stringify(acceptance) : null,
+          nowIso(),
+          scope.id,
+        );
+      this.audit(actor, "scope.extended", {
+        scope_id: scope.id,
+        detail: {
+          task_count: tasks.length,
+          acceptance_count: acceptance?.length,
+        },
+      });
+    });
+    apply();
+    return ids.map((id) => this.getTask(id)!);
+  }
   // ---------------------------------------------------------------------
   // Tasks
   // ---------------------------------------------------------------------

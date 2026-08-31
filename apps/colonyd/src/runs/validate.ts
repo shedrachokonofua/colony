@@ -20,6 +20,7 @@ import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
 import { buildCloneUrl } from "./merge-gate.js";
+import type { ArchitectExtensionInput } from "./packets.js";
 
 const VALIDATE_LEASE_MS = 30 * 60_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 15 * 60_000;
@@ -77,6 +78,65 @@ export interface ValidateResult {
 export type ValidateExecutor = (
   input: ValidateExecutionInput,
 ) => Promise<ValidateResult>;
+/**
+ * Build the architect's repair context from durable rows. The failed run's
+ * evidence JSON is passed byte-for-byte so command tails and exit codes cannot
+ * be lost while constructing a markdown packet.
+ */
+export function buildValidationExtensionInput(
+  ctx: ColonydContext,
+  scope: Scope,
+): ArchitectExtensionInput | null {
+  const runs = ctx.store.runsForScope(scope.id);
+  const failed = runs
+    .filter((run) => run.kind === "validate" && run.status === "failed")
+    .at(-1);
+  if (!failed) return null;
+  const currentAcceptance = scope.acceptance_json
+    ? (() => {
+        try {
+          const parsed = JSON.parse(scope.acceptance_json);
+          return Array.isArray(parsed)
+            ? parsed.filter(
+                (entry): entry is { description: string; command: string } =>
+                  !!entry &&
+                  typeof entry === "object" &&
+                  typeof entry.description === "string" &&
+                  typeof entry.command === "string",
+              )
+            : [];
+        } catch {
+          return [];
+        }
+      })()
+    : [];
+  const architect = runs
+    .filter((run) => run.kind === "architect" && run.status === "succeeded")
+    .at(-1);
+  let planSummary = scope.goal;
+  if (architect?.envelope_json) {
+    try {
+      const parsed = JSON.parse(architect.envelope_json);
+      if (parsed && typeof parsed.summary === "string")
+        planSummary = parsed.summary;
+    } catch {
+      // The evidence remains useful even if an old architect row is malformed.
+    }
+  }
+  const existingTasks = ctx.store.listTasks(scope.id).map((task) => ({
+    id: task.id,
+    title: task.title,
+    state: task.state,
+    depends_on: ctx.store.taskDeps(task.id),
+  }));
+  return {
+    validationEvidenceJson:
+      failed.evidence_json ?? JSON.stringify({ error: failed.error }),
+    currentAcceptance,
+    planSummary,
+    existingTasks,
+  };
+}
 
 /**
  * Run the scope-level validation phase: clone the default branch at HEAD,

@@ -18,6 +18,12 @@ import type {
   AgentRuntimePacket,
   AgentRuntimeRole,
 } from "./adapter.js";
+import {
+  buildArchitectExtensionSystemPrompt,
+  createArchitectExtensionSubmitTool,
+  extensionTasksFromPacket,
+  isArchitectExtensionPacket,
+} from "./architect-extension.js";
 import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
@@ -120,12 +126,11 @@ const SDK_THINKING_LEVELS = {
 function toSdkThinkingLevel(level: ColonyThinkingLevel): SdkThinkingLevel {
   return SDK_THINKING_LEVELS[level];
 }
-
 export interface PiRoleProfile {
   readonly role: AgentRuntimeRole;
   readonly kind: PiRunner["kind"];
   readonly sandboxPrefix: string;
-  readonly systemPrompt: () => string;
+  readonly systemPrompt: (packet?: AgentRuntimePacket) => string;
   finalizerPrompt: (packet: AgentRuntimePacket) => string;
   readonly schemaName:
     | "implementer_completion"
@@ -135,6 +140,7 @@ export interface PiRoleProfile {
   readonly submitTool: (
     capture: (value: unknown) => void,
     sizeGate?: ArchitectSizeGate,
+    packet?: AgentRuntimePacket,
   ) => ToolDefinition;
   readonly validate: (value: unknown) => string[] | null;
   readonly defaultTools: readonly string[];
@@ -262,22 +268,26 @@ export class PiBaseAgentRunner implements PiRunner {
     let session: AgentSession | undefined;
     let handle: SandboxHandle | undefined;
     let workspaceProbe: NodeJS.Timeout | undefined;
-
-    const submitTool = this.profile.submitTool((value) => {
-      if (this.options.critique && this.profile.phases && !critiqueCompleted) {
-        draftEnvelope = value;
-        resolveDraftEnvelope?.();
-        // A draft closes this candidate's phase pipeline. The SDK ignores the
-        // submit tool's terminate hint, so the in-flight generation would keep
-        // issuing provider calls against the stale conversation and could
-        // interleave with the critique/revision turns below - abort it the way
-        // acceptance ends the run in non-critique mode.
-        void session?.abort();
-        return;
-      }
-      capturedEnvelope = value;
-      resolveCapturedEnvelope?.();
-    }, this.options.architectSizeGate?.());
+    const submitTool = this.profile.submitTool(
+      (value) => {
+        if (
+          this.options.critique &&
+          this.profile.phases &&
+          !critiqueCompleted
+        ) {
+          draftEnvelope = value;
+          resolveDraftEnvelope?.();
+          // A draft closes this candidate's phase pipeline. The SDK ignores the
+          // submit tool's terminate hint, so abort the stale generation.
+          void session?.abort();
+          return;
+        }
+        capturedEnvelope = value;
+        resolveCapturedEnvelope?.();
+      },
+      this.options.architectSizeGate?.(),
+      request.packet,
+    );
     /** True while submissions route to the draft slot pending critique. */
     const critiqueEngaged = Boolean(
       this.options.critique && this.profile.phases,
@@ -606,7 +616,7 @@ export class PiBaseAgentRunner implements PiRunner {
 
       const result = await createAgentSession(
         buildSessionOptions({
-          systemPrompt: `${this.profile.systemPrompt()}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
+          systemPrompt: `${this.profile.systemPrompt(request.packet)}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
           customTools: [
             ...customTools,
             ...sandboxTools,
@@ -1251,15 +1261,25 @@ export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
 };
 
 export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
-  phases: buildArchitectPhases,
+  phases: (packet) =>
+    isArchitectExtensionPacket(packet) ? [] : buildArchitectPhases(packet),
   role: "architect",
   kind: "pi-architect",
   sandboxPrefix: "pi-architect",
-  systemPrompt: buildArchitectSystemPrompt,
+  systemPrompt: (packet) =>
+    isArchitectExtensionPacket(packet)
+      ? buildArchitectExtensionSystemPrompt()
+      : buildArchitectSystemPrompt(),
   finalizerPrompt: buildArchitectFinalizerPrompt,
   schemaName: "architect_decomposition",
   typeboxSchema: architectDecompositionEnvelopeTypeBox,
-  submitTool: createArchitectSubmitTool,
+  submitTool: (capture, sizeGate, packet) =>
+    isArchitectExtensionPacket(packet)
+      ? createArchitectExtensionSubmitTool(
+          capture as Parameters<typeof createArchitectExtensionSubmitTool>[0],
+          extensionTasksFromPacket(packet),
+        )
+      : createArchitectSubmitTool(capture, sizeGate),
   validate: zodValidator(architectDecompositionV2Schema),
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",

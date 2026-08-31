@@ -85,6 +85,7 @@ describe("state machine", () => {
       ["active", "validating"],
       ["validating", "done"],
       ["validating", "active"],
+      ["validating", "planning"],
       ["validating", "abandoned"],
       ["blocked", "planning"],
       ["blocked", "active"],
@@ -108,7 +109,6 @@ describe("state machine", () => {
       ["planning", "done"],
       ["planning", "validating"],
       ["active", "planning"],
-      ["validating", "planning"],
       ["validating", "blocked"],
       ["draft", "validating"],
       ["abandoned", "active"],
@@ -166,6 +166,55 @@ describe("Store", () => {
     expect(String(tasks[1]!.id)).toBe(`${scopeId}.2`);
     expect(store.getScope(scopeId)!.status).toBe("active");
     expect(store.taskDeps(tasks[1]!.id)).toEqual([tasks[0]!.id]);
+  });
+
+  it("appends extension tasks while preserving existing ids and wiring deps", () => {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const [first] = store.materializePlan(scopeId, plan(), "svc:colonyd");
+    store.setScopeStatus(scopeId, "validating", "svc:colonyd");
+    const appended = store.appendTasks(
+      scopeId,
+      [
+        {
+          title: "Repair",
+          spec: "repair the implementation",
+          depends_on: [first!.id],
+        },
+        {
+          title: "Verify repair",
+          spec: "verify the repair",
+          depends_on: [0],
+        },
+      ],
+      "svc:colonyd",
+    );
+    expect(appended.map((task) => task.id)).toEqual([
+      `${scopeId}.3`,
+      `${scopeId}.4`,
+    ]);
+    expect(store.listTasks(scopeId)).toHaveLength(4);
+    expect(store.taskDeps(appended[0]!.id)).toEqual([first!.id]);
+    expect(store.taskDeps(appended[1]!.id)).toEqual([appended[0]!.id]);
+    expect(store.getScope(scopeId)!.status).toBe("active");
+  });
+
+  it("rejects cycles in appended tasks before inserting any rows", () => {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    store.materializePlan(scopeId, plan(), "svc:colonyd");
+    store.setScopeStatus(scopeId, "validating", "svc:colonyd");
+    expect(() =>
+      store.appendTasks(
+        scopeId,
+        [
+          { title: "Cycle A", spec: "a", depends_on: [1] },
+          { title: "Cycle B", spec: "b", depends_on: [0] },
+        ],
+        "svc:colonyd",
+      ),
+    ).toThrow(/cyclic/);
+    expect(store.listTasks(scopeId)).toHaveLength(2);
   });
 
   it("persists acceptance_json on materializePlan", () => {
@@ -1105,7 +1154,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(6);
+        expect(LATEST_SCHEMA_VERSION).toBe(7);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),

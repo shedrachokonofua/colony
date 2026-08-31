@@ -3,6 +3,7 @@ import type {
   TaskCostModelV1,
 } from "@colony/schemas";
 import type { ArchitectSizeGate } from "./pi-runner-common.js";
+import type { ArchitectExtensionEnvelope } from "./architect-extension.js";
 
 export type DecompositionValidationRule =
   | "depends_on_range"
@@ -250,4 +251,92 @@ export function validateDecompositionEnvelope(
     ...checkSharedFilesWithoutEdge(envelope),
     ...(gate ? checkTaskOverBudget(envelope, gate) : []),
   ];
+}
+/**
+ * Validate only the graph delta in an architect extension. Existing task ids
+ * are the stable namespace; numeric references are indexes into the appended
+ * task list. Building one graph before running Kahn's algorithm catches a new
+ * task cycle that only appears through an edge back into an existing chain.
+ */
+export function validateExtensionEnvelope(
+  envelope: Extract<ArchitectExtensionEnvelope, { kind: "extend" }>,
+  existingTasks: readonly { id: string; depends_on: readonly string[] }[],
+): DecompositionValidationError[] {
+  const errors: DecompositionValidationError[] = [];
+  const existingIds = new Set(existingTasks.map((task) => task.id));
+  const nodeForIndex = (index: number): string => `new:${index}`;
+  const nodes = [
+    ...existingTasks.map((task) => task.id),
+    ...envelope.tasks.map((_task, index) => nodeForIndex(index)),
+  ];
+  const deps = new Map<string, string[]>();
+  for (const task of existingTasks) {
+    deps.set(
+      task.id,
+      task.depends_on.filter((id) => existingIds.has(id)),
+    );
+  }
+  for (const [taskIndex, task] of envelope.tasks.entries()) {
+    const taskDeps: string[] = [];
+    for (const dependency of task.depends_on) {
+      if (typeof dependency === "number") {
+        if (
+          !Number.isInteger(dependency) ||
+          dependency < 0 ||
+          dependency >= envelope.tasks.length ||
+          dependency === taskIndex
+        ) {
+          errors.push({
+            taskIndex,
+            rule: "depends_on_range",
+            message:
+              `task ${taskIndex} ("${task.title}") depends_on new-task index ${dependency}, ` +
+              `but the extension has ${envelope.tasks.length} tasks.`,
+          });
+          continue;
+        }
+        taskDeps.push(nodeForIndex(dependency));
+      } else if (!existingIds.has(dependency)) {
+        errors.push({
+          taskIndex,
+          rule: "depends_on_range",
+          message: `task ${taskIndex} ("${task.title}") depends_on unknown existing task id "${dependency}".`,
+        });
+      } else {
+        taskDeps.push(dependency);
+      }
+    }
+    deps.set(nodeForIndex(taskIndex), taskDeps);
+  }
+  const remaining = new Set(nodes);
+  const indegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const [node, nodeDeps] of deps) {
+    indegree.set(node, nodeDeps.length);
+    for (const prerequisite of nodeDeps) {
+      const list = dependents.get(prerequisite) ?? [];
+      list.push(node);
+      dependents.set(prerequisite, list);
+    }
+  }
+  while (remaining.size > 0) {
+    const ready = [...remaining].filter(
+      (node) => (indegree.get(node) ?? 0) === 0,
+    );
+    if (ready.length === 0) break;
+    for (const node of ready) remaining.delete(node);
+    for (const node of ready) {
+      for (const dependent of dependents.get(node) ?? []) {
+        indegree.set(dependent, (indegree.get(dependent) ?? 1) - 1);
+      }
+    }
+  }
+  if (remaining.size > 0) {
+    errors.push({
+      taskIndex: null,
+      rule: "depends_on_cycle",
+      message: `combined existing + extension tasks form a dependency cycle: ${[...remaining].join(", ")}.`,
+    });
+  }
+  return errors;
 }

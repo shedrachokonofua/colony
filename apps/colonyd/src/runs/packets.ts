@@ -40,6 +40,24 @@ export interface ArchitectPacket {
   repo: AgentPacketRepo;
 }
 
+export interface ArchitectExtensionPacket {
+  kind: "architect_scope_extension";
+  scope_id: string;
+  goal: string;
+  body: string;
+  project: PacketProject | null;
+  repo: AgentPacketRepo;
+  validation_evidence_json: string;
+  current_acceptance: readonly { description: string; command: string }[];
+  plan_summary: string;
+  existing_tasks: readonly {
+    id: string;
+    title: string;
+    state: string;
+    depends_on: readonly string[];
+  }[];
+}
+
 export interface ImplementPacket {
   kind: "implement_task";
   task_id: string;
@@ -147,6 +165,66 @@ export function buildArchitectPacket(
       branch: scope.default_branch,
       base_commit: baseSha,
     },
+  };
+}
+
+export interface ArchitectExtensionInput {
+  readonly validationEvidenceJson: string;
+  readonly currentAcceptance: readonly {
+    description: string;
+    command: string;
+  }[];
+  readonly planSummary: string;
+  readonly existingTasks: readonly {
+    id: string;
+    title: string;
+    state: string;
+    depends_on: readonly string[];
+  }[];
+}
+
+export function buildArchitectExtensionPacket(
+  scope: Scope,
+  project: Project | null,
+  files: readonly ProjectFile[],
+  _repo: ProviderRepoRef,
+  baseSha: string,
+  input: ArchitectExtensionInput,
+): ArchitectExtensionPacket {
+  return {
+    kind: "architect_scope_extension",
+    scope_id: scope.id,
+    goal: scope.goal,
+    body: [
+      `Scope goal: ${scope.goal}`,
+      "",
+      "Validation failed. Diagnose the failure and submit exactly one extension envelope.",
+      "A defective acceptance command requires acceptance_fix; missing or incomplete implementation requires extend; an issue genuinely requiring operator action requires human_required.",
+      "Acceptance commands run inside a fresh already-cloned workspace: never clone, never use literal placeholders such as <repo-url>, and never require provider credentials. Prefer `bun run test:unit` plus `npm run typecheck` over full `npm test`, whose integration tests exceed the sandbox execution deadline.",
+      "",
+      "## Failed validation evidence (verbatim evidence_json)",
+      input.validationEvidenceJson,
+      "",
+      "## Current acceptance criteria",
+      JSON.stringify(input.currentAcceptance, null, 2),
+      "",
+      `## Existing plan summary\n${input.planSummary}`,
+      "",
+      "## Existing task DAG (titles/states and dependencies)",
+      JSON.stringify(input.existingTasks, null, 2),
+      "",
+      "For extend, preserve all existing tasks. Numeric depends_on values index new tasks in the submitted array; string values reference existing task ids above. The combined DAG must remain acyclic.",
+    ].join("\n"),
+    project: packetProject(project, files),
+    repo: {
+      url: scope.provider_repo_path,
+      branch: scope.default_branch,
+      base_commit: baseSha,
+    },
+    validation_evidence_json: input.validationEvidenceJson,
+    current_acceptance: input.currentAcceptance,
+    plan_summary: input.planSummary,
+    existing_tasks: input.existingTasks,
   };
 }
 

@@ -3,21 +3,29 @@ import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
 } from "@colony/schemas";
 import { context } from "@opentelemetry/api";
-import type { Scope, Store } from "@colony/core";
+import type { Scope } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
-import { buildArchitectPacket } from "./packets.js";
+import {
+  buildArchitectExtensionPacket,
+  buildArchitectPacket,
+  type ArchitectExtensionInput,
+} from "./packets.js";
+import { handleArchitectExtension } from "./extend.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
+import { ArchitectExtensionEnvelope } from "@colony/agent-runtime";
+import type { ArchitectExtensionEnvelope as ArchitectExtensionEnvelopeType } from "@colony/agent-runtime";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
 export interface ArchitectRunOptions {
   readonly leaseTtlMs?: number;
+  readonly mode?: "initial" | "extension";
+  readonly extension?: ArchitectExtensionInput;
 }
-
 /**
  * Execute one architect run for a scope already transitioned to `planning`.
  * Success stores the validated plan in `scopes.plan_json`; the tick's
@@ -73,6 +81,7 @@ export async function runArchitect(
     runId,
     abortController,
     runSpan,
+    options,
   );
   trackRun(runId, execution, () => {
     abortController.abort();
@@ -95,6 +104,7 @@ async function executeArchitect(
   runId: string,
   abortController: AbortController,
   runSpan: ColonyRunSpan | undefined,
+  options: ArchitectRunOptions,
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {
@@ -122,13 +132,17 @@ async function executeArchitect(
     const files = scope.project_name
       ? ctx.store.listProjectFiles(scope.project_name)
       : [];
-    const { repo: repoWithCredentials, ...packet } = buildArchitectPacket(
-      scope,
-      project,
-      files,
-      repo,
-      baseSha,
-    );
+    const { repo: repoWithCredentials, ...packet } =
+      options.mode === "extension" && options.extension
+        ? buildArchitectExtensionPacket(
+            scope,
+            project,
+            files,
+            repo,
+            baseSha,
+            options.extension,
+          )
+        : buildArchitectPacket(scope, project, files, repo, baseSha);
     const full = {
       ...packet,
       repo: {
@@ -167,7 +181,9 @@ async function executeArchitect(
 
     const output = await ctx.agents.architect.getRunOutput(runId);
     const parsed = output
-      ? architectDecompositionV2Schema.safeParse(output.envelope)
+      ? options.mode === "extension"
+        ? ArchitectExtensionEnvelope.safeParse(output.envelope)
+        : architectDecompositionV2Schema.safeParse(output.envelope)
       : null;
     if (!parsed || !parsed.success) {
       ctx.store.finishRun(runId, "failed", {
@@ -178,25 +194,34 @@ async function executeArchitect(
       return;
     }
     const envelope = parsed.data;
-
-    if (!isAcyclic(envelope.tasks.map((t) => t.depends_on))) {
+    if (options.mode === "extension") {
+      const extension = envelope as ArchitectExtensionEnvelopeType;
+      ctx.store.finishRun(runId, "succeeded", {
+        envelope_json: JSON.stringify(extension),
+      });
+      runSpan?.end("succeeded");
+      await handleArchitectExtension(ctx, scope, runId, extension);
+      return;
+    }
+    const decomposition = envelope as ArchitectDecompositionV2;
+    if (!isAcyclic(decomposition.tasks.map((task) => task.depends_on))) {
       ctx.store.finishRun(runId, "failed", {
         error: "decomposition dependency graph is cyclic",
-        envelope_json: JSON.stringify(envelope),
+        envelope_json: JSON.stringify(decomposition),
       });
       runSpan?.end("failed", "decomposition dependency graph is cyclic");
       return;
     }
 
     ctx.store.finishRun(runId, "succeeded", {
-      envelope_json: JSON.stringify(envelope),
+      envelope_json: JSON.stringify(decomposition),
     });
     runSpan?.end("succeeded");
-    ctx.store.setScopePlan(scope.id, JSON.stringify(envelope));
+    ctx.store.setScopePlan(scope.id, JSON.stringify(decomposition));
     ctx.store.audit(SERVICE_ACTOR, "scope.plan_proposed", {
       scope_id: scope.id,
       run_id: runId,
-      detail: { task_count: envelope.tasks.length },
+      detail: { task_count: decomposition.tasks.length },
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

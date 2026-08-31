@@ -78,7 +78,7 @@ const SCOPE_TRANSITIONS: Readonly<Record<ScopeStatus, readonly ScopeStatus[]>> =
     draft: ["planning", "abandoned"],
     planning: ["active", "blocked", "abandoned"],
     active: ["done", "blocked", "abandoned", "validating"],
-    validating: ["done", "active", "abandoned"],
+    validating: ["done", "active", "planning", "abandoned"],
     blocked: ["planning", "active", "abandoned"],
     done: ["active"],
     abandoned: [],

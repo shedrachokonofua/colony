@@ -11,8 +11,11 @@ import { runImplement } from "./runs/implement.js";
 import { runMergeGate } from "./runs/merge-gate.js";
 import { reconcileRejectedReview, runReview } from "./runs/review.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
-import { runValidation } from "./runs/validate.js";
-
+import {
+  buildValidationExtensionInput,
+  runValidation,
+} from "./runs/validate.js";
+import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
 /** Fire-and-forget run dispatch; records that this tick dispatched work. */
 type RunDispatcher = (run: Promise<void>) => void;
 
@@ -674,9 +677,7 @@ async function closeScopes(ctx: ColonydContext): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 7 — validation: run acceptance commands on validating scopes.
-// ---------------------------------------------------------------------------
-
+// Phase 7 — validate acceptance or dispatch bounded architect repair.
 async function validateScopes(
   ctx: ColonydContext,
   dispatch: RunDispatcher,
@@ -684,23 +685,45 @@ async function validateScopes(
   for (const scope of ctx.store.listScopes()) {
     if (ctx.draining.isDraining()) return;
     if (scope.status !== "validating") continue;
-    // Re-fetch fresh before dispatch (scope may have moved since list).
     const fresh = ctx.store.getScope(scope.id);
     if (!fresh || fresh.status !== "validating") continue;
-    // The first validate run is dispatched once; after a failure the scope
-    // parks and the operator re-triggers via the revalidate endpoint.
-    const hasValidateRun = ctx.store
-      .runsForScope(scope.id)
-      .some((r) => r.kind === "validate");
-    if (hasValidateRun) continue;
-    const running = ctx.store
-      .activeRuns("validate")
-      .some((r) => r.scope_id === scope.id);
-    if (running) continue;
-    // Validate runs are credential-free (model_id: null), so the slot is
-    // keyed on the pipeline's primary role.
-    if (!hasModelSlot(ctx, "developer")) continue;
-    dispatch(runValidation(ctx, fresh));
+    const runs = ctx.store.runsForScope(scope.id);
+    const activeValidate = runs.some(
+      (run) => run.kind === "validate" && run.status === "running",
+    );
+    const activeArchitect = runs.some(
+      (run) => run.kind === "architect" && run.status === "running",
+    );
+    if (activeValidate || activeArchitect) continue;
+    const lastValidate = runs.filter((run) => run.kind === "validate").at(-1);
+    if (!lastValidate) {
+      if (!hasModelSlot(ctx, "developer")) continue;
+      dispatch(runValidation(ctx, fresh));
+      continue;
+    }
+    if (lastValidate.status === "succeeded") continue;
+    const lastArchitect = runs.filter((run) => run.kind === "architect").at(-1);
+    if (lastArchitect && lastArchitect.started_at > lastValidate.started_at) {
+      if (lastArchitect.status === "succeeded") {
+        if (!hasModelSlot(ctx, "developer")) continue;
+        dispatch(runValidation(ctx, fresh));
+      }
+      continue;
+    }
+    if (fresh.extension_rounds >= MAX_EXTENSION_ROUNDS) {
+      ctx.store.setScopeStatus(fresh.id, "blocked", SERVICE_ACTOR, {
+        blocked_reason: `validation extension rounds exhausted (cap ${MAX_EXTENSION_ROUNDS})`,
+      });
+      continue;
+    }
+    const extension = buildValidationExtensionInput(ctx, fresh);
+    if (!extension || !hasModelSlot(ctx, "architect")) continue;
+    dispatch(
+      runArchitect(ctx, fresh, {
+        mode: "extension",
+        extension,
+      }),
+    );
   }
 }
 

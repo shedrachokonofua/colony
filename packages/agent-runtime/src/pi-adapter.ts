@@ -91,7 +91,11 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         finishMetrics(current.status, current.rejectionReason);
         return withoutOutput(current);
       }
-      const parsed = parseEnvelope(runEnvironment.role, result.envelope);
+      const parsed = parseEnvelope(
+        runEnvironment.role,
+        result.envelope,
+        packet,
+      );
       const unfinished =
         result.envelope &&
         typeof result.envelope === "object" &&

@@ -6,6 +6,11 @@ import {
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
 } from "@colony/schemas";
+import {
+  ArchitectExtensionEnvelope,
+  type ArchitectExtensionEnvelope as ArchitectExtensionEnvelopeType,
+  isArchitectExtensionPacket,
+} from "./architect-extension.js";
 import type { Context } from "@opentelemetry/api";
 import { sha256Json } from "./hashing.js";
 
@@ -20,6 +25,7 @@ export interface AgentRuntimePacket {
 
 export type AgentRuntimeEnvelope =
   | ArchitectDecompositionV2
+  | ArchitectExtensionEnvelopeType
   | ImplementerCompletionV2
   | ReviewerVerdictV2;
 
@@ -37,6 +43,12 @@ export interface AgentRunEnvironment {
   readonly role: AgentRuntimeRole;
   /** Caller-supplied run id; adapters use it so cancelRun(runId) addresses the same run. */
   readonly runId?: string;
+  /**
+   * Dispatch-time model choice when the primary has no free slot. Runners
+   * rotate their configured chain so this model leads while preserving the
+   * remaining configured order.
+   */
+  readonly startModelId?: string;
   /**
    * Caller-bound span context (the colony.run root span). When set, runners
    * activate it around prompts so the SDK's GenAI spans nest under it.
@@ -128,7 +140,7 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
     const rawEnvelope =
       this.options.envelopeForRun?.(packet, runEnvironment) ??
       defaultEnvelope(packet, runEnvironment.role);
-    const parsed = parseEnvelope(runEnvironment.role, rawEnvelope);
+    const parsed = parseEnvelope(runEnvironment.role, rawEnvelope, packet);
     const status: AgentRunRuntimeStatus = parsed.ok
       ? "succeeded"
       : "envelope_rejected";
@@ -180,10 +192,13 @@ export type EnvelopeParseResult =
 export function parseEnvelope(
   role: AgentRuntimeRole,
   value: unknown,
+  packet?: AgentRuntimePacket,
 ): EnvelopeParseResult {
   const schema =
     role === "architect"
-      ? architectDecompositionV2Schema
+      ? isArchitectExtensionPacket(packet)
+        ? ArchitectExtensionEnvelope
+        : architectDecompositionV2Schema
       : role === "reviewer"
         ? reviewerVerdictV2Schema
         : implementerCompletionV2Schema;
@@ -191,7 +206,7 @@ export function parseEnvelope(
   if (!parsed.success) {
     return { ok: false, reason: parsed.error.message };
   }
-  return { ok: true, envelope: parsed.data };
+  return { ok: true, envelope: parsed.data as AgentRuntimeEnvelope };
 }
 
 export function hashPacket(packet: AgentRuntimePacket): string {

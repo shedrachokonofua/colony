@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { createArchitectSubmitTool } from "./pi-runner-common.js";
-
+import { createArchitectExtensionSubmitTool } from "./architect-extension.js";
 function decomposition(
   tasks: Array<{ title: string; spec: string; depends_on?: number[] }>,
 ) {
@@ -214,5 +214,82 @@ describe("architect submission", () => {
       await expect(rejection).rejects.toThrow(/mechanical validation/);
       expect(captured).toBeUndefined();
     });
+  });
+  it("accepts an acceptance fix and validates extension dependencies", async () => {
+    let captured: unknown;
+    const tool = createArchitectExtensionSubmitTool(
+      (value) => {
+        captured = value;
+      },
+      [{ id: "col-abcd.1", depends_on: [] }],
+    );
+    await tool.execute(
+      "extension-fix",
+      {
+        kind: "acceptance_fix",
+        acceptance: [{ description: "unit", command: "bun run test:unit" }],
+      },
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    expect(captured).toMatchObject({ kind: "acceptance_fix" });
+
+    captured = undefined;
+    await tool.execute(
+      "extension-tasks",
+      {
+        kind: "extend",
+        tasks: [
+          {
+            title: "Repair",
+            spec: "repair packages/core/src/store.ts",
+            depends_on: ["col-abcd.1"],
+          },
+          {
+            title: "Verify",
+            spec: "verify packages/core/src/store.ts",
+            depends_on: [0],
+          },
+        ],
+      },
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    expect(captured).toMatchObject({ kind: "extend" });
+  });
+
+  it("rejects an extension cycle and unknown existing dependency", async () => {
+    const tool = createArchitectExtensionSubmitTool(() => {}, [
+      { id: "col-abcd.1", depends_on: [] },
+    ]);
+    await expect(
+      tool.execute(
+        "extension-cycle",
+        {
+          kind: "extend",
+          tasks: [
+            { title: "A", spec: "a", depends_on: [1] },
+            { title: "B", spec: "b", depends_on: [0] },
+          ],
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow("dependency cycle");
+    await expect(
+      tool.execute(
+        "extension-unknown",
+        {
+          kind: "extend",
+          tasks: [{ title: "A", spec: "a", depends_on: ["col-missing.9"] }],
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow("unknown existing task id");
   });
 });
