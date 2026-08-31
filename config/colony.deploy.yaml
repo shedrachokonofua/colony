@@ -158,9 +158,9 @@ agents:
         gemini-3.7-flash,
         glm-5.3-flash,
         deepseek-v4-flash,
+        grok-4.6,
         muse-spark,
         qwen3.8-27b,
-        grok-4.6,
       ]
     thinking_level: high
     timeout_ms: 10800000
