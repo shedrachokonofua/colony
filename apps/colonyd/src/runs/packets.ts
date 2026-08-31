@@ -231,6 +231,8 @@ export function buildArchitectExtensionPacket(
 /** Run-history sections only the dispatching caller can collect from the store. */
 export interface ImplementContinuity {
   interrupted?: string;
+  /** Set when the task already has an open MR: land it, do not restart. */
+  openMr?: string;
   gateFailure?: string;
   reviewFindings?: string;
 }
@@ -339,6 +341,7 @@ function buildImplementBody(
     "- Never commit PACKET.json or credentials; keep the diff limited to this task.",
     "- Iterate with targeted tests (bun test <paths you touched>) plus typecheck. For cross-package changes, verify breadth with `bun run test:unit` (integration tests excluded). Avoid the full `npm test`: its integration tests exceed the sandbox's 15-minute exec deadline and return nothing — CI and review run the full suite for you.",
     "- Push your work early and after every green test run; unpushed work does not survive this sandbox.",
+    "- Before submitting: git fetch origin && git rebase origin/<target branch>. Resolve conflicts now - you have the context; a later run does not. If the rebase touched your files, rerun your targeted tests.",
     "- Submit implementer_completion with the exact branch and head SHA you pushed.",
   ];
   if (continuity.interrupted) {
@@ -346,6 +349,15 @@ function buildImplementBody(
       "",
       "## Previous attempt was interrupted — RESUME MODE",
       continuity.interrupted,
+    );
+  }
+  if (continuity.openMr) {
+    sections.push(
+      "",
+      "## An MR for this task already exists — LAND IT",
+      continuity.openMr,
+      "Rebase the existing branch onto the target branch, resolve conflicts,",
+      "and push to the same branch. Do NOT start over or open a new MR.",
     );
   }
   if (continuity.gateFailure) {

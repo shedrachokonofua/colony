@@ -406,6 +406,36 @@ async function advanceMrOpenTasks(
     if (mr.state !== "opened") continue;
     if (task.state !== "mr_open") continue;
 
+    // A conflicted MR cannot merge; reviewing or gating it wastes a full
+    // run. Requeue so an implement run rebases the branch - unless one is
+    // already in flight and may be about to move the head anyway.
+    if (mr.has_conflicts === true) {
+      if (
+        ctx.store.activeRuns("implement").some((r) => r.task_id === task.id)
+      ) {
+        continue;
+      }
+      const attempt = task.attempt + 1;
+      ctx.store.transitionTask(
+        task.id,
+        task.state_version,
+        "queued",
+        SERVICE_ACTOR,
+        {
+          attempt,
+          next_retry_at: new Date(
+            Date.now() + retryBackoffMs(attempt),
+          ).toISOString(),
+        },
+      );
+      ctx.store.audit(SERVICE_ACTOR, "mr.conflicted", {
+        scope_id: scope.id,
+        task_id: task.id,
+        detail: { mr_iid: task.mr_iid, head_sha: headSha },
+      });
+      continue;
+    }
+
     // Pipeline requirement: if the MR head has a pipeline it must succeed
     // before the gate runs; unknown pipeline state fails closed this tick.
     const pipelineReady = await pipelineGate(

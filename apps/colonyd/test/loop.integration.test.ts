@@ -49,6 +49,7 @@ const script = {
   distinctShas: false,
   singleTask: false,
   validateFail: false,
+  reviewerAdvancesHead: false,
 };
 
 function fakeAgents(): FakeAgentRuntimeAdapter {
@@ -96,6 +97,21 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
               },
             ],
             head_sha: headSha,
+          };
+        }
+        if (script.reviewerAdvancesHead && script.reviewerCalls === 1) {
+          // Simulate an implement retry pushing to the MR branch mid-review:
+          // the reviewer honestly reviews the branch's new head, not the
+          // dispatched one.
+          const branch = `colony/${String(packet.task_id)}`;
+          const newSha = "c".repeat(40);
+          void provider.branches.create({ id: repoId }, branch, newSha);
+          return {
+            kind: "reviewer_verdict",
+            verdict: "approve",
+            summary: "Looks good at the branch's current head.",
+            findings: [],
+            head_sha: newSha,
           };
         }
         return {
@@ -326,6 +342,7 @@ beforeEach(async () => {
   script.distinctShas = false;
   script.singleTask = false;
   script.validateFail = false;
+  script.reviewerAdvancesHead = false;
   provider = new FakeProviderAdapter();
   const repo = await provider.repos.create({
     name: "fake-e2e",
@@ -716,6 +733,70 @@ describe("colonyd fake end-to-end loop", () => {
     expect(approved).toBeGreaterThan(requested);
     expect(audit.filter((action) => action === "mr.opened")).toHaveLength(1);
     expect(audit.filter((action) => action === "mr.reused")).toHaveLength(1);
+  }, 30_000);
+
+  it("review verdict at a newer head is accepted when it matches the MR's current head", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `head-advance-${Date.now()}.db`), {
+      reviewRequired: true,
+    });
+    script.singleTask = true;
+    script.reviewerAdvancesHead = true;
+
+    const scopeId = await createScope("head advance");
+    await driveToDone(scopeId, 40);
+
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("done");
+    const taskId = `${scopeId}.1`;
+    expect(handle.ctx.store.getTask(taskId)!.state).toBe("merged");
+
+    // Exactly one review ran, succeeded, and its evidence names the sha the
+    // reviewer actually inspected - not the dispatched one.
+    const reviews = handle.ctx.store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "review");
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]!.status).toBe("succeeded");
+    const evidence = JSON.parse(reviews[0]!.evidence_json!) as {
+      head_sha: string;
+    };
+    expect(evidence.head_sha).toBe("c".repeat(40));
+
+    const advanced = handle.ctx.store
+      .listAudit({ task_id: taskId, limit: 1000 })
+      .events.filter((row) => row.action === "review.head_advanced");
+    expect(advanced).toHaveLength(1);
+  }, 30_000);
+
+  it("conflicted MR requeues for landing instead of dispatching review or gate", async () => {
+    script.singleTask = true;
+    let conflicted = true;
+    const orig = provider.mergeRequests.get.bind(provider.mergeRequests);
+    provider.mergeRequests.get = async (repo, id) => ({
+      ...(await orig(repo, id)),
+      ...(conflicted ? { has_conflicts: true } : {}),
+    });
+
+    const scopeId = await createScope("conflicted mr");
+    const taskId = `${scopeId}.1`;
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; implement -> mr_open
+    await tickAndSettle(); // conflict observed -> requeue
+
+    let task = handle.ctx.store.getTask(taskId)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(1);
+    expect(script.gateCalls.get(taskId) ?? 0).toBe(0);
+    const conflictAudits = handle.ctx.store
+      .listAudit({ task_id: taskId, limit: 1000 })
+      .events.filter((row) => row.action === "mr.conflicted");
+    expect(conflictAudits).toHaveLength(1);
+
+    // Conflict resolved (the retry rebases); the loop completes normally.
+    conflicted = false;
+    handle.ctx.store.clearRetryDelay(taskId);
+    await driveToDone(scopeId, 40);
+    expect(handle.ctx.store.getTask(taskId)!.state).toBe("merged");
   }, 30_000);
 
   it("review rejection cap: three consecutive request_changes blocks the task and scope", async () => {

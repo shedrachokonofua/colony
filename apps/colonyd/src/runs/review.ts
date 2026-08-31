@@ -215,16 +215,40 @@ async function executeReview(
     const envelope = parsed.data;
 
     if (envelope.head_sha !== headSha) {
-      failReview(
-        ctx,
-        scope,
-        task,
-        runId,
-        headSha,
-        "envelope facts unverified: reviewed head_sha mismatch",
-        { runSpan, envelopeJson: JSON.stringify(envelope) },
-      );
-      return;
+      // The branch can move mid-review (an implement retry pushing to the
+      // same MR). If the reviewer honestly reviewed the MR's CURRENT head,
+      // the verdict is valid at that head - accept it there instead of
+      // discarding a finished run.
+      let currentHead: string | undefined;
+      try {
+        const mr = await ctx.provider.mergeRequests.get(
+          repo,
+          `${repo.id}:${task.mr_iid}`,
+        );
+        currentHead = mr.head_commit_sha;
+      } catch {
+        currentHead = undefined;
+      }
+      if (currentHead !== undefined && envelope.head_sha === currentHead) {
+        ctx.store.audit(SERVICE_ACTOR, "review.head_advanced", {
+          scope_id: scope.id,
+          task_id: task.id,
+          run_id: runId,
+          detail: { dispatched_sha: headSha, reviewed_sha: envelope.head_sha },
+        });
+        headSha = envelope.head_sha;
+      } else {
+        failReview(
+          ctx,
+          scope,
+          task,
+          runId,
+          headSha,
+          "envelope facts unverified: reviewed head_sha mismatch",
+          { runSpan, envelopeJson: JSON.stringify(envelope) },
+        );
+        return;
+      }
     }
 
     if (envelope.verdict === "approve") {

@@ -370,6 +370,55 @@ describe("project reference files in packets", () => {
     }
   });
 
+  it("implement packet instructs pre-submit rebase and lands existing MRs", async () => {
+    const { store, app } = appWithStore();
+    const scope = await createScope(app, {
+      goal: "landing test",
+      repo: { path: "so/demo" },
+    });
+    store.setScopeStatus(scope.id, "planning", "human:op-1");
+    store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        acceptance: [{ description: "d", command: "true" }],
+        tasks: [{ title: "task1", spec: "spec1", depends_on: [] }],
+      },
+      "human:op-1",
+    );
+    const task = store.listTasks(scope.id)[0]!;
+    const s = store.getScope(scope.id)!;
+
+    const fresh = buildImplementPacket(
+      task,
+      s,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      "base",
+    );
+    expect(fresh.body).toContain("git rebase origin/");
+    expect(fresh.body).not.toContain("LAND IT");
+
+    const landing = buildImplementPacket(
+      task,
+      s,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      "base",
+      { openMr: "MR !7 is open on branch `colony/x`." },
+    );
+    expect(landing.body).toContain(
+      "## An MR for this task already exists — LAND IT",
+    );
+    expect(landing.body).toContain("MR !7 is open on branch `colony/x`.");
+    expect(landing.body).toContain("Do NOT start over or open a new MR.");
+  });
+
   it("materializes real file bytes from a builder-produced packet into the workspace", async () => {
     const { store, app } = appWithStore();
     expect((await createProject(app, "deliver", DOC)).status).toBe(201);

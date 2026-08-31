@@ -165,6 +165,10 @@ async function executeImplement(
       baseSha,
       {
         interrupted: interruptedAttempt(ctx, task),
+        openMr:
+          task.mr_iid !== null
+            ? `MR !${task.mr_iid} is open on branch \`${branch}\`.`
+            : undefined,
         gateFailure: latestGateFailure(ctx, task),
         reviewFindings: latestReviewFindings(ctx, task),
       },
