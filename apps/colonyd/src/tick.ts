@@ -141,22 +141,33 @@ export function isInfraError(error: string | null | undefined): boolean {
 }
 
 /**
- * True when the role's primary provider model has a free dispatch slot.
+ * Pick the first model in a role's configured chain with a free dispatch slot.
  *
- * The cap is read from config alone, so a config without `max_parallel_runs`
- * is unlimited: an unresolvable role (lazy/fake configs omitting it) also
- * counts as free rather than stalling the whole pipeline on a config gap.
+ * Caps throttle individual models, never the pipeline: a saturated primary
+ * overflows to the first fallback with capacity. An unresolvable role (lazy or
+ * fake configs omitting it) counts as free rather than stalling the pipeline.
  */
-export function hasModelSlot(ctx: ColonydContext, role: AgentRole): boolean {
-  let modelId: string;
+export function pickDispatchSlot(
+  ctx: ColonydContext,
+  role: AgentRole,
+): { readonly allowed: boolean; readonly startModelId: string | null } {
+  let roleConfig;
   try {
-    modelId = ctx.config.forAgent(role).model.id;
+    roleConfig = ctx.config.forAgent(role);
   } catch {
-    return true;
+    return { allowed: true, startModelId: null };
   }
-  const limit = ctx.config.modelParallelLimit(modelId);
-  if (limit === null) return true;
-  return ctx.store.activeRunCountByModel(modelId) < limit;
+  const models = [roleConfig.model, ...roleConfig.fallbackModels];
+  for (const [index, model] of models.entries()) {
+    const limit = ctx.config.modelParallelLimit(model.id);
+    if (limit === null || ctx.store.activeRunCountByModel(model.id) < limit) {
+      return {
+        allowed: true,
+        startModelId: index === 0 ? null : model.id,
+      };
+    }
+  }
+  return { allowed: false, startModelId: null };
 }
 
 function lastImplementRun(
@@ -477,8 +488,13 @@ async function advanceMrOpenTasks(
         ) {
           continue;
         }
-        if (!hasModelSlot(ctx, "reviewer")) continue;
-        dispatch(runReview(ctx, scope, task, headSha));
+        const slot = pickDispatchSlot(ctx, "reviewer");
+        if (!slot.allowed) continue;
+        dispatch(
+          runReview(ctx, scope, task, headSha, {
+            startModelId: slot.startModelId ?? undefined,
+          }),
+        );
         continue;
       }
     }
@@ -578,10 +594,14 @@ async function advanceScopePlanning(
         .runsForScope(scope.id)
         .some((r) => r.kind === "architect" && r.status === "running");
       if (activeArchitect) continue;
-      if (!hasModelSlot(ctx, "architect")) continue;
+      const slot = pickDispatchSlot(ctx, "architect");
+      if (!slot.allowed) continue;
       ctx.store.setScopeStatus(scope.id, "planning", SERVICE_ACTOR);
-      dispatch(runArchitect(ctx, ctx.store.getScope(scope.id)!));
-      continue;
+      dispatch(
+        runArchitect(ctx, ctx.store.getScope(scope.id)!, {
+          startModelId: slot.startModelId ?? undefined,
+        }),
+      );
     }
 
     if (scope.status === "planning") {
@@ -597,9 +617,13 @@ async function advanceScopePlanning(
 
       if (lastArchitect?.status === "succeeded" && !scope.plan_json) {
         // Replan requested: the operator rejected the plan with feedback.
-        if (!hasModelSlot(ctx, "architect")) continue;
-        dispatch(runArchitect(ctx, scope));
-        continue;
+        const slot = pickDispatchSlot(ctx, "architect");
+        if (!slot.allowed) continue;
+        dispatch(
+          runArchitect(ctx, scope, {
+            startModelId: slot.startModelId ?? undefined,
+          }),
+        );
       }
 
       if (lastArchitect?.status === "succeeded" && scope.plan_json) {
@@ -630,8 +654,13 @@ async function advanceScopePlanning(
           });
           continue;
         }
-        if (!hasModelSlot(ctx, "architect")) continue;
-        dispatch(runArchitect(ctx, scope));
+        const slot = pickDispatchSlot(ctx, "architect");
+        if (!slot.allowed) continue;
+        dispatch(
+          runArchitect(ctx, scope, {
+            startModelId: slot.startModelId ?? undefined,
+          }),
+        );
       }
     }
   }
@@ -649,7 +678,8 @@ async function dispatchImplementers(
   for (const task of ready) {
     if (ctx.draining.isDraining()) return;
     if (ctx.store.activeRunCount("implement") >= ctx.env.maxConcurrent) break;
-    if (!hasModelSlot(ctx, "developer")) continue;
+    const slot = pickDispatchSlot(ctx, "developer");
+    if (!slot.allowed) continue;
     const scope = ctx.store.getScope(task.scope_id);
     if (!scope || scope.status !== "active") continue;
     const current = ctx.store.getTask(task.id);
@@ -660,7 +690,11 @@ async function dispatchImplementers(
       "running",
       SERVICE_ACTOR,
     );
-    dispatch(runImplement(ctx, scope, ctx.store.getTask(current.id)!));
+    dispatch(
+      runImplement(ctx, scope, ctx.store.getTask(current.id)!, {
+        startModelId: slot.startModelId ?? undefined,
+      }),
+    );
   }
 }
 
@@ -724,10 +758,11 @@ async function validateScopes(
     const activeArchitect = runs.some(
       (run) => run.kind === "architect" && run.status === "running",
     );
-    if (activeValidate || activeArchitect) continue;
     const lastValidate = runs.filter((run) => run.kind === "validate").at(-1);
+    if (activeValidate || activeArchitect) continue;
     if (!lastValidate) {
-      if (!hasModelSlot(ctx, "developer")) continue;
+      const slot = pickDispatchSlot(ctx, "developer");
+      if (!slot.allowed) continue;
       dispatch(runValidation(ctx, fresh));
       continue;
     }
@@ -735,7 +770,8 @@ async function validateScopes(
     const lastArchitect = runs.filter((run) => run.kind === "architect").at(-1);
     if (lastArchitect && lastArchitect.started_at > lastValidate.started_at) {
       if (lastArchitect.status === "succeeded") {
-        if (!hasModelSlot(ctx, "developer")) continue;
+        const slot = pickDispatchSlot(ctx, "developer");
+        if (!slot.allowed) continue;
         dispatch(runValidation(ctx, fresh));
       }
       continue;
@@ -747,11 +783,13 @@ async function validateScopes(
       continue;
     }
     const extension = buildValidationExtensionInput(ctx, fresh);
-    if (!extension || !hasModelSlot(ctx, "architect")) continue;
+    const slot = pickDispatchSlot(ctx, "architect");
+    if (!extension || !slot.allowed) continue;
     dispatch(
       runArchitect(ctx, fresh, {
         mode: "extension",
         extension,
+        startModelId: slot.startModelId ?? undefined,
       }),
     );
   }
