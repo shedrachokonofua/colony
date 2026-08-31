@@ -25,7 +25,11 @@ import {
 } from "./drain.js";
 import { buildApp } from "./http.js";
 import { consoleLogger } from "./logging.js";
-import { abortRuns, awaitPendingRuns } from "./runs/registry.js";
+import {
+  abortRuns,
+  activeTrackedRunIds,
+  awaitPendingRuns,
+} from "./runs/registry.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
 import { tick } from "./tick.js";
@@ -151,7 +155,11 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     },
     pollMs: 250,
     timeoutMs: environment.COLONY_DRAIN_TIMEOUT_MS,
-    activeRunIds: () => [...ctx.store.activeRuns().map((r) => r.id)],
+    // Registry ids, not store rows: a DB row can sit 'running' with no
+    // in-process handler (crash recovery paths), and aborting untracked ids
+    // is a no-op that would stall shutdown until the cap. The registry is the
+    // source of truth for work this process can still abort and await.
+    activeRunIds: activeTrackedRunIds,
     // In-flight run handlers record their own canceled/failed results from
     // the abort; the controller only needs to stop them.
     abortAll: async (ids) => {
@@ -217,13 +225,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       server.close(() => resolve());
       await promise;
     }
-    const outcome = await drain.wait();
-    if (outcome === "aborted") {
-      // Cap elapsed with runs still alive: abort the remainder (once — the
-      // drain controller never aborts), then let handlers record the result.
-      await abortRuns([...ctx.store.activeRuns().map((r) => r.id)]);
-      await awaitPendingRuns();
-    }
+    await drain.wait();
     store.close();
     await shutdownTelemetry();
   };
