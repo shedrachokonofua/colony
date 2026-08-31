@@ -41,12 +41,18 @@ export class ProjectContextCard extends ColonyElement {
     super.willUpdate(changed);
     // Adopt a new doc from the server unless the operator is typing in the
     // textarea: an unfocused editor is showing a value nobody is editing, so
-    // a poll may refresh it, but a focused one is the operator's draft.
-    if (
+    // a poll may refresh it, but a focused one is the operator's draft. The
+    // shell seeds the doc once and never re-fetches it, so the value rarely
+    // changes while the editor is closed — which is why opening the editor
+    // re-reads it too: without that, Cancel would leave the abandoned text
+    // in the draft and reopening would restore what the operator discarded.
+    const docChanged =
       changed.has("contextDoc") &&
-      this.contextDoc !== changed.get("contextDoc")
-    ) {
-      if (!this._focused) this._contextDraft = this.contextDoc ?? "";
+      this.contextDoc !== changed.get("contextDoc");
+    if (docChanged && !this._focused) {
+      this._contextDraft = this.contextDoc ?? "";
+    } else if (this.editing && changed.get("editing") === false) {
+      this._contextDraft = this.contextDoc ?? "";
     }
   }
 

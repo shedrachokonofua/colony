@@ -107,6 +107,7 @@ export class ColonyApp extends ColonyElement {
     goalOpen: { state: true },
     planOpen: { state: true },
     briefOpen: { state: true },
+    settingsOpen: { state: true },
     reader: { state: true },
     projectContext: { state: true },
     projectPage: { state: true },
@@ -142,6 +143,7 @@ export class ColonyApp extends ColonyElement {
     this.goalOpen = false;
     this.planOpen = false;
     this.briefOpen = false;
+    this.settingsOpen = false;
     this.reader = null;
     this.projectContext = null;
     this.projectPage = null;
@@ -369,6 +371,7 @@ export class ColonyApp extends ColonyElement {
     this.filesPage = null;
     this.projectFiles = null;
     this.briefOpen = false;
+    this.settingsOpen = false;
     this.confirmFile = null;
     this.replaceFileId = null;
     this.newProjectDraft = null;

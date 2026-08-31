@@ -218,7 +218,7 @@ describe("project-page settings rail", () => {
   it("composes <project-context-card> and the deduped repo list", async () => {
     const el = makePage(pageOf({ scopes: [] }), {
       editing: true,
-      tab: "settings",
+      settingsOpen: true,
       contextDoc: "# Brief\n\nOperator-facing console.",
     });
     await el.updateComplete;
@@ -238,7 +238,7 @@ describe("project-page settings rail", () => {
 
   it("hands the files and save status down to the card", async () => {
     const el = makePage(pageOf({ scopes: [] }), {
-      tab: "settings",
+      settingsOpen: true,
       files: [
         { filename: "notes.md", media_type: "text/markdown", byte_size: 12 },
       ],
@@ -260,21 +260,24 @@ describe("project-page settings tab", () => {
   it("shows the scopes rack and hides the rail while the Scopes tab is active", async () => {
     const el = makePage(pageOf({ scopes: [scope("col-a")] }));
     await el.updateComplete;
-    expect(el.tab).toBe("scopes");
+    expect(el.settingsOpen).toBe(false);
     expect(el.querySelector(".project-scopes")).toBeTruthy();
     expect(el.querySelector(".project-settings")).toBeNull();
   });
 
   it("swaps to the rail on the Settings tab, hiding the scope rack", async () => {
     const el = makePage(pageOf({ scopes: [scope("col-a")] }), {
-      tab: "settings",
+      settingsOpen: true,
     });
     await el.updateComplete;
     expect(el.querySelector(".project-scopes")).toBeNull();
     expect(el.querySelector(".project-settings")).toBeTruthy();
   });
 
-  it("each tab bubbles colony-toggle with its id and marks aria-selected", async () => {
+  it("each tab bubbles the bare colony-toggle the shell's _toggle flips, and marks aria-selected", async () => {
+    // _toggle(detail.key) flips a shell property by name: a {key, value}
+    // pair would set projectTab to "settings", which no handler reads and
+    // no render compares, so the Settings tab could never open.
     const el = makePage(pageOf({ scopes: [] }));
     const seen = [];
     el.addEventListener("colony-toggle", (event) => seen.push(event.detail));
@@ -287,13 +290,26 @@ describe("project-page settings tab", () => {
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
     expect(tabs[1].getAttribute("aria-selected")).toBe("false");
     tabs[1].click();
-    expect(seen).toEqual([{ key: "projectTab", value: "settings" }]);
+    tabs[0].click();
+    expect(seen).toEqual([
+      { key: "settingsOpen" },
+      { key: "settingsOpen" },
+    ]);
+  });
+
+  it("swaps the rack for the rail as settingsOpen flips", async () => {
+    const el = makePage(pageOf({ scopes: [scope("col-a")] }));
+    await el.updateComplete;
+    expect(el.querySelector(".project-settings")).toBeNull();
+    el.settingsOpen = true;
+    await el.updateComplete;
+    expect(el.querySelector(".project-settings")).toBeTruthy();
   });
 
   it("shows the empty repo note when none are connected", async () => {
     const el = makePage(
       pageOf({ project: { ...PROJECT, repositories: [] }, scopes: [] }),
-      { tab: "settings" },
+      { settingsOpen: true },
     );
     await el.updateComplete;
     expect(el.querySelector(".repo-list")).toBeNull();

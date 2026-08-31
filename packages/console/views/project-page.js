@@ -1,13 +1,17 @@
 // <project-page>: a project's own page — breadcrumbs, head, scope list, and
 // the settings rail. Ported from renderProjectPage + renderProjectRail
 // (app.js). Property-down: projectPage {name, project, scopes, total,
-// offset, page}, contextDoc, files, editing, saveStatus, tab, config, error.
-// Events-up: colony-page {page, surface:"project"}, colony-navigate, and
-// colony-toggle {key:"projectTab", value} from the Scopes/Settings tabs.
+// offset, page}, contextDoc, files, editing, saveStatus, settingsOpen,
+// config, error. Events-up: colony-page {page, surface:"project"},
+// colony-navigate, and colony-toggle {key:"settingsOpen"} from the
+// Scopes/Settings tabs.
 //
 // The monolith gates the rail behind a Scopes/Settings tab switcher; here
 // the tab is a property the shell drives, so the rail's visibility is the
-// shell's call rather than state the view owns.
+// shell's call rather than state the view owns. The tabs emit the bare
+// {key:"settingsOpen"} form every sibling element uses, and the shell's
+// _toggle flips that key: a {key, value} pair would be dropped, since
+// _toggle only reads the key.
 import { ColonyElement, html, nothing, repeat } from "../base.js";
 import { rel } from "../rel-time.js";
 import { hrefForPage, pageCount } from "../pagination.js";
@@ -32,14 +36,14 @@ export class ProjectPage extends ColonyElement {
     files: { type: Array },
     editing: { type: Boolean },
     saveStatus: { type: String },
-    tab: { type: String },
+    settingsOpen: { type: Boolean },
     config: { type: Object },
     error: { type: String },
   };
 
   static TABS = [
-    ["scopes", "Scopes"],
-    ["settings", "Settings"],
+    [false, "Scopes"],
+    [true, "Settings"],
   ];
 
   constructor() {
@@ -49,7 +53,7 @@ export class ProjectPage extends ColonyElement {
     this.files = [];
     this.editing = false;
     this.saveStatus = null;
-    this.tab = "scopes";
+    this.settingsOpen = false;
     this.config = null;
     this.error = "";
   }
@@ -105,13 +109,13 @@ export class ProjectPage extends ColonyElement {
   #tabs() {
     return html`<nav class="tabs" role="tablist" aria-label="Project sections">
       ${ProjectPage.TABS.map(
-        ([id, label]) =>
+        ([settings, label]) =>
           html`<button
             class="tab"
             role="tab"
-            aria-selected=${this.tab === id}
+            aria-selected=${this.settingsOpen === settings}
             @click=${() =>
-              this.#emit("colony-toggle", { key: "projectTab", value: id })}
+              this.#emit("colony-toggle", { key: "settingsOpen" })}
           >
             ${label}
           </button>`,
@@ -238,7 +242,7 @@ export class ProjectPage extends ColonyElement {
             </p>`
           : nothing}
         ${this.#tabs()}
-        ${this.tab === "settings"
+        ${this.settingsOpen
           ? this.#rail()
           : html`<section class="project-scopes">
                 ${page.total > 0 && scopes.length === 0

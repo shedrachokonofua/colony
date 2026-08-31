@@ -275,6 +275,25 @@ describe("project-context-card draft vs poll (defect 1)", () => {
     expect(textarea(el).value).toBe("typed");
   });
 
+  it("Cancel discards the abandoned draft, so reopening shows the saved doc", async () => {
+    // Regression: the shell seeds the doc once and never re-fetches it, so
+    // re-adopting only on a doc change left the discarded text in the
+    // draft — Cancel, then Edit brief, restored what was thrown away.
+    const el = makeCard({ contextDoc: "saved", editing: true });
+    await el.updateComplete;
+    textarea(el).value = "bad edit";
+    textarea(el).dispatchEvent(new window.Event("input", { bubbles: true }));
+    await el.updateComplete;
+    expect(el._contextDraft).toBe("bad edit");
+
+    el.editing = false;
+    await el.updateComplete;
+    el.editing = true;
+    await el.updateComplete;
+    expect(el._contextDraft).toBe("saved");
+    expect(textarea(el).value).toBe("saved");
+  });
+
   it("re-opening the editor (editing false -> true) re-adopts the latest doc", async () => {
     const el = makeCard({ contextDoc: "orig", editing: true });
     await el.updateComplete;
