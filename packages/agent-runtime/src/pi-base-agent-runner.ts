@@ -609,6 +609,19 @@ export class PiBaseAgentRunner implements PiRunner {
       // call) resets the budget.
       const ZERO_OUTPUT_JIGGLES = 2;
       const JIGGLE_BACKOFF_MS = 15_000;
+      // Quota exhaustion (weekly caps, frequency limits with a distant reset)
+      // never recovers inside a jiggle window: fail over immediately instead
+      // of burning wake cycles against a benched provider.
+      const QUOTA_ERROR_RE =
+        /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at/i;
+      const lastAssistantQuotaError = (): string | null => {
+        for (const message of [...session.agent.state.messages].reverse()) {
+          if (message.role !== "assistant") continue;
+          const err = message.errorMessage;
+          return err && QUOTA_ERROR_RE.test(err) ? err : null;
+        }
+        return null;
+      };
       let jigglesUsed = 0;
       const sleep = (ms: number) =>
         new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -887,6 +900,8 @@ export class PiBaseAgentRunner implements PiRunner {
           let prompt: string;
           if (zeroOutputStalled) {
             zeroOutputStalled = false;
+            const quotaError = lastAssistantQuotaError();
+            if (quotaError) jigglesUsed = ZERO_OUTPUT_JIGGLES;
             if (jigglesUsed < ZERO_OUTPUT_JIGGLES) {
               jigglesUsed += 1;
               this.options.logger?.warn?.(
@@ -905,7 +920,13 @@ export class PiBaseAgentRunner implements PiRunner {
               const next = resolvedModels[index]!;
               await session.setModel(next);
               this.options.logger?.warn?.(
-                { runId, to: next.id, error: "zero_output_stall" },
+                {
+                  runId,
+                  to: next.id,
+                  error: quotaError
+                    ? `provider_quota_exhausted: ${quotaError.slice(0, 160)}`
+                    : "zero_output_stall",
+                },
                 "pi_model_fallback",
               );
             } else {
