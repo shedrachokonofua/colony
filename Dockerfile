@@ -6,23 +6,22 @@
 # executes colonyd's TypeScript directly, so the image needs no build step and no
 # loader.
 
+# Manifests stage: harvest every workspace package.json with paths intact.
+# The deps layer below keys its cache on this stage's CONTENT, so unchanged
+# manifests still cache-hit - and a new workspace package can never silently
+# break the image again (apps/cli did exactly that to a hand-kept COPY list
+# on 2026-08-31: five consecutive build failures on its MR).
+FROM docker.io/oven/bun:1.3.14-debian AS manifests
+WORKDIR /src
+COPY . .
+RUN mkdir -p /manifests \
+  && cp --parents package.json bun.lock tsconfig.base.json tsconfig.json /manifests/ \
+  && find apps packages -maxdepth 2 -name package.json -not -path "*/node_modules/*" \
+     -exec cp --parents {} /manifests/ \;
+
 FROM docker.io/oven/bun:1.3.14-debian AS deps
 WORKDIR /workspace
-COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
-COPY apps/colonyd/package.json ./apps/colonyd/
-COPY packages/agent-runtime/package.json ./packages/agent-runtime/
-COPY packages/config/package.json ./packages/config/
-COPY packages/console/package.json ./packages/console/
-COPY packages/core/package.json ./packages/core/
-COPY packages/domain/package.json ./packages/domain/
-COPY packages/observability/package.json ./packages/observability/
-COPY packages/provider/package.json ./packages/provider/
-COPY packages/provider-gitlab/package.json ./packages/provider-gitlab/
-COPY packages/schemas/package.json ./packages/schemas/
-COPY packages/sandbox/package.json ./packages/sandbox/
-COPY packages/sandbox-in-process/package.json ./packages/sandbox-in-process/
-COPY packages/sandbox-k8s/package.json ./packages/sandbox-k8s/
-COPY packages/sandbox-tests/package.json ./packages/sandbox-tests/
+COPY --from=manifests /manifests/ ./
 RUN bun install --frozen-lockfile
 
 FROM docker.io/oven/bun:1.3.14-debian AS runtime
@@ -38,7 +37,7 @@ RUN apt-get update \
 COPY --from=deps /workspace/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
 COPY packages ./packages
-COPY apps/colonyd ./apps/colonyd
+COPY apps ./apps
 COPY config ./config
 USER bun
 CMD ["bun", "apps/colonyd/src/main.ts"]
