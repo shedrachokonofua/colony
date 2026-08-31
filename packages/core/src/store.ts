@@ -117,23 +117,6 @@ interface ProjectRunningSqlRow {
   run_started_at: string | null;
 }
 
-/** Board labels fall back to a clipped goal, matching the console's rule. */
-function shortGoal(goal: string): string {
-  return goal.length > 72 ? `${goal.slice(0, 72).trimEnd()}…` : goal;
-}
-
-function newestRunOf(row: ProjectRunningSqlRow): ProjectRunningRow["run"] {
-  // A non-null run_id means the LEFT JOIN matched, so the run columns are set.
-  if (row.run_id === null) return null;
-  return {
-    id: row.run_id,
-    kind: row.run_kind!,
-    status: row.run_status!,
-    model_id: row.run_model_id,
-    started_at: row.run_started_at!,
-  };
-}
-
 export interface Scope {
   readonly id: ScopeId;
   readonly goal: string;
@@ -268,7 +251,7 @@ export interface AuditFilter {
  * of TASK_STATES (`queued` and `blocked` are idle and reach the console as
  * tallies instead).
  */
-export const IN_FLIGHT_TASK_STATES: readonly TaskState[] = TASK_STATES.filter(
+const IN_FLIGHT_TASK_STATES: readonly TaskState[] = TASK_STATES.filter(
   (state) =>
     state !== "queued" &&
     state !== "blocked" &&
@@ -609,12 +592,28 @@ export class Store {
       ) as ProjectRunningSqlRow[];
     return rows.map((row) => ({
       scope_id: row.scope_id,
-      scope_title: row.scope_title ?? shortGoal(row.scope_goal),
+      // Board labels fall back to a clipped goal, the console's own rule.
+      scope_title:
+        row.scope_title ??
+        (row.scope_goal.length > 72
+          ? `${row.scope_goal.slice(0, 72).trimEnd()}…`
+          : row.scope_goal),
       task_id: row.task_id,
       task_title: row.task_title,
       task_state: row.task_state,
       attempt: row.attempt,
-      run: newestRunOf(row),
+      // A non-null run_id means the LEFT JOIN matched, so the run columns
+      // are all set.
+      run:
+        row.run_id === null
+          ? null
+          : {
+              id: row.run_id,
+              kind: row.run_kind!,
+              status: row.run_status!,
+              model_id: row.run_model_id,
+              started_at: row.run_started_at!,
+            },
     }));
   }
 
