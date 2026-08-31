@@ -581,58 +581,75 @@ export interface WorkspaceProbeOptions {
   readonly onLost: () => void;
 }
 
+/** Mutable probe state; one instance per installed probe. */
+export interface WorkspaceProbeState {
+  misses: number;
+  fired: boolean;
+}
+
 /**
- * Detects sandbox storage vanishing mid-run (node reboot, container recycle):
- * repo workspaces carry .git, scratch workspaces carry PACKET.json. Only a
- * COMPLETED exec is evidence - a nonzero exit means the markers are gone; a
- * thrown or timed-out exec means the check could not run and proves nothing
+ * One probe step: exec the marker check and update state. Only a COMPLETED
+ * exec is evidence - a nonzero exit means the markers are gone; a thrown or
+ * timed-out exec means the check could not run and proves nothing
  * (2026-08-31: a probe transport bug miscounted as loss killed every run at
  * minute four). cwd is intentionally omitted: ExecRequest cwd is
  * workspace-relative and defaults to the workspace root, where both markers
- * live.
+ * live. Returns true when this step declared the workspace lost.
+ */
+export async function workspaceProbeStep(
+  handle: WorkspaceProbeHandle,
+  state: WorkspaceProbeState,
+  options: WorkspaceProbeOptions,
+): Promise<boolean> {
+  if (state.fired) return false;
+  try {
+    const res = await handle.exec(
+      { command: "test -e .git || test -e PACKET.json", timeoutMs: 10_000 },
+      () => {},
+    );
+    if (res.exitCode === 0) {
+      state.misses = 0;
+      return false;
+    }
+    if (res.exitCode === null) return false; // timed out: not evidence
+    state.misses += 1;
+  } catch (err) {
+    options.logger?.warn?.(
+      {
+        runId: options.runId,
+        sandboxId: options.sandboxId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      "workspace_probe_error",
+    );
+    return false;
+  }
+  if (state.misses < 2) return false;
+  state.fired = true;
+  options.logger?.warn?.(
+    { runId: options.runId, sandboxId: options.sandboxId },
+    WORKSPACE_LOST_REASON,
+  );
+  options.onLost();
+  return true;
+}
+
+/**
+ * Detects sandbox storage vanishing mid-run (node reboot, container recycle):
+ * repo workspaces carry .git, scratch workspaces carry PACKET.json. Thin
+ * scheduling shell over {@link workspaceProbeStep}, which owns every
+ * decision and is tested without timers.
  */
 export function installWorkspaceProbe(
   handle: WorkspaceProbeHandle,
   options: WorkspaceProbeOptions,
 ): () => void {
-  const intervalMs = options.intervalMs ?? 120_000;
-  let misses = 0;
-  let fired = false;
+  const state: WorkspaceProbeState = { misses: 0, fired: false };
   const timer = setInterval(() => {
-    void (async () => {
-      try {
-        const res = await handle.exec(
-          { command: "test -e .git || test -e PACKET.json", timeoutMs: 10_000 },
-          () => {},
-        );
-        if (res.exitCode === 0) {
-          misses = 0;
-          return;
-        }
-        if (res.exitCode === null) return; // timed out: not evidence
-        misses += 1;
-      } catch (err) {
-        options.logger?.warn?.(
-          {
-            runId: options.runId,
-            sandboxId: options.sandboxId,
-            error: err instanceof Error ? err.message : String(err),
-          },
-          "workspace_probe_error",
-        );
-        return;
-      }
-      if (misses >= 2 && !fired) {
-        fired = true;
-        clearInterval(timer);
-        options.logger?.warn?.(
-          { runId: options.runId, sandboxId: options.sandboxId },
-          WORKSPACE_LOST_REASON,
-        );
-        options.onLost();
-      }
-    })();
-  }, intervalMs);
+    void workspaceProbeStep(handle, state, options).then((lost) => {
+      if (lost) clearInterval(timer);
+    });
+  }, options.intervalMs ?? 120_000);
   return () => clearInterval(timer);
 }
 export function installRunGuards(

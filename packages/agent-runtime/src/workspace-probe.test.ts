@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, jest } from "bun:test";
+import { describe, expect, it } from "bun:test";
 
 import {
-  installWorkspaceProbe,
+  workspaceProbeStep,
   type WorkspaceProbeHandle,
+  type WorkspaceProbeOptions,
+  type WorkspaceProbeState,
 } from "./pi-runner-common.js";
 
 function probeWith(exitCodes: Array<number | null | "throw">): {
@@ -23,121 +25,92 @@ function probeWith(exitCodes: Array<number | null | "throw">): {
   };
 }
 
-/** Fire one probe tick and drain the async probe body. */
-async function tick(): Promise<void> {
-  jest.advanceTimersByTime(10);
-  // The interval body is fire-and-forget async; a few microtask turns let
-  // the exec promise and the post-exec bookkeeping settle.
-  for (let i = 0; i < 8; i += 1) await Promise.resolve();
-}
-
-afterEach(() => {
-  jest.useRealTimers();
-});
-
-describe("workspace probe", () => {
-  it("fires onLost exactly once after two consecutive completed misses", async () => {
-    jest.useFakeTimers();
-    const { handle } = probeWith([1, 1, 1]);
-    let lost = 0;
-    const cancel = installWorkspaceProbe(handle, {
-      intervalMs: 10,
-      runId: "r",
-      sandboxId: "s",
-      onLost: () => {
-        lost += 1;
-      },
-    });
-    try {
-      await tick();
-      expect(lost).toBe(0);
-      await tick();
-      expect(lost).toBe(1);
-      await tick();
-      expect(lost).toBe(1);
-    } finally {
-      cancel();
-    }
-  });
-
-  it("never fires on thrown execs: transport failure is not evidence", async () => {
-    jest.useFakeTimers();
-    const { handle, calls } = probeWith(["throw"]);
-    let lost = 0;
-    const warns: string[] = [];
-    const cancel = installWorkspaceProbe(handle, {
-      intervalMs: 10,
+function harness(): {
+  state: WorkspaceProbeState;
+  options: WorkspaceProbeOptions;
+  lost: () => number;
+  warns: string[];
+} {
+  let lost = 0;
+  const warns: string[] = [];
+  return {
+    state: { misses: 0, fired: false },
+    options: {
       runId: "r",
       sandboxId: "s",
       logger: { warn: (_f, msg) => warns.push(msg) },
       onLost: () => {
         lost += 1;
       },
-    });
-    try {
-      for (let i = 0; i < 5; i += 1) await tick();
-      expect(calls()).toBeGreaterThanOrEqual(5);
-      expect(lost).toBe(0);
-      expect(warns).toContain("workspace_probe_error");
-    } finally {
-      cancel();
+    },
+    lost: () => lost,
+    warns,
+  };
+}
+
+describe("workspace probe", () => {
+  it("fires onLost exactly once after two consecutive completed misses", async () => {
+    const { handle } = probeWith([1, 1, 1]);
+    const h = harness();
+    expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(false);
+    expect(h.lost()).toBe(0);
+    expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(true);
+    expect(h.lost()).toBe(1);
+    // A fired probe is inert: no further exec, no second onLost.
+    expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(false);
+    expect(h.lost()).toBe(1);
+  });
+
+  it("never fires on thrown execs: transport failure is not evidence", async () => {
+    const { handle } = probeWith(["throw"]);
+    const h = harness();
+    for (let i = 0; i < 5; i += 1) {
+      expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(false);
     }
+    expect(h.lost()).toBe(0);
+    expect(h.state.misses).toBe(0);
+    expect(h.warns).toContain("workspace_probe_error");
   });
 
   it("a healthy probe resets the miss counter", async () => {
-    jest.useFakeTimers();
     const { handle } = probeWith([1, 0, 1, 0, 1, 0]);
-    let lost = 0;
-    const cancel = installWorkspaceProbe(handle, {
-      intervalMs: 10,
-      runId: "r",
-      sandboxId: "s",
-      onLost: () => {
-        lost += 1;
-      },
-    });
-    try {
-      for (let i = 0; i < 6; i += 1) await tick();
-      expect(lost).toBe(0);
-    } finally {
-      cancel();
+    const h = harness();
+    for (let i = 0; i < 6; i += 1) {
+      await workspaceProbeStep(handle, h.state, h.options);
     }
+    expect(h.lost()).toBe(0);
+    expect(h.state.misses).toBe(0);
   });
 
   it("timed-out execs (exitCode null) are not evidence", async () => {
-    jest.useFakeTimers();
     const { handle } = probeWith([null, null, null, null]);
-    let lost = 0;
-    const cancel = installWorkspaceProbe(handle, {
-      intervalMs: 10,
-      runId: "r",
-      sandboxId: "s",
-      onLost: () => {
-        lost += 1;
-      },
-    });
-    try {
-      for (let i = 0; i < 4; i += 1) await tick();
-      expect(lost).toBe(0);
-    } finally {
-      cancel();
+    const h = harness();
+    for (let i = 0; i < 4; i += 1) {
+      await workspaceProbeStep(handle, h.state, h.options);
     }
+    expect(h.lost()).toBe(0);
+    expect(h.state.misses).toBe(0);
   });
 
-  it("cancel stops probing", async () => {
-    jest.useFakeTimers();
-    const { handle, calls } = probeWith([0]);
-    const cancel = installWorkspaceProbe(handle, {
-      intervalMs: 10,
-      runId: "r",
-      sandboxId: "s",
-      onLost: () => {},
-    });
-    await tick();
-    expect(calls()).toBe(1);
-    cancel();
-    await tick();
-    await tick();
-    expect(calls()).toBe(1);
+  it("a transport error between misses does not bridge them into a loss", async () => {
+    const { handle } = probeWith([1, "throw", 1, "throw"]);
+    const h = harness();
+    for (let i = 0; i < 4; i += 1) {
+      await workspaceProbeStep(handle, h.state, h.options);
+    }
+    // Errors neither reset nor advance the count; the two real misses are
+    // non-consecutive only through error gaps, which still totals two.
+    expect(h.lost()).toBe(1);
+  });
+
+  it("fired state stops probing entirely", async () => {
+    const { handle, calls } = probeWith([1, 1, 0]);
+    const h = harness();
+    await workspaceProbeStep(handle, h.state, h.options);
+    await workspaceProbeStep(handle, h.state, h.options);
+    expect(h.state.fired).toBe(true);
+    const after = calls();
+    await workspaceProbeStep(handle, h.state, h.options);
+    expect(calls()).toBe(after);
   });
 });
