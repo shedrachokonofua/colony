@@ -615,7 +615,9 @@ export class PiBaseAgentRunner implements PiRunner {
       const QUOTA_ERROR_RE =
         /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at/i;
       const lastAssistantQuotaError = (): string | null => {
-        for (const message of [...session.agent.state.messages].reverse()) {
+        for (const message of [
+          ...(session?.agent.state.messages ?? []),
+        ].reverse()) {
           if (message.role !== "assistant") continue;
           const err = message.errorMessage;
           return err && QUOTA_ERROR_RE.test(err) ? err : null;
