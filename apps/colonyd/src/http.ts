@@ -114,6 +114,7 @@ const scopesQuery = z.object({
 const projectsQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
+  archived: z.string().optional(),
 });
 
 /** Operator-authored background; `null` clears it. Strict: no extra keys. */
@@ -387,7 +388,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!parsed.success) return badBody(c, parsed.error.message);
     const limit = parsed.data.limit ?? 25;
     const offset = parsed.data.offset ?? 0;
-    const { projects, total } = ctx.store.pageProjects(limit, offset);
+    const includeArchived = parsed.data.archived === "1";
+    const { projects, total } = ctx.store.pageProjects(
+      limit,
+      offset,
+      includeArchived,
+    );
     return c.json({ projects, total, limit, offset });
   });
 
@@ -409,6 +415,36 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         detail: { project: parsed.data.name },
       });
       return c.json({ project }, 201);
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
+  app.post("/projects/:name/archive", (c) => {
+    const name = c.req.param("name");
+    const existing = ctx.store.getProject(name);
+    if (!existing) return notFound(c, "project");
+    try {
+      const project = ctx.store.archiveProject(name);
+      ctx.store.audit(c.get("actor"), "project.archived", {
+        detail: { project: name },
+      });
+      return c.json({ project });
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
+  app.post("/projects/:name/unarchive", (c) => {
+    const name = c.req.param("name");
+    const existing = ctx.store.getProject(name);
+    if (!existing) return notFound(c, "project");
+    try {
+      const project = ctx.store.unarchiveProject(name);
+      ctx.store.audit(c.get("actor"), "project.unarchived", {
+        detail: { project: name },
+      });
+      return c.json({ project });
     } catch (err) {
       return conflict(c, err);
     }
@@ -1274,7 +1310,11 @@ function notFound(c: Context<Env>, kind: string) {
 
 function conflict(c: Context<Env>, err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
-  return c.json({ error: { code: "CONFLICT", message } }, 409);
+  const extra =
+    err instanceof DomainStateError && err.details
+      ? (err.details as Record<string, unknown>)
+      : {};
+  return c.json({ error: { code: "CONFLICT", message, ...extra } }, 409);
 }
 
 /** Whether the request's Accept-Encoding header includes gzip. */

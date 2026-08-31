@@ -30,6 +30,7 @@ import {
 export interface Project {
   readonly name: string;
   readonly context_doc: string | null;
+  readonly archived_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -299,7 +300,21 @@ export class Store {
   createScope(input: CreateScopeInput): Scope {
     const id = `col-${randomBytes(4).toString("hex")}` as ScopeId;
     const apply = this.db.transaction(() => {
-      if (input.project !== undefined) this.ensureProject(input.project);
+      if (input.project !== undefined) {
+        const existing = this.db
+          .prepare(`SELECT archived_at FROM projects WHERE name = ?`)
+          .get(input.project) as { archived_at: string | null } | undefined;
+        if (existing && existing.archived_at !== null) {
+          throw new DomainStateError(
+            domainError(
+              "PROJECT_ARCHIVED" as DomainErrorCode,
+              `cannot create scope in archived project: ${input.project}`,
+              { project: input.project },
+            ),
+          );
+        }
+        this.ensureProject(input.project);
+      }
       this.db
         .prepare(
           `INSERT INTO scopes (id, goal, title, project_name, status, approvals, provider_repo_id, provider_repo_path, default_branch)
@@ -351,14 +366,16 @@ export class Store {
   pageProjects(
     limit: number,
     offset: number,
+    includeArchived = false,
   ): { projects: ProjectWithCounts[]; total: number } {
+    const where = includeArchived ? "" : "WHERE archived_at IS NULL ";
     const rows = this.db
       .prepare(
-        `SELECT * FROM projects ORDER BY updated_at DESC, name LIMIT ? OFFSET ?`,
+        `SELECT * FROM projects ${where}ORDER BY updated_at DESC, name LIMIT ? OFFSET ?`,
       )
       .all(limit, offset) as Project[];
     const { n } = this.db
-      .prepare(`SELECT COUNT(*) AS n FROM projects`)
+      .prepare(`SELECT COUNT(*) AS n FROM projects ${where}`)
       .get() as { n: number };
     return {
       projects: this.enrichProjectFileStats(this.withScopeCounts(rows)),
@@ -495,6 +512,93 @@ export class Store {
     const project = this.getProject(name);
     if (!project) throw new Error(`project insert lost: ${name}`);
     return project;
+  }
+
+  archiveProject(name: string): Project {
+    const project = this.db
+      .prepare(`SELECT * FROM projects WHERE name = ?`)
+      .get(name) as Project | undefined;
+    if (!project) {
+      throw new DomainStateError(
+        domainError(
+          "UNKNOWN_PROJECT" as DomainErrorCode,
+          `unknown project: ${name}`,
+          { project: name },
+        ),
+      );
+    }
+    if (project.archived_at !== null) {
+      throw new DomainStateError(
+        domainError(
+          "PROJECT_ALREADY_ARCHIVED" as DomainErrorCode,
+          `project already archived: ${name}`,
+          { project: name },
+        ),
+      );
+    }
+
+    const nonTerminalScopes = this.db
+      .prepare(
+        `SELECT id FROM scopes WHERE project_name = ? AND status NOT IN ('done', 'abandoned') ORDER BY id`,
+      )
+      .all(name) as { id: string }[];
+
+    if (nonTerminalScopes.length > 0) {
+      const scope_ids = nonTerminalScopes.map((s) => s.id);
+      throw new DomainStateError(
+        domainError(
+          "PROJECT_HAS_ACTIVE_SCOPES" as DomainErrorCode,
+          `cannot archive project ${name} with non-terminal scopes: ${scope_ids.join(", ")}`,
+          { project: name, scope_ids },
+        ),
+      );
+    }
+
+    const now = nowIso();
+    this.db
+      .prepare(
+        `UPDATE projects SET archived_at = ?, updated_at = ? WHERE name = ?`,
+      )
+      .run(now, now, name);
+
+    const updated = this.getProject(name);
+    if (!updated) throw new Error(`project lost after archive: ${name}`);
+    return updated;
+  }
+
+  unarchiveProject(name: string): Project {
+    const project = this.db
+      .prepare(`SELECT * FROM projects WHERE name = ?`)
+      .get(name) as Project | undefined;
+    if (!project) {
+      throw new DomainStateError(
+        domainError(
+          "UNKNOWN_PROJECT" as DomainErrorCode,
+          `unknown project: ${name}`,
+          { project: name },
+        ),
+      );
+    }
+    if (project.archived_at === null) {
+      throw new DomainStateError(
+        domainError(
+          "PROJECT_NOT_ARCHIVED" as DomainErrorCode,
+          `project is not archived: ${name}`,
+          { project: name },
+        ),
+      );
+    }
+
+    const now = nowIso();
+    this.db
+      .prepare(
+        `UPDATE projects SET archived_at = NULL, updated_at = ? WHERE name = ?`,
+      )
+      .run(now, name);
+
+    const updated = this.getProject(name);
+    if (!updated) throw new Error(`project lost after unarchive: ${name}`);
+    return updated;
   }
 
   /**

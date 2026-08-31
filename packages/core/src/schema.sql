@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS projects (
   name TEXT PRIMARY KEY,
   context_doc TEXT,                        -- operator-authored markdown (optional)
+  archived_at TEXT,                        -- ISO timestamp string when archived, NULL while live
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
