@@ -254,10 +254,11 @@ describe("Pi model fallback", () => {
         scratchDir,
         broker: { resolve: () => "test-key" },
         maxTurns: 8,
-        // Short wall: the CORRECT path (jiggle, 15s first backoff) cannot
-        // finish inside it, so reaching "third" at all means the stale
-        // primary quota error short-circuited the jiggles - the bug.
-        runTimeoutMs: 9_000,
+        // The wall must be long enough for three empty turns + the first
+        // 15s jiggle even on a slow CI box (9s starved the stall entirely
+        // there), yet shorter than jiggle 1 + jiggle 2 completing - so
+        // "third" is reachable ONLY via the stale-quota shortcut, the bug.
+        runTimeoutMs: 30_000,
         logger: {
           warn: (fields: Record<string, unknown>, message: string) => {
             warnings.push({ fields, message });
@@ -280,5 +281,5 @@ describe("Pi model fallback", () => {
     expect(
       warnings.some((warning) => warning.message === "pi_zero_output_jiggle"),
     ).toBe(true);
-  }, 40_000);
+  }, 90_000);
 });
