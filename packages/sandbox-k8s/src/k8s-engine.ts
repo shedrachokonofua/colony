@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { PassThrough, Readable } from "node:stream";
@@ -193,10 +194,20 @@ class K8sSandboxHandle implements SandboxHandle {
    *   and block on its pipe buffer.
    */
   async transferWorkspace(workspace: string): Promise<void> {
+    // Archive explicit top-level members, never `.`: a `./` entry makes the
+    // pod tar restore mode/mtime on /workspace itself, which is a root-owned
+    // PVC mountpoint - EPERM, exit 2 (GNU tar chmods `.` even under
+    // --no-overwrite-dir; proven live 2026-08-31).
+    const members = await readdir(workspace);
+    if (members.length === 0) return;
     // No shell: tar's stdout is piped verbatim into the pod's tar stdin.
-    const local = spawn("tar", ["-cf", "-", "-C", workspace, "."], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const local = spawn(
+      "tar",
+      ["-cf", "-", "-C", workspace, "--", ...members],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     // client-node pumps stdin with `.on("data")`. Under Bun, a ChildProcess
     // stdout attached that way never flows (no bytes, no "end"), which strands
     // the pod-side tar on stdin forever. A piped PassThrough restores real
@@ -220,8 +231,16 @@ class K8sSandboxHandle implements SandboxHandle {
       stdout: string;
     };
     try {
+      // The PVC mountpoint is owned root:<fsGroup>; tar must not try to
+      // restore mode/mtime on it (EPERM, exit 2). lost+found is the fresh
+      // ext4 artifact - clear it so agents see a clean workspace.
+      await this.runPod(
+        ["rm", "-rf", `${POD_WORKSPACE_DIR}/lost+found`],
+        undefined,
+        undefined,
+      );
       podResult = await this.runPod(
-        ["tar", "-xf", "-", "-C", POD_WORKSPACE_DIR],
+        ["tar", "-xf", "-", "--no-overwrite-dir", "-C", POD_WORKSPACE_DIR],
         pipe,
         undefined,
       );

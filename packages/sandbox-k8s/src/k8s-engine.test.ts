@@ -292,7 +292,15 @@ function createFakeClient(
   const scenarios = config.scenarios ?? new Map<string, ExecScenario>();
   const startupSandboxes = new Set(config.startupSandboxes ?? []);
 
-  const transferCommand = ["tar", "-xf", "-", "-C", POD_WORKSPACE_DIR];
+  const transferCommand = [
+    "tar",
+    "-xf",
+    "-",
+    "--no-overwrite-dir",
+    "-C",
+    POD_WORKSPACE_DIR,
+  ];
+  const cleanupCommand = ["rm", "-rf", `${POD_WORKSPACE_DIR}/lost+found`];
 
   return {
     createdAt,
@@ -351,7 +359,9 @@ function createFakeClient(
       }
 
       const explicit = scenarios.get(scenarioKey(command));
-      const isTransfer = scenarioKey(command) === scenarioKey(transferCommand);
+      const isTransfer =
+        scenarioKey(command) === scenarioKey(transferCommand) ||
+        scenarioKey(command) === scenarioKey(cleanupCommand);
       const scenario: ExecScenario =
         explicit ??
         (isTransfer ? { exit: 0 } : (config.fallback ?? { hang: true }));
@@ -758,9 +768,9 @@ describe("K8sSandboxHandle exec channel", () => {
         });
         await handle.exec({ command: "true" }, () => undefined);
 
-        // execCalls[0] is the provision-time tar transfer; the second is the
-        // /bin/sh -c exec above.
-        const execCall = client.execCalls[1]!;
+        // execCalls[0] is the provision-time lost+found cleanup, [1] the tar
+        // transfer; the exec under test follows both.
+        const execCall = client.execCalls[2]!;
         const script = execCall.command[2]!;
         expect(execCall.command[0]).toBe("/bin/sh");
         expect(execCall.command[1]).toBe("-c");
@@ -804,7 +814,7 @@ describe("K8sSandboxHandle exec channel", () => {
       expect(finalEvent.kind).toBe("exit");
       expect(finalEvent.kind === "exit" && finalEvent.exitCode).toBeNull();
 
-      const execCall = client.execCalls[1]!;
+      const execCall = client.execCalls[2]!;
       expect(execCall.wsClosed).toBe(true);
 
       await handle.destroy();
@@ -881,12 +891,18 @@ describe("K8sSandboxHandle exec channel", () => {
     try {
       const { client, handle } = await provisionWith(workspace);
 
-      // execCalls[0] is the workspace-transfer exec session.
-      const transferCall = client.execCalls[0]!;
+      // execCalls[0] clears lost+found; [1] is the workspace-transfer session.
+      expect(client.execCalls[0]!.command).toEqual([
+        "rm",
+        "-rf",
+        `${POD_WORKSPACE_DIR}/lost+found`,
+      ]);
+      const transferCall = client.execCalls[1]!;
       expect(transferCall.command).toEqual([
         "tar",
         "-xf",
         "-",
+        "--no-overwrite-dir",
         "-C",
         POD_WORKSPACE_DIR,
       ]);
