@@ -110,16 +110,11 @@ export class SandboxRbacError extends Error {
 }
 
 /**
- * Provisioning refused for a reason the caller can act on without a stack:
- * the namespace ResourceQuota has no room. The message carries the
- * `sandbox_quota_exhausted:` marker so the tick can defer the task.
+ * Provisioning refused because the namespace ResourceQuota has no room.
+ * Defined in `@colony/sandbox` so the engine that raises it and the
+ * orchestrator that defers on it share one marker.
  */
-export class SandboxError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SandboxError";
-  }
-}
+export { SandboxQuotaError } from "@colony/sandbox";
 
 /**
  * Internal adapter seam implemented by both the real Kubernetes client and the

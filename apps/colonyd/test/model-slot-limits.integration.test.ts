@@ -21,7 +21,7 @@ import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { boot, type ColonydHandle } from "../src/main.js";
 import type { ColonydContext } from "../src/context.js";
 import { SERVICE_ACTOR } from "../src/context.js";
-import { SANDBOX_QUOTA_EXHAUSTED } from "../src/tick.js";
+import { SANDBOX_QUOTA_EXHAUSTED } from "@colony/sandbox";
 import { awaitPendingRuns } from "../src/runs/registry.js";
 import type { GateFailure } from "../src/runs/merge-gate.js";
 import type { ValidateResult } from "../src/runs/validate.js";

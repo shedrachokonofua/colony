@@ -1,5 +1,6 @@
 import { ReviewerVerdictV2 as reviewerVerdictV2Schema } from "@colony/schemas";
 import { retryBackoffMs, type Scope, type Task } from "@colony/core";
+import { isQuotaDeferred } from "@colony/sandbox";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -320,6 +321,9 @@ function blockIfConsecutiveReviewFailures(
   if (!current || current.state !== "mr_open") return;
   const fails = countConsecutiveFailedReviews(ctx, current, headSha);
   if (fails < MAX_CONSECUTIVE_REVIEW_FAILURES) return;
+  // A saturated cluster parks the review before it ever ran: blocking the
+  // task on that would hold the MR hostage to infrastructure capacity.
+  if (lastReviewWasQuotaRefused(ctx, task, headSha)) return;
   ctx.store.transitionTask(
     current.id,
     current.state_version,
@@ -328,6 +332,26 @@ function blockIfConsecutiveReviewFailures(
     {
       blocked_reason: `review failed ${fails} consecutive times at ${headSha}`,
     },
+  );
+}
+
+/**
+ * True when the newest review run at this head SHA was refused for cluster
+ * capacity rather than for anything the reviewer did.
+ */
+function lastReviewWasQuotaRefused(
+  ctx: ColonydContext,
+  task: Task,
+  headSha: string,
+): boolean {
+  const last = ctx.store
+    .runsForTask(task.id)
+    .filter((r) => r.kind === "review")
+    .at(-1);
+  if (!last || last.status !== "failed") return false;
+  return (
+    parseReviewEvidence(last.evidence_json).head_sha === headSha &&
+    isQuotaDeferred(last.error)
   );
 }
 

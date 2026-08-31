@@ -82,3 +82,36 @@ export interface SandboxEngine {
     workspace: string,
   ): Promise<SandboxHandle>;
 }
+
+/**
+ * Marker prefixing every quota-refusal message. One constant shared by the
+ * engine that raises the refusal and the orchestrator that defers on it:
+ * a producer/consumer pair is only trustworthy when both spellings come from
+ * the same source.
+ */
+export const SANDBOX_QUOTA_EXHAUSTED = "sandbox_quota_exhausted";
+
+/**
+ * Provisioning refused for a reason the caller cannot fix: the cluster has
+ * no room for another sandbox (namespace ResourceQuota). The sandbox was
+ * never created, so the failure is a scheduling condition rather than an
+ * agent failure — callers must defer the work, not charge it an attempt.
+ *
+ * The marker is part of the message by construction, so a producer cannot
+ * raise this class and escape detection by {@link isQuotaDeferred}.
+ */
+export class SandboxQuotaError extends Error {
+  constructor(detail: string) {
+    super(`${SANDBOX_QUOTA_EXHAUSTED}: ${detail}`);
+    this.name = "SandboxQuotaError";
+  }
+}
+
+/**
+ * True when a run's stored error records a quota refusal. Run errors cross
+ * the process/database boundary as strings, so detection is textual and
+ * matches what {@link SandboxQuotaError} writes.
+ */
+export function isQuotaDeferred(error: string | null | undefined): boolean {
+  return typeof error === "string" && error.includes(SANDBOX_QUOTA_EXHAUSTED);
+}

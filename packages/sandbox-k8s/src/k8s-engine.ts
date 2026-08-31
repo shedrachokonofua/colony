@@ -4,9 +4,10 @@ import { resolve, sep } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
 import {
-  SANDBOX_PART_OF_LABEL,
   DEFAULT_EXEC_TIMEOUT_MS,
+  SANDBOX_PART_OF_LABEL,
   SANDBOX_PART_OF_VALUE,
+  SandboxQuotaError,
   type ExecEvent,
   type ExecRequest,
   type ExecResult,
@@ -21,7 +22,6 @@ import {
   SANDBOX_GROUP,
   SANDBOX_ID_LABEL,
   SANDBOX_PLURAL,
-  SandboxError,
   SandboxRbacError,
   buildSandboxCustomResource,
   resolveSandboxApiVersion,
@@ -70,7 +70,7 @@ function buildQuotaMessage(err: unknown, namespace: string): string {
     typeof candidate.message === "string" && candidate.message.length > 0
       ? candidate.message
       : "namespace quota exhausted";
-  return `sandbox_quota_exhausted: ${detail} (namespace ${namespace})`;
+  return `${detail} (namespace ${namespace})`;
 }
 
 function buildRbacMessage(namespace: string): string {
@@ -577,7 +577,7 @@ export function createKubernetesEngine(
         await client.createSandbox(namespace, cr);
       } catch (err) {
         if (isQuotaExceeded(err)) {
-          throw new SandboxError(buildQuotaMessage(err, namespace));
+          throw new SandboxQuotaError(buildQuotaMessage(err, namespace));
         }
         if (isForbidden(err)) {
           throw new SandboxRbacError(buildRbacMessage(namespace));

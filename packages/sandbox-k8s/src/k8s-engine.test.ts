@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { KubeConfig } from "@kubernetes/client-node";
 import {
   SANDBOX_PART_OF_LABEL,
+  SANDBOX_QUOTA_EXHAUSTED,
   SANDBOX_ROLE_LABEL,
   buildSandboxLaunchProfile,
 } from "@colony/sandbox";
@@ -14,7 +15,7 @@ import {
   POD_WORKSPACE_DIR,
   SANDBOX_GROUP,
   SANDBOX_ID_LABEL,
-  SandboxError,
+  SandboxQuotaError,
   SandboxRbacError,
   buildSandboxCustomResource,
   resolveSandboxApiVersion,
@@ -605,7 +606,10 @@ describe("createKubernetesEngine", () => {
     // A saturated namespace is not an RBAC misconfiguration: the error must
     // be distinguishable from the forbidden case that never admits.
     expect(error).not.toBeInstanceOf(SandboxRbacError);
-    expect(error).toBeInstanceOf(SandboxError);
+    expect(error).toBeInstanceOf(SandboxQuotaError);
+    // The marker is the whole contract with the orchestrator: a class that
+    // is right but a message that lost the prefix defers nothing.
+    expect((error as Error).message).toContain(SANDBOX_QUOTA_EXHAUSTED);
     expect((error as Error).message).toContain("exceeded quota");
     expect((error as Error).message).toContain("colony-sandboxes");
   });
