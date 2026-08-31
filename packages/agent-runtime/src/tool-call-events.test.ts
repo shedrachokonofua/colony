@@ -93,7 +93,10 @@ describe("RunEvidenceCollector: tool_call rows", () => {
     expect(detail.intent).toBe("prove it");
     expect(JSON.stringify(detail.args)).not.toContain("glpat-abc-secret");
     expect(JSON.stringify(detail.args)).toContain("[REDACTED]");
-    expect(detail.duration_ms).toBe(42);
+    // toolStart stamps its own clock; a ms tick between it and this test's
+    // Date.now() reference skews the pair by 1-2ms on slow machines.
+    expect(detail.duration_ms).toBeGreaterThanOrEqual(42);
+    expect(detail.duration_ms).toBeLessThan(100);
     expect(detail.started_at < detail.ended_at).toBe(true);
     expect(detail.is_error).toBe(false);
     expect(detail.result_summary).toBe("ok");
