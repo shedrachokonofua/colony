@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -106,12 +106,14 @@ describe("UI gzip serving", () => {
       k.endsWith("pagination.js"),
     );
     expect(cachedKey).toBeDefined();
-    expect(uiGzipCache.get(cachedKey!)).toEqual(firstBytes);
+    const entry = uiGzipCache.get(cachedKey!);
+    expect(entry).toBeDefined();
+    expect(entry!.compressed).toEqual(firstBytes);
 
     // Plant a marker: if the next response serves it, the body came from the
     // cache rather than a fresh gzipSync.
     const marker = Buffer.from("marker-cache-hit");
-    uiGzipCache.set(cachedKey!, marker);
+    uiGzipCache.set(cachedKey!, { ...entry!, compressed: marker });
     const second = await app.request("/ui/pagination.js", {
       headers: { "accept-encoding": "gzip" },
     });
@@ -122,5 +124,41 @@ describe("UI gzip serving", () => {
     expect(
       [...uiGzipCache.keys()].filter((k) => k.endsWith("pagination.js")),
     ).toHaveLength(1);
+  });
+
+  it("recompresses when the file changes on disk", async () => {
+    const app = gzipApp();
+    const name = `gz-stale-${process.pid}-${Date.now()}.js`;
+    const full = join(staticDir, name);
+    const pad0 = "// padding 0".repeat(40);
+    const firstContent = `export const v = 1; ${pad0}`;
+    const pad1 = "/* changed */".repeat(60);
+    const secondContent = `export const v = 22; ${pad1}`;
+    // Different padding lengths guarantee statSync().size differs, so the
+    // (mtimeMs, size) identity changes even with coarse mtime granularity.
+    expect(secondContent.length).not.toBe(firstContent.length);
+    writeFileSync(full, firstContent);
+    try {
+      const first = await app.request(`/ui/${name}`, {
+        headers: { "accept-encoding": "gzip" },
+      });
+      expect(first.status).toBe(200);
+      expect(first.headers.get("content-encoding")).toBe("gzip");
+      const firstBytes = Buffer.from(await first.arrayBuffer());
+      expect(gunzipSync(firstBytes)).toEqual(Buffer.from(firstContent));
+
+      writeFileSync(full, secondContent);
+      const second = await app.request(`/ui/${name}`, {
+        headers: { "accept-encoding": "gzip" },
+      });
+      expect(second.status).toBe(200);
+      expect(second.headers.get("content-encoding")).toBe("gzip");
+      const secondBytes = Buffer.from(await second.arrayBuffer());
+      expect(gunzipSync(secondBytes)).toEqual(Buffer.from(secondContent));
+      expect(gunzipSync(secondBytes)).not.toEqual(gunzipSync(firstBytes));
+    } finally {
+      rmSync(full, { force: true });
+      uiGzipCache.delete(full);
+    }
   });
 });
