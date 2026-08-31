@@ -212,6 +212,9 @@ export type ResolvedArtifactsConfig =
 
 export const DEFAULT_ARTIFACTS_DIR = "data/artifacts";
 
+/** Root for per-run Pi session JSONL; relative paths resolve against the daemon cwd. */
+export const DEFAULT_SESSIONS_DIR = "data/sessions";
+
 const artifactsSchema = z
   .object({
     kind: z.enum(["local", "s3"]).default("local"),
@@ -239,6 +242,8 @@ export const colonyConfigFileSchema = z
     hitl: hitlSchema,
     review: reviewSchema,
     artifacts: artifactsSchema.optional(),
+    /** Durable session root; defaults to `data/sessions`. */
+    sessions_dir: z.string().min(1).optional(),
     providers: z.record(z.string().min(1), providerSchema).default({}),
     agents: z
       .object({
@@ -321,6 +326,8 @@ export interface ColonyConfig {
   readonly reviewMode: ReviewMode;
   /** Where run artifacts live; absent section means local `data/artifacts`. */
   readonly artifacts: ResolvedArtifactsConfig;
+  /** Durable per-run session JSONL root; default `data/sessions`. */
+  readonly sessionsDir: string;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
   readonly oauthProviderKeys: readonly string[];
   forAgent(role: AgentRole): ResolvedAgentConfig;
@@ -441,6 +448,7 @@ export function loadColonyConfig(
     .map(([k]) => k);
 
   const artifacts = resolveArtifacts(file.artifacts, env);
+  const sessionsDir = file.sessions_dir ?? DEFAULT_SESSIONS_DIR;
 
   // Collected once at load so lookups never re-scan the file shape. First
   // entry wins when several providers declare the same model id.
@@ -465,6 +473,7 @@ export function loadColonyConfig(
     hitlMode: file.hitl.mode,
     reviewMode: file.review.mode,
     artifacts,
+    sessionsDir,
     oauthProviderKeys,
     forAgent(role) {
       const agentEntry = file.agents[role];

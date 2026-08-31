@@ -143,6 +143,8 @@ describe("collectRunModelIds", () => {
       base_sha: null,
       head_sha: null,
       workspace_path: null,
+      sandbox_id: null,
+      adopted: 0,
       envelope_json: null,
       evidence_json: null,
       token_id: null,

@@ -110,6 +110,7 @@ export async function createAgentWiring(
   onRunEvent?: RunEventSink,
   taskCost?: AgentTaskCostSource,
   auditSink?: RunAuditSink,
+  store?: Store,
 ): Promise<AgentWiring> {
   if (config.agentRuntime === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
@@ -144,6 +145,15 @@ export async function createAgentWiring(
   const { PiCodingAgentRunner } =
     await import("@colony/agent-runtime/pi-coding-agent-runner");
 
+  // Shared Pi runner persistence options: durable session JSONL root and the
+  // runs-table sandbox write-back. The store is reached only through this
+  // injected callback — the agent-runtime package never imports @colony/core.
+  const persistOptions = {
+    sessionsDir: config.sessionsDir,
+    onSandboxId: (runId: string, sandboxId: string) =>
+      store?.setRunSandboxId(runId, sandboxId),
+  } as const;
+
   const architectLogger = roleLogger("architect", onRunEvent);
   const developerLogger = roleLogger("developer", onRunEvent);
 
@@ -163,6 +173,7 @@ export async function createAgentWiring(
         logger: reviewerLogger,
         ...(auditSink ? { auditSink } : {}),
         engine,
+        ...persistOptions,
         ...(webTools ? { webTools } : {}),
       }),
       {
@@ -187,6 +198,7 @@ export async function createAgentWiring(
         engine,
         critique: ARCHITECT_CRITIQUE,
         ...(taskCost ? { architectSizeGate: taskCost.provider } : {}),
+        ...persistOptions,
         ...(webTools ? { webTools } : {}),
       }),
       {
@@ -205,6 +217,7 @@ export async function createAgentWiring(
         logger: developerLogger,
         ...(auditSink ? { auditSink } : {}),
         engine,
+        ...persistOptions,
         ...(webTools ? { webTools } : {}),
       }),
       {

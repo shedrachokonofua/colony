@@ -620,3 +620,30 @@ describe("artifacts config", () => {
     ).toThrow(/colony config validation failed/);
   });
 });
+
+describe("sessions config", () => {
+  it("absent sessions_dir resolves to data/sessions", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(VALID_YAML),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.sessionsDir).toBe("data/sessions");
+  });
+
+  it("resolves an explicit sessions_dir", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(`${VALID_YAML}\nsessions_dir: /var/colony/sessions\n`),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.sessionsDir).toBe("/var/colony/sessions");
+  });
+
+  it("rejects an empty sessions_dir", () => {
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(`${VALID_YAML}\nsessions_dir: ""\n`),
+        env: { ANTHROPIC_API_KEY: "x" },
+      }),
+    ).toThrow(/colony config validation failed/);
+  });
+});
