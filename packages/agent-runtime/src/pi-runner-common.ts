@@ -561,6 +561,11 @@ export function installRunGuards(
   let usdSpent = 0;
   let previousMessageAt = performance.now();
   const maxTurns = options.maxTurns ?? 60;
+  // Terminal-state latch: after the limit fires once, every later event in
+  // the same agent loop would otherwise re-warn, re-fail, and re-abort —
+  // colonyd's role logger mirrors each warn into `run_events`, which is how
+  // one run produced dozens of identical `pi_run_limit_exceeded` rows.
+  let runLimitEmitted = false;
 
   // Progress-based liveness (Temporal heartbeat_timeout analog): every agent
   // event is a heartbeat. Forensics on hung runs showed two client-side hang
@@ -699,7 +704,8 @@ export function installRunGuards(
     }
     const reason =
       turns >= maxTurns ? "max_turns_exhausted_without_envelope" : undefined;
-    if (reason) {
+    if (reason && !runLimitEmitted) {
+      runLimitEmitted = true;
       options.logger?.warn?.(
         {
           runId,

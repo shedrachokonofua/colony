@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   installRunGuards,
   LIVENESS_FAILURE_REASON,
+  type PiRunnerLogger,
 } from "./pi-runner-common.js";
 
 type AgentEvent = { type: string; [key: string]: unknown };
@@ -149,5 +150,37 @@ describe("zero-output stall", () => {
     msg(agent, 0);
     expect(stalled).toBe(0);
     expect(agent.aborted).toBe(0);
+  });
+});
+
+describe("run limit", () => {
+  it("emits pi_run_limit_exceeded exactly once per guard installation", () => {
+    const agent = fakeAgent();
+    const failures: string[] = [];
+    const warns: string[] = [];
+    const capturing: PiRunnerLogger = {
+      info() {},
+      warn(fields, message) {
+        warns.push(message);
+      },
+      error() {},
+    };
+    const unsubscribe = installRunGuards(agent as never, "run-limit", {
+      maxTurns: 2,
+      livenessTimeoutMs: 0,
+      logger: capturing,
+      onFailure: (reason) => failures.push(reason),
+    });
+    try {
+      for (let i = 0; i < 7; i += 1) {
+        agent.emit({ type: "turn_end" });
+        agent.emit({ type: "message_update" });
+      }
+      expect(warns.filter((m) => m === "pi_run_limit_exceeded").length).toBe(1);
+      expect(failures).toEqual(["max_turns_exhausted_without_envelope"]);
+      expect(agent.aborted).toBe(1);
+    } finally {
+      unsubscribe();
+    }
   });
 });
