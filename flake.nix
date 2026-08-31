@@ -21,8 +21,21 @@
         fontsConf = pkgs.makeFontsConf {
           fontDirectories = [ pkgs.dejavu_fonts pkgs.liberation_ttf ];
         };
+        # validate/unit CI jobs: everything else in the default shell
+        # (chromium, ffmpeg, GTK, podman) is closure weight those jobs
+        # download and never run.
+        ciPackages = with pkgs; [
+          bun
+          nodejs_24
+          git
+        ];
       in
       {
+        devShells.ci = pkgs.mkShell {
+          name = "colony-ci";
+          packages = ciPackages;
+        };
+
         devShells.default = pkgs.mkShell {
           name = "colony";
 

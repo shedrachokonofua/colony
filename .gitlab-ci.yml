@@ -33,16 +33,20 @@ default:
       - .bun-cache/
       - node_modules/
 
+# COLONY_SHELL picks the flake dev shell: `.#ci` (bun+node+git) for jobs
+# that never open a browser; e2e overrides to `.#default` for chromium.
 .with-deps:
+  variables:
+    COLONY_SHELL: ".#ci"
   before_script:
     - nix --version
-    - nix develop --command bun install --frozen-lockfile
+    - nix develop "$COLONY_SHELL" --command bun install --frozen-lockfile
 
 validate:
   stage: validate
   extends: .with-deps
   script:
-    - nix develop --command bash -c 'set -euxo pipefail; bun run lint && bun run typecheck'
+    - nix develop "$COLONY_SHELL" --command bash -c 'set -euxo pipefail; bun run lint && bun run typecheck'
 
 unit-tests:
   stage: unit
@@ -50,15 +54,16 @@ unit-tests:
   script:
     # timeout guards a bun-at-exit hang (leaked handle keeps the process
     # alive after the summary): fail in 10 minutes, not at the 1h job wall.
-    - nix develop --command bash -c 'timeout -k 15 600 bun run test:unit'
+    - nix develop "$COLONY_SHELL" --command bash -c 'timeout -k 15 600 bun run test:unit'
 
 e2e-tests:
   stage: e2e
   extends: .with-deps
   variables:
+    COLONY_SHELL: ".#default"
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
   script:
-    - nix develop --command bash -c 'export COLONY_TEST_CHROMIUM_PATH="$(command -v chromium)"; timeout -k 15 1800 npm test && timeout -k 15 1800 npm run test:e2e'
+    - nix develop "$COLONY_SHELL" --command bash -c 'export COLONY_TEST_CHROMIUM_PATH="$(command -v chromium)"; timeout -k 15 1800 npm test && timeout -k 15 1800 npm run test:e2e'
 
 build:colonyd:
   stage: build
