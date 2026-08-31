@@ -110,6 +110,9 @@ async function offlineCtx(
       auth: { kind: "api_key", apiKey: "fake-key" },
       ceilings: { timeoutMs: 60_000, maxTurns: 400 },
     }),
+    // Unlimited dispatch slots: the drain-gate tests observe the draining
+    // gate, not the unrelated per-model parallelism cap added on main.
+    modelParallelLimit: () => null,
   } as unknown as ColonyConfig;
   const agents = new FakeAgentRuntimeAdapter({
     envelopeForRun: (packet, environment) =>
