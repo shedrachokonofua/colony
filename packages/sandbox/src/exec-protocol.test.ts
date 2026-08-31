@@ -3,6 +3,9 @@ import {
   ExecEventSchema,
   ExecRequestSchema,
   ExecResultSchema,
+  SANDBOX_QUOTA_EXHAUSTED,
+  SandboxQuotaError,
+  isQuotaDeferred,
   type ExecEvent,
   type ExecRequest,
   type ExecResult,
@@ -69,5 +72,29 @@ describe("ExecResultSchema", () => {
 
   it("rejects a non-integer exit code", () => {
     expect(() => ExecResultSchema.parse({ exitCode: 0.5 })).toThrow();
+  });
+});
+
+describe("SandboxQuotaError and marker contract", () => {
+  it("constructs with the marker prefix", () => {
+    const err = new SandboxQuotaError("request did not admit");
+    expect(err.message).toBe(
+      `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit`,
+    );
+    expect(err.name).toBe("SandboxQuotaError");
+  });
+
+  it("recognises its own message", () => {
+    const err = new SandboxQuotaError("pods=1 used=20 limited=20");
+    expect(isQuotaDeferred(err.message)).toBe(true);
+  });
+
+  it("rejects unadorned messages", () => {
+    expect(isQuotaDeferred("workspace_provision_failed")).toBe(false);
+  });
+
+  it("tolerates null or undefined", () => {
+    expect(isQuotaDeferred(null)).toBe(false);
+    expect(isQuotaDeferred(undefined)).toBe(false);
   });
 });
