@@ -28,6 +28,8 @@ import type { ValidateResult } from "../src/runs/validate.js";
 
 const ACTOR = "human:op-1";
 const SHA_A = "a".repeat(40);
+/** COLONYD_MAX_ATTEMPTS set by the harness: the attempt/review budget. */
+const MAX_ATTEMPTS = 3;
 
 const PLAN: ArchitectDecompositionV2 = {
   kind: "architect_decomposition",
@@ -49,6 +51,10 @@ const script = {
   reviewerCalls: 0,
   /** Error the developer adapter raises instead of returning an envelope. */
   implementerError: undefined as string | undefined,
+  /** Error the reviewer adapter raises instead of returning a verdict. */
+  reviewerError: undefined as string | undefined,
+  /** Error the architect adapter raises instead of returning a plan. */
+  architectError: undefined as string | undefined,
 };
 
 function fakeAgents(): FakeAgentRuntimeAdapter {
@@ -57,9 +63,17 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
       packet: AgentRuntimePacket,
       environment: AgentRunEnvironment,
     ) => {
-      if (environment.role === "architect") return PLAN;
+      if (environment.role === "architect") {
+        if (script.architectError !== undefined) {
+          throw new Error(script.architectError);
+        }
+        return PLAN;
+      }
       if (environment.role === "reviewer") {
         script.reviewerCalls += 1;
+        if (script.reviewerError !== undefined) {
+          throw new Error(script.reviewerError);
+        }
         return {
           kind: "reviewer_verdict",
           verdict: "approve",
@@ -299,6 +313,8 @@ beforeEach(async () => {
   script.implementerCalls.clear();
   script.reviewerCalls = 0;
   script.implementerError = undefined;
+  script.reviewerError = undefined;
+  script.architectError = undefined;
   provider = new FakeProviderAdapter();
   const repo = await provider.repos.create({
     name: "fake-slots",
@@ -370,6 +386,49 @@ describe("namespace quota deferral", () => {
     expect(task.attempt).toBe(1);
     expect(task.next_retry_at).toBeTruthy();
     await h.settle();
+  }, 30_000);
+
+  // The k8s engine is shared by every role, so a saturated cluster refuses
+  // architect and review runs too — and both keep their own failure budget.
+  it("never exhausts the architect budget on quota refusals", async () => {
+    const h = await harness(writeConfig("no-limits.yaml"));
+    const scopeId = h.draftScope("refused planning");
+    script.architectError = `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`;
+
+    // More refusals than the budget allows: three non-quota failures would
+    // have blocked the scope by now.
+    for (let i = 0; i < MAX_ATTEMPTS + 1; i += 1) {
+      await h.tick();
+      await h.settle();
+    }
+
+    expect(h.store.getScope(scopeId)!.status).toBe("planning");
+    expect(h.store.getScope(scopeId)!.blocked_reason).toBeNull();
+  }, 30_000);
+
+  it("never blocks an mr_open task on quota-refused review runs", async () => {
+    const h = await harness(
+      writeConfig("review.yaml", { reviewRequired: true }),
+    );
+    const { taskId } = h.activeScopeWithTask("refused review");
+    await h.driveToMrOpen(taskId);
+    script.reviewerError = `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`;
+
+    // More refusals than the review budget allows: three real review
+    // failures would have blocked the task by now.
+    for (let i = 0; i < MAX_ATTEMPTS + 1; i += 1) {
+      await h.tick();
+      await h.settle();
+    }
+
+    expect(h.store.getTask(taskId)!.state).toBe("mr_open");
+    // Clearing the refusal lets the review through: the task was deferred,
+    // never condemned.
+    script.reviewerError = undefined;
+    await h.tick();
+    await h.settle();
+    expect(script.reviewerCalls).toBeGreaterThan(0);
+    expect(h.store.getTask(taskId)!.state).toBe("mr_open");
   }, 30_000);
 });
 

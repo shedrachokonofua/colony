@@ -321,9 +321,6 @@ function blockIfConsecutiveReviewFailures(
   if (!current || current.state !== "mr_open") return;
   const fails = countConsecutiveFailedReviews(ctx, current, headSha);
   if (fails < MAX_CONSECUTIVE_REVIEW_FAILURES) return;
-  // A saturated cluster parks the review before it ever ran: blocking the
-  // task on that would hold the MR hostage to infrastructure capacity.
-  if (lastReviewWasQuotaRefused(ctx, task, headSha)) return;
   ctx.store.transitionTask(
     current.id,
     current.state_version,
@@ -336,25 +333,11 @@ function blockIfConsecutiveReviewFailures(
 }
 
 /**
- * True when the newest review run at this head SHA was refused for cluster
- * capacity rather than for anything the reviewer did.
+ * Failed review runs at this head SHA that the reviewer is accountable for.
+ * A run a saturated cluster refused before the reviewer ever saw the diff is
+ * a scheduling condition, so it counts as zero: charging it would hold the
+ * MR hostage to infrastructure capacity.
  */
-function lastReviewWasQuotaRefused(
-  ctx: ColonydContext,
-  task: Task,
-  headSha: string,
-): boolean {
-  const last = ctx.store
-    .runsForTask(task.id)
-    .filter((r) => r.kind === "review")
-    .at(-1);
-  if (!last || last.status !== "failed") return false;
-  return (
-    parseReviewEvidence(last.evidence_json).head_sha === headSha &&
-    isQuotaDeferred(last.error)
-  );
-}
-
 function countConsecutiveFailedReviews(
   ctx: ColonydContext,
   task: Task,
@@ -369,6 +352,7 @@ function countConsecutiveFailedReviews(
     if (evidence.head_sha !== headSha) break;
     if (run.status === "succeeded") break;
     if (run.status !== "failed") break;
+    if (isQuotaDeferred(run.error)) continue;
     count += 1;
   }
   return count;
