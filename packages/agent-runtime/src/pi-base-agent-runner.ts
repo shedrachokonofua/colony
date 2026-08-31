@@ -173,6 +173,8 @@ export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
    * submit tool accepts any decomposition shape.
    */
   readonly architectSizeGate?: () => ArchitectSizeGate | undefined;
+  /** Workspace-loss probe cadence; tests shrink it. Default 120s. */
+  readonly workspaceProbeIntervalMs?: number;
 }
 
 export { WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME, WEB_TOOL_NAMES };
@@ -259,6 +261,7 @@ export class PiBaseAgentRunner implements PiRunner {
     let critiqueCompleted = false;
     let session: AgentSession | undefined;
     let handle: SandboxHandle | undefined;
+    let workspaceProbe: NodeJS.Timeout | undefined;
 
     const submitTool = this.profile.submitTool((value) => {
       if (this.options.critique && this.profile.phases && !critiqueCompleted) {
@@ -404,6 +407,44 @@ export class PiBaseAgentRunner implements PiRunner {
           // visible in the run logs, never swallowed silently.
           logger: this.options.logger,
         });
+
+        // Sandbox storage can vanish mid-run (node reboot, container
+        // recycle). Repo workspaces carry .git, scratch workspaces carry
+        // PACKET.json; two consecutive misses abort as infrastructure.
+        const probeIntervalMs =
+          this.options.workspaceProbeIntervalMs ?? 120_000;
+        let probeMisses = 0;
+        const probeHandle = handle;
+        workspaceProbe = setInterval(() => {
+          void (async () => {
+            try {
+              const res = await probeHandle.exec(
+                {
+                  command: "test -e .git || test -e PACKET.json",
+                  cwd,
+                  timeoutMs: 10_000,
+                },
+                () => {},
+              );
+              if (res.exitCode === 0) {
+                probeMisses = 0;
+                return;
+              }
+              probeMisses += 1;
+            } catch {
+              probeMisses += 1;
+            }
+            if (probeMisses >= 2) {
+              clearInterval(workspaceProbe);
+              this.options.logger?.warn?.(
+                { runId, sandboxId },
+                "workspace_lost",
+              );
+              failureReason ??= "workspace_lost";
+              await session?.abort();
+            }
+          })();
+        }, probeIntervalMs);
       }
       const deadline =
         Date.now() + (this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);
@@ -1116,6 +1157,7 @@ export class PiBaseAgentRunner implements PiRunner {
       }
     } finally {
       clearTimeoutGuard();
+      clearInterval(workspaceProbe);
       session?.dispose();
       this.activeRuns.delete(runId);
       await handle?.destroy();
