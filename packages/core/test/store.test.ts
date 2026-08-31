@@ -9,11 +9,13 @@ import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
   SCOPE_STATUSES,
   Store,
+  TASK_STATES,
   assertScopeTransition,
   assertTaskTransition,
   retryBackoffMs,
   type ScopeStatus,
   type Task,
+  type TaskState,
 } from "../src/index.js";
 
 let dir: string;
@@ -1674,6 +1676,295 @@ describe("project files", () => {
     expect(empty.file_count).toBe(0);
     expect(empty.file_bytes).toBe(0);
     expect(empty.repositories).toEqual([]);
+  });
+});
+
+describe("project running", () => {
+  /** Scope in `status`, owned by `project`, holding one task per title. */
+  function scopeWithTasks(
+    project: string,
+    titles: readonly string[],
+    status: ScopeStatus = "active",
+    goal = "goal",
+  ): { scope_id: string; task_ids: string[] } {
+    const scope_id = store.createScope({
+      goal,
+      provider_repo_id: "1",
+      provider_repo_path: "so/x",
+      project,
+    }).id;
+    store.setScopeStatus(scope_id, "planning", "svc:colonyd");
+    const task_ids = store
+      .materializePlan(
+        scope_id,
+        plan({
+          tasks: titles.map((title) => ({
+            title,
+            spec: `do ${title}`,
+            depends_on: [],
+          })),
+        }),
+        "svc:colonyd",
+      )
+      .map((task) => String(task.id));
+    if (status !== "active") {
+      store.setScopeStatus(scope_id, status, "svc:colonyd");
+    }
+    return { scope_id, task_ids };
+  }
+
+  /** Walk a task queued -> running -> (mr_open), returning the new version. */
+  function advanceTask(taskId: string, to: "running" | "mr_open"): number {
+    const running = store.transitionTask(taskId, 0, "running", "svc:colonyd");
+    if (to === "running") return running.state_version;
+    return store.transitionTask(
+      taskId,
+      running.state_version,
+      "mr_open",
+      "svc:colonyd",
+    ).state_version;
+  }
+
+  function terminateTask(taskId: string, to: "merged" | "canceled"): void {
+    const mrOpen = store.transitionTask(taskId, 0, "running", "svc:colonyd");
+    const open = store.transitionTask(
+      taskId,
+      mrOpen.state_version,
+      "mr_open",
+      "svc:colonyd",
+    );
+    store.transitionTask(taskId, open.state_version, to, "svc:colonyd");
+  }
+
+  it("joins each in-flight task with its newest run of any kind", () => {
+    const { scope_id, task_ids } = scopeWithTasks(
+      "wave",
+      ["Running", "NoRuns", "MultiKind"],
+      "active",
+      "a goal long enough to be the label",
+    );
+    advanceTask(task_ids[0]!, "running");
+    advanceTask(task_ids[1]!, "running");
+    advanceTask(task_ids[2]!, "mr_open");
+
+    const running = store.startRun({
+      scope_id,
+      task_id: task_ids[0],
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+      model_id: "model-a",
+    });
+    // The newest run wins even though an older run of another kind exists.
+    const older = store.startRun({
+      scope_id,
+      task_id: task_ids[2],
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    store.db
+      .prepare(`UPDATE runs SET started_at = ? WHERE id = ?`)
+      .run("2026-01-01T00:00:00.000Z", older.id);
+    const newest = store.startRun({
+      scope_id,
+      task_id: task_ids[2],
+      kind: "review",
+      lease_ttl_ms: 60_000,
+      model_id: "model-b",
+    });
+    store.db
+      .prepare(`UPDATE runs SET started_at = ? WHERE id = ?`)
+      .run("2026-01-03T00:00:00.000Z", newest.id);
+
+    const rows = store.listProjectRunning("wave");
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual([
+        "attempt",
+        "run",
+        "scope_id",
+        "scope_title",
+        "task_id",
+        "task_state",
+        "task_title",
+      ]);
+      expect(row.scope_id).toBe(scope_id);
+      // The scope has no title, so the goal carries the label.
+      expect(row.scope_title).toBe("a goal long enough to be the label");
+    }
+
+    const byTask = new Map(rows.map((row) => [row.task_id, row]));
+    expect(byTask.get(task_ids[1]!)!.run).toBeNull();
+
+    const single = byTask.get(task_ids[0]!)!.run!;
+    expect(single).toEqual({
+      id: running.id,
+      kind: "implement",
+      status: "running",
+      model_id: "model-a",
+      started_at: running.started_at,
+    });
+
+    const multi = byTask.get(task_ids[2]!)!.run!;
+    expect(multi.id).toBe(newest.id);
+    expect(multi.kind).toBe("review");
+    expect(multi.model_id).toBe("model-b");
+    expect(multi.started_at).toBe("2026-01-03T00:00:00.000Z");
+  });
+
+  it("orders rows newest-activity-first with tasks lacking a run last", () => {
+    const first = scopeWithTasks("wave", ["A"]);
+    const second = scopeWithTasks("wave", ["B", "C"]);
+    advanceTask(first.task_ids[0]!, "mr_open");
+    advanceTask(second.task_ids[0]!, "running");
+    advanceTask(second.task_ids[1]!, "running");
+
+    const oldest = store.startRun({
+      scope_id: first.scope_id,
+      task_id: first.task_ids[0],
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    const middle = store.startRun({
+      scope_id: second.scope_id,
+      task_id: second.task_ids[0],
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    for (const [run, at] of [
+      [oldest, "2026-01-01T00:00:00.000Z"],
+      [middle, "2026-01-02T00:00:00.000Z"],
+    ] as const) {
+      store.db
+        .prepare(`UPDATE runs SET started_at = ? WHERE id = ?`)
+        .run(at, run.id);
+    }
+
+    const rows = store.listProjectRunning("wave");
+    expect(rows.map((row) => row.task_id)).toEqual([
+      second.task_ids[0]!,
+      first.task_ids[0]!,
+      second.task_ids[1]!,
+    ]);
+    // Tasks with no run sort last, and the ordering is stable across calls.
+    expect(rows[2]!.run).toBeNull();
+    expect(store.listProjectRunning("wave").map((row) => row.task_id)).toEqual(
+      rows.map((row) => row.task_id),
+    );
+  });
+
+  it("excludes idle and terminal tasks and tasks under terminal scopes", () => {
+    const live = scopeWithTasks("wave", [
+      "Running",
+      "Queued",
+      "Blocked",
+      "Merged",
+      "Canceled",
+    ]);
+    advanceTask(live.task_ids[0]!, "running");
+    // `queued` and `blocked` are idle: the console surfaces them as tallies.
+    const blocked = store.transitionTask(
+      live.task_ids[2]!,
+      0,
+      "running",
+      "svc:colonyd",
+    );
+    store.transitionTask(
+      live.task_ids[2]!,
+      blocked.state_version,
+      "blocked",
+      "svc:colonyd",
+    );
+    terminateTask(live.task_ids[3]!, "merged");
+    terminateTask(live.task_ids[4]!, "canceled");
+
+    const abandoned = scopeWithTasks("wave", ["Abandoned"]);
+    advanceTask(abandoned.task_ids[0]!, "running");
+    store.setScopeStatus(abandoned.scope_id, "abandoned", "svc:colonyd");
+
+    const done = scopeWithTasks("wave", ["Done"]);
+    advanceTask(done.task_ids[0]!, "running");
+    store.setScopeStatus(done.scope_id, "validating", "svc:colonyd");
+    store.setScopeStatus(done.scope_id, "done", "svc:colonyd");
+
+    // Only the running task of the active scope survives.
+    const rows = store.listProjectRunning("wave");
+    expect(rows.map((row) => row.task_title)).toEqual(["Running"]);
+    expect(rows[0]!.task_state).toBe("running");
+  });
+
+  it("returns [] for a project with unknown or only terminal scopes", () => {
+    expect(store.listProjectRunning("ghost")).toEqual([]);
+
+    store.ensureProject("settled");
+    expect(store.listProjectRunning("settled")).toEqual([]);
+
+    const done = scopeWithTasks("settled", ["Running"]);
+    advanceTask(done.task_ids[0]!, "running");
+    store.setScopeStatus(done.scope_id, "validating", "svc:colonyd");
+    store.setScopeStatus(done.scope_id, "done", "svc:colonyd");
+    expect(store.listProjectRunning("settled")).toEqual([]);
+  });
+
+  it("zero-fills getProject task_state_counts across every TASK_STATES key", () => {
+    const zeroCounts = () =>
+      Object.fromEntries(TASK_STATES.map((s) => [s, 0])) as Record<
+        TaskState,
+        number
+      >;
+    store.createProject({ name: "empty", context_doc: null });
+    expect(store.getProject("empty")!.task_state_counts).toEqual(zeroCounts());
+
+    const live = scopeWithTasks("wave", [
+      "Queued",
+      "Running",
+      "Merged",
+      "Blocked",
+      "Canceled",
+      "MrOpen",
+    ]);
+    advanceTask(live.task_ids[1]!, "running");
+    const blocked = store.transitionTask(
+      live.task_ids[3]!,
+      0,
+      "running",
+      "svc:colonyd",
+    );
+    store.transitionTask(
+      live.task_ids[3]!,
+      blocked.state_version,
+      "blocked",
+      "svc:colonyd",
+    );
+    terminateTask(live.task_ids[2]!, "merged");
+    terminateTask(live.task_ids[4]!, "canceled");
+    advanceTask(live.task_ids[5]!, "mr_open");
+
+    // Terminal scopes still contribute their tasks: tallies count everything.
+    const done = scopeWithTasks("wave", ["UnderDone"]);
+    store.setScopeStatus(done.scope_id, "validating", "svc:colonyd");
+    store.setScopeStatus(done.scope_id, "done", "svc:colonyd");
+
+    const expected = {
+      ...zeroCounts(),
+      queued: 2,
+      running: 1,
+      mr_open: 1,
+      merged: 1,
+      blocked: 1,
+      canceled: 1,
+    };
+    expect(store.getProject("wave")!.task_state_counts).toEqual(expected);
+    expect(
+      Object.keys(store.getProject("wave")!.task_state_counts).sort(),
+    ).toEqual([...TASK_STATES].sort());
+
+    const page = store.pageProjects(10, 0);
+    expect(
+      page.projects.find((p) => p.name === "wave")!.task_state_counts,
+    ).toEqual(expected);
+    expect(
+      page.projects.find((p) => p.name === "empty")!.task_state_counts,
+    ).toEqual(zeroCounts());
   });
 });
 

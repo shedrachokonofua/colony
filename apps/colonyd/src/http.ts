@@ -456,6 +456,14 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json({ project });
   });
 
+  // Every in-flight task of the project across its non-terminal scopes,
+  // newest activity first, each joined with its newest run.
+  app.get("/projects/:name/running", (c) => {
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+    return c.json(ctx.store.listProjectRunning(project.name));
+  });
+
   app.get("/projects/:name/context", (c) => {
     const project = ctx.store.getProject(c.req.param("name"));
     if (!project) return notFound(c, "project");
