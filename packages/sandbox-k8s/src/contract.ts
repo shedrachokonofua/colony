@@ -45,6 +45,12 @@ export interface SandboxCustomResourceContainer {
   readonly image: string;
   readonly command: readonly ["sleep", "infinity"];
   readonly workingDir: typeof POD_WORKSPACE_DIR;
+  readonly volumeMounts: readonly [
+    {
+      readonly name: "workspace";
+      readonly mountPath: typeof POD_WORKSPACE_DIR;
+    },
+  ];
   readonly securityContext: SandboxContainerSecurityContext;
   readonly resources: {
     readonly requests: {
@@ -78,6 +84,7 @@ export interface SandboxCustomResource {
       readonly spec: {
         readonly runtimeClassName: "kata";
         readonly automountServiceAccountToken: false;
+        readonly securityContext: { readonly fsGroup: number };
         readonly topologySpreadConstraints: readonly [
           {
             readonly maxSkew: number;
@@ -85,6 +92,21 @@ export interface SandboxCustomResource {
             readonly whenUnsatisfiable: "ScheduleAnyway";
             readonly labelSelector: {
               readonly matchLabels: Record<string, string>;
+            };
+          },
+        ];
+        readonly volumes: readonly [
+          {
+            readonly name: "workspace";
+            readonly ephemeral: {
+              readonly volumeClaimTemplate: {
+                readonly spec: {
+                  readonly accessModes: readonly ["ReadWriteOnce"];
+                  readonly resources: {
+                    readonly requests: { readonly storage: string };
+                  };
+                };
+              };
             };
           },
         ];
@@ -246,6 +268,7 @@ export function buildSandboxCustomResource({
     image,
     command: ["sleep", "infinity"],
     workingDir: POD_WORKSPACE_DIR,
+    volumeMounts: [{ name: "workspace", mountPath: POD_WORKSPACE_DIR }],
     securityContext: {
       runAsUser: 1000,
       runAsNonRoot: true,
@@ -291,6 +314,9 @@ export function buildSandboxCustomResource({
         spec: {
           runtimeClassName: "kata",
           automountServiceAccountToken: false,
+          // Fresh PVCs arrive root-owned; fsGroup chowns them for uid 1000
+          // before the workspace transfer lands.
+          securityContext: { fsGroup: 1000 },
           // Soft spread across the kata-capable nodes: the default scheduler
           // bin-packs sandboxes onto one node while others idle. maxSkew 2 +
           // ScheduleAnyway biases toward balance without ever making a pod
@@ -303,6 +329,26 @@ export function buildSandboxCustomResource({
               labelSelector: {
                 matchLabels: {
                   "app.kubernetes.io/component": "agent-sandbox",
+                },
+              },
+            },
+          ],
+          // /workspace rides a pod-lifetime PVC, not the container layer:
+          // container and kata-VM restarts keep the files (verified live:
+          // kill 1 -> restart -> intact), and the claim deletes with the pod.
+          volumes: [
+            {
+              name: "workspace",
+              ephemeral: {
+                volumeClaimTemplate: {
+                  spec: {
+                    accessModes: ["ReadWriteOnce"],
+                    resources: {
+                      requests: {
+                        storage: profile.resourceLimits.workspaceStorage,
+                      },
+                    },
+                  },
                 },
               },
             },

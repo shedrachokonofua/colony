@@ -40,6 +40,7 @@ describe("buildSandboxLaunchProfile", () => {
       cpu: "1",
       memory: "2Gi",
       ephemeralStorage: "4Gi",
+      workspaceStorage: "8Gi",
     });
 
     const services = profile.egressAllowlist.flatMap((target) =>

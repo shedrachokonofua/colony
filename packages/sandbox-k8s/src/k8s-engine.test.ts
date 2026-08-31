@@ -125,6 +125,27 @@ describe("buildSandboxCustomResource (developer profile)", () => {
     expect(container.env).toHaveLength(0);
   });
 
+  it("backs /workspace with a 16Gi pod-lifetime PVC mounted for uid 1000", () => {
+    const spec = cr.spec.podTemplate.spec;
+    expect(spec.securityContext.fsGroup).toBe(1000);
+    expect(spec.volumes).toEqual([
+      {
+        name: "workspace",
+        ephemeral: {
+          volumeClaimTemplate: {
+            spec: {
+              accessModes: ["ReadWriteOnce"],
+              resources: { requests: { storage: "16Gi" } },
+            },
+          },
+        },
+      },
+    ]);
+    expect(spec.containers[0].volumeMounts).toEqual([
+      { name: "workspace", mountPath: "/workspace" },
+    ]);
+  });
+
   it("honors a configured image override", () => {
     const overridden = buildSandboxCustomResource({
       profile,
@@ -161,6 +182,13 @@ describe("buildSandboxCustomResource (reviewer profile)", () => {
       memory: "1Gi",
     });
     expect(cr.metadata.labels[SANDBOX_ROLE_LABEL]).toBe("reviewer");
+  });
+
+  it("requests an 8Gi workspace volume", () => {
+    expect(
+      cr.spec.podTemplate.spec.volumes[0].ephemeral.volumeClaimTemplate.spec
+        .resources.requests.storage,
+    ).toBe("8Gi");
   });
 });
 

@@ -39,6 +39,8 @@ export interface SandboxResourceLimits {
   readonly cpu: string;
   readonly memory: string;
   readonly ephemeralStorage: string;
+  /** PVC size for the /workspace ephemeral volume (ceph thin-provisioned). */
+  readonly workspaceStorage: string;
 }
 
 /**
@@ -100,6 +102,8 @@ const DEVELOPER_RESOURCES: SandboxResourceLimits = {
   cpu: "2",
   memory: "4Gi",
   ephemeralStorage: "8Gi",
+  // 10 claims x 16Gi fits the namespace's 200Gi requests.storage quota.
+  workspaceStorage: "16Gi",
 };
 
 const DEVELOPER_REQUESTS: SandboxResourceRequests = {
@@ -111,6 +115,7 @@ const REVIEWER_RESOURCES: SandboxResourceLimits = {
   cpu: "1",
   memory: "2Gi",
   ephemeralStorage: "4Gi",
+  workspaceStorage: "8Gi",
 };
 
 const REVIEWER_REQUESTS: SandboxResourceRequests = {
