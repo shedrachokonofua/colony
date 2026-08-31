@@ -189,6 +189,6 @@ describe("Running tab - Demo mode and live ticker", () => {
     expect(cssSource).toContain(".project-running");
     expect(cssSource).toContain(".running-row");
     expect(cssSource).toContain(".scope-chip");
-    expect(cssSource).toContain(".badge[data-state=\"running\"]");
+    expect(cssSource).toContain('.badge[data-state="running"]');
   });
 });

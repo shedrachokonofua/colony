@@ -2010,7 +2010,9 @@ function renderRunningRow(entry) {
       <div class="running-meta">
         <span class="badge" data-state=${row.taskState}>${row.taskState}</span>
         <span class="running-attempt mono">${row.attemptText}</span>
-        ${runInfo ? html`<span class="running-run-info">${runInfo}</span>` : nothing}
+        ${runInfo
+          ? html`<span class="running-run-info">${runInfo}</span>`
+          : nothing}
         <span
           class=${classMap({
             "running-duration": true,
@@ -2034,11 +2036,17 @@ function renderRunningTab() {
     const tallies = formatRunningEmptyTallies(counts);
     return html`<div class="running-empty rack-empty">
       <p>Nothing running right now.</p>
-      ${tallies ? html`<p class="running-tallies mono">${tallies}</p>` : nothing}
+      ${tallies
+        ? html`<p class="running-tallies mono">${tallies}</p>`
+        : nothing}
     </div>`;
   }
   return html`<div class="running-list">
-    ${repeat(list, (entry) => `${entry.scope_id}:${entry.task_id}`, renderRunningRow)}
+    ${repeat(
+      list,
+      (entry) => `${entry.scope_id}:${entry.task_id}`,
+      renderRunningRow,
+    )}
   </div>`;
 }
 
@@ -2123,31 +2131,33 @@ function renderProjectPage() {
       ${tab === "settings"
         ? html`<div class="project-settings">${renderProjectRail()}</div>`
         : tab === "running"
-          ? html`<section class="project-running">${renderRunningTab()}</section>`
+          ? html`<section class="project-running">
+              ${renderRunningTab()}
+            </section>`
           : html`<section class="project-scopes">
-            ${page.total > 0 && scopes.length === 0
-              ? html`<div class="rack-empty">
-                  <p>Past the last page.</p>
-                  <a class="btn btn-solid" href=${hrefForPage(base, 1)}
-                    >Back to page 1</a
-                  >
-                  <a class="btn btn-quiet" href="#/">All projects</a>
-                </div>`
-              : scopes.length
-                ? html`<div class="rack">
-                    ${repeat(scopes, (scope) => scope.id, scopeCard)}
+              ${page.total > 0 && scopes.length === 0
+                ? html`<div class="rack-empty">
+                    <p>Past the last page.</p>
+                    <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                      >Back to page 1</a
+                    >
+                    <a class="btn btn-quiet" href="#/">All projects</a>
                   </div>`
-                : html`<p class="rack-empty">
-                    No scopes in this project yet.
-                  </p>`}
-            ${renderPager({
-              base,
-              page: page.page,
-              total: page.total,
-              items: scopes.length,
-              label: "Project scope pages",
-            })}
-          </section>`}
+                : scopes.length
+                  ? html`<div class="rack">
+                      ${repeat(scopes, (scope) => scope.id, scopeCard)}
+                    </div>`
+                  : html`<p class="rack-empty">
+                      No scopes in this project yet.
+                    </p>`}
+              ${renderPager({
+                base,
+                page: page.page,
+                total: page.total,
+                items: scopes.length,
+                label: "Project scope pages",
+              })}
+            </section>`}
     </div>
   `;
 }
