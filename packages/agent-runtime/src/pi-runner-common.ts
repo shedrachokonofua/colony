@@ -562,6 +562,79 @@ export const TOOL_WEDGE_TIMEOUT_MS = 20 * 60_000;
 
 export const LIVENESS_FAILURE_REASON = "liveness_watchdog_no_progress";
 export const TOOL_WEDGE_FAILURE_REASON = "liveness_watchdog_tool_wedge";
+
+export const WORKSPACE_LOST_REASON = "workspace_lost";
+
+export interface WorkspaceProbeHandle {
+  exec(
+    request: { command: string; timeoutMs?: number },
+    onEvent: (event: unknown) => void,
+  ): Promise<{ exitCode: number | null }>;
+}
+
+export interface WorkspaceProbeOptions {
+  readonly intervalMs?: number;
+  readonly logger?: PiRunnerLogger;
+  readonly runId: string;
+  readonly sandboxId: string;
+  /** Fired once, after two consecutive completed probes report the markers gone. */
+  readonly onLost: () => void;
+}
+
+/**
+ * Detects sandbox storage vanishing mid-run (node reboot, container recycle):
+ * repo workspaces carry .git, scratch workspaces carry PACKET.json. Only a
+ * COMPLETED exec is evidence - a nonzero exit means the markers are gone; a
+ * thrown or timed-out exec means the check could not run and proves nothing
+ * (2026-08-31: a probe transport bug miscounted as loss killed every run at
+ * minute four). cwd is intentionally omitted: ExecRequest cwd is
+ * workspace-relative and defaults to the workspace root, where both markers
+ * live.
+ */
+export function installWorkspaceProbe(
+  handle: WorkspaceProbeHandle,
+  options: WorkspaceProbeOptions,
+): () => void {
+  const intervalMs = options.intervalMs ?? 120_000;
+  let misses = 0;
+  let fired = false;
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        const res = await handle.exec(
+          { command: "test -e .git || test -e PACKET.json", timeoutMs: 10_000 },
+          () => {},
+        );
+        if (res.exitCode === 0) {
+          misses = 0;
+          return;
+        }
+        if (res.exitCode === null) return; // timed out: not evidence
+        misses += 1;
+      } catch (err) {
+        options.logger?.warn?.(
+          {
+            runId: options.runId,
+            sandboxId: options.sandboxId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          "workspace_probe_error",
+        );
+        return;
+      }
+      if (misses >= 2 && !fired) {
+        fired = true;
+        clearInterval(timer);
+        options.logger?.warn?.(
+          { runId: options.runId, sandboxId: options.sandboxId },
+          WORKSPACE_LOST_REASON,
+        );
+        options.onLost();
+      }
+    })();
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
 export function installRunGuards(
   agent: Agent,
   runId: string,

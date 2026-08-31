@@ -10,7 +10,18 @@ import type { SandboxLaunchProfile } from "./sandbox-profile.js";
 
 export const ExecRequestSchema = z.object({
   command: z.string(),
-  cwd: z.string().optional(),
+  /**
+   * WORKSPACE-RELATIVE working directory; omitted = workspace root. Host
+   * paths are meaningless inside an engine, so absolute paths are rejected
+   * at the contract, not per-engine (a host-absolute cwd here killed every
+   * run via the workspace probe on 2026-08-31).
+   */
+  cwd: z
+    .string()
+    .refine((p) => !p.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(p), {
+      message: "cwd must be workspace-relative (host-absolute path rejected)",
+    })
+    .optional(),
   env: z.record(z.string(), z.string()).optional(),
   timeoutMs: z.number().int().optional(),
 });

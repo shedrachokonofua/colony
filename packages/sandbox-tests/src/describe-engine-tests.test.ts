@@ -38,6 +38,9 @@ class CorrectFakeHandle implements SandboxHandle {
     if (request.cwd !== undefined && request.cwd.startsWith("..")) {
       throw new Error("cwd escapes workspace");
     }
+    if (request.cwd !== undefined && request.cwd.startsWith("/")) {
+      throw new Error("cwd must be workspace-relative");
+    }
     return this.runCommand(request.command, onEvent);
   }
 

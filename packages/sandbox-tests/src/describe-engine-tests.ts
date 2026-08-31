@@ -139,6 +139,13 @@ async function checkApiContainment(makeEngine: MakeEngine): Promise<void> {
     await expect(
       handle.exec({ command: "true", cwd: ".." }, () => undefined),
     ).rejects.toThrow();
+
+    // Host-absolute cwd violates the wire contract (cwd is
+    // workspace-relative) and must be rejected by every engine - a caller
+    // passing its host scratch path once killed every run (2026-08-31).
+    await expect(
+      handle.exec({ command: "true", cwd: "/tmp" }, () => undefined),
+    ).rejects.toThrow(/workspace-relative/);
   });
 }
 

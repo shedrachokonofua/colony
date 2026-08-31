@@ -5,6 +5,7 @@ import { join, resolve, sep } from "node:path";
 import {
   DEFAULT_EXEC_TIMEOUT_MS,
   type ExecEvent,
+  ExecRequestSchema,
   type ExecRequest,
   type ExecResult,
   type SandboxEngine,
@@ -43,7 +44,9 @@ class InProcessSandboxHandle implements SandboxHandle {
     if (this.destroyed) {
       throw new Error("exec after destroy");
     }
-    return this.runCommand(request, onEvent);
+    // The wire contract owns cwd semantics (workspace-relative); parsing
+    // here rejects host-absolute paths instead of silently using them.
+    return this.runCommand(ExecRequestSchema.parse(request), onEvent);
   }
 
   async readFile(path: string): Promise<Buffer> {

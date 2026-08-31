@@ -9,6 +9,7 @@ import {
   SANDBOX_PART_OF_LABEL,
   SANDBOX_PART_OF_VALUE,
   SandboxQuotaError,
+  ExecRequestSchema,
   type ExecEvent,
   type ExecRequest,
   type ExecResult,
@@ -126,7 +127,9 @@ class K8sSandboxHandle implements SandboxHandle {
     onEvent: (event: ExecEvent) => void,
   ): Promise<ExecResult> {
     if (this.destroyed) throw new Error("k8s exec after destroy");
-    const command = this.buildExecCommand(request);
+    // The wire contract owns cwd semantics (workspace-relative); parse so a
+    // host-absolute cwd fails with the contract's message on every engine.
+    const command = this.buildExecCommand(ExecRequestSchema.parse(request));
     const { exitCode, timedOut } = await this.runPod(
       command,
       undefined,
