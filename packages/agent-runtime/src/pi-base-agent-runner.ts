@@ -652,10 +652,16 @@ export class PiBaseAgentRunner implements PiRunner {
       // moving to the fallback (the next run returns to the primary anyway).
       const QUOTA_ERROR_RE =
         /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at|no deployments available/i;
+      // Scoped to messages produced by the CURRENT model: an errored turn
+      // survives in history across setModel, and tool-call/reasoning turns
+      // don't append plain assistant text - so an unscoped "newest assistant
+      // error" can be a different model's quota 403 from twenty minutes ago
+      // (2026-08-31: grok was demoted mid-run on kimi's stale error).
+      let quotaScanFloor = 0;
       const lastAssistantQuotaError = (): string | null => {
-        for (const message of [
-          ...(session?.agent.state.messages ?? []),
-        ].reverse()) {
+        const messages = session?.agent.state.messages ?? [];
+        for (let i = messages.length - 1; i >= quotaScanFloor; i -= 1) {
+          const message = messages[i]!;
           if (message.role !== "assistant") continue;
           const err = message.errorMessage;
           return err && QUOTA_ERROR_RE.test(err) ? err : null;
@@ -917,6 +923,7 @@ export class PiBaseAgentRunner implements PiRunner {
             if (index > 0) {
               await session.setModel(candidate);
               jigglesUsed = 0;
+              quotaScanFloor = session.agent.state.messages.length;
             }
             if (await runPromptPlan(candidate)) break;
           }
@@ -959,6 +966,7 @@ export class PiBaseAgentRunner implements PiRunner {
               jigglesUsed = 0;
               const next = resolvedModels[index]!;
               await session.setModel(next);
+              quotaScanFloor = session.agent.state.messages.length;
               this.options.logger?.warn?.(
                 {
                   runId,
