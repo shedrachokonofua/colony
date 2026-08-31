@@ -16,7 +16,6 @@ import {
   type AgentRuntimePacket,
 } from "@colony/agent-runtime";
 import { FakeProviderAdapter } from "@colony/provider";
-import type { Run } from "@colony/core";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { boot, type ColonydHandle } from "../src/main.js";
 import type { ColonydContext } from "../src/context.js";
@@ -114,6 +113,8 @@ function writeConfig(
   name: string,
   options: {
     readonly developerLimit?: number;
+    readonly developerFallback?: boolean;
+    readonly developerFallbackLimit?: number;
     readonly reviewerLimit?: number;
     readonly reviewRequired?: boolean;
   } = {},
@@ -141,7 +142,10 @@ function writeConfig(
       "      value: fake-key",
       "    models:",
       ...model("model-a", options.developerLimit),
-      ...model("model-b", options.reviewerLimit),
+      ...model(
+        "model-b",
+        options.developerFallbackLimit ?? options.reviewerLimit,
+      ),
       "agents:",
       "  architect:",
       "    provider: fake_llm",
@@ -149,6 +153,7 @@ function writeConfig(
       "  developer:",
       "    provider: fake_llm",
       "    model: model-a",
+      ...(options.developerFallback ? ["    fallback_models: [model-b]"] : []),
       ...(options.reviewRequired
         ? ["  reviewer:", "    provider: fake_llm", "    model: model-b"]
         : []),
@@ -220,8 +225,6 @@ async function harness(configPath: string): Promise<{
   /** A `validating` scope: the next tick dispatches its validate run. */
   validatingScope(goal: string): string;
   totalImplementerCalls(): number;
-  /** The single implement run holding a slot. */
-  theRunningImplement(): Run;
   store: ColonydContext["store"];
 }> {
   const booted = await bootFresh(configPath);
@@ -288,11 +291,6 @@ async function harness(configPath: string): Promise<{
     validatingScope,
     totalImplementerCalls: () =>
       [...script.implementerCalls.values()].reduce((a, b) => a + b, 0),
-    theRunningImplement: () => {
-      const runs = store.activeRuns("implement");
-      expect(runs).toHaveLength(1);
-      return runs[0]!;
-    },
     store,
   };
 }
@@ -433,55 +431,112 @@ describe("namespace quota deferral", () => {
 });
 
 describe("per-model dispatch slots", () => {
-  it("caps concurrent implement runs and hands the freed slot to the waiter", async () => {
-    const h = await harness(writeConfig("capped.yaml", { developerLimit: 1 }));
+  it("overflows a capped primary to the first fallback with capacity", async () => {
+    const h = await harness(
+      writeConfig("capped.yaml", {
+        developerLimit: 1,
+        developerFallback: true,
+      }),
+    );
+    h.activeScopeWithTask("cap A");
+    h.activeScopeWithTask("cap B");
 
-    const first = h.activeScopeWithTask("cap A");
-    const second = h.activeScopeWithTask("cap B");
-
-    await h.tick();
-    expect(h.totalImplementerCalls()).toBe(1);
-
-    const dispatched = h.theRunningImplement();
-    const waiterId =
-      dispatched.task_id === first.taskId ? second.taskId : first.taskId;
-
-    // The deferred task is untouched: deferral is not a failure.
-    const waiter = h.store.getTask(waiterId)!;
-    expect(waiter.state).toBe("queued");
-    expect(waiter.attempt).toBe(0);
-    expect(waiter.next_retry_at).toBeNull();
-
-    // Finish the first run: the freed slot goes to the waiter. (The same two
-    // ready tasks dispatch together when no cap is set — case 4.)
-    await h.settle();
-    expect(h.store.getTask(dispatched.task_id!)!.state).toBe("mr_open");
     await h.tick();
     expect(h.totalImplementerCalls()).toBe(2);
-    expect(h.store.getTask(waiterId)!.state).toBe("running");
+    expect(h.store.activeRuns("implement")).toHaveLength(2);
+    expect(h.store.activeRuns("implement").map((run) => run.model_id)).toEqual([
+      "model-a",
+      "model-b",
+    ]);
     await h.settle();
   }, 30_000);
 
-  it("frees a capped slot as soon as the run falls back to another model", async () => {
-    const h = await harness(writeConfig("capped.yaml", { developerLimit: 1 }));
+  it("defers when every model in the chain is capped", async () => {
+    const h = await harness(
+      writeConfig("all-capped.yaml", {
+        developerLimit: 1,
+        developerFallback: true,
+        developerFallbackLimit: 1,
+      }),
+    );
+    const primaryHolder = h.activeScopeWithTask("primary holder");
+    const fallbackHolder = h.activeScopeWithTask("fallback holder");
+    h.store.startRun({
+      scope_id: primaryHolder.scopeId,
+      task_id: primaryHolder.taskId,
+      kind: "implement",
+      lease_ttl_ms: 30 * 60_000,
+      model_id: "model-a",
+    });
+    h.store.startRun({
+      scope_id: fallbackHolder.scopeId,
+      task_id: fallbackHolder.taskId,
+      kind: "implement",
+      lease_ttl_ms: 30 * 60_000,
+      model_id: "model-b",
+    });
+    const waiter = h.activeScopeWithTask("all models capped");
 
-    const first = h.activeScopeWithTask("fallback A");
-    const second = h.activeScopeWithTask("fallback B");
+    await h.tick();
+    expect(h.totalImplementerCalls()).toBe(0);
+    expect(h.store.runsForTask(waiter.taskId)).toHaveLength(0);
+    const task = h.store.getTask(waiter.taskId)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(0);
+    expect(task.next_retry_at).toBeNull();
+  }, 30_000);
 
+  it("frees the primary slot when a run is rewritten to its fallback model", async () => {
+    const h = await harness(
+      writeConfig("capped-chain.yaml", {
+        developerLimit: 1,
+        developerFallback: true,
+        developerFallbackLimit: 1,
+      }),
+    );
+    const primaryHolder = h.activeScopeWithTask("primary holder");
+    const fallbackHolder = h.activeScopeWithTask("fallback holder");
+    for (const holder of [primaryHolder, fallbackHolder]) {
+      const task = h.store.getTask(holder.taskId)!;
+      h.store.transitionTask(
+        task.id,
+        task.state_version,
+        "running",
+        SERVICE_ACTOR,
+      );
+    }
+    h.store.startRun({
+      scope_id: primaryHolder.scopeId,
+      task_id: primaryHolder.taskId,
+      kind: "implement",
+      lease_ttl_ms: 30 * 60_000,
+      model_id: "model-a",
+    });
+    h.store.startRun({
+      scope_id: fallbackHolder.scopeId,
+      task_id: fallbackHolder.taskId,
+      kind: "implement",
+      lease_ttl_ms: 30 * 60_000,
+      model_id: "model-b",
+    });
+    const waiter = h.activeScopeWithTask("fallback waiter");
+
+    await h.tick();
+    expect(h.totalImplementerCalls()).toBe(0);
+    expect(h.store.getTask(waiter.taskId)!.state).toBe("queued");
+
+    const primary = h.store
+      .runsForScope(primaryHolder.scopeId)
+      .find((run) => run.kind === "implement")!;
+    // A pi_model_fallback sink rewrite moves the run off model-a, releasing
+    // that model's slot even though the run remains active.
+    h.store.setRunModel(primary.id, "model-b");
     await h.tick();
     expect(h.totalImplementerCalls()).toBe(1);
-    const dispatched = h.theRunningImplement();
-    expect(dispatched.model_id).toBe("model-a");
-    const waiterId =
-      dispatched.task_id === first.taskId ? second.taskId : first.taskId;
-
-    // pi_model_fallback sink rewrite: the run no longer holds model-a's slot.
-    h.store.setRunModel(dispatched.id, "model-b");
-
-    // Same tick — the waiter does not wait for the run to finish.
-    await h.tick();
-    expect(h.totalImplementerCalls()).toBe(2);
-    expect(h.store.getTask(waiterId)!.state).toBe("running");
+    const waiterRun = h.store
+      .runsForTask(waiter.taskId)
+      .find((run) => run.kind === "implement")!;
+    expect(waiterRun.model_id).toBe("model-a");
     await h.settle();
   }, 30_000);
 

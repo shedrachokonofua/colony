@@ -346,10 +346,18 @@ export class PiBaseAgentRunner implements PiRunner {
 
     // Specs are registered above; the registry owns compat resolution, so ask it
     // for the real models the session and its fallbacks will use.
-    const resolvedModels = models.flatMap((candidate) => {
+    let resolvedModels = models.flatMap((candidate) => {
       const resolved = modelRegistry.find(candidate.provider, candidate.id);
       return resolved ? [resolved] : [];
     });
+    // A saturated primary overflows to the dispatch-selected fallback model.
+    const startIndex = resolvedModels.findIndex(
+      (candidate) => candidate.id === request.environment.startModelId,
+    );
+    if (startIndex > 0) {
+      const [startModel] = resolvedModels.splice(startIndex, 1);
+      resolvedModels.unshift(startModel!);
+    }
     const primaryModel = resolvedModels[0];
     if (!primaryModel) {
       throw new Error(
