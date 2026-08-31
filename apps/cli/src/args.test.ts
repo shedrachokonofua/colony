@@ -249,6 +249,8 @@ describe("parseArgs", () => {
   });
 
   it("throws UsageError when a command's own required flag is absent", () => {
-    expect(() => parse(["replan", "col-1"])).toThrow(/replan requires --feedback/);
+    expect(() => parse(["replan", "col-1"])).toThrow(
+      /replan requires --feedback/,
+    );
   });
 });
