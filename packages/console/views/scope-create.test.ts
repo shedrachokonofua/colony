@@ -152,7 +152,7 @@ describe("scope-create submit", () => {
     ]);
   });
 
-  it("sends a null project when the field is left blank", async () => {
+  it("sends an empty-string project when the field is left blank", async () => {
     const el = makeCreate();
     const seen = eventsOf(el);
     await el.updateComplete;

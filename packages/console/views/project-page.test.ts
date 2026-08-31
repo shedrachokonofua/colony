@@ -192,7 +192,7 @@ describe("project-page pagination", () => {
   it("hides the pager within one page and bubbles colony-page past it", async () => {
     const el = makePage();
     await el.updateComplete;
-    expect(el.querySelector(".pager")).toBeNull();
+    expect(el.querySelector(".board-pager")).toBeNull();
 
     const paged = makePage(pageOf({ total: 100, page: 3 }));
     const seen = eventsOf(paged);
@@ -274,10 +274,12 @@ describe("project-page settings tab", () => {
     expect(el.querySelector(".project-settings")).toBeTruthy();
   });
 
-  it("each tab bubbles the bare colony-toggle the shell's _toggle flips, and marks aria-selected", async () => {
+  it("bubbles the bare colony-toggle only from the inactive tab, and marks aria-selected", async () => {
     // _toggle(detail.key) flips a shell property by name: a {key, value}
     // pair would set projectTab to "settings", which no handler reads and
-    // no render compares, so the Settings tab could never open.
+    // no render compares, so the Settings tab could never open. Clicking
+    // the already-active tab emits nothing: the monolith's setProjectTab
+    // was idempotent, and a bare toggle would switch to the other surface.
     const el = makePage(pageOf({ scopes: [] }));
     const seen = [];
     el.addEventListener("colony-toggle", (event) => seen.push(event.detail));
@@ -289,6 +291,10 @@ describe("project-page settings tab", () => {
     ]);
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
     expect(tabs[1].getAttribute("aria-selected")).toBe("false");
+    tabs[0].click();
+    tabs[1].click();
+    el.settingsOpen = true;
+    await el.updateComplete;
     tabs[1].click();
     tabs[0].click();
     expect(seen).toEqual([{ key: "settingsOpen" }, { key: "settingsOpen" }]);

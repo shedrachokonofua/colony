@@ -11,7 +11,9 @@
 // shell's call rather than state the view owns. The tabs emit the bare
 // {key:"settingsOpen"} form every sibling element uses, and the shell's
 // _toggle flips that key: a {key, value} pair would be dropped, since
-// _toggle only reads the key.
+// _toggle only reads the key. Clicking the already-active tab emits
+// nothing — the monolith's setProjectTab was idempotent, and a bare toggle
+// would otherwise switch to the other surface.
 import { ColonyElement, html, nothing, repeat } from "../base.js";
 import { rel } from "../rel-time.js";
 import { hrefForPage, pageCount } from "../pagination.js";
@@ -114,7 +116,10 @@ export class ProjectPage extends ColonyElement {
             class="tab"
             role="tab"
             aria-selected=${this.settingsOpen === settings}
-            @click=${() => this.#emit("colony-toggle", { key: "settingsOpen" })}
+            @click=${() => {
+              if (this.settingsOpen === settings) return;
+              this.#emit("colony-toggle", { key: "settingsOpen" });
+            }}
           >
             ${label}
           </button>`,
