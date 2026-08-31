@@ -435,7 +435,10 @@ function countConsecutiveReviewRejections(
     .filter((r) => r.kind === "review");
   let count = 0;
   for (const run of [...runs].reverse()) {
-    if (run.status === "failed" && (isQuotaDeferred(run.error) || isInfraError(run.error)))
+    if (
+      run.status === "failed" &&
+      (isQuotaDeferred(run.error) || isInfraError(run.error))
+    )
       continue;
     if (run.status !== "succeeded") break;
     const evidence = parseReviewEvidence(run.evidence_json);
