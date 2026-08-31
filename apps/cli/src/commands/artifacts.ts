@@ -62,7 +62,9 @@ async function list(
     a.bytes === null ? "-" : String(a.bytes),
     a.content_type ?? "-",
   ]);
-  process.stdout.write(`${renderTable(["id", "kind", "key", "bytes", "type"], rows)}\n`);
+  process.stdout.write(
+    `${renderTable(["id", "kind", "key", "bytes", "type"], rows)}\n`,
+  );
   return 0;
 }
 
@@ -86,7 +88,9 @@ async function download(
       if (io.json) {
         process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
       } else {
-        process.stdout.write(`artifact is remote: ${body.error.ref ?? body.error.message}\n`);
+        process.stdout.write(
+          `artifact is remote: ${body.error.ref ?? body.error.message}\n`,
+        );
       }
       return 0;
     }

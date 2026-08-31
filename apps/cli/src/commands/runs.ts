@@ -1,7 +1,10 @@
 import type { ColonyClient } from "../client.js";
 import type { ParsedCommand } from "../args.js";
 import { ansi, renderTable } from "../render.js";
-import { formatDuration, runDurationMs } from "../../../../packages/console/duration.js";
+import {
+  formatDuration,
+  runDurationMs,
+} from "../../../../packages/console/duration.js";
 import { statusCode } from "./scopes.js";
 import type { RunsRow } from "./scope.js";
 

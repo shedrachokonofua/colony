@@ -14,7 +14,8 @@ import {
 const dirs: string[] = [];
 
 afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0))
+    rmSync(dir, { recursive: true, force: true });
 });
 
 function homeWithToken(token?: string): string {
@@ -29,13 +30,18 @@ function homeWithToken(token?: string): string {
 
 describe("resolveServer", () => {
   it("prefers --server over COLONY_URL", () => {
-    expect(resolveServer({ server: "http://localhost:8080" }, { COLONY_URL: "https://env" })).toBe(
-      "http://localhost:8080",
-    );
+    expect(
+      resolveServer(
+        { server: "http://localhost:8080" },
+        { COLONY_URL: "https://env" },
+      ),
+    ).toBe("http://localhost:8080");
   });
 
   it("uses COLONY_URL when no flag is given", () => {
-    expect(resolveServer({}, { COLONY_URL: "https://env" })).toBe("https://env");
+    expect(resolveServer({}, { COLONY_URL: "https://env" })).toBe(
+      "https://env",
+    );
   });
 
   it("falls back to the default server", () => {
@@ -51,16 +57,22 @@ describe("resolveCredentials", () => {
   it("prefers --token and reports the flag source", () => {
     const home = homeWithToken("file-token");
     expect(
-      resolveCredentials({ token: "flag-token" }, { COLONY_TOKEN: "env-token" }, home),
+      resolveCredentials(
+        { token: "flag-token" },
+        { COLONY_TOKEN: "env-token" },
+        home,
+      ),
     ).toEqual({ token: "flag-token", source: "flag" });
   });
 
   it("prefers COLONY_TOKEN over the token file", () => {
     const home = homeWithToken("file-token");
-    expect(resolveCredentials({}, { COLONY_TOKEN: "env-token" }, home)).toEqual({
-      token: "env-token",
-      source: "env",
-    });
+    expect(resolveCredentials({}, { COLONY_TOKEN: "env-token" }, home)).toEqual(
+      {
+        token: "env-token",
+        source: "env",
+      },
+    );
   });
 
   it("reads <home>/.config/colony/token as the file source", () => {
@@ -72,14 +84,18 @@ describe("resolveCredentials", () => {
   });
 
   it("treats an unreadable or missing file as absent", () => {
-    expect(() => resolveCredentials({}, {}, homeWithToken())).toThrow(UsageError);
+    expect(() => resolveCredentials({}, {}, homeWithToken())).toThrow(
+      UsageError,
+    );
     expect(() =>
       resolveCredentials({}, {}, join(homeWithToken(), "does-not-exist")),
     ).toThrow(UsageError);
   });
 
   it("throws UsageError when no source yields a token", () => {
-    expect(() => resolveCredentials({}, {}, homeWithToken())).toThrow(/no API token/);
+    expect(() => resolveCredentials({}, {}, homeWithToken())).toThrow(
+      /no API token/,
+    );
   });
 });
 

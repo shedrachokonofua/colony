@@ -3,13 +3,21 @@ import { ansi, colorEnabled, renderTable } from "./render.js";
 
 describe("renderTable", () => {
   it("pads columns to the widest cell", () => {
-    expect(renderTable(["id", "state"], [["col-1", "active"], ["col-22", "done"]])).toBe(
-      ["id      state", "col-1   active", "col-22  done"].join("\n"),
-    );
+    expect(
+      renderTable(
+        ["id", "state"],
+        [
+          ["col-1", "active"],
+          ["col-22", "done"],
+        ],
+      ),
+    ).toBe(["id      state", "col-1   active", "col-22  done"].join("\n"));
   });
 
   it("uses the header width when rows are narrower", () => {
-    expect(renderTable(["long-header"], [["x"]])).toBe(["long-header", "x"].join("\n"));
+    expect(renderTable(["long-header"], [["x"]])).toBe(
+      ["long-header", "x"].join("\n"),
+    );
   });
 
   it("renders only the header when there are no rows", () => {
@@ -17,7 +25,9 @@ describe("renderTable", () => {
   });
 
   it("tolerates ragged rows", () => {
-    expect(renderTable(["a", "b"], [["only-a"]])).toBe(["a       b", "only-a"].join("\n"));
+    expect(renderTable(["a", "b"], [["only-a"]])).toBe(
+      ["a       b", "only-a"].join("\n"),
+    );
   });
 });
 

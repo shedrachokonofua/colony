@@ -113,7 +113,9 @@ export function withQuery(
   return qs ? `${path}?${qs}` : path;
 }
 
-function errorBody(parsed: unknown): { code?: unknown; message?: unknown } | null {
+function errorBody(
+  parsed: unknown,
+): { code?: unknown; message?: unknown } | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const error = (parsed as { error?: unknown }).error;
   if (typeof error !== "object" || error === null) return null;

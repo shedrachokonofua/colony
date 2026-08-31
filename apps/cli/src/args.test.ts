@@ -47,7 +47,9 @@ describe("parseArgs", () => {
       positional: ["run-1"],
       flags: {},
     });
-    expect(parse(["artifacts", "run-1", "get", "art-1", "-o", "out.log"])).toEqual({
+    expect(
+      parse(["artifacts", "run-1", "get", "art-1", "-o", "out.log"]),
+    ).toEqual({
       command: "artifacts",
       positional: ["run-1", "get", "art-1"],
       flags: { o: "out.log" },
@@ -86,7 +88,18 @@ describe("parseArgs", () => {
 
   it("parses mutation subcommands", () => {
     expect(
-      parse(["open", "spec.md", "--title", "T", "--project", "p", "--repo", "so/c", "--manual", "--create-project"]),
+      parse([
+        "open",
+        "spec.md",
+        "--title",
+        "T",
+        "--project",
+        "p",
+        "--repo",
+        "so/c",
+        "--manual",
+        "--create-project",
+      ]),
     ).toEqual({
       command: "open",
       positional: ["spec.md"],
@@ -135,12 +148,16 @@ describe("parseArgs", () => {
       positional: ["col-1.1", "amend"],
       flags: { spec: "-" },
     });
-    expect(parse(["task", "col-1.1", "request-changes", "--feedback", "f.md"])).toEqual({
+    expect(
+      parse(["task", "col-1.1", "request-changes", "--feedback", "f.md"]),
+    ).toEqual({
       command: "task",
       positional: ["col-1.1", "request-changes"],
       flags: { feedback: "f.md" },
     });
-    expect(parse(["task", "col-1.1", "approve-merge", "--sha", "a".repeat(40)])).toEqual({
+    expect(
+      parse(["task", "col-1.1", "approve-merge", "--sha", "a".repeat(40)]),
+    ).toEqual({
       command: "task",
       positional: ["col-1.1", "approve-merge"],
       flags: { sha: "a".repeat(40) },
@@ -178,7 +195,9 @@ describe("parseArgs", () => {
   });
 
   it("supports --flag=value syntax", () => {
-    expect(parse(["scopes", "--project=colony"]).flags).toEqual({ project: "colony" });
+    expect(parse(["scopes", "--project=colony"]).flags).toEqual({
+      project: "colony",
+    });
   });
 
   it("treats a lone dash as a positional", () => {
@@ -212,12 +231,20 @@ describe("parseArgs", () => {
 
   it("throws UsageError for an unknown flag or verb", () => {
     expect(() => parse(["scopes", "--nope"])).toThrow(/unknown flag/);
-    expect(() => parse(["task", "col-1.1", "destroy"])).toThrow(/unknown task verb/);
+    expect(() => parse(["task", "col-1.1", "destroy"])).toThrow(
+      /unknown task verb/,
+    );
   });
 
   it("throws UsageError when a verb's required flag is absent", () => {
-    expect(() => parse(["task", "col-1.1", "amend"])).toThrow(/requires --spec/);
-    expect(() => parse(["task", "col-1.1", "approve-merge"])).toThrow(/requires --sha/);
-    expect(() => parse(["artifacts", "run-1", "get", "art-1"])).toThrow(/requires --o/);
+    expect(() => parse(["task", "col-1.1", "amend"])).toThrow(
+      /requires --spec/,
+    );
+    expect(() => parse(["task", "col-1.1", "approve-merge"])).toThrow(
+      /requires --sha/,
+    );
+    expect(() => parse(["artifacts", "run-1", "get", "art-1"])).toThrow(
+      /requires --o/,
+    );
   });
 });

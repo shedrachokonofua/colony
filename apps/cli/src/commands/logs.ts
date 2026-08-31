@@ -56,17 +56,22 @@ export async function run(
       if (io.json) {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       } else {
-        process.stdout.write(`#${event.id} ${event.event} ${summarize(event.detail_json)}\n`);
+        process.stdout.write(
+          `#${event.id} ${event.event} ${summarize(event.detail_json)}\n`,
+        );
       }
     }
   };
 
   // Backfill: walk pages backwards until the run's first event is printed.
   for await (const page of iterPages<RunEvent>(async (beforeId) => {
-    const res = await client.get<EventPage>(`/runs/${encodeURIComponent(id)}/events`, {
-      before_id: beforeId,
-      limit: 100,
-    });
+    const res = await client.get<EventPage>(
+      `/runs/${encodeURIComponent(id)}/events`,
+      {
+        before_id: beforeId,
+        limit: 100,
+      },
+    );
     return toCursorPage(res);
   })) {
     print(page);
@@ -75,12 +80,17 @@ export async function run(
   if (!follow) return 0;
 
   for (;;) {
-    const status = await client.get<RunDetail>(`/runs/${encodeURIComponent(id)}`);
+    const status = await client.get<RunDetail>(
+      `/runs/${encodeURIComponent(id)}`,
+    );
     if (status.status !== "running") return 0;
     await sleep(POLL_INTERVAL_MS);
-    const res = await client.get<EventPage>(`/runs/${encodeURIComponent(id)}/events`, {
-      limit: 100,
-    });
+    const res = await client.get<EventPage>(
+      `/runs/${encodeURIComponent(id)}/events`,
+      {
+        limit: 100,
+      },
+    );
     print(res.events.filter((event) => event.id > lastId));
   }
 }
@@ -99,7 +109,8 @@ export function summarize(detailJson: string): string {
 }
 
 function brief(value: unknown): string {
-  if (typeof value === "string") return value.length > 60 ? `${value.slice(0, 57)}...` : value;
+  if (typeof value === "string")
+    return value.length > 60 ? `${value.slice(0, 57)}...` : value;
   if (value === null || typeof value !== "object") return String(value);
   const json = JSON.stringify(value);
   return json.length > 80 ? `${json.slice(0, 77)}...` : json;

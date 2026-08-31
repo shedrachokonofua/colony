@@ -42,7 +42,9 @@ export async function run(
   io: { json: boolean; isTty: boolean },
 ): Promise<number> {
   const id = cmd.positional[0];
-  const detail = await client.get<ScopeDetail>(`/scopes/${encodeURIComponent(id)}`);
+  const detail = await client.get<ScopeDetail>(
+    `/scopes/${encodeURIComponent(id)}`,
+  );
   if (io.json) {
     process.stdout.write(`${JSON.stringify(detail, null, 2)}\n`);
     return 0;
@@ -52,7 +54,8 @@ export async function run(
   process.stdout.write(
     `${scope.id}  ${ansi(io.isTty, statusCode(scope.status), scope.status)}  ${scope.title ?? "(untitled)"}\n`,
   );
-  if (scope.project_name) process.stdout.write(`project: ${scope.project_name}\n`);
+  if (scope.project_name)
+    process.stdout.write(`project: ${scope.project_name}\n`);
   process.stdout.write(`\ngoal: ${scope.goal}\n`);
 
   const plan = parsePlan(scope.plan_json);
@@ -97,7 +100,9 @@ export async function run(
         r.model ?? "-",
         ansi(io.isTty, statusCode(r.status), r.status),
       ]);
-    process.stdout.write(`${renderTable(["run", "kind", "model", "status"], rows)}\n`);
+    process.stdout.write(
+      `${renderTable(["run", "kind", "model", "status"], rows)}\n`,
+    );
   }
   return 0;
 }

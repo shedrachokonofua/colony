@@ -5,8 +5,19 @@
  */
 
 import { homedir } from "node:os";
-import { parseArgs, SUBCOMMANDS, UsageError, usageFor, type ParsedCommand } from "./args.js";
-import { describeTokenSource, resolveActor, resolveCredentials, resolveServer } from "./auth.js";
+import {
+  parseArgs,
+  SUBCOMMANDS,
+  UsageError,
+  usageFor,
+  type ParsedCommand,
+} from "./args.js";
+import {
+  describeTokenSource,
+  resolveActor,
+  resolveCredentials,
+  resolveServer,
+} from "./auth.js";
 import { ApiError, createClient, type ColonyClient } from "./client.js";
 import { colorEnabled } from "./render.js";
 import * as scopes from "./commands/scopes.js";
@@ -77,7 +88,9 @@ export async function main(argv: string[]): Promise<number> {
 
   const handler = COMMANDS[parsed.command];
   if (!handler) {
-    process.stderr.write(`colony: '${parsed.command}' is not implemented yet\n`);
+    process.stderr.write(
+      `colony: '${parsed.command}' is not implemented yet\n`,
+    );
     return 2;
   }
 
@@ -95,7 +108,10 @@ export async function main(argv: string[]): Promise<number> {
   });
   const io: CommandIo = {
     json: parsed.flags.json === true,
-    isTty: colorEnabled(process.stdout.isTTY === true, process.env.NO_COLOR === undefined ? undefined : true),
+    isTty: colorEnabled(
+      process.stdout.isTTY === true,
+      process.env.NO_COLOR === undefined ? undefined : true,
+    ),
   };
 
   try {

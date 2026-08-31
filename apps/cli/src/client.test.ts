@@ -11,7 +11,8 @@ const originalFetch = globalThis.fetch;
 
 function stubFetch(respond: (req: Request) => Promise<Response> | Response) {
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
-    const req = input instanceof Request ? input : new Request(String(input), init);
+    const req =
+      input instanceof Request ? input : new Request(String(input), init);
     calls.push({ url: req.url, init });
     return Promise.resolve(respond(req));
   }) as typeof fetch;
@@ -38,7 +39,11 @@ function json(body: unknown, status = 200) {
 describe("createClient", () => {
   it("builds URLs and serializes query params, omitting undefined", async () => {
     stubFetch(() => json({ ok: true }));
-    await client.get("/scopes", { limit: 25, offset: undefined, project: "colony" });
+    await client.get("/scopes", {
+      limit: 25,
+      offset: undefined,
+      project: "colony",
+    });
     expect(calls[0]!.url).toBe(
       "https://colony.test/scopes?limit=25&project=colony",
     );
@@ -90,7 +95,10 @@ describe("createClient", () => {
 
   it("throws ApiError on 401 so the caller can name the credential source", async () => {
     stubFetch(() =>
-      json({ error: { code: "UNAUTHORIZED", message: "Bearer token required" } }, 401),
+      json(
+        { error: { code: "UNAUTHORIZED", message: "Bearer token required" } },
+        401,
+      ),
     );
     const err = await client.get("/scopes").catch((e: unknown) => e);
     expect((err as ApiError).status).toBe(401);

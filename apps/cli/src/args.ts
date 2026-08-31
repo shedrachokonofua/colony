@@ -202,18 +202,23 @@ function validate(
   if (command === "") throw new UsageError("no command given");
   if (!spec) throw new UsageError(`unknown command '${command}'`);
 
-  const verb = spec.verbs && positional[1] !== undefined ? spec.verbs[positional[1]] : undefined;
+  const verb =
+    spec.verbs && positional[1] !== undefined
+      ? spec.verbs[positional[1]]
+      : undefined;
   if (spec.verbs && positional[1] !== undefined && !verb) {
     throw new UsageError(`unknown ${command} verb '${positional[1]}'`);
   }
   const minPositional =
-    (spec.minPositional ?? 0) + (verb?.minPositional ?? verb ? 1 : 0);
+    (spec.minPositional ?? 0) + ((verb?.minPositional ?? verb) ? 1 : 0);
   if (positional.length < minPositional) {
     throw new UsageError(`usage: ${spec.usage}`);
   }
   for (const required of verb?.required ?? []) {
     if (flags[required] === undefined) {
-      throw new UsageError(`${command} ${positional[1]} requires --${required}`);
+      throw new UsageError(
+        `${command} ${positional[1]} requires --${required}`,
+      );
     }
   }
   return { command, positional, flags };

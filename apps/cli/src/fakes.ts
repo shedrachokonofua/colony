@@ -47,10 +47,14 @@ export function fakeClient(routes: Record<string, Responder>): {
     calls,
     client: {
       baseUrl: "https://colony.test",
-      get: <T,>(path: string, query?: Record<string, string | number | undefined>) =>
-        dispatch("get", path, query) as Promise<T>,
-      post: <T,>(path: string, body?: unknown) => dispatch("post", path, undefined, body) as Promise<T>,
-      put: <T,>(path: string, body?: unknown) => dispatch("put", path, undefined, body) as Promise<T>,
+      get: <T>(
+        path: string,
+        query?: Record<string, string | number | undefined>,
+      ) => dispatch("get", path, query) as Promise<T>,
+      post: <T>(path: string, body?: unknown) =>
+        dispatch("post", path, undefined, body) as Promise<T>,
+      put: <T>(path: string, body?: unknown) =>
+        dispatch("put", path, undefined, body) as Promise<T>,
       raw: (path: string) => dispatch("get", path) as Promise<Response>,
     },
   };
@@ -61,7 +65,9 @@ export function captureStdout(): { text: () => string; restore: () => void } {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
   process.stdout.write = ((chunk: string | Uint8Array) => {
-    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    chunks.push(
+      typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"),
+    );
     return true;
   }) as typeof process.stdout.write;
   return {

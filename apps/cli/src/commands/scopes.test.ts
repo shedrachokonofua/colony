@@ -39,7 +39,10 @@ describe("scopes", () => {
     } finally {
       out.restore();
     }
-    const parsed = parseJsonOut(out.text()) as { scopes: unknown[]; total: number };
+    const parsed = parseJsonOut(out.text()) as {
+      scopes: unknown[];
+      total: number;
+    };
     expect(parsed.scopes).toHaveLength(1);
     expect(parsed.total).toBe(1);
   });
@@ -55,7 +58,11 @@ describe("scopes", () => {
     } finally {
       out.restore();
     }
-    expect(calls[0]!.query).toEqual({ limit: 25, offset: 50, project: undefined });
+    expect(calls[0]!.query).toEqual({
+      limit: 25,
+      offset: 50,
+      project: undefined,
+    });
   });
 
   it("passes the project filter", async () => {
@@ -69,7 +76,11 @@ describe("scopes", () => {
     } finally {
       out.restore();
     }
-    expect(calls[0]!.query).toEqual({ limit: 25, offset: 0, project: "colony" });
+    expect(calls[0]!.query).toEqual({
+      limit: 25,
+      offset: 0,
+      project: "colony",
+    });
   });
 
   it("renders a table of id/status/title/created without color", async () => {
@@ -85,7 +96,9 @@ describe("scopes", () => {
       out.restore();
     }
     expect(out.text()).toContain("id     status  title         created");
-    expect(out.text()).toContain("col-1  active  Ship the CLI  2026-08-30T10:00:00.000Z");
+    expect(out.text()).toContain(
+      "col-1  active  Ship the CLI  2026-08-30T10:00:00.000Z",
+    );
     expect(out.text()).not.toContain("\u001b[");
   });
 

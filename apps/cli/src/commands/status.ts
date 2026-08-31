@@ -1,7 +1,10 @@
 import { ApiError } from "../client.js";
 import type { ColonyClient } from "../client.js";
 import type { ParsedCommand } from "../args.js";
-import { formatDuration, runDurationMs } from "../../../../packages/console/duration.js";
+import {
+  formatDuration,
+  runDurationMs,
+} from "../../../../packages/console/duration.js";
 import { ansi, renderTable } from "../render.js";
 import { statusCode, type ScopeRow } from "./scopes.js";
 import type { RunsRow } from "./scope.js";
@@ -40,7 +43,9 @@ export async function run(
     active.map(async (scope) => ({
       scope,
       runs: (
-        await client.get<{ runs: RunsRow[] }>(`/scopes/${encodeURIComponent(scope.id)}`)
+        await client.get<{ runs: RunsRow[] }>(
+          `/scopes/${encodeURIComponent(scope.id)}`,
+        )
       ).runs,
     })),
   );
@@ -63,7 +68,10 @@ export async function run(
   process.stdout.write(
     `${renderTable(
       ["status", "count"],
-      SCOPE_STATUSES.map((s) => [ansi(io.isTty, statusCode(s), s), String(tally.get(s) ?? 0)]),
+      SCOPE_STATUSES.map((s) => [
+        ansi(io.isTty, statusCode(s), s),
+        String(tally.get(s) ?? 0),
+      ]),
     )}\n`,
   );
 
@@ -87,7 +95,9 @@ export async function run(
     return 0;
   }
   process.stdout.write("\n");
-  process.stdout.write(`${renderTable(["run", "scope", "kind", "model", "age"], rows)}\n`);
+  process.stdout.write(
+    `${renderTable(["run", "scope", "kind", "model", "age"], rows)}\n`,
+  );
   return 0;
 }
 

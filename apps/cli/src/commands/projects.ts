@@ -40,8 +40,10 @@ export async function run(
     `created: ${project.created_at}`,
     `updated: ${project.updated_at}`,
   ];
-  if (project.scope_count !== undefined) lines.push(`scopes:  ${project.scope_count}`);
-  if (project.file_count !== undefined) lines.push(`files:   ${project.file_count}`);
+  if (project.scope_count !== undefined)
+    lines.push(`scopes:  ${project.scope_count}`);
+  if (project.file_count !== undefined)
+    lines.push(`files:   ${project.file_count}`);
   process.stdout.write(`${lines.join("\n")}\n`);
   return 0;
 }
@@ -68,7 +70,9 @@ async function list(
     p.file_count === undefined ? "-" : String(p.file_count),
     p.updated_at,
   ]);
-  process.stdout.write(`${renderTable(["name", "scopes", "files", "updated"], rows)}\n`);
+  process.stdout.write(
+    `${renderTable(["name", "scopes", "files", "updated"], rows)}\n`,
+  );
   return 0;
 }
 
@@ -99,6 +103,8 @@ export async function context(
     process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
     return 0;
   }
-  process.stdout.write(res.context_doc ? `${res.context_doc}\n` : "no context doc\n");
+  process.stdout.write(
+    res.context_doc ? `${res.context_doc}\n` : "no context doc\n",
+  );
   return 0;
 }

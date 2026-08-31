@@ -54,7 +54,12 @@ describe("iterPages", () => {
 
   it("adapts the server envelope shape", () => {
     expect(
-      toCursorPage({ events: [1, 2], has_more: true, oldest_id: 1, newest_id: 2 }),
+      toCursorPage({
+        events: [1, 2],
+        has_more: true,
+        oldest_id: 1,
+        newest_id: 2,
+      }),
     ).toEqual({ items: [1, 2], hasMore: true, oldestId: 1 });
   });
 });

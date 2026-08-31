@@ -27,7 +27,8 @@ export function resolveCredentials(
   const flag = stringFlag(flags, "token");
   if (flag) return { token: flag, source: "flag" };
   const fromEnv = env.COLONY_TOKEN;
-  if (fromEnv && fromEnv.trim()) return { token: fromEnv.trim(), source: "env" };
+  if (fromEnv && fromEnv.trim())
+    return { token: fromEnv.trim(), source: "env" };
   const fromFile = readTokenFile(join(homeDir, ".config", "colony", "token"));
   if (fromFile) return { token: fromFile, source: "file" };
   throw new UsageError(
