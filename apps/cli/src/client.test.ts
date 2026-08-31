@@ -53,7 +53,7 @@ describe("createClient", () => {
   it("sends the bearer token and actor headers on every request", async () => {
     stubFetch(() => json({ ok: true }));
     await client.get("/health");
-    const headers = new Headers(calls[0]!.init?.headers as HeadersInit);
+    const headers = new Headers(calls[0]!.init?.headers);
     expect(headers.get("authorization")).toBe("Bearer tok");
     expect(headers.get("x-actor-id")).toBe("human:ada");
     expect(headers.get("x-actor")).toBe("human:ada");
