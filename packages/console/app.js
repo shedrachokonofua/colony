@@ -12,11 +12,11 @@ import {
 import { costPredictionLines, parseCostPrediction } from "./cost-prediction.js";
 import { traceHref } from "./trace-link.js";
 import {
-  hrefForPage,
-  outOfRange,
-  pageCount,
-  pageFromHash,
-} from "./pagination.js";
+  deriveRunningRow,
+  formatRunningEmptyTallies,
+  parseProjectTab,
+  serializeProjectTabHref,
+} from "./project-helpers.js";
 
 const ACTOR_KEY = "colony.actor";
 const AUTH_KEY = "colony.auth";
@@ -24,7 +24,7 @@ const DEMO = new URLSearchParams(location.search).has("demo");
 // Demo-safe read paths: project detail, its context, its scope page, and the
 // project list (the homepage) so the whole console is driveable offline.
 const DEMO_READS =
-  /^\/projects\/[^/?]+(?:\/context|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
+  /^\/projects\/[^/?]+(?:\/context|\/running|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
 
 // Demo volume: enough projects and scopes to exercise page 2 on both surfaces.
 const DEMO_PROJECT_COUNT = 27;
@@ -120,7 +120,9 @@ const state = {
   projectsPage: null,
   filesPage: null,
   projectFiles: null,
-  projectTab: "scopes",
+  projectRunning: null,
+  pendingSelectTaskId: null,
+  projectTab: parseProjectTab(location.hash),
   showArchived: false,
   briefOpen: false,
   confirmFile: null,
@@ -325,6 +327,10 @@ function routeProjectName() {
 
 function projectHref(name) {
   return `#/project/${encodeURIComponent(name)}`;
+}
+
+function hashQueryTab() {
+  return parseProjectTab(location.hash);
 }
 
 /** The `?project=` query of the current hash route, or null when absent. */
@@ -602,6 +608,14 @@ function demoWorld() {
     ).toISOString(),
     scope_count: projectScopes.length,
     status_counts: statusCounts,
+    task_state_counts: {
+      queued: 4,
+      running: 1,
+      mr_open: 1,
+      merged: 12,
+      blocked: 2,
+      canceled: 0,
+    },
     last_activity_at: new Date(
       Math.max(...projectScopes.map((s) => Date.parse(s.updated_at))),
     ).toISOString(),
@@ -631,6 +645,14 @@ function demoWorld() {
       blocked: 0,
       done: 0,
       abandoned: 0,
+    },
+    task_state_counts: {
+      queued: 0,
+      running: 0,
+      mr_open: 0,
+      merged: 0,
+      blocked: 0,
+      canceled: 0,
     },
     last_activity_at: null,
     file_count: 0,
@@ -861,6 +883,32 @@ function demoWorld() {
       },
       ...generatedScopes,
     ],
+    running: [
+      {
+        scope_id: "col-d00",
+        scope_title: "Demo scope 00",
+        task_id: "col-d00.1",
+        task_title: "Wire /version into the health page",
+        task_state: "running",
+        attempt: 1,
+        run: {
+          id: "run-demo-running-1",
+          kind: "implement",
+          status: "running",
+          model_id: "deepseek-v4-flash",
+          started_at: new Date(Date.now() - 45 * 1000).toISOString(),
+        },
+      },
+      {
+        scope_id: "col-d01",
+        scope_title: "Demo scope 01",
+        task_id: "col-d01.0",
+        task_title: "Acceptance check for /version",
+        task_state: "mr_open",
+        attempt: 1,
+        run: null,
+      },
+    ],
     detail: { scope, tasks, deps, runs },
     runEvents,
     audit: [
@@ -915,6 +963,11 @@ async function mutate(path, body) {
     state.error = err instanceof Error ? err.message : String(err);
     paint();
   }
+}
+
+function openTaskInScope(scopeId, taskId) {
+  state.pendingSelectTaskId = taskId;
+  openScope(scopeId);
 }
 
 function openScope(id) {
@@ -982,6 +1035,13 @@ function toggleShowArchived() {
 function setProjectTab(tab) {
   state.projectTab = tab;
   state.briefOpen = false;
+  const projectName = routeProjectName();
+  if (projectName) {
+    const newHash = serializeProjectTabHref(location.hash, projectName, tab);
+    if (newHash !== location.hash) {
+      history.replaceState(null, "", newHash);
+    }
+  }
   paint();
 }
 
@@ -1914,6 +1974,74 @@ function renderProjectList() {
   `;
 }
 
+function renderRunningRow(entry) {
+  const row = deriveRunningRow(entry);
+  const durationLabel = row.startedAt
+    ? durationAriaLabel(row.startedAt)
+    : undefined;
+  const durationText = row.startedAt ? formatDuration(row.startedAt) : "—";
+  const runKind = row.runKind ? (KIND_LABEL[row.runKind] ?? row.runKind) : "";
+  const runInfo = [runKind, row.runModel].filter(Boolean).join(" · ");
+
+  return html`
+    <div
+      class="running-row"
+      tabindex="0"
+      role="button"
+      @click=${() => openTaskInScope(row.scopeId, row.taskId)}
+      @keydown=${(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openTaskInScope(row.scopeId, row.taskId);
+        }
+      }}
+    >
+      <div class="running-main">
+        <span
+          class="scope-chip mono"
+          @click=${(e) => {
+            e.stopPropagation();
+            openScope(row.scopeId);
+          }}
+          >${row.scopeTitle}</span
+        >
+        <span class="running-task-title">${row.taskTitle}</span>
+      </div>
+      <div class="running-meta">
+        <span class="badge" data-state=${row.taskState}>${row.taskState}</span>
+        <span class="running-attempt mono">${row.attemptText}</span>
+        ${runInfo ? html`<span class="running-run-info">${runInfo}</span>` : nothing}
+        <span
+          class=${classMap({
+            "running-duration": true,
+            mono: true,
+            live: row.isRunning,
+          })}
+          aria-label=${durationLabel || nothing}
+          title=${row.startedAt ? isoDuration(row.startedAt) : nothing}
+          >${durationText}</span
+        >
+      </div>
+    </div>
+  `;
+}
+
+function renderRunningTab() {
+  const page = state.projectPage;
+  const list = state.projectRunning ?? [];
+  if (!list.length) {
+    const counts = page?.project?.task_state_counts;
+    const tallies = formatRunningEmptyTallies(counts);
+    return html`<div class="running-empty rack-empty">
+      <p>Nothing running right now.</p>
+      ${tallies ? html`<p class="running-tallies mono">${tallies}</p>` : nothing}
+    </div>`;
+  }
+  return html`<div class="running-list">
+    ${repeat(list, (entry) => `${entry.scope_id}:${entry.task_id}`, renderRunningRow)}
+  </div>`;
+}
+
 function renderProjectPage() {
   const page = state.projectPage;
   if (!page?.name) return renderProjectList();
@@ -1978,6 +2106,7 @@ function renderProjectPage() {
       <nav class="tabs" role="tablist" aria-label="Project sections">
         ${[
           ["scopes", "Scopes"],
+          ["running", "Running"],
           ["settings", "Settings"],
         ].map(
           ([id, label]) =>
@@ -1993,7 +2122,9 @@ function renderProjectPage() {
       </nav>
       ${tab === "settings"
         ? html`<div class="project-settings">${renderProjectRail()}</div>`
-        : html`<section class="project-scopes">
+        : tab === "running"
+          ? html`<section class="project-running">${renderRunningTab()}</section>`
+          : html`<section class="project-scopes">
             ${page.total > 0 && scopes.length === 0
               ? html`<div class="rack-empty">
                   <p>Past the last page.</p>
@@ -3097,6 +3228,7 @@ async function refresh() {
           offset: start,
           page: pageNo,
         };
+        state.projectRunning = world.running ?? [];
         // Same seeding path as live refresh(): read the stored doc through
         // the demo-served GET so the editor prefills offline. Local edits
         // are kept in demoContextStore so an edited brief survives re-render.
@@ -3123,9 +3255,11 @@ async function refresh() {
           offset: 0,
           page: pageNo,
         };
+        state.projectRunning = [];
         state.projectFiles = found ? (demoFileStore.get(demoName) ?? []) : [];
       } else {
         state.projectPage = null;
+        state.projectRunning = null;
         // Sort the demo world's projects exactly like the API (row
         // updated_at DESC, name), then page. This keeps the demo ordering
         // pin: "Operator console" lands at offset 25, page 2.
@@ -3185,6 +3319,7 @@ async function refresh() {
         page: pageNo,
       };
       state.projectPage = null;
+      state.projectRunning = null;
       state.error = "";
       paint();
       return;
@@ -3193,13 +3328,16 @@ async function refresh() {
     if (projectName) {
       // The project route owns this refresh: it must not touch board or sheet
       // state, and it must preserve an in-flight editor status ("Saved.").
-      const [project, scopesPage] = await Promise.all([
+      const [project, scopesPage, runningRows] = await Promise.all([
         api(`/projects/${encodeURIComponent(projectName)}`, {
           notFound: "null",
         }),
         api(
           `/scopes?limit=${PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
         ),
+        api(`/projects/${encodeURIComponent(projectName)}/running`, {
+          notFound: "null",
+        }),
       ]);
       state.projectPage = {
         name: projectName,
@@ -3209,6 +3347,7 @@ async function refresh() {
         offset,
         page: pageNo,
       };
+      state.projectRunning = Array.isArray(runningRows) ? runningRows : [];
       // Seed the editor from the same read the save round-trips through, so
       // prefill cannot drift from what Save will persist. An unknown project
       // has no document to read.
@@ -3229,6 +3368,7 @@ async function refresh() {
       return;
     }
     state.projectPage = null;
+    state.projectRunning = null;
     const projectsPage = await api(
       `/projects?limit=${PAGE_SIZE}&offset=${offset}${archivedQuery()}`,
     );
@@ -3246,6 +3386,16 @@ async function refresh() {
       ]);
       state.detail = detail;
       state.audit = audit.events;
+      if (
+        state.pendingSelectTaskId &&
+        taskSelectionExists(detail, state.pendingSelectTaskId)
+      ) {
+        state.selectedTaskId = state.pendingSelectTaskId;
+        state.pendingSelectTaskId = null;
+        state.drawerOpen = true;
+        state.confirm = null;
+        state.runEvents = null;
+      }
       if (
         state.projectContext === null &&
         detail.project &&
@@ -3343,7 +3493,8 @@ window.addEventListener("hashchange", () => {
   state.projectsPage = null;
   state.filesPage = null;
   state.projectFiles = null;
-  state.projectTab = "scopes";
+  state.projectRunning = null;
+  state.projectTab = parseProjectTab(location.hash);
   state.showArchived = false;
   state.briefOpen = false;
   state.confirmFile = null;
@@ -3364,12 +3515,20 @@ function isEditing() {
 
 function hasVisibleRunningRun() {
   const detail = state.detail;
-  if (!detail) return false;
-  const runs = detail.runs || [];
-  // Any running run on the current scope is considered visible:
-  // drawer runs, plan achitect runs, validation, or DAG live nodes all
-  // surface through the rendered sheet so a single check covers them.
-  return runs.some((run) => run.status === "running");
+  if (detail) {
+    const runs = detail.runs || [];
+    // Any running run on the current scope is considered visible:
+    // drawer runs, plan architect runs, validation, or DAG live nodes all
+    // surface through the rendered sheet so a single check covers them.
+    if (runs.some((run) => run.status === "running")) return true;
+  }
+  const runningList = state.projectRunning;
+  if (Array.isArray(runningList)) {
+    if (runningList.some((entry) => entry?.run?.status === "running")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function syncDurationTicker() {
