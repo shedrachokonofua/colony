@@ -179,7 +179,7 @@ agents:
   architect:
     provider: openai_compatible
     model: glm-5.3
-    fallback_models: [kimi-k3, grok-4.6, deepseek-v4-pro, qwen3.8-27b]
+    fallback_models: [kimi-k3, grok-4.6, deepseek-v4-pro]
     timeout_ms: 2700000
     max_turns: 200
   memory_consolidator:
