@@ -15,6 +15,8 @@ export class UsageError extends Error {
 
 interface CommandSpec {
   readonly usage: string;
+  /** Value flags the command itself requires, whatever its verb. */
+  readonly required?: readonly string[];
   /** Presence-only flags. */
   readonly boolFlags?: readonly string[];
   /** Value flags; value maps an accepted spelling to its canonical name. */
@@ -59,6 +61,7 @@ const SPECS: Record<string, CommandSpec> = {
     usage: "replan <id> --feedback <file|->",
     minPositional: 1,
     valueFlags: { feedback: "feedback" },
+    required: ["feedback"],
   },
   abandon: {
     usage: "abandon <id> [--yes]",
@@ -213,6 +216,11 @@ function validate(
     (spec.minPositional ?? 0) + ((verb?.minPositional ?? verb) ? 1 : 0);
   if (positional.length < minPositional) {
     throw new UsageError(`usage: ${spec.usage}`);
+  }
+  for (const required of spec.required ?? []) {
+    if (flags[required] === undefined) {
+      throw new UsageError(`${command} requires --${required}`);
+    }
   }
   for (const required of verb?.required ?? []) {
     if (flags[required] === undefined) {
