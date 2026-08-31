@@ -268,6 +268,16 @@ function migrateRunArtifacts(db: Db): void {
   db.exec(RUN_ARTIFACTS_DDL);
 }
 
+/**
+ * Migration 7: per-run sandbox id (set at sandbox creation) and the exactly-once
+ * adoption marker. Both columns are nullable/defaulted so existing rows keep
+ * their meaning: `adopted = 0` means a live colonyd has not claimed the run.
+ */
+function migrateRunsSandboxId(db: Db): void {
+  addColumn(db, "runs", "sandbox_id", "TEXT");
+  addColumn(db, "runs", "adopted", "INTEGER NOT NULL DEFAULT 0");
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -294,6 +304,7 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "projects-archived-at",
     apply: (db) => addColumn(db, "projects", "archived_at", "TEXT"),
   },
+  { version: 9, name: "runs-sandbox-id", apply: migrateRunsSandboxId },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

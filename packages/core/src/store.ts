@@ -172,6 +172,10 @@ export interface Run {
   readonly base_sha: string | null;
   readonly head_sha: string | null;
   readonly workspace_path: string | null;
+  /** Live sandbox the run is executing in; set once creation succeeds. */
+  readonly sandbox_id: string | null;
+  /** Exactly-once adoption marker; 1 only after a winning adoptRun claim. */
+  readonly adopted: 0 | 1;
   readonly envelope_json: string | null;
   readonly evidence_json: string | null;
   readonly token_id: string | null;
@@ -1544,6 +1548,45 @@ export class Store {
         `UPDATE runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'`,
       )
       .run(lease, runId);
+  }
+
+  /** Record the live sandbox a run is executing in (set at sandbox creation). */
+  setRunSandboxId(runId: string, sandboxId: string): void {
+    this.db
+      .prepare(`UPDATE runs SET sandbox_id = ? WHERE id = ?`)
+      .run(sandboxId, runId);
+  }
+
+  /**
+   * Atomically claim a run for adoption. Returns true only for the first
+   * caller: the conditional UPDATE flips `adopted` inside the statement, so a
+   * concurrent loser's no-changes result never pushes the lease or audits.
+   * `adopted = 0` survives plain heartbeats by design — a heartbeat-extended
+   * run is still claimable by the next daemon.
+   */
+  adoptRun(runId: string, leaseTtlMs: number): boolean {
+    const claim = this.db
+      .prepare(
+        `UPDATE runs SET adopted = 1
+         WHERE id = ? AND status = 'running'
+           AND sandbox_id IS NOT NULL AND adopted = 0`,
+      )
+      .run(runId);
+    if (claim.changes === 0) return false;
+    const now = Date.now();
+    this.db
+      .prepare(
+        `UPDATE runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'`,
+      )
+      .run(new Date(now + leaseTtlMs).toISOString(), runId);
+    const run = this.getRun(runId);
+    this.audit("svc:colonyd", "run.adopted", {
+      run_id: runId,
+      scope_id: run?.scope_id,
+      task_id: run?.task_id,
+      detail: { adopted_by: "svc:colonyd" },
+    });
+    return true;
   }
 
   finishRun(

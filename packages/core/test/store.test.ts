@@ -1156,7 +1156,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(8);
+        expect(LATEST_SCHEMA_VERSION).toBe(9);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -1340,6 +1340,123 @@ describe("versioned migrations", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("migration 7 adds nullable sandbox_id and defaulted adopted to runs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig7-"));
+    try {
+      // A version-6 database: created fresh, then downgraded by dropping the
+      // migration-7 columns and stamping user_version=6.
+      const v6Path = join(dir, "v6.db");
+      const v6 = new Store(v6Path);
+      v6.close();
+      const downgrade = new Database(v6Path);
+      downgrade.exec(
+        `ALTER TABLE runs DROP COLUMN sandbox_id;
+         ALTER TABLE runs DROP COLUMN adopted;
+         PRAGMA user_version = 6;`,
+      );
+      downgrade.close();
+
+      const migrated = new Store(v6Path);
+      try {
+        expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
+        for (const column of ["sandbox_id", "adopted"]) {
+          expect(tableColumns(migrated.db, "runs")).toContain(column);
+        }
+        const fresh = new Store(join(dir, "fresh.db"));
+        expect(tableColumns(fresh.db, "runs")).toEqual(
+          tableColumns(migrated.db, "runs"),
+        );
+        fresh.close();
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("run adoption and sandbox id", () => {
+  function createRun(goal: string): string {
+    const scope = store.createScope({
+      goal,
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    return store.startRun({
+      scope_id: scope.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    }).id;
+  }
+
+  it("setRunSandboxId round-trips onto the run row", () => {
+    const runId = createRun("sandbox write-back");
+    expect(store.getRun(runId)?.sandbox_id).toBeNull();
+    store.setRunSandboxId(runId, "sbx-abc123");
+    expect(store.getRun(runId)?.sandbox_id).toBe("sbx-abc123");
+  });
+
+  it("adoptRun wins exactly once, pushes the lease, and audits once", () => {
+    const runId = createRun("adoption");
+    // A run without a sandbox id is not adoptable by anyone.
+    expect(store.adoptRun(runId, 60_000)).toBe(false);
+    store.setRunSandboxId(runId, "sbx-adopt");
+
+    const before = store.getRun(runId)!;
+    expect(store.adoptRun(runId, 60_000)).toBe(true);
+    const after = store.getRun(runId)!;
+    expect(after.adopted).toBe(1);
+    expect(new Date(after.lease_expires_at).getTime()).toBeGreaterThan(
+      new Date(before.lease_expires_at).getTime(),
+    );
+
+    // The loss: no lease move, no second audit row.
+    const leasedAt = after.lease_expires_at;
+    const audits = store.listAudit({ run_id: runId }).events;
+    expect(store.adoptRun(runId, 60_000)).toBe(false);
+    expect(store.getRun(runId)!.lease_expires_at).toBe(leasedAt);
+    expect(store.listAudit({ run_id: runId }).events).toEqual(audits);
+
+    const adopted = store
+      .listAudit({ run_id: runId })
+      .events.filter((e) => e.action === "run.adopted");
+    expect(adopted).toHaveLength(1);
+    expect(adopted[0]!.actor).toBe("svc:colonyd");
+    expect(JSON.parse(adopted[0]!.detail_json)).toEqual({
+      adopted_by: "svc:colonyd",
+    });
+  });
+
+  it("adoptRun refuses finished runs even with a sandbox id", () => {
+    const runId = createRun("finished run");
+    store.setRunSandboxId(runId, "sbx-done");
+    store.finishRun(runId, "succeeded");
+    expect(store.adoptRun(runId, 60_000)).toBe(false);
+    expect(store.getRun(runId)?.adopted).toBe(0);
+  });
+
+  it("heartbeat after a lost adoptRun still extends the lease without touching adopted", () => {
+    const runId = createRun("heartbeat vs adoption");
+    store.setRunSandboxId(runId, "sbx-hb");
+    expect(store.adoptRun(runId, 60_000)).toBe(true);
+    expect(store.adoptRun(runId, 60_000)).toBe(false);
+
+    const before = store.getRun(runId)!;
+    store.heartbeatRun(runId, 600_000);
+    const after = store.getRun(runId)!;
+    expect(after.adopted).toBe(before.adopted);
+    expect(new Date(after.lease_expires_at).getTime()).toBeGreaterThan(
+      new Date(before.lease_expires_at).getTime(),
+    );
+    // The second heartbeat must not smuggle an adoption claim in.
+    expect(
+      store
+        .listAudit({ run_id: runId })
+        .events.filter((e) => e.action === "run.adopted"),
+    ).toHaveLength(1);
   });
 });
 

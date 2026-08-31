@@ -68,12 +68,14 @@ CREATE TABLE IF NOT EXISTS runs (
   base_sha TEXT,
   head_sha TEXT,
   workspace_path TEXT,
+  sandbox_id TEXT,
   envelope_json TEXT,                        -- validated agent envelope
   evidence_json TEXT,                        -- commands, exit codes, gate results, artifacts
   token_id TEXT,                             -- provider access-token id; crash-reap revoke
   model_id TEXT,                             -- LLM model the run started with (nullable)
   trace_id TEXT,                             -- run root span's trace id; links spans to the run
   error TEXT,
+  adopted INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT
 );
