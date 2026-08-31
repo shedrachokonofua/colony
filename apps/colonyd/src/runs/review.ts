@@ -1,5 +1,6 @@
 import { ReviewerVerdictV2 as reviewerVerdictV2Schema } from "@colony/schemas";
 import { retryBackoffMs, type Scope, type Task } from "@colony/core";
+import { isQuotaDeferred } from "@colony/sandbox";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -331,6 +332,12 @@ function blockIfConsecutiveReviewFailures(
   );
 }
 
+/**
+ * Failed review runs at this head SHA that the reviewer is accountable for.
+ * A run a saturated cluster refused before the reviewer ever saw the diff is
+ * a scheduling condition, so it counts as zero: charging it would hold the
+ * MR hostage to infrastructure capacity.
+ */
 function countConsecutiveFailedReviews(
   ctx: ColonydContext,
   task: Task,
@@ -345,6 +352,7 @@ function countConsecutiveFailedReviews(
     if (evidence.head_sha !== headSha) break;
     if (run.status === "succeeded") break;
     if (run.status !== "failed") break;
+    if (isQuotaDeferred(run.error)) continue;
     count += 1;
   }
   return count;

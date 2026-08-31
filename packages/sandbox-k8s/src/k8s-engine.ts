@@ -4,9 +4,10 @@ import { resolve, sep } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
 import {
-  SANDBOX_PART_OF_LABEL,
   DEFAULT_EXEC_TIMEOUT_MS,
+  SANDBOX_PART_OF_LABEL,
   SANDBOX_PART_OF_VALUE,
+  SandboxQuotaError,
   type ExecEvent,
   type ExecRequest,
   type ExecResult,
@@ -41,6 +42,35 @@ function isForbidden(err: unknown): boolean {
     err !== null &&
     (err as { code?: unknown }).code === 403
   );
+}
+
+/**
+ * A namespace ResourceQuota refusal (HTTP 403 with an `exceeded quota`
+ * admission message). The CR was never created, so the readiness wait would
+ * burn its full timeout and still fail — surface it at once.
+ */
+function isQuotaExceeded(err: unknown): boolean {
+  if (
+    typeof err !== "object" ||
+    err === null ||
+    (err as { code?: unknown }).code !== 403
+  ) {
+    return false;
+  }
+  const candidate = err as { body?: unknown; message?: unknown };
+  const parts = [candidate.message, candidate.body].map((part) =>
+    typeof part === "string" ? part : JSON.stringify(part ?? ""),
+  );
+  return parts.some((part) => /exceeded quota/i.test(part));
+}
+
+function buildQuotaMessage(err: unknown, namespace: string): string {
+  const candidate = err as { message?: unknown };
+  const detail =
+    typeof candidate.message === "string" && candidate.message.length > 0
+      ? candidate.message
+      : "namespace quota exhausted";
+  return `${detail} (namespace ${namespace})`;
 }
 
 function buildRbacMessage(namespace: string): string {
@@ -546,6 +576,9 @@ export function createKubernetesEngine(
       try {
         await client.createSandbox(namespace, cr);
       } catch (err) {
+        if (isQuotaExceeded(err)) {
+          throw new SandboxQuotaError(buildQuotaMessage(err, namespace));
+        }
         if (isForbidden(err)) {
           throw new SandboxRbacError(buildRbacMessage(namespace));
         }

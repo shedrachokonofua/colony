@@ -110,6 +110,13 @@ export class SandboxRbacError extends Error {
 }
 
 /**
+ * Provisioning refused because the namespace ResourceQuota has no room.
+ * Defined in `@colony/sandbox` so the engine that raises it and the
+ * orchestrator that defers on it share one marker.
+ */
+export { SandboxQuotaError } from "@colony/sandbox";
+
+/**
  * Internal adapter seam implemented by both the real Kubernetes client and the
  * faked client used in unit tests. This is intentionally transport-agnostic so
  * the engine never touches `@kubernetes/client-node` directly.

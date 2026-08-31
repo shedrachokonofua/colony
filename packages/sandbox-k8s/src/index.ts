@@ -9,6 +9,7 @@ export {
   POD_WORKSPACE_DIR,
   SANDBOX_ID_LABEL,
   SANDBOX_SPEC_POD_TEMPLATE_PATH,
+  SandboxQuotaError,
   SandboxRbacError,
   buildSandboxCustomResource,
   resolveSandboxApiVersion,
