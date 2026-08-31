@@ -44,6 +44,8 @@ const script = {
   gateFailOnceFor: undefined as string | undefined,
   gateCalls: new Map<string, number>(),
   reviewerCalls: 0,
+  /** Error the reviewer adapter raises instead of returning a verdict. */
+  reviewerError: undefined as string | undefined,
   reviewerRejectFirst: false,
   reviewerAlwaysReject: false,
   distinctShas: false,
@@ -81,6 +83,9 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         const headSha =
           typeof packet.head_sha === "string" ? packet.head_sha : SHA_A;
         script.reviewerCalls += 1;
+        if (script.reviewerError !== undefined) {
+          throw new Error(script.reviewerError);
+        }
         if (
           script.reviewerAlwaysReject ||
           (script.reviewerRejectFirst && script.reviewerCalls === 1)
@@ -337,6 +342,7 @@ beforeEach(async () => {
   script.gateFailOnceFor = undefined;
   script.gateCalls.clear();
   script.reviewerCalls = 0;
+  script.reviewerError = undefined;
   script.reviewerRejectFirst = false;
   script.reviewerAlwaysReject = false;
   script.distinctShas = false;
@@ -853,6 +859,70 @@ describe("colonyd fake end-to-end loop", () => {
     // A blocked scope here would mean the corpses were counted; instead the
     // architect planned and the loop ran to completion.
     expect(handle.ctx.store.getScope(scopeId)!.status).toBe("done");
+  }, 30_000);
+
+  it("infra-failed review runs never block the task and a fourth review still dispatches", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `review-infra-${Date.now()}.db`), {
+      reviewRequired: true,
+    });
+    script.singleTask = true;
+
+    const scopeId = await createScope("infra review");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; implement -> mr_open
+    const task = handle.ctx.store.listTasks(scopeId)[0]!;
+    expect(task.state).toBe("mr_open");
+
+    script.reviewerError = "502 status code (no body)";
+    for (let i = 0; i < 3; i += 1) {
+      await tickAndSettle(); // infra-failed review
+      const current = handle.ctx.store.getTask(task.id)!;
+      expect(current.state).toBe("mr_open");
+      expect(current.state).not.toBe("blocked");
+    }
+
+    const failedReviews = handle.ctx.store
+      .runsForTask(task.id)
+      .filter((r) => r.kind === "review" && r.status === "failed");
+    expect(failedReviews).toHaveLength(3);
+    for (const run of failedReviews) {
+      expect(run.error).toBe("502 status code (no body)");
+    }
+
+    // The gateway recovers: the fourth review dispatches and approves. The
+    // task may already have moved on to gate/merge, but it never blocked.
+    script.reviewerError = undefined;
+    await tickAndSettle();
+    expect(script.reviewerCalls).toBeGreaterThanOrEqual(4);
+    expect(handle.ctx.store.getTask(task.id)!.state).not.toBe("blocked");
+  }, 30_000);
+
+  it("timeout_without_envelope review failures still block the task", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `review-timeout-${Date.now()}.db`), {
+      reviewRequired: true,
+    });
+    script.singleTask = true;
+
+    const scopeId = await createScope("timeout review");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; implement -> mr_open
+    const task = handle.ctx.store.listTasks(scopeId)[0]!;
+    expect(task.state).toBe("mr_open");
+
+    script.reviewerError = "timeout_without_envelope";
+    for (let i = 0; i < 3; i += 1) {
+      await tickAndSettle(); // review failure the reviewer is accountable for
+    }
+    await tickAndSettle(); // closeScopes
+
+    const blocked = handle.ctx.store.getTask(task.id)!;
+    expect(blocked.state).toBe("blocked");
+    expect(blocked.blocked_reason).toBe(
+      `review failed 3 consecutive times at ${SHA_A}`,
+    );
+    script.reviewerError = undefined;
   }, 30_000);
 
   it("POST /scopes/:id/unblock returns an architect-exhausted scope to planning", async () => {
