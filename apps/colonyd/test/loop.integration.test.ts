@@ -865,7 +865,7 @@ describe("colonyd fake end-to-end loop", () => {
     const app = buildApp(handle.ctx);
     const res = await app.request(`/scopes/${scopeId}/unblock`, {
       method: "POST",
-      headers: { "x-actor": ACTOR },
+      headers: { "X-Actor-Id": ACTOR },
     });
     expect(res.status).toBe(200);
     expect(handle.ctx.store.getScope(scopeId)!.status).toBe("planning");
@@ -873,7 +873,7 @@ describe("colonyd fake end-to-end loop", () => {
     // Unblocking a non-blocked scope conflicts.
     const again = await app.request(`/scopes/${scopeId}/unblock`, {
       method: "POST",
-      headers: { "x-actor": ACTOR },
+      headers: { "X-Actor-Id": ACTOR },
     });
     expect(again.status).toBe(409);
 
