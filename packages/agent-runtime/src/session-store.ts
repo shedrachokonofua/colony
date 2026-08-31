@@ -1,9 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import {
-  FileSessionStorage,
-  SessionManager,
-} from "@oh-my-pi/pi-coding-agent";
+import { FileSessionStorage, SessionManager } from "@oh-my-pi/pi-coding-agent";
 import type {
   SessionStorage,
   SessionStorageStat,
@@ -62,9 +59,7 @@ class RunScopedSessionStorage extends FileSessionStorage {
     await super.updateSessionTitle(this.filePath, update);
   }
 
-  override statSync(
-    _path: string,
-  ): SessionStorageStat {
+  override statSync(_path: string): SessionStorageStat {
     return super.statSync(this.filePath);
   }
 
@@ -121,7 +116,9 @@ class RunScopedSessionStorage extends FileSessionStorage {
     }
   }
 
-  override async deleteSessionWithArtifacts(sessionPath: string): Promise<void> {
+  override async deleteSessionWithArtifacts(
+    sessionPath: string,
+  ): Promise<void> {
     await this.unlink(sessionPath);
   }
 }
@@ -171,7 +168,11 @@ export function readSessionHeader(
   if (first === undefined) return { ok: false, entries: 0 };
   try {
     const header = JSON.parse(first) as unknown;
-    if (typeof header !== "object" || header === null || Array.isArray(header)) {
+    if (
+      typeof header !== "object" ||
+      header === null ||
+      Array.isArray(header)
+    ) {
       return { ok: false, entries: 0 };
     }
   } catch {

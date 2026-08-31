@@ -1,7 +1,15 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
+import type { PiModelSpec } from "./pi-runner-common.js";
 import {
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,
@@ -30,10 +38,16 @@ function newDataDir(): string {
 describe("session-store paths", () => {
   it("sessionFilePath resolves to <dataDir>/sessions/<run_id>/session.jsonl", () => {
     const file = sessionFilePath("/srv/colony", "run-1");
-    expect(file).toBe(resolve("/srv/colony", "sessions", "run-1", "session.jsonl"));
+    expect(file).toBe(
+      resolve("/srv/colony", "sessions", "run-1", "session.jsonl"),
+    );
     const segments = file.split(sep);
     const i = segments.indexOf("sessions");
-    expect(segments.slice(i, i + 3)).toEqual(["sessions", "run-1", "session.jsonl"]);
+    expect(segments.slice(i, i + 3)).toEqual([
+      "sessions",
+      "run-1",
+      "session.jsonl",
+    ]);
   });
 
   it("sessionRunDir is the parent of the session file", () => {
@@ -47,25 +61,42 @@ describe("readSessionHeader", () => {
   it("ok only when the file exists and the first line is a JSON object", () => {
     const dataDir = newDataDir();
 
-    expect(readSessionHeader(dataDir, "ghost")).toEqual({ ok: false, entries: 0 });
+    expect(readSessionHeader(dataDir, "ghost")).toEqual({
+      ok: false,
+      entries: 0,
+    });
 
     const file = sessionFilePath(dataDir, "run-ok");
     mkdirSync(sessionRunDir(dataDir, "run-ok"), { recursive: true });
     writeFileSync(
       file,
-      ['{"type":"session_title_slot","v":1}', '{"type":"session","id":"s1"}', '{"type":"message"}'].join(
-        "\n",
-      ),
+      [
+        '{"type":"session_title_slot","v":1}',
+        '{"type":"session","id":"s1"}',
+        '{"type":"message"}',
+      ].join("\n"),
     );
-    expect(readSessionHeader(dataDir, "run-ok")).toEqual({ ok: true, entries: 3 });
+    expect(readSessionHeader(dataDir, "run-ok")).toEqual({
+      ok: true,
+      entries: 3,
+    });
 
     // Non-object first line is not a header; empty file has nothing.
     writeFileSync(file, "[1,2]\n");
-    expect(readSessionHeader(dataDir, "run-ok")).toEqual({ ok: false, entries: 0 });
+    expect(readSessionHeader(dataDir, "run-ok")).toEqual({
+      ok: false,
+      entries: 0,
+    });
     writeFileSync(file, "not json\n");
-    expect(readSessionHeader(dataDir, "run-ok")).toEqual({ ok: false, entries: 0 });
+    expect(readSessionHeader(dataDir, "run-ok")).toEqual({
+      ok: false,
+      entries: 0,
+    });
     writeFileSync(file, "");
-    expect(readSessionHeader(dataDir, "run-ok")).toEqual({ ok: false, entries: 0 });
+    expect(readSessionHeader(dataDir, "run-ok")).toEqual({
+      ok: false,
+      entries: 0,
+    });
   });
 });
 
@@ -87,7 +118,14 @@ describe("createFileSessionManager", () => {
       role: "assistant",
       content: [],
       api: "openai-completions",
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
       stopReason: "stop",
       provider: "test",
       model: "test-model",
@@ -96,7 +134,10 @@ describe("createFileSessionManager", () => {
 
     const file = sessionFilePath(dataDir, "run-jsonl");
     expect(existsSync(file)).toBe(true);
-    expect(readSessionHeader(dataDir, "run-jsonl")).toEqual({ ok: true, entries: 4 });
+    expect(readSessionHeader(dataDir, "run-jsonl")).toEqual({
+      ok: true,
+      entries: 4,
+    });
     const objects = readFileSync(file, "utf8")
       .split("\n")
       .filter((line) => line.trim().length > 0)
@@ -116,7 +157,14 @@ describe("createFileSessionManager", () => {
       role: "assistant",
       content: [],
       api: "openai-completions",
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
       stopReason: "stop",
       provider: "test",
       model: "test-model",
@@ -129,6 +177,61 @@ describe("createFileSessionManager", () => {
     const reopened = await createFileSessionManager(dataDir, "run-resume", cwd);
     expect(reopened.getHeader()?.id).toBe(first.getHeader()?.id);
     expect(reopened.getEntries().length).toBe(1);
-    expect(readSessionHeader(dataDir, "run-resume")).toEqual({ ok: true, entries: 3 });
+    expect(readSessionHeader(dataDir, "run-resume")).toEqual({
+      ok: true,
+      entries: 3,
+    });
+  });
+
+  it("pi runner uses durable session dir and invokes onSandboxId once", async () => {
+    const customDataDir = "/var/lib/colonyd";
+    const sandboxIds: Array<{ runId: string; sandboxId: string }> = [];
+
+    const model: PiModelSpec = {
+      id: "test-model",
+      name: "test-model",
+      api: "openai-completions",
+      provider: "test",
+      baseUrl: "http://127.0.0.1:9999/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 8_192,
+    };
+
+    const runner = new PiBaseAgentRunner(REVIEWER_ROLE_PROFILE, {
+      model,
+      sessionsDir: customDataDir,
+      onSandboxId: (runId, sandboxId) => {
+        sandboxIds.push({ runId, sandboxId });
+      },
+    });
+
+    const result = await runner.run({
+      runId: "run-agent-test",
+      packet: {
+        kind: "review_task",
+        task_id: "task-1",
+        scope_id: "scope-1",
+        goal: "test goal",
+        body: "test body",
+        mr: { id: "1", title: "test", diff: "" },
+      },
+      environment: {
+        role: "reviewer",
+        runId: "run-agent-test",
+      },
+    });
+
+    expect(sandboxIds).toHaveLength(1);
+    expect(sandboxIds[0]).toEqual({
+      runId: "run-agent-test",
+      sandboxId: result.sandboxId,
+    });
+
+    const expectedPath = sessionFilePath(customDataDir, "run-agent-test");
+    expect(expectedPath.includes("sessions/")).toBe(true);
+    expect(expectedPath.startsWith(tmpdir())).toBe(false);
   });
 });
