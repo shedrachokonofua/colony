@@ -33,7 +33,6 @@ export interface LogsIo {
   isTty: boolean;
   /** Injected so tests drive polling without real waiting. */
   sleep?: Sleep;
-  now?: () => number;
 }
 
 export async function run(
