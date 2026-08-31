@@ -289,6 +289,11 @@ export const MIGRATIONS: readonly Migration[] = [
     apply: (db) =>
       addColumn(db, "scopes", "extension_rounds", "INTEGER NOT NULL DEFAULT 0"),
   },
+  {
+    version: 8,
+    name: "projects-archived-at",
+    apply: (db) => addColumn(db, "projects", "archived_at", "TEXT"),
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

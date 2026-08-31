@@ -1154,12 +1154,14 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(7);
+        expect(LATEST_SCHEMA_VERSION).toBe(8);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
           );
         }
+        expect(tableColumns(fresh.db, "projects")).toContain("archived_at");
+        expect(tableColumns(migrated.db, "projects")).toContain("archived_at");
         // The run root span's trace_id persists on every generation of the
         // runs table: fresh DDL and migration 3's ALTER TABLE agree.
         expect(tableColumns(store.db, "runs")).toContain("trace_id");
@@ -1513,6 +1515,126 @@ describe("project files", () => {
       { repo_id: "1", repo_path: "so/z" },
     ]);
     expect(store.projectRepositories("missing")).toEqual([]);
+  });
+
+  it("archive and unarchive round-trips archived_at and validates constraints", () => {
+    store.createProject({ name: "p-arch", context_doc: null });
+    const p1 = store.getProject("p-arch")!;
+    expect(p1.archived_at).toBeNull();
+
+    // Archive project
+    const archived = store.archiveProject("p-arch");
+    expect(archived.archived_at).toBeString();
+    expect(store.getProject("p-arch")!.archived_at).toBe(archived.archived_at);
+
+    // Idempotency: archiving already archived throws DomainStateError
+    expect(() => store.archiveProject("p-arch")).toThrow(DomainStateError);
+
+    // Unarchive project
+    const unarchived = store.unarchiveProject("p-arch");
+    expect(unarchived.archived_at).toBeNull();
+    expect(store.getProject("p-arch")!.archived_at).toBeNull();
+
+    // Idempotency: unarchiving not archived throws DomainStateError
+    expect(() => store.unarchiveProject("p-arch")).toThrow(DomainStateError);
+
+    // Unknown project throws DomainStateError
+    expect(() => store.archiveProject("non-existent")).toThrow(
+      DomainStateError,
+    );
+    expect(() => store.unarchiveProject("non-existent")).toThrow(
+      DomainStateError,
+    );
+  });
+
+  it("refuses archiving when project has non-terminal scopes and lists scope_ids", () => {
+    store.createProject({ name: "p-scopes", context_doc: null });
+    const scope = store.createScope({
+      goal: "scope in draft",
+      provider_repo_id: "1",
+      provider_repo_path: "so/p",
+      project: "p-scopes",
+    });
+
+    // Draft scope blocks archiving
+    try {
+      store.archiveProject("p-scopes");
+      expect(true).toBe(false); // should not reach
+    } catch (err) {
+      expect(err).toBeInstanceOf(DomainStateError);
+      const e = err as DomainStateError;
+      expect((e.details as { scope_ids: string[] }).scope_ids).toContain(
+        scope.id,
+      );
+      expect(e.message).toContain(scope.id);
+    }
+
+    // Drive scope through non-terminal statuses: planning, active, blocked
+    store.setScopeStatus(scope.id, "planning", "svc:colonyd");
+    expect(() => store.archiveProject("p-scopes")).toThrow(DomainStateError);
+
+    store.setScopeStatus(scope.id, "active", "svc:colonyd");
+    expect(() => store.archiveProject("p-scopes")).toThrow(DomainStateError);
+
+    store.setScopeStatus(scope.id, "blocked", "svc:colonyd");
+    expect(() => store.archiveProject("p-scopes")).toThrow(DomainStateError);
+
+    // Transition blocked -> active -> done
+    store.setScopeStatus(scope.id, "active", "svc:colonyd");
+    store.setScopeStatus(scope.id, "done", "svc:colonyd");
+    expect(() => store.archiveProject("p-scopes")).not.toThrow();
+
+    // Unarchive, set status to abandoned, archive again -> succeeds
+    store.unarchiveProject("p-scopes");
+    // Transition from done to active, then abandoned
+    store.setScopeStatus(scope.id, "active", "svc:colonyd");
+    store.setScopeStatus(scope.id, "abandoned", "svc:colonyd");
+    expect(() => store.archiveProject("p-scopes")).not.toThrow();
+  });
+
+  it("pageProjects filters archived projects by default and includes them when requested", () => {
+    store.createProject({ name: "live-proj", context_doc: null });
+    store.createProject({ name: "arch-proj", context_doc: null });
+    store.archiveProject("arch-proj");
+
+    const defaultPage = store.pageProjects(10, 0);
+    expect(defaultPage.total).toBe(1);
+    expect(defaultPage.projects.map((p) => p.name)).toEqual(["live-proj"]);
+
+    const withArchivedPage = store.pageProjects(10, 0, true);
+    expect(withArchivedPage.total).toBe(2);
+    expect(withArchivedPage.projects.map((p) => p.name).sort()).toEqual([
+      "arch-proj",
+      "live-proj",
+    ]);
+    const archItem = withArchivedPage.projects.find(
+      (p) => p.name === "arch-proj",
+    );
+    expect(archItem?.archived_at).toBeString();
+  });
+
+  it("refuses createScope against an archived project but permits new project names", () => {
+    store.createProject({ name: "archived-target", context_doc: null });
+    store.archiveProject("archived-target");
+
+    expect(() =>
+      store.createScope({
+        goal: "try on archived",
+        provider_repo_id: "1",
+        provider_repo_path: "so/p",
+        project: "archived-target",
+      }),
+    ).toThrow(DomainStateError);
+
+    // Genuinely new project name creates on demand
+    const newScope = store.createScope({
+      goal: "try on new",
+      provider_repo_id: "1",
+      provider_repo_path: "so/p",
+      project: "brand-new-project",
+    });
+    expect(newScope.project_name).toBe("brand-new-project");
+    expect(store.getProject("brand-new-project")).toBeDefined();
   });
 
   it("getProject and pageProjects expose file_count, file_bytes, repositories", () => {
