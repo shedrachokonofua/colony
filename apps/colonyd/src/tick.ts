@@ -250,8 +250,10 @@ function retryOrFailScope(
 }
 
 /**
- * Architect runs that spent the scope's attempt budget: every finished run
- * except the ones a saturated cluster refused before the agent ever ran.
+ * Failed architect runs that count against the scope's attempt budget.
+ * Infra-classified failures are the environment's fault, not the plan's -
+ * the same exemption the task path applies (2026-08-31: a probe bug killed
+ * three architects per scope with workspace_lost and blocked every scope).
  */
 function architectAttempts(ctx: ColonydContext, scopeId: string): number {
   return ctx.store
@@ -260,7 +262,8 @@ function architectAttempts(ctx: ColonydContext, scopeId: string): number {
       (r) =>
         r.kind === "architect" &&
         r.status !== "running" &&
-        !isQuotaDeferred(r.error),
+        !isQuotaDeferred(r.error) &&
+        !isInfraError(r.error),
     ).length;
 }
 

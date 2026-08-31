@@ -679,6 +679,32 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(updated);
   });
 
+  // Operator unblock for a scope parked by exhausted architect attempts:
+  // with no tasks it returns to planning (fresh architect budget - failed
+  // runs stay in history but the operator judged them environmental);
+  // with tasks it returns to active and the tick re-reconciles.
+  app.post("/scopes/:id/unblock", (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    if (scope.status !== "blocked") {
+      return conflict(c, new Error("scope is not blocked"));
+    }
+    const target = ctx.store.listTasks(scope.id).length ? "active" : "planning";
+    try {
+      ctx.store.setScopeStatus(scope.id, target, c.get("actor"), {
+        reason: "operator_unblock",
+      });
+    } catch (err) {
+      return conflict(c, err);
+    }
+    ctx.store.audit(c.get("actor"), "scope.unblocked", {
+      scope_id: scope.id,
+      detail: { to: target },
+    });
+    ctx.requestTick();
+    return c.json(ctx.store.getScope(scope.id));
+  });
+
   app.post("/scopes/:id/abandon", async (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
     if (!scope) return notFound(c, "scope");

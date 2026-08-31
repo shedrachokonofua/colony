@@ -832,6 +832,56 @@ describe("colonyd fake end-to-end loop", () => {
     expect(scope.status).toBe("blocked");
   }, 30_000);
 
+  it("infra-failed architect runs never spend the scope's attempt budget", async () => {
+    const scopeId = await createScope("infra architect");
+    // Three infra-classified architect corpses recorded before any tick.
+    for (let i = 0; i < 3; i += 1) {
+      const run = handle.ctx.store.startRun({
+        id: crypto.randomUUID(),
+        scope_id: scopeId,
+        task_id: null,
+        kind: "architect",
+        lease_ttl_ms: 60_000,
+      });
+      handle.ctx.store.finishRun(run.id, "failed", {
+        error: "workspace_lost",
+      });
+    }
+    handle.ctx.store.setScopeStatus(scopeId, "planning", ACTOR);
+
+    await driveToDone(scopeId);
+    // A blocked scope here would mean the corpses were counted; instead the
+    // architect planned and the loop ran to completion.
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("done");
+  }, 30_000);
+
+  it("POST /scopes/:id/unblock returns an architect-exhausted scope to planning", async () => {
+    const scopeId = await createScope("unblock scope");
+    handle.ctx.store.setScopeStatus(scopeId, "planning", ACTOR);
+    handle.ctx.store.setScopeStatus(scopeId, "blocked", ACTOR, {
+      reason: "architect retries exhausted: workspace_lost",
+    });
+
+    const app = buildApp(handle.ctx);
+    const res = await app.request(`/scopes/${scopeId}/unblock`, {
+      method: "POST",
+      headers: { "x-actor": ACTOR },
+    });
+    expect(res.status).toBe(200);
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("planning");
+
+    // Unblocking a non-blocked scope conflicts.
+    const again = await app.request(`/scopes/${scopeId}/unblock`, {
+      method: "POST",
+      headers: { "x-actor": ACTOR },
+    });
+    expect(again.status).toBe(409);
+
+    // The freed scope plans and completes.
+    await driveToDone(scopeId);
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("done");
+  }, 30_000);
+
   it("validation failure parks the scope then revalidate rescues it", async () => {
     script.validateFail = true;
     const scopeId = await createScope("validation failure");
