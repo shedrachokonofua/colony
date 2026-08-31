@@ -16,6 +16,9 @@ import type {
 } from "@colony/schemas";
 import {
   SCOPE_STATUSES,
+  TASK_STATES,
+  TERMINAL_SCOPE_STATUSES,
+  TERMINAL_TASK_STATES,
   assertScopeTransition,
   assertTaskTransition,
   type ScopeStatus,
@@ -39,6 +42,8 @@ export interface ProjectWithCounts extends Project {
   readonly scope_count: number;
   /** Every SCOPE_STATUSES key is present; statuses with no scopes are 0. */
   readonly status_counts: Record<ScopeStatus, number>;
+  /** Every TASK_STATES key is present; states with no tasks are 0. */
+  readonly task_state_counts: Record<TaskState, number>;
   readonly last_activity_at: string | null;
   /** Number of curated reference files in this project. */
   readonly file_count: number;
@@ -74,6 +79,59 @@ export interface ProjectFileMeta {
 export interface ProjectRepository {
   readonly repo_id: string;
   readonly repo_path: string;
+}
+
+/** One in-flight task of a project with the run behind its newest activity. */
+export interface ProjectRunningRow {
+  readonly scope_id: string;
+  readonly scope_title: string;
+  readonly task_id: string;
+  readonly task_title: string;
+  readonly task_state: TaskState;
+  readonly attempt: number;
+  readonly run: {
+    readonly id: string;
+    readonly kind: Run["kind"];
+    readonly status: Run["status"];
+    readonly model_id: string | null;
+    readonly started_at: string;
+  } | null;
+}
+
+/**
+ * Flat join of one task, its scope, and its newest run. Every run column is
+ * NULL when the task has no runs, so `run_id` is the presence marker.
+ */
+interface ProjectRunningSqlRow {
+  scope_id: string;
+  scope_title: string | null;
+  scope_goal: string;
+  task_id: string;
+  task_title: string;
+  task_state: TaskState;
+  attempt: number;
+  run_id: string | null;
+  run_kind: Run["kind"] | null;
+  run_status: Run["status"] | null;
+  run_model_id: string | null;
+  run_started_at: string | null;
+}
+
+/** Board labels fall back to a clipped goal, matching the console's rule. */
+function shortGoal(goal: string): string {
+  return goal.length > 72 ? `${goal.slice(0, 72).trimEnd()}…` : goal;
+}
+
+function newestRunOf(row: ProjectRunningSqlRow): ProjectRunningRow["run"] {
+  // A non-null run_id means the LEFT JOIN matched, so the run columns are set.
+  if (row.run_id === null) return null;
+  return {
+    id: row.run_id,
+    kind: row.run_kind!,
+    status: row.run_status!,
+    model_id: row.run_model_id,
+    started_at: row.run_started_at!,
+  };
 }
 
 export interface Scope {
@@ -205,6 +263,18 @@ export interface AuditFilter {
   readonly limit?: number;
 }
 
+/**
+ * Task states surfaced as in-flight work: the non-terminal, non-idle subset
+ * of TASK_STATES (`queued` and `blocked` are idle and reach the console as
+ * tallies instead).
+ */
+export const IN_FLIGHT_TASK_STATES: readonly TaskState[] = TASK_STATES.filter(
+  (state) =>
+    state !== "queued" &&
+    state !== "blocked" &&
+    !TERMINAL_TASK_STATES.has(state),
+);
+
 export type ScopeApprovals = "auto" | "manual";
 
 export interface CreateScopeInput {
@@ -292,6 +362,18 @@ export class Store {
     this.db.close();
   }
 
+  /**
+   * True once the migration chain has created `table` on this database.
+   * Drivers disagree on the no-row marker: node:sqlite yields `undefined`,
+   * bun:sqlite yields `null`.
+   */
+  private hasTable(table: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get(table);
+    return row !== undefined && row !== null;
+  }
+
   // ---------------------------------------------------------------------
   // Scopes
   // ---------------------------------------------------------------------
@@ -367,10 +449,12 @@ export class Store {
   }
 
   /**
-   * Attach whole-table scope tallies to project rows: one GROUP BY over
-   * scopes serves every row, never N+1 queries or JS-side scope filtering.
-   * status_counts is zero-filled so consumers never probe for missing keys,
-   * and scope_count is its sum.
+   * Attach whole-table scope and task tallies to project rows: one GROUP BY
+   * over scopes and one over tasks joined to their scope serve every row,
+   * never N+1 queries or JS-side filtering. status_counts and
+   * task_state_counts are zero-filled so consumers never probe for missing
+   * keys, and scope_count is the sum of status_counts. Task tallies cover
+   * every task of the project, including tasks under terminal scopes.
    */
   private withScopeCounts(projects: readonly Project[]): ProjectWithCounts[] {
     const rows = this.db
@@ -403,15 +487,41 @@ export class Store {
         lastActivity.set(project_name, last_activity_at);
       }
     }
+
+    // Databases that predate versioned migrations get their tables from a
+    // schema.sql replay, but a v1 snapshot carrying only scopes has no tasks
+    // table to group over: no rows to count rather than an error.
+    const taskRows = this.hasTable("tasks")
+      ? (this.db
+          .prepare(
+            `SELECT s.project_name AS project_name, t.state AS state, COUNT(*) AS n
+         FROM tasks t JOIN scopes s ON s.id = t.scope_id
+         WHERE s.project_name IS NOT NULL
+         GROUP BY s.project_name, t.state`,
+          )
+          .all() as { project_name: string; state: TaskState; n: number }[])
+      : [];
+    const tasksByName = new Map<string, Map<TaskState, number>>();
+    for (const { project_name, state, n } of taskRows) {
+      const perState = tasksByName.get(project_name);
+      if (perState) perState.set(state, n);
+      else tasksByName.set(project_name, new Map([[state, n]]));
+    }
+
     return projects.map((project) => {
       const perStatus = byName.get(project.name);
       const status_counts = Object.fromEntries(
         SCOPE_STATUSES.map((status) => [status, perStatus?.get(status) ?? 0]),
       ) as Record<ScopeStatus, number>;
+      const perState = tasksByName.get(project.name);
+      const task_state_counts = Object.fromEntries(
+        TASK_STATES.map((state) => [state, perState?.get(state) ?? 0]),
+      ) as Record<TaskState, number>;
       return {
         ...project,
         scope_count: Object.values(status_counts).reduce((a, b) => a + b, 0),
         status_counts,
+        task_state_counts,
         last_activity_at: lastActivity.get(project.name) ?? null,
         file_count: 0,
         file_bytes: 0,
@@ -467,6 +577,45 @@ export class Store {
         repositories: projRepos,
       };
     }) as ProjectWithCounts[];
+  }
+
+  /**
+   * Every in-flight task of one project, newest activity first, each joined
+   * with its newest run of any kind. One statement: no per-scope or per-task
+   * follow-up queries.
+   */
+  listProjectRunning(projectName: string): ProjectRunningRow[] {
+    const sql = `SELECT s.id AS scope_id, s.title AS scope_title, s.goal AS scope_goal,
+                t.id AS task_id, t.title AS task_title, t.state AS task_state,
+                t.attempt AS attempt,
+                r.id AS run_id, r.kind AS run_kind, r.status AS run_status,
+                r.model_id AS run_model_id, r.started_at AS run_started_at
+         FROM tasks t
+         JOIN scopes s ON s.id = t.scope_id
+         LEFT JOIN runs r ON r.id = (
+           SELECT id FROM runs WHERE task_id = t.id
+           ORDER BY started_at DESC, id DESC LIMIT 1
+         )
+         WHERE s.project_name = ?
+           AND t.state IN (${IN_FLIGHT_TASK_STATES.map(() => "?").join(",")})
+           AND s.status NOT IN (${[...TERMINAL_SCOPE_STATUSES].map(() => "?").join(",")})
+         ORDER BY r.started_at DESC, t.id`;
+    const rows = this.db
+      .prepare(sql)
+      .all(
+        projectName,
+        ...IN_FLIGHT_TASK_STATES,
+        ...[...TERMINAL_SCOPE_STATUSES],
+      ) as ProjectRunningSqlRow[];
+    return rows.map((row) => ({
+      scope_id: row.scope_id,
+      scope_title: row.scope_title ?? shortGoal(row.scope_goal),
+      task_id: row.task_id,
+      task_title: row.task_title,
+      task_state: row.task_state,
+      attempt: row.attempt,
+      run: newestRunOf(row),
+    }));
   }
 
   /**
