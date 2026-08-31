@@ -13,21 +13,25 @@ export class UsageError extends Error {
   }
 }
 
-interface VerbSpec {
-  /** Flags consuming a value; also their required subset. */
-  readonly valueFlags: readonly string[];
-  readonly required?: readonly string[];
-}
-
 interface CommandSpec {
   readonly usage: string;
-  readonly minPositional?: number;
   /** Presence-only flags. */
   readonly boolFlags?: readonly string[];
-  /** Value flags; keyed by flag name, mapped from any accepted spelling. */
+  /** Value flags; value maps an accepted spelling to its canonical name. */
   readonly valueFlags?: Readonly<Record<string, string>>;
   /** Second-positional verbs (`task <id> retry`). */
   readonly verbs?: Readonly<Record<string, VerbSpec>>;
+  /** Alternate spellings mapped to their canonical flag name (`-f` → follow). */
+  readonly aliases?: Readonly<Record<string, string>>;
+  /** Required positional count, excluding the subcommand. */
+  readonly minPositional?: number;
+}
+
+interface VerbSpec {
+  /** Value flags accepted only for this verb. */
+  readonly valueFlags: readonly string[];
+  readonly required?: readonly string[];
+  readonly minPositional?: number;
 }
 
 const GLOBAL_VALUE_FLAGS: Record<string, string> = {
@@ -37,13 +41,6 @@ const GLOBAL_VALUE_FLAGS: Record<string, string> = {
 };
 const GLOBAL_BOOL_FLAGS = ["json"] as const;
 
-/** Short spellings, per command, mapped to their long form. */
-const SHORT_FLAGS: Record<string, Record<string, string>> = {
-  logs: { f: "follow" },
-  audit: { n: "n" },
-  artifacts: { o: "o" },
-};
-
 const SPECS: Record<string, CommandSpec> = {
   scopes: {
     usage: "scopes [--project P] [--page N]",
@@ -51,7 +48,8 @@ const SPECS: Record<string, CommandSpec> = {
   },
   scope: { usage: "scope <id>", minPositional: 1 },
   open: {
-    usage: "open <file|-> [--title T] [--project P] [--repo PATH] [--manual] [--create-project]",
+    usage:
+      "open <file|-> [--title T] [--project P] [--repo PATH] [--manual] [--create-project]",
     minPositional: 1,
     valueFlags: { title: "title", project: "project", repo: "repo" },
     boolFlags: ["manual", "create-project"],
@@ -62,11 +60,15 @@ const SPECS: Record<string, CommandSpec> = {
     minPositional: 1,
     valueFlags: { feedback: "feedback" },
   },
-  abandon: { usage: "abandon <id> [--yes]", minPositional: 1, boolFlags: ["yes"] },
+  abandon: {
+    usage: "abandon <id> [--yes]",
+    minPositional: 1,
+    boolFlags: ["yes"],
+  },
   revalidate: { usage: "revalidate <id>", minPositional: 1 },
   task: {
     usage:
-      "task <id> [retry|stop|cancel|restore|unblock] | task <id> amend --spec <file|> | task <id> request-changes --feedback <file|-> | task <id> approve-merge --sha <sha>",
+      "task <id> [retry|stop|cancel|restore|unblock] | task <id> amend --spec <file|-> | task <id> request-changes --feedback <file|-> | task <id> approve-merge --sha <sha>",
     minPositional: 1,
     verbs: {
       retry: { valueFlags: [] },
@@ -84,13 +86,14 @@ const SPECS: Record<string, CommandSpec> = {
   logs: {
     usage: "logs <run-id> [-f]",
     minPositional: 1,
-    boolFlags: ["f", "follow"],
+    boolFlags: ["follow"],
+    aliases: { f: "follow" },
   },
   artifacts: {
     usage: "artifacts <run-id> [get <artifact-id> -o FILE]",
     minPositional: 1,
     verbs: {
-      get: { valueFlags: ["o", "output"], required: ["o"] },
+      get: { valueFlags: ["o", "output"], required: ["o"], minPositional: 2 },
     },
   },
   projects: { usage: "projects" },
@@ -130,39 +133,32 @@ export function parseArgs(argv: string[]): ParsedCommand {
   const flags: Record<string, string | boolean> = {};
   const tokens: string[] = [];
 
-  const setValue = (key: string, value: string | undefined, arg: string): void => {
-    if (value === undefined || value.startsWith("-")) {
-      throw new UsageError(`flag ${arg} requires a value`);
-    }
-    flags[key] = value;
-  };
-
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (!arg.startsWith("-") || arg === "-") {
       tokens.push(arg);
       continue;
     }
-    const long = arg.startsWith("--");
-    const body = arg.slice(long ? 2 : 1);
-    const command = tokens[0] ?? "";
-    const short = long ? undefined : SHORT_FLAGS[command]?.[body];
-    if (!long && short === undefined) throw new UsageError(`unknown flag ${arg}`);
-    const name = short ?? body;
-    const eq = name.indexOf("=");
+    const body = arg.replace(/^--?/, "");
+    const eq = body.indexOf("=");
     if (eq !== -1) {
-      const key = flagKey(name.slice(0, eq), tokens);
+      const key = flagKey(body.slice(0, eq), tokens);
       if (key === null) throw new UsageError(`unknown flag ${arg}`);
-      flags[key] = name.slice(eq + 1);
+      flags[key] = body.slice(eq + 1);
       continue;
     }
-    const key = flagKey(name, tokens);
+    const key = flagKey(body, tokens);
     if (key === null) throw new UsageError(`unknown flag ${arg}`);
-    if (isBoolFlag(name, tokens)) {
+    if (isBoolFlag(body, tokens)) {
       flags[key] = true;
       continue;
     }
-    setValue(key, argv[i + 1], arg);
+    // `-` is the stdin spelling for file-valued flags, not a following flag.
+    const value = argv[i + 1];
+    if (value === undefined || (value.startsWith("-") && value !== "-")) {
+      throw new UsageError(`flag ${arg} requires a value`);
+    }
+    flags[key] = value;
     i += 1;
   }
 
@@ -175,9 +171,8 @@ function flagKey(body: string, tokens: string[]): string | null {
   if ((GLOBAL_BOOL_FLAGS as readonly string[]).includes(body)) return body;
   const spec = SPECS[tokens[0] ?? ""];
   if (!spec) return null;
-  const verb = verbFlags(spec, tokens);
-  if (verb?.valueFlags.includes(body)) return body;
-  const mapped = spec.valueFlags?.[body];
+  if (verbFlags(spec, tokens)?.valueFlags.includes(body)) return body;
+  const mapped = spec.valueFlags?.[body] ?? spec.aliases?.[body];
   if (mapped) return mapped;
   if (spec.boolFlags?.includes(body)) return body;
   return null;
@@ -187,13 +182,13 @@ function isBoolFlag(body: string, tokens: string[]): boolean {
   if ((GLOBAL_BOOL_FLAGS as readonly string[]).includes(body)) return true;
   const spec = SPECS[tokens[0] ?? ""];
   if (!spec) return false;
-  if (spec.boolFlags?.includes(body)) return true;
-  const verb = verbFlags(spec, tokens);
-  return verb ? !verb.valueFlags.includes(body) : false;
+  const canonical = spec.aliases?.[body] ?? body;
+  return spec.boolFlags?.includes(canonical) ?? false;
 }
 
+/** Verbs sit after the command's leading positional: `task <id> <verb>`. */
 function verbFlags(spec: CommandSpec, tokens: string[]): VerbSpec | undefined {
-  const verb = tokens[1];
+  const verb = tokens[2];
   if (verb === undefined || !spec.verbs) return undefined;
   return spec.verbs[verb];
 }
@@ -211,15 +206,14 @@ function validate(
   if (spec.verbs && positional[1] !== undefined && !verb) {
     throw new UsageError(`unknown ${command} verb '${positional[1]}'`);
   }
-  const minPositional = (spec.minPositional ?? 0) + (verb ? 1 : 0);
+  const minPositional =
+    (spec.minPositional ?? 0) + (verb?.minPositional ?? verb ? 1 : 0);
   if (positional.length < minPositional) {
     throw new UsageError(`usage: ${spec.usage}`);
   }
-  if (verb) {
-    for (const required of verb.required ?? []) {
-      if (flags[required] === undefined) {
-        throw new UsageError(`${command} ${positional[1]} requires --${required}`);
-      }
+  for (const required of verb?.required ?? []) {
+    if (flags[required] === undefined) {
+      throw new UsageError(`${command} ${positional[1]} requires --${required}`);
     }
   }
   return { command, positional, flags };
