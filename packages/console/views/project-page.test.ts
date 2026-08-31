@@ -291,10 +291,7 @@ describe("project-page settings tab", () => {
     expect(tabs[1].getAttribute("aria-selected")).toBe("false");
     tabs[1].click();
     tabs[0].click();
-    expect(seen).toEqual([
-      { key: "settingsOpen" },
-      { key: "settingsOpen" },
-    ]);
+    expect(seen).toEqual([{ key: "settingsOpen" }, { key: "settingsOpen" }]);
   });
 
   it("swaps the rack for the rail as settingsOpen flips", async () => {

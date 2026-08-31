@@ -114,8 +114,7 @@ export class ProjectPage extends ColonyElement {
             class="tab"
             role="tab"
             aria-selected=${this.settingsOpen === settings}
-            @click=${() =>
-              this.#emit("colony-toggle", { key: "settingsOpen" })}
+            @click=${() => this.#emit("colony-toggle", { key: "settingsOpen" })}
           >
             ${label}
           </button>`,
