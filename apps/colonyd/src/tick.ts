@@ -618,6 +618,20 @@ async function advanceScopePlanning(
         .filter((r) => r.kind === "architect")
         .at(-1);
 
+      if (!lastArchitect) {
+        // Planning with no architect run at all: a crash between the status
+        // transition and the dispatch, or an operator unblock. Self-heal by
+        // dispatching rather than stalling until someone notices.
+        const slot = pickDispatchSlot(ctx, "architect");
+        if (!slot.allowed) continue;
+        dispatch(
+          runArchitect(ctx, scope, {
+            startModelId: slot.startModelId ?? undefined,
+          }),
+        );
+        continue;
+      }
+
       if (lastArchitect?.status === "succeeded" && !scope.plan_json) {
         // Replan requested: the operator rejected the plan with feedback.
         const slot = pickDispatchSlot(ctx, "architect");
