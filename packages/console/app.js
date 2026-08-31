@@ -967,8 +967,15 @@ function archivedQuery() {
 /** Flip the archived-projects toggle; the 2.5s poll re-reads this state. */
 function toggleShowArchived() {
   state.showArchived = !state.showArchived;
+  // Hiding archived projects must not leave the old page's rows on screen
+  // while the refetch is in flight: drop the page and refetch first, then
+  // paint. Showing them keeps the current rows, so it repaints immediately.
+  if (state.showArchived) {
+    paint();
+    void refresh();
+    return;
+  }
   state.projectsPage = null;
-  paint();
   void refresh();
 }
 
@@ -1875,17 +1882,20 @@ function renderProjectList() {
             <p>No projects yet</p>
             <a class="btn btn-solid" href="#/new-project">New project</a>
           </div>`
-        : items === 0
+        : items === 0 && archived.length === 0
           ? html`<div class="rack-empty">
               <p>Past the last page.</p>
               <a class="btn btn-solid" href=${hrefForPage(base, 1)}
                 >Back to page 1</a
               >
             </div>`
-          : html`<div class="project-cards">
-              ${repeat(rows, (project) => project.name, projectCard)}
-            </div>`}
-      ${archived.length
+          : nothing}
+      ${items
+        ? html`<div class="project-cards">
+            ${repeat(rows, (project) => project.name, projectCard)}
+          </div>`
+        : nothing}
+      ${state.showArchived && archived.length
         ? html`<section class="archived-section">
             <p class="archived-head">Archived</p>
             <div class="project-cards">
