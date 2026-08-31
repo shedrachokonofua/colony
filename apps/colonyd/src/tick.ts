@@ -137,7 +137,7 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
  * must only block on failures the agent could have prevented.
  */
 const INFRA_FAILURE =
-  /^process_restart$|^liveness_watchdog_no_progress$|^liveness_watchdog_tool_wedge$|^zero_output_stall$|^workspace_lost$|\b(?:429|50[234])\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|workspace_provision_failed|workspace_transfer_failed|RBAC: denied creating|timed out .* waiting for (?:backing pod of )?Sandbox CR|Sandbox CR .* failed:/i;
+  /^process_restart$|^liveness_watchdog_no_progress$|^liveness_watchdog_tool_wedge$|^zero_output_stall$|^workspace_lost$|\b(?:429|50[234])\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|Unable to connect|workspace_provision_failed|workspace_transfer_failed|RBAC: denied creating|timed out .* waiting for (?:backing pod of )?Sandbox CR|Sandbox CR .* failed:/i;
 
 /**
  * A quota rejection is a scheduling condition, not a failure: the work stays
