@@ -118,6 +118,8 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
    * event is treated as a dead transport once that cap expires.
    */
   readonly livenessTimeoutMs?: number;
+  /** In-flight tool wedge cap override; tests shrink it. Default {@link TOOL_WEDGE_TIMEOUT_MS}. */
+  readonly toolWedgeTimeoutMs?: number;
 }
 
 export interface ActivePiRun {
@@ -586,6 +588,8 @@ export function installRunGuards(
   // renew this exemption forever.
   const livenessTimeoutMs =
     options.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
+  const toolWedgeTimeoutMs =
+    options.toolWedgeTimeoutMs ?? TOOL_WEDGE_TIMEOUT_MS;
   let inFlightTools = 0;
   let toolFlightStartedAt: number | undefined;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -602,7 +606,7 @@ export function installRunGuards(
       inFlightTools > 0 && toolFlightStartedAt !== undefined
         ? Math.min(
             livenessTimeoutMs,
-            Math.max(1, TOOL_WEDGE_TIMEOUT_MS - toolInFlightMs),
+            Math.max(1, toolWedgeTimeoutMs - toolInFlightMs),
           )
         : livenessTimeoutMs;
     watchdog = setTimeout(() => {
@@ -612,7 +616,7 @@ export function installRunGuards(
           0,
           performance.now() - toolFlightStartedAt,
         );
-        if (toolInFlightMs >= TOOL_WEDGE_TIMEOUT_MS) {
+        if (toolInFlightMs >= toolWedgeTimeoutMs) {
           options.logger?.warn?.(
             {
               runId,

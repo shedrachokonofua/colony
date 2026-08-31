@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { DomainStateError } from "@colony/domain";
+import { DomainStateError, taskId } from "@colony/domain";
 import { LATEST_SCHEMA_VERSION } from "../src/migrations.js";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
@@ -190,8 +190,8 @@ describe("Store", () => {
       "svc:colonyd",
     );
     expect(appended.map((task) => task.id)).toEqual([
-      `${scopeId}.3`,
-      `${scopeId}.4`,
+      taskId(`${scopeId}.3`),
+      taskId(`${scopeId}.4`),
     ]);
     expect(store.listTasks(scopeId)).toHaveLength(4);
     expect(store.taskDeps(appended[0]!.id)).toEqual([first!.id]);

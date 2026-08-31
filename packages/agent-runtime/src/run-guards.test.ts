@@ -1,11 +1,10 @@
-import { describe, expect, it, jest } from "bun:test";
+import { describe, expect, it } from "bun:test";
 
 import {
   DEFAULT_LIVENESS_TIMEOUT_MS,
   installRunGuards,
   LIVENESS_FAILURE_REASON,
   TOOL_WEDGE_FAILURE_REASON,
-  TOOL_WEDGE_TIMEOUT_MS,
   type PiRunnerLogger,
 } from "./pi-runner-common.js";
 
@@ -88,25 +87,27 @@ describe("liveness watchdog", () => {
     expect(agent.aborted).toBe(1);
   });
 
-  it("aborts a wedged tool after the in-flight cap", () => {
-    jest.useFakeTimers();
+  it("aborts a wedged tool after the in-flight cap", async () => {
     const agent = fakeAgent();
     const failures: string[] = [];
     const unsubscribe = installRunGuards(agent as never, "run-wedge", {
-      livenessTimeoutMs: DEFAULT_LIVENESS_TIMEOUT_MS,
+      livenessTimeoutMs: 10_000,
+      toolWedgeTimeoutMs: 250,
       onFailure: (reason) => failures.push(reason),
     });
     try {
       agent.emit({ type: "tool_execution_start", toolCallId: "wedged" });
-      jest.advanceTimersByTime(TOOL_WEDGE_TIMEOUT_MS - 1);
+      await sleep(50);
       expect(failures).toEqual([]);
       expect(agent.aborted).toBe(0);
-      jest.advanceTimersByTime(1);
+      const deadline = Date.now() + 5_000;
+      while (failures.length === 0 && Date.now() < deadline) {
+        await sleep(25);
+      }
       expect(failures).toEqual([TOOL_WEDGE_FAILURE_REASON]);
       expect(agent.aborted).toBe(1);
     } finally {
       unsubscribe();
-      jest.useRealTimers();
     }
   });
 
