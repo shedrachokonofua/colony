@@ -27,6 +27,20 @@ interface EventPageFixture {
   newest_id: number | null;
 }
 
+/** One events page: `oldest` is the cursor for the next older page. */
+function page(
+  events: RunEvent[],
+  has_more: boolean,
+  oldest: number | null,
+): EventPageFixture {
+  return {
+    events,
+    has_more,
+    oldest_id: oldest,
+    newest_id: events.at(-1)?.id ?? null,
+  };
+}
+
 /** Serve events page N for call N, recording the query each call carried. */
 function pagedEvents(pages: EventPageFixture[]): {
   responder: Responder;
@@ -186,6 +200,61 @@ describe("logs", () => {
       "#3 log line=c",
     ]);
     expect(new Set(printed).size).toBe(printed.length);
+  });
+
+  it("backfills older pages with the cursor helper before following", async () => {
+    const queries: (Record<string, string | number | undefined> | undefined)[] =
+      [];
+    const responder: Responder = (call) => {
+      queries.push(call.query);
+      const before = call.query?.before_id;
+      if (before === undefined)
+        return page(
+          [event(10, "log", { line: "j" }), event(11, "log", { line: "k" })],
+          true,
+          10,
+        );
+      if (before === 10)
+        return page(
+          [event(7, "log", { line: "g" }), event(8, "log", { line: "h" })],
+          true,
+          7,
+        );
+      if (before === 7)
+        return page(
+          [event(5, "log", { line: "e" }), event(6, "log", { line: "f" })],
+          false,
+          5,
+        );
+      throw new Error(`unexpected before_id ${String(before)}`);
+    };
+    const { client } = fakeClient({
+      "get /runs/x/events": responder,
+      "get /runs/x": runProgression(["succeeded"]).responder,
+    });
+    const out = captureStdout();
+    try {
+      const code = await run(parseArgs(["logs", "x", "-f"]), client, IO);
+      expect(code).toBe(0);
+    } finally {
+      out.restore();
+    }
+    // The cursor walks backwards from the first page's oldest id until a page
+    // reports has_more false.
+    expect(queries.map((query) => query?.before_id)).toEqual([
+      undefined,
+      10,
+      7,
+    ]);
+    // History prints oldest-first, so the stream reads chronologically.
+    expect(lines(out.text())).toEqual([
+      "#5 log line=e",
+      "#6 log line=f",
+      "#7 log line=g",
+      "#8 log line=h",
+      "#10 log line=j",
+      "#11 log line=k",
+    ]);
   });
 
   it("prints event objects as JSON lines with --json", async () => {

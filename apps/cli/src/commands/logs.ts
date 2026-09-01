@@ -1,5 +1,6 @@
 import { ApiError, type ColonyClient } from "../client.js";
 import type { ParsedCommand } from "../args.js";
+import { iterPages, toCursorPage } from "../cursor.js";
 import type { RunDetail } from "./run.js";
 
 export interface RunEvent {
@@ -61,15 +62,30 @@ export async function run(
     }
   };
 
-  // First page only: the human view starts at the newest window and -f
-  // streams everything newer from there.
-  const first = await client.get<EventPage>(
-    `/runs/${encodeURIComponent(id)}/events`,
-    { limit: 100 },
-  );
-  print(first.events);
-
-  if (!follow) return 0;
+  if (follow) {
+    // Replay the run's history oldest-first through the cursor helper, so -f
+    // opens on the whole backlog instead of just the newest window.
+    const history: RunEvent[] = [];
+    for await (const events of iterPages<RunEvent>(async (beforeId) =>
+      toCursorPage(
+        await client.get<EventPage>(`/runs/${encodeURIComponent(id)}/events`, {
+          before_id: beforeId,
+          limit: 100,
+        }),
+      ),
+    )) {
+      history.push(...events);
+    }
+    history.sort((a, b) => a.id - b.id);
+    print(history);
+  } else {
+    const first = await client.get<EventPage>(
+      `/runs/${encodeURIComponent(id)}/events`,
+      { limit: 100 },
+    );
+    print(first.events);
+    return 0;
+  }
 
   for (;;) {
     const status = await client.get<RunDetail>(
