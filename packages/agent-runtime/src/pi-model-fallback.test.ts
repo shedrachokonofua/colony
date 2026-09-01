@@ -1,9 +1,5 @@
 import type { PiModelSpec } from "./pi-runner-common.js";
-import {
-  createServer,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,9 +51,7 @@ const startGateway = async (
     });
   });
   servers.push(server);
-  await new Promise<void>((resolve) =>
-    server.listen(0, "127.0.0.1", resolve),
-  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("missing port");
   return { baseUrl: `http://127.0.0.1:${address.port}/v1`, requestedModels };
@@ -128,10 +122,7 @@ const respondVerdictToolCall = (
 };
 
 /** A healthy turn that deliberately does NOT submit. */
-const respondHealthyText = (
-  response: ServerResponse,
-  model: string,
-): void => {
+const respondHealthyText = (response: ServerResponse, model: string): void => {
   response.writeHead(200, sseHeaders);
   sseChunk(response, model, [
     {

@@ -970,7 +970,8 @@ export class PiBaseAgentRunner implements PiRunner {
                 // dead, and with no candidate left the failure is
                 // classified as infrastructure so the run keeps its
                 // attempt budget instead of throwing past finalization.
-                if (connectionErrors < MODEL_CONNECTION_ERROR_LIMIT) return true;
+                if (connectionErrors < MODEL_CONNECTION_ERROR_LIMIT)
+                  return true;
                 if (!next) {
                   failureReason = `provider_connection_failure: ${(
                     lastConnectionError ?? errText
