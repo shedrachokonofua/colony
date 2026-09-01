@@ -17,8 +17,12 @@ RUN apt-get update \
     ca-certificates git tar \
     chromium fonts-liberation \
   && rm -rf /var/lib/apt/lists/*
-# Bun is the repo's runtime and test runner (bun install / bun test).
-RUN npm install -g bun
+# Bun is the repo's runtime and test runner (bun install / bun test). PINNED
+# to the same version as the colonyd image and the CI shell: an unpinned
+# `npm install -g bun` drifted to 1.4.0 while everything else ran 1.3.14,
+# and every validate on 2026-09-01 failed five tests that pass on the pinned
+# runtime. Bump all three together (Dockerfile, flake.nix, here).
+RUN npm install -g bun@1.3.14
 # Test-suite browser contract (see task specs): Playwright configs point
 # executablePath here instead of downloading browsers per run.
 ENV COLONY_TEST_CHROMIUM_PATH=/usr/bin/chromium
