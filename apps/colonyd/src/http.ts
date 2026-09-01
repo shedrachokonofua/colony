@@ -1018,6 +1018,13 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.post("/tasks/:id/unblock", (c) => {
     const task = ctx.store.getTask(c.req.param("id"));
     if (!task) return notFound(c, "task");
+    // Operators act on snapshots; the factory moves in between. An unblock
+    // aimed at a task that already healed itself must not requeue healthy
+    // work (2026-09-01: a stale unblock spawned a duplicate implement under
+    // a live review). The scope unblock had this guard from day one.
+    if (task.state !== "blocked") {
+      return conflict(c, new Error("task is not blocked"));
+    }
     try {
       const updated = ctx.store.transitionTask(
         task.id,

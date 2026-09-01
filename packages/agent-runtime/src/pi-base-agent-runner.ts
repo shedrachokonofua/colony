@@ -813,11 +813,12 @@ export class PiBaseAgentRunner implements PiRunner {
       // nothing is submitted, every tool result carries the clock.
       const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
       let lastDeadlineNudgeAt = 0;
-      const takeSubmitDeadlineNudge = (): string | null => {
+      const takeSubmitDeadlineNudge = (force = false): string | null => {
         if (submissionCaptured()) return null;
         const remainingMs = deadline - Date.now();
         if (remainingMs > SUBMIT_DEADLINE_NUDGE_MS) return null;
-        if (performance.now() - lastDeadlineNudgeAt < 60_000) return null;
+        if (!force && performance.now() - lastDeadlineNudgeAt < 60_000)
+          return null;
         lastDeadlineNudgeAt = performance.now();
         const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
         return [
@@ -1145,7 +1146,12 @@ export class PiBaseAgentRunner implements PiRunner {
               { runId, sandboxId },
               "pi_run_continuation",
             );
-            prompt = steer;
+            // A model that stops without tool calls never sees the
+            // tool-result nudge (qwen wrote a 13k-token prose review with
+            // zero tool calls and no submit, 2026-09-01); the stop-steer is
+            // its only channel, so the clock rides here too, unthrottled.
+            const deadlineOnStop = takeSubmitDeadlineNudge(true);
+            prompt = deadlineOnStop ? `${deadlineOnStop}\n\n${steer}` : steer;
           }
           try {
             const waitPromise = submissionPromise();

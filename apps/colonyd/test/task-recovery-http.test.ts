@@ -206,6 +206,44 @@ describe("task recovery API", () => {
     expect(tickCount()).toBe(1);
   });
 
+  it("unblock refuses a task that is not blocked (stale operator snapshot)", async () => {
+    const { app, store, task, tickCount } = recoveryApp();
+    // The task healed itself (queued) before the operator's unblock arrived.
+    expect(store.getTask(task.id)!.state).toBe("queued");
+
+    const response = await app.request(`/tasks/${task.id}/unblock`, {
+      method: "POST",
+      headers: actorHeaders,
+    });
+
+    expect(response.status).toBe(409);
+    expect(store.getTask(task.id)!.state_version).toBe(task.state_version);
+    expect(tickCount()).toBe(0);
+
+    // A genuinely blocked task still unblocks.
+    const blocked = store.transitionTask(
+      task.id,
+      task.state_version,
+      "running",
+      "svc:colonyd",
+    );
+    store.transitionTask(
+      task.id,
+      blocked.state_version,
+      "blocked",
+      "svc:colonyd",
+      {
+        blocked_reason: "retries exhausted",
+      },
+    );
+    const ok = await app.request(`/tasks/${task.id}/unblock`, {
+      method: "POST",
+      headers: actorHeaders,
+    });
+    expect(ok.status).toBe(200);
+    expect(store.getTask(task.id)!.state).toBe("queued");
+  });
+
   it("does not restore tasks inside an abandoned scope", async () => {
     const { app, store, scope, task, tickCount } = recoveryApp();
     store.transitionTask(
