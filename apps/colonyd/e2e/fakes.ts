@@ -367,6 +367,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
             command: "false",
             exit_code: 1,
             tail: ["boom"],
+            failures: [],
           },
         ],
       };
@@ -385,6 +386,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
               command: "false",
               exit_code: 1,
               tail: ["boom"],
+              failures: [],
             },
           ],
         };
@@ -399,6 +401,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
           command: "true",
           exit_code: 0,
           tail: [],
+          failures: [],
         },
       ],
     };

@@ -178,10 +178,14 @@ agents:
   reviewer:
     provider: openai_compatible
     model: grok-4.6
+    # 2026-09-01 audit: qwen3.8-max went 0/4 as reviewer in six hours with
+    # zero tool calls per run (prose-only, no inspection, ~20 min each), so
+    # every grok failover paid 20 minutes before reaching a model that reads
+    # the repo. deepseek and kimi inspect; qwen keeps the seat behind them.
     fallback_models:
-      - qwen3.8-max
       - deepseek-v4-pro
       - kimi-k3
+      - qwen3.8-max
       - qwen3.8-27b
     thinking_level: xhigh
     timeout_ms: 2700000

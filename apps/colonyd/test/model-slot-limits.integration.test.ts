@@ -196,6 +196,7 @@ async function bootFresh(configPath: string): Promise<ColonydHandle> {
             command: "true",
             exit_code: 0,
             tail: [],
+            failures: [],
           },
         ],
       }),

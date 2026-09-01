@@ -111,6 +111,34 @@ describe("defaultValidateExecutor", () => {
     expect(Array.isArray(result.results[0]!.tail)).toBe(true);
   });
 
+  it("surfaces failure-marker lines from the full output, not just the tail", async () => {
+    const repo = seedRepo();
+    // A bun-style run: two (fail) lines early, then more than MAX_TAIL_LINES
+    // of (pass) noise so the tail alone would carry no failing name.
+    const script = [
+      'echo "(fail) store > adoption wins once [3.8ms]"',
+      'echo "error: expect(received).toBe(expected)"',
+      'for i in $(seq 1 60); do echo "(pass) noise $i"; done',
+      'echo " 2 fail"',
+      "exit 1",
+    ].join("; ");
+    const result = await defaultValidateExecutor({
+      engine: createInProcessEngine(),
+      workspace: workspaceKey(),
+      cloneUrl: repo,
+      displayUrl: repo,
+      targetBranch: "main",
+      acceptance: [{ description: "suite", command: script }],
+    });
+    const entry = result.results[0]!;
+    expect(entry.exit_code).toBe(1);
+    expect(entry.tail.some((line) => line.includes("(fail)"))).toBe(false);
+    expect(entry.failures).toEqual([
+      "(fail) store > adoption wins once [3.8ms]",
+      "error: expect(received).toBe(expected)",
+    ]);
+  });
+
   it("scrubs PACKET.json and the credential-embedded git remote from a workspace", () => {
     // Direct unit test against a staged workspace: a clone whose origin
     // embeds a token and a PACKET.json carrying the same token — exactly

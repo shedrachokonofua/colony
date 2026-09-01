@@ -63,6 +63,13 @@ export interface ValidateResultEntry {
   readonly command: string;
   readonly exit_code: number;
   readonly tail: readonly string[];
+  /**
+   * Failure-marker lines from the FULL output, not just the tail. A
+   * 1000-test suite prints its `(fail)` lines mid-stream and its last 40
+   * lines are all summary, so a failing validate landed as "5 fail" with no
+   * name attached - and the architect re-planned blind (2026-09-01).
+   */
+  readonly failures: readonly string[];
 }
 
 export interface ValidateResult {
@@ -483,6 +490,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
         command: acceptance.command,
         exit_code: exitCode,
         tail: tailOutput(output),
+        failures: failureLines(output),
       });
       if (exitCode !== 0) passed = false;
     }
@@ -589,6 +597,23 @@ function tailOutput(output: string): string[] {
       : stripped;
   const lines = capped.split("\n");
   return lines.slice(Math.max(0, lines.length - MAX_TAIL_LINES));
+}
+
+const MAX_FAILURE_LINES = 40;
+// bun/vitest/jest/tap/tsc/prettier failure markers; the intent is "which
+// thing failed", so summary counters and pass lines never match.
+const FAILURE_LINE_RE =
+  /^\s*(?:\(fail\)|✗|×|FAIL\b|not ok\b|error(?: TS\d+)?:|Error:|\[warn\] .+\.\w+$|AssertionError)/;
+
+function failureLines(output: string): string[] {
+  const lines = stripAnsi(output).split("\n");
+  const hits: string[] = [];
+  for (const line of lines) {
+    if (!FAILURE_LINE_RE.test(line)) continue;
+    hits.push(line.length > 400 ? `${line.slice(0, 400)}...` : line);
+    if (hits.length === MAX_FAILURE_LINES) break;
+  }
+  return hits;
 }
 
 function extractPassword(url: string): string | undefined {

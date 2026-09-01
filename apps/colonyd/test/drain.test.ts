@@ -167,6 +167,7 @@ async function offlineCtx(
           command: "true",
           exit_code: 0,
           tail: [],
+          failures: [],
         },
       ],
       passed: true,

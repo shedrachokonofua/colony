@@ -199,6 +199,7 @@ function fakeValidateExecutor(): ValidateExecutor {
             command: "false",
             exit_code: 1,
             tail: ["boom"],
+            failures: [],
           },
         ],
       };
@@ -212,6 +213,7 @@ function fakeValidateExecutor(): ValidateExecutor {
           command: "true",
           exit_code: 0,
           tail: [],
+          failures: [],
         },
       ],
     };
