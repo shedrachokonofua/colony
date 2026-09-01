@@ -75,7 +75,12 @@ describe("task <id>", () => {
       out.restore();
     }
     expect(calls).toEqual([
-      { method: "get", path: "/tasks/col-1.1", query: undefined, body: undefined },
+      {
+        method: "get",
+        path: "/tasks/col-1.1",
+        query: undefined,
+        body: undefined,
+      },
     ]);
     const text = out.text();
     expect(text).toContain("col-1.1");
@@ -134,7 +139,7 @@ describe("task mutations", () => {
           body: undefined,
         },
       ]);
-expect(out.text()).toBe(
+      expect(out.text()).toBe(
         `col-1.1  ${verb === "restore" ? "queued" : "running"}  attempt 2\n`,
       );
     });
@@ -163,7 +168,13 @@ expect(out.text()).toBe(
   it("maps an ApiError from a mutation to a thrown error (exit 1 via main)", async () => {
     const { client } = fakeClient({
       "post /tasks/col-1.1/stop": () =>
-        Promise.reject(new ApiError(409, "NOT_RUNNING", "only a running task can be stopped")),
+        Promise.reject(
+          new ApiError(
+            409,
+            "NOT_RUNNING",
+            "only a running task can be stopped",
+          ),
+        ),
     });
     await expect(
       run(parseArgs(["task", "col-1.1", "stop"]), client, IO),
@@ -204,7 +215,11 @@ describe("task amend", () => {
     })() as unknown as typeof process.stdin;
     const out = captureStdout();
     try {
-      await run(parseArgs(["task", "col-1.1", "amend", "--spec", "-"]), client, IO);
+      await run(
+        parseArgs(["task", "col-1.1", "amend", "--spec", "-"]),
+        client,
+        IO,
+      );
     } finally {
       out.restore();
       process.stdin = original;

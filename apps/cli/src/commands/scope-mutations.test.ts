@@ -57,7 +57,9 @@ function captureStderr(): { text: () => string; restore: () => void } {
 describe("approve", () => {
   it("POSTs approve-plan with no body and prints the resulting status", async () => {
     const { client, calls } = fakeClient({
-      "post /scopes/col-1/approve-plan": json({ scope: scope({ status: "active" }) }),
+      "post /scopes/col-1/approve-plan": json({
+        scope: scope({ status: "active" }),
+      }),
     });
     const out = captureStdout();
     try {
@@ -80,10 +82,14 @@ describe("approve", () => {
     });
     const out = captureStdout();
     try {
-      const code = await run(parseArgs(["approve", "col-1", "--json"]), client, {
-        json: true,
-        isTty: false,
-      });
+      const code = await run(
+        parseArgs(["approve", "col-1", "--json"]),
+        client,
+        {
+          json: true,
+          isTty: false,
+        },
+      );
       expect(code).toBe(0);
     } finally {
       out.restore();
@@ -95,12 +101,16 @@ describe("approve", () => {
     const { client } = fakeClient({
       "post /scopes/col-1/approve-plan": () =>
         Promise.reject(
-          new ApiError(409, "NO_PLAN_PENDING", "scope has no plan awaiting approval"),
+          new ApiError(
+            409,
+            "NO_PLAN_PENDING",
+            "scope has no plan awaiting approval",
+          ),
         ),
     });
-    await expect(run(parseArgs(["approve", "col-1"]), client, IO)).rejects.toMatchObject(
-      { status: 409, code: "NO_PLAN_PENDING" },
-    );
+    await expect(
+      run(parseArgs(["approve", "col-1"]), client, IO),
+    ).rejects.toMatchObject({ status: 409, code: "NO_PLAN_PENDING" });
   });
 });
 
@@ -174,7 +184,11 @@ describe("abandon", () => {
     });
     const out = captureStdout();
     try {
-      const code = await run(parseArgs(["abandon", "col-1", "--yes"]), client, IO);
+      const code = await run(
+        parseArgs(["abandon", "col-1", "--yes"]),
+        client,
+        IO,
+      );
       expect(code).toBe(0);
     } finally {
       out.restore();
@@ -220,7 +234,13 @@ describe("revalidate", () => {
   it("surfaces NOT_VALIDATING as an ApiError for main to exit 1", async () => {
     const { client } = fakeClient({
       "post /scopes/col-1/revalidate": () =>
-        Promise.reject(new ApiError(409, "NOT_VALIDATING", "scope is not awaiting validation")),
+        Promise.reject(
+          new ApiError(
+            409,
+            "NOT_VALIDATING",
+            "scope is not awaiting validation",
+          ),
+        ),
     });
     await expect(
       run(parseArgs(["revalidate", "col-1"]), client, IO),

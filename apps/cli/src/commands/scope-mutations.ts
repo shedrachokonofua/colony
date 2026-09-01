@@ -106,10 +106,7 @@ async function revalidate(
   return 0;
 }
 
-async function readFeedback(
-  cmd: ParsedCommand,
-  flag: string,
-): Promise<string> {
+async function readFeedback(cmd: ParsedCommand, flag: string): Promise<string> {
   const source = stringFlag(cmd.flags, flag);
   if (source === undefined) {
     throw new UsageError(`${cmd.command} requires --${flag} <file|->`);
@@ -141,7 +138,8 @@ function confirm(prompt: string): boolean {
     return false;
   }
   const line = buf.subarray(0, n).toString("utf8");
-  const answer = (line.includes("\n") ? line.slice(0, line.indexOf("\n")) : line)
-    .trim();
+  const answer = (
+    line.includes("\n") ? line.slice(0, line.indexOf("\n")) : line
+  ).trim();
   return answer === "y" || answer === "Y";
 }

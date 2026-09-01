@@ -79,7 +79,14 @@ describe("open", () => {
     const out = captureStdout();
     try {
       const code = await run(
-        parseArgs(["open", file, "--title", "Ship the CLI", "--repo", "/srv/repo"]),
+        parseArgs([
+          "open",
+          file,
+          "--title",
+          "Ship the CLI",
+          "--repo",
+          "/srv/repo",
+        ]),
         client,
         IO,
       );
@@ -197,8 +204,20 @@ describe("open", () => {
       "get /projects": () => {
         page += 1;
         return page === 1
-          ? { projects: projectsPage(Array.from({ length: 100 }, (_, i) => `p${i}`)).projects, total: 101, limit: 100, offset: 0 }
-          : { projects: projectsPage(["colony"], 100).projects, total: 101, limit: 100, offset: 100 };
+          ? {
+              projects: projectsPage(
+                Array.from({ length: 100 }, (_, i) => `p${i}`),
+              ).projects,
+              total: 101,
+              limit: 100,
+              offset: 0,
+            }
+          : {
+              projects: projectsPage(["colony"], 100).projects,
+              total: 101,
+              limit: 100,
+              offset: 100,
+            };
       },
       "post /scopes": json(SCOPE),
     });

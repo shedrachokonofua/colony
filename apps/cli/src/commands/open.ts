@@ -26,7 +26,9 @@ export async function run(
 ): Promise<number> {
   const goal = await readText(cmd.positional[0]!);
   if (goal.trim() === "") {
-    throw new UsageError("goal is empty — pass a markdown file or `-` for stdin");
+    throw new UsageError(
+      "goal is empty — pass a markdown file or `-` for stdin",
+    );
   }
   const repoPath = stringFlag(cmd.flags, "repo");
   if (repoPath === undefined) {
