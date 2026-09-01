@@ -442,12 +442,12 @@ describe("project reference files in packets", () => {
       "abc123",
     );
 
-    const dir = mkdtempSync(join(tmpdir(), "colonyd-deliver-"));
-    dirs.push(dir);
-    provisionScratchDir(
+    const root = mkdtempSync(join(tmpdir(), "colonyd-deliver-"));
+    dirs.push(root);
+    const dir = provisionScratchDir(
       "deliver-run",
       packet as unknown as Parameters<typeof provisionScratchDir>[1],
-      dir,
+      root,
     );
 
     // The workspace files carry the real reference content, read-only.
