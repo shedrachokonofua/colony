@@ -13,6 +13,13 @@
         "typescript": "^5.7.2",
       },
     },
+    "apps/cli": {
+      "name": "@colony/cli",
+      "version": "0.0.0",
+      "bin": {
+        "colony": "./src/main.ts",
+      },
+    },
     "apps/colonyd": {
       "name": "@colony/colonyd",
       "version": "0.0.0",
@@ -217,6 +224,8 @@
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.14.0", "", {}, "sha512-C3UGsiCwSprE2NKIIFA3hCDlpXTMCAXRZuEVp88L1GY36Y41+rYL5fryE+nOFhp4p4JPQvdV8PQ4DWgHgeTE+w=="],
 
     "@colony/agent-runtime": ["@colony/agent-runtime@workspace:packages/agent-runtime"],
+
+    "@colony/cli": ["@colony/cli@workspace:apps/cli"],
 
     "@colony/colonyd": ["@colony/colonyd@workspace:apps/colonyd"],
 
