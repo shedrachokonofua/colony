@@ -646,10 +646,10 @@ describe("Pi model fallback", () => {
       warnings.some((warning) => warning.message === "pi_model_fallback"),
     ).toBe(false);
     expect(result.reason).toBeDefined();
-    if (result.reason?.startsWith("provider_connection_failure:")) {
-      expect(result.reason).toMatch(
-        /provider_connection_failure:.*(503|fetch failed|ECONNRESET|service unavailable)/i,
-      );
-    }
+    // The settled leg, not the run wall, must spend the budget: the sole
+    // candidate is classified with the raw provider text embedded.
+    expect(result.reason).toMatch(
+      /^provider_connection_failure:.*(503|fetch failed|ECONNRESET|service unavailable)/i,
+    );
   }, 120_000);
 });

@@ -472,6 +472,11 @@ export class PiBaseAgentRunner implements PiRunner {
           // leg that spends the whole run wall inside one prompt, so bound
           // the budget the leg may burn before the runner sees an error.
           "retry.maxRetries": 4,
+          // A 503 is classified MODEL_CAPACITY_EXHAUSTED, whose reason backoff
+          // is 45-75s — six attempts of it dwarf a test or run wall before the
+          // five-error connection budget can settle. Cap the wait so one
+          // settled dead-leg turn costs seconds, not minutes.
+          "retry.maxDelayMs": 1_000,
           "todo.enabled": true,
           "todo.reminders": true,
           "goal.enabled": true,
@@ -960,9 +965,6 @@ export class PiBaseAgentRunner implements PiRunner {
               if (cancellationTriggered) throw err;
               if (timeoutTriggered) return true;
               const next = models[index + 1];
-              if (!next || failureReason !== undefined) {
-                throw err;
-              }
               const errText = err instanceof Error ? err.message : String(err);
               if (CONNECTION_ERROR_RE.test(errText)) {
                 // Under budget this was a blip: the model stays and the
@@ -990,6 +992,9 @@ export class PiBaseAgentRunner implements PiRunner {
                   "pi_model_fallback",
                 );
                 return false;
+              }
+              if (!next || failureReason !== undefined) {
+                throw err;
               }
               this.options.logger?.warn?.(
                 {
