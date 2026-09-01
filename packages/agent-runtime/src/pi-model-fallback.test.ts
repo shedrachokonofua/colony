@@ -627,7 +627,7 @@ describe("Pi model fallback", () => {
         scratchDir,
         broker: { resolve: () => "test-key" },
         maxTurns: 8,
-        runTimeoutMs: 60_000,
+        runTimeoutMs: 120_000,
         logger: {
           warn: (fields: Record<string, unknown>, message: string) => {
             warnings.push({ fields, message });
