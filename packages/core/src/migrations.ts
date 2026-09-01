@@ -269,7 +269,7 @@ function migrateRunArtifacts(db: Db): void {
 }
 
 /**
- * Migration 7: per-run sandbox id (set at sandbox creation) and the exactly-once
+ * Migration 9: per-run sandbox id (set at sandbox creation) and the exactly-once
  * adoption marker. Both columns are nullable/defaulted so existing rows keep
  * their meaning: `adopted = 0` means a live colonyd has not claimed the run.
  */

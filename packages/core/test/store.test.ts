@@ -1342,8 +1342,8 @@ describe("versioned migrations", () => {
     }
   });
 
-  it("migration 7 adds nullable sandbox_id and defaulted adopted to runs", () => {
-    const dir = mkdtempSync(join(tmpdir(), "colony-mig7-"));
+  it("migration 9 adds nullable sandbox_id and defaulted adopted to runs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig9-"));
     try {
       // A version-6 database: created fresh, then downgraded by dropping the
       // migration-7 columns and stamping user_version=6.
