@@ -7,7 +7,7 @@ import { SCOPE_STATUSES, type ScopeStatus, Store } from "@colony/core";
 import { createLocalArtifactStore } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
-import { isInfraError } from "../src/tick.js";
+import { isInfraError } from "../src/run-classification.js";
 
 const dirs: string[] = [];
 

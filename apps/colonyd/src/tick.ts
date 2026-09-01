@@ -16,6 +16,7 @@ import {
   runValidation,
 } from "./runs/validate.js";
 import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
+import { isInfraError } from "./run-classification.js";
 /** Fire-and-forget run dispatch; records that this tick dispatched work. */
 type RunDispatcher = (run: Promise<void>) => void;
 
@@ -131,26 +132,12 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
 }
 
 /**
- * Failure classes that are the platform's fault, not the agent's: the
- * colonyd process restarting mid-run, or the LLM gateway erroring. These
- * retry with backoff but never consume the task's attempt budget — a task
- * must only block on failures the agent could have prevented.
- */
-const INFRA_FAILURE =
-  /^process_restart$|^liveness_watchdog_no_progress$|^liveness_watchdog_tool_wedge$|^zero_output_stall$|^workspace_lost$|\b(?:429|50[234])\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed|Unable to connect|workspace_provision_failed|workspace_transfer_failed|RBAC: denied creating|timed out .* waiting for (?:backing pod of )?Sandbox CR|Sandbox CR .* failed:/i;
-
-/**
  * A quota rejection is a scheduling condition, not a failure: the work stays
  * eligible and the next tick retries it once capacity exists. Detection is
  * textual because run errors cross the database boundary as strings.
  */
 function isQuotaDeferred(error: string | null | undefined): boolean {
   return typeof error === "string" && error.includes(SANDBOX_QUOTA_EXHAUSTED);
-}
-
-/** Exported for tests: classify a run error as infrastructure-caused. */
-export function isInfraError(error: string | null | undefined): boolean {
-  return typeof error === "string" && INFRA_FAILURE.test(error);
 }
 
 /**

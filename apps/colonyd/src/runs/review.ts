@@ -1,6 +1,7 @@
 import { ReviewerVerdictV2 as reviewerVerdictV2Schema } from "@colony/schemas";
 import { retryBackoffMs, type Scope, type Task } from "@colony/core";
 import { isQuotaDeferred } from "@colony/sandbox";
+import { isInfraError } from "../run-classification.js";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -382,6 +383,7 @@ function countConsecutiveFailedReviews(
     if (run.status === "succeeded") break;
     if (run.status !== "failed") break;
     if (isQuotaDeferred(run.error)) continue;
+    if (isInfraError(run.error)) continue;
     count += 1;
   }
   return count;
@@ -433,6 +435,11 @@ function countConsecutiveReviewRejections(
     .filter((r) => r.kind === "review");
   let count = 0;
   for (const run of [...runs].reverse()) {
+    if (
+      run.status === "failed" &&
+      (isQuotaDeferred(run.error) || isInfraError(run.error))
+    )
+      continue;
     if (run.status !== "succeeded") break;
     const evidence = parseReviewEvidence(run.evidence_json);
     if (evidence.verdict === "approve") break;
