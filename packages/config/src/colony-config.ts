@@ -236,20 +236,17 @@ const artifactsSchema = z
 // Notifications.
 // ---------------------------------------------------------------------------
 
-export const NOTIFICATION_SEVERITIES = [
-  "info",
-  "warning",
-  "critical",
-] as const;
+export const NOTIFICATION_SEVERITIES = ["info", "warning", "critical"] as const;
 
 export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
 
 /** Rank for min_severity filtering; higher = more severe. */
-export const NOTIFICATION_SEVERITY_ORDER: Record<NotificationSeverity, number> = {
-  info: 0,
-  warning: 1,
-  critical: 2,
-};
+export const NOTIFICATION_SEVERITY_ORDER: Record<NotificationSeverity, number> =
+  {
+    info: 0,
+    warning: 1,
+    critical: 2,
+  };
 
 const notificationSinkSchema = z
   .object({

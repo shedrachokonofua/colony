@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ColonyConfigError, loadColonyConfig } from "../src/colony-config.js";
+import {
+  ColonyConfigError,
+  NOTIFICATION_SEVERITY_ORDER,
+  loadColonyConfig,
+} from "../src/colony-config.js";
 import { env, resetEnvCache } from "../src/index.js";
 
 function tempConfig(yaml: string): string {
@@ -642,6 +646,178 @@ describe("sessions config", () => {
     expect(() =>
       loadColonyConfig({
         path: tempConfig(`${VALID_YAML}\nsessions_dir: ""\n`),
+        env: { ANTHROPIC_API_KEY: "x" },
+      }),
+    ).toThrow(/colony config validation failed/);
+  });
+});
+
+describe("notifications config", () => {
+  const NTFY_URL = "https://ntfy.home.shdr.ch/colony";
+
+  it("absent block resolves to { enabled: false }", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(VALID_YAML),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.notifications).toEqual({ enabled: false });
+  });
+
+  it("parses the full block with explicit values and an info sink", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(
+        `${VALID_YAML}
+notifications:
+  enabled: true
+  cooldown_s: 300
+  digest_window_s: 1800
+  sinks:
+    - kind: ntfy
+      url: ${NTFY_URL}
+      min_severity: info
+`,
+      ),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.notifications).toEqual({
+      enabled: true,
+      cooldownS: 300,
+      digestWindowS: 1800,
+      sinks: [{ kind: "ntfy", url: NTFY_URL, minSeverity: "info" }],
+    });
+  });
+
+  it("defaults cooldown, digest window, and min_severity in a sinks-only block", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(
+        `${VALID_YAML}
+notifications:
+  sinks:
+    - kind: ntfy
+      url: ${NTFY_URL}
+`,
+      ),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.notifications).toEqual({
+      enabled: true,
+      cooldownS: 300,
+      digestWindowS: 1800,
+      sinks: [{ kind: "ntfy", url: NTFY_URL, minSeverity: "warning" }],
+    });
+  });
+
+  it("ranks severities info < warning < critical", () => {
+    expect(NOTIFICATION_SEVERITY_ORDER).toEqual({
+      info: 0,
+      warning: 1,
+      critical: 2,
+    });
+  });
+
+  it("rejects a sink kind other than ntfy with VALIDATION", () => {
+    let thrown: unknown;
+    try {
+      loadColonyConfig({
+        path: tempConfig(
+          `${VALID_YAML}
+notifications:
+  sinks:
+    - kind: apprise
+      url: ${NTFY_URL}
+`,
+        ),
+        env: { ANTHROPIC_API_KEY: "x" },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(ColonyConfigError);
+    expect((thrown as ColonyConfigError).code).toBe("VALIDATION");
+  });
+
+  it("rejects an unknown key inside notifications (strict schema)", () => {
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(
+          `${VALID_YAML}
+notifications:
+  sinks:
+    - kind: ntfy
+      url: ${NTFY_URL}
+  credentials: nope
+`,
+        ),
+        env: { ANTHROPIC_API_KEY: "x" },
+      }),
+    ).toThrow(/colony config validation failed/);
+  });
+
+  it("resolves enabled: false with sinks to the disabled variant", () => {
+    const cfg = loadColonyConfig({
+      path: tempConfig(
+        `${VALID_YAML}
+notifications:
+  enabled: false
+  sinks:
+    - kind: ntfy
+      url: ${NTFY_URL}
+`,
+      ),
+      env: { ANTHROPIC_API_KEY: "x" },
+    });
+    expect(cfg.notifications).toEqual({ enabled: false });
+  });
+
+  it("rejects non-positive cooldown_s and digest_window_s", () => {
+    for (const field of ["cooldown_s", "digest_window_s"]) {
+      for (const value of ["0", "-1", "1.5"]) {
+        let thrown: unknown;
+        try {
+          loadColonyConfig({
+            path: tempConfig(
+              `${VALID_YAML}
+notifications:
+  ${field}: ${value}
+  sinks:
+    - kind: ntfy
+      url: ${NTFY_URL}
+`,
+            ),
+            env: { ANTHROPIC_API_KEY: "x" },
+          });
+        } catch (e) {
+          thrown = e;
+        }
+        expect(thrown).toBeInstanceOf(ColonyConfigError);
+        const err = thrown as ColonyConfigError;
+        expect(err.code).toBe("VALIDATION");
+        const issues = err.details?.issues as { path: PropertyKey[] }[];
+        expect(issues.some((issue) => issue.path.includes(field))).toBe(true);
+      }
+    }
+  });
+
+  it("rejects an empty sinks array", () => {
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(`${VALID_YAML}\nnotifications:\n  sinks: []\n`),
+        env: { ANTHROPIC_API_KEY: "x" },
+      }),
+    ).toThrow(/colony config validation failed/);
+  });
+
+  it("rejects a non-url sink url", () => {
+    expect(() =>
+      loadColonyConfig({
+        path: tempConfig(
+          `${VALID_YAML}
+notifications:
+  sinks:
+    - kind: ntfy
+      url: not-a-url
+`,
+        ),
         env: { ANTHROPIC_API_KEY: "x" },
       }),
     ).toThrow(/colony config validation failed/);
