@@ -23,7 +23,6 @@ function scope(overrides: Partial<ScopeRow> = {}): ScopeRow {
 function task(id: string, overrides: Partial<TaskRow> = {}): TaskRow {
   return {
     id,
-    index: 0,
     title: `Task ${id}`,
     state: "pending",
     attempt: 1,

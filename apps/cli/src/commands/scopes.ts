@@ -18,7 +18,8 @@ interface ScopesResponse {
   total: number;
   limit: number;
   offset: number;
-  projects: string[];
+  /** Server sends `{ project, n }` tallies, not bare names. */
+  projects: { project: string | null; n: number }[];
 }
 
 export const SCOPES_PAGE_SIZE = 25;

@@ -55,7 +55,7 @@ describe("run", () => {
     const payload = detail({
       status: "failed",
       finished_at: "2026-08-30T10:05:00.000Z",
-      failure_reason: "tests failed",
+      error: "tests failed",
     });
     const { client } = fakeClient(route(payload));
     const out = captureStdout();
@@ -114,7 +114,7 @@ describe("run", () => {
     const payload = detail({
       status: "failed",
       finished_at: "2026-08-30T10:05:00.000Z",
-      failure_reason: "tests failed",
+      error: "tests failed",
     });
     const { client } = fakeClient(route(payload));
     const out = captureStdout();
@@ -126,7 +126,7 @@ describe("run", () => {
     expect(out.text()).toContain("failure:  tests failed");
   });
 
-  it("falls back to error when there is no failure_reason", async () => {
+  it("prints the run error as the failure", async () => {
     const payload = detail({
       status: "failed",
       finished_at: "2026-08-30T10:05:00.000Z",
@@ -142,12 +142,18 @@ describe("run", () => {
     expect(out.text()).toContain("failure:  sandbox OOM");
   });
 
-  it("prefers failure_reason over error", async () => {
+  it("reads the failure from evidence_json when error is null", async () => {
+    // Gate and validate failures record their reason in evidence_json and
+    // leave runs.error NULL (e.g. apps/colonyd/src/runs/merge-gate.ts:182).
     const payload = detail({
       status: "failed",
       finished_at: "2026-08-30T10:05:00.000Z",
-      failure_reason: "tests failed",
-      error: "sandbox OOM",
+      error: null,
+      evidence_json: JSON.stringify({
+        reason: "head_moved",
+        head_sha: "abc123",
+        observed: "def456",
+      }),
     });
     const { client } = fakeClient(route(payload));
     const out = captureStdout();
@@ -156,9 +162,30 @@ describe("run", () => {
     } finally {
       out.restore();
     }
-    const text = out.text();
-    expect(text).toContain("failure:  tests failed");
-    expect(text).not.toContain("sandbox OOM");
+    expect(out.text()).toContain("failure:  head_moved");
+  });
+
+  it("prints the first failing command when evidence has no reason", async () => {
+    const payload = detail({
+      status: "failed",
+      finished_at: "2026-08-30T10:05:00.000Z",
+      error: null,
+      evidence_json: JSON.stringify({
+        head_sha: "abc123",
+        results: [
+          { command: "bun test", exit_code: 0 },
+          { command: "bun run lint", exit_code: 1 },
+        ],
+      }),
+    });
+    const { client } = fakeClient(route(payload));
+    const out = captureStdout();
+    try {
+      await run(parseArgs(["run", "run-1"]), client, IO);
+    } finally {
+      out.restore();
+    }
+    expect(out.text()).toContain("failure:  bun run lint (exit 1)");
   });
 
   it("prints no failure line when the run is healthy", async () => {

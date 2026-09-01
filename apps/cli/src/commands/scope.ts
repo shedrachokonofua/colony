@@ -5,7 +5,6 @@ import { statusCode, type ScopeRow } from "./scopes.js";
 
 export interface TaskRow {
   id: string;
-  index: number;
   title: string;
   state: string;
   attempt: number;
@@ -27,7 +26,7 @@ interface ScopeDetail {
   scope: ScopeRow;
   project: { name: string; context_doc: string | null } | null;
   tasks: TaskRow[];
-  deps: string[];
+  deps: { task_id: string; depends_on_task_id: string }[];
   runs: RunsRow[];
 }
 
