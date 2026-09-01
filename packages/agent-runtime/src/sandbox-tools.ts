@@ -745,3 +745,35 @@ export function buildSandboxTools(
     sandboxEditTool(handle, cwd, execOptions),
   ];
 }
+
+/**
+ * Is `headSha` what `origin/<branch>` points at, as seen from inside the
+ * sandbox? Used by the implementer's submit gate: three implementers on
+ * 2026-09-01 submitted envelopes naming commits that were never pushed
+ * (one SHA visibly synthetic); colonyd's fact check caught each, but only
+ * after the run had ended and its attempt was burned. Checking in-session
+ * turns that into a tool error the model can still act on.
+ *
+ * `undefined` means the check could not run (no network, no remote); the
+ * caller must not block on that - colonyd still verifies after the run.
+ */
+export async function verifyPushedHead(
+  handle: SandboxHandle,
+  branch: string,
+  headSha: string,
+): Promise<{ ok: boolean; remoteHead: string | null } | undefined> {
+  if (!/^[A-Za-z0-9._\/-]+$/.test(branch))
+    return { ok: false, remoteHead: null };
+  const capture = await execCapture(
+    handle,
+    `git ls-remote --heads origin ${JSON.stringify(branch)}`,
+    { cwd: ".", timeoutMs: 30_000 },
+  );
+  if (capture.exitCode !== 0) return undefined;
+  const line = capture.output
+    .toString("utf8")
+    .split("\n")
+    .find((row) => row.trim().endsWith(`refs/heads/${branch}`));
+  const remoteHead = line ? (line.split(/\s+/)[0] ?? null) : null;
+  return { ok: remoteHead === headSha, remoteHead };
+}

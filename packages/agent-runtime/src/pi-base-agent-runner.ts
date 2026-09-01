@@ -66,7 +66,7 @@ import {
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import { createSubagentTool } from "./subagent-tool.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
-import { buildSandboxTools } from "./sandbox-tools.js";
+import { buildSandboxTools, verifyPushedHead } from "./sandbox-tools.js";
 import { RunEvidenceCollector } from "./run-evidence.js";
 import {
   buildSandboxLaunchProfile,
@@ -160,6 +160,12 @@ export interface PiRoleProfile {
   readonly workspaceMode: PiWorkspaceMode;
   readonly skipPromptWithoutWorkTools?: boolean;
   readonly requireRepositoryInspection?: boolean;
+  /**
+   * The submit gate checks, from inside the sandbox, that the envelope's
+   * head_sha is what origin/<branch> points at. A claimed-but-unpushed
+   * commit becomes a tool error the model can fix, not a burned attempt.
+   */
+  readonly verifyPushedHead?: boolean;
   /**
    * When set, run() drives this deterministic phase pipeline instead of one
    * initial packet prompt. Roles without it keep single-prompt behavior.
@@ -790,6 +796,31 @@ export class PiBaseAgentRunner implements PiRunner {
             reason:
               "Inspect the repository first: read or search real source/test files (read, grep, glob, bash, or a task subagent) before submitting.",
           };
+        }
+        if (
+          context.toolCall.name === submitTool.name &&
+          this.profile.verifyPushedHead &&
+          handle
+        ) {
+          const args = context.args as { head_sha?: unknown; branch?: unknown };
+          if (
+            typeof args.head_sha === "string" &&
+            typeof args.branch === "string"
+          ) {
+            const pushed = await verifyPushedHead(
+              handle,
+              args.branch,
+              args.head_sha,
+            );
+            if (pushed && !pushed.ok) {
+              return {
+                block: true,
+                reason: pushed.remoteHead
+                  ? `origin/${args.branch} is at ${pushed.remoteHead}, not the envelope's head_sha ${args.head_sha}. Push your final commit (git push origin ${args.branch}), confirm with git ls-remote --heads origin ${args.branch}, then submit the SHA that is actually on the remote.`
+                  : `origin/${args.branch} does not exist on the remote. Push the work branch (git push origin ${args.branch}) before submitting.`,
+              };
+            }
+          }
         }
         const authorized = await broker.authorizeTool?.({
           toolName: context.toolCall.name,
@@ -1444,6 +1475,7 @@ export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
   defaultLimits: { maxTurns: 60 },
   workspaceMode: "repo-required",
   skipPromptWithoutWorkTools: true,
+  verifyPushedHead: true,
 };
 
 export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
