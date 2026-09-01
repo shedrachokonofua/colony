@@ -2214,3 +2214,46 @@ describe("run artifacts", () => {
     ).toThrow(/FOREIGN KEY/);
   });
 });
+
+describe("audit outbox cursor", () => {
+  it("tails audit rows ascending after a cursor id, honoring the limit", () => {
+    store.audit("svc:colonyd", "outbox.one", {});
+    store.audit("svc:colonyd", "outbox.two", {});
+    store.audit("svc:colonyd", "outbox.three", {});
+
+    const firstId = store.listAudit({ limit: 10 }).events[0]!.id;
+
+    // Null cursor means "from the beginning": the first two rows in id order.
+    const firstPage = store.auditRowsAfter(null, 2);
+    expect(firstPage.map((row) => row.id)).toEqual([firstId, firstId + 1]);
+    expect(firstPage.map((row) => row.action)).toEqual([
+      "outbox.one",
+      "outbox.two",
+    ]);
+    const ids = firstPage.map((row) => row.id);
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+
+    // Strictly after the cursor: the remainder, monotonic id order.
+    const rest = store.auditRowsAfter(firstId, 10);
+    expect(rest.map((row) => row.id)).toEqual([firstId + 1, firstId + 2]);
+    expect(rest.map((row) => row.action)).toEqual([
+      "outbox.two",
+      "outbox.three",
+    ]);
+  });
+
+  it("returns an empty page when the cursor is at the tail", () => {
+    store.audit("svc:colonyd", "outbox.only", {});
+    const lastId = store.listAudit({ limit: 10 }).events.at(-1)!.id;
+    expect(store.auditRowsAfter(lastId, 10)).toEqual([]);
+  });
+
+  it("upserts and reads meta values, returning null when absent", () => {
+    expect(store.getMetaValue("notifier_cursor")).toBeNull();
+    store.setMetaValue("notifier_cursor", "42");
+    expect(store.getMetaValue("notifier_cursor")).toBe("42");
+    // Upsert overwrites instead of throwing on the existing key.
+    store.setMetaValue("notifier_cursor", "43");
+    expect(store.getMetaValue("notifier_cursor")).toBe("43");
+  });
+});
