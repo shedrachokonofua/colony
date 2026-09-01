@@ -768,6 +768,27 @@ export class PiBaseAgentRunner implements PiRunner {
           "</system-reminder>",
         ].join("\n");
       };
+
+      // Submit-deadline enforcement: re-steering only fires when a model
+      // STOPS without submitting, so a model that investigates forever never
+      // hears it (grok-4.6 spent 44 of 45 minutes probing a diff with zero
+      // submit attempts, twice, 2026-09-01). When the wall is near and
+      // nothing is submitted, every tool result carries the clock.
+      const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
+      let lastDeadlineNudgeAt = 0;
+      const takeSubmitDeadlineNudge = (): string | null => {
+        if (submissionCaptured()) return null;
+        const remainingMs = deadline - Date.now();
+        if (remainingMs > SUBMIT_DEADLINE_NUDGE_MS) return null;
+        if (performance.now() - lastDeadlineNudgeAt < 60_000) return null;
+        lastDeadlineNudgeAt = performance.now();
+        const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
+        return [
+          "<system-reminder>",
+          `~${remainingMin} minute(s) of wall clock remain and nothing has been submitted. Stop investigating NOW and call ${submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
+          "</system-reminder>",
+        ].join("\n");
+      };
       const previousAfterToolCall = session.agent.afterToolCall;
       session.agent.afterToolCall = async (context, signal) => {
         const base = await previousAfterToolCall?.(context, signal);
@@ -796,21 +817,29 @@ export class PiBaseAgentRunner implements PiRunner {
           },
           "pi_tool_observation",
         );
-        const phaseNudge = takePhaseBudgetNudge();
-        const repeatNudge = phaseNudge
-          ? null
-          : steering.takeRepeatFailureNudge();
-        const nudge = phaseNudge ?? repeatNudge ?? steering.takeDriftNudge();
+        const deadlineNudge = takeSubmitDeadlineNudge();
+        const phaseNudge = deadlineNudge ? null : takePhaseBudgetNudge();
+        const repeatNudge =
+          deadlineNudge || phaseNudge
+            ? null
+            : steering.takeRepeatFailureNudge();
+        const nudge =
+          deadlineNudge ??
+          phaseNudge ??
+          repeatNudge ??
+          steering.takeDriftNudge();
         if (!nudge) return base;
         // Fold the reminder in ahead of the tool's own output, the way the omp
         // harness delivers non-interrupting rule reminders.
         this.options.logger?.warn?.(
           { runId, sandboxId, phase: activePhase?.name },
-          phaseNudge
-            ? "pi_phase_budget_nudge"
-            : repeatNudge
-              ? "pi_repeat_failure_nudge"
-              : "pi_drift_nudge",
+          deadlineNudge
+            ? "pi_submit_deadline_nudge"
+            : phaseNudge
+              ? "pi_phase_budget_nudge"
+              : repeatNudge
+                ? "pi_repeat_failure_nudge"
+                : "pi_drift_nudge",
         );
         return {
           ...base,
