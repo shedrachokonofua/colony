@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +23,10 @@ import {
   type KubernetesSandboxClient,
   type SandboxCustomResource,
 } from "./contract.js";
-import { createKubernetesEngine } from "./k8s-engine.js";
+import {
+  createKubernetesEngine,
+  resetStartupCleanupForTests,
+} from "./k8s-engine.js";
 import { loadKubernetesConfig } from "./k8s-client.js";
 
 describe("loadKubernetesConfig", () => {
@@ -440,6 +443,8 @@ function restoreEnv(name: string, previous: string | undefined): void {
 }
 
 describe("createKubernetesEngine", () => {
+  // Startup cleanup is process-scoped; each case starts from a fresh boot.
+  beforeEach(() => resetStartupCleanupForTests());
   function fakeClient(state: {
     ready: boolean;
   }): ReturnType<typeof createFakeClient> {
@@ -531,6 +536,45 @@ describe("createKubernetesEngine", () => {
       expect(client.createdAt).toHaveLength(2);
 
       await Promise.all([first.destroy(), second.destroy()]);
+    } finally {
+      await rm(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a second engine instance in the same process never reaps the first one's live sandboxes", async () => {
+    // colonyd runs two engine instances (agent runners + validation). The
+    // validator's first provision after a boot used to reap every live agent
+    // sandbox as a restart orphan (2026-09-01).
+    const parentDir = await mkdtemp(join(tmpdir(), "k8s-two-engines-"));
+    const workspace = join(parentDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    try {
+      const state = { ready: false };
+      const client = createFakeClient(state, {
+        startupSandboxes: ["orphan-from-last-boot"],
+      });
+      const runners = createKubernetesEngine({
+        client,
+        provisionTimeoutMs: 2000,
+        pollIntervalMs: 5,
+      });
+      const validator = createKubernetesEngine({
+        client,
+        provisionTimeoutMs: 2000,
+        pollIntervalMs: 5,
+      });
+      const profile = buildSandboxLaunchProfile("developer");
+
+      const live = await runners.provision(profile, workspace);
+      expect(client.deleted).toEqual(["orphan-from-last-boot"]);
+      const liveName = client.createdAt[0]!.body.metadata.name;
+
+      const validate = await validator.provision(profile, workspace);
+      // Still exactly the one boot orphan: the live sandbox survived.
+      expect(client.deleted).toEqual(["orphan-from-last-boot"]);
+      expect(client.deleted).not.toContain(liveName);
+
+      await Promise.all([live.destroy(), validate.destroy()]);
     } finally {
       await rm(parentDir, { recursive: true, force: true });
     }

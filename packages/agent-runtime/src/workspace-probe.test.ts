@@ -61,15 +61,30 @@ describe("workspace probe", () => {
     expect(h.lost()).toBe(1);
   });
 
-  it("never fires on thrown execs: transport failure is not evidence", async () => {
-    const { handle } = probeWith(["throw"]);
+  it("a streak of thrown execs is a dead pod: fires on the third consecutive throw", async () => {
+    // A reaped pod makes exec THROW, not exit non-zero. Treating throws as
+    // nothing let runs generate against gone sandboxes for 26+ minutes
+    // (2026-09-01, 13 consecutive probe errors each).
+    const { handle } = probeWith(["throw", "throw", "throw", "throw"]);
     const h = harness();
-    for (let i = 0; i < 5; i += 1) {
-      expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(false);
+    expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(false);
+    expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(false);
+    expect(h.lost()).toBe(0);
+    expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(true);
+    expect(h.lost()).toBe(1);
+    expect(await workspaceProbeStep(handle, h.state, h.options)).toBe(false);
+    expect(h.lost()).toBe(1);
+    expect(h.warns).toContain("workspace_probe_error");
+  });
+
+  it("a single thrown exec between healthy probes is a blip, not evidence", async () => {
+    const { handle } = probeWith(["throw", 0, "throw", 0, "throw", 0]);
+    const h = harness();
+    for (let i = 0; i < 6; i += 1) {
+      await workspaceProbeStep(handle, h.state, h.options);
     }
     expect(h.lost()).toBe(0);
     expect(h.state.misses).toBe(0);
-    expect(h.warns).toContain("workspace_probe_error");
   });
 
   it("a healthy probe resets the miss counter", async () => {
@@ -98,8 +113,8 @@ describe("workspace probe", () => {
     for (let i = 0; i < 4; i += 1) {
       await workspaceProbeStep(handle, h.state, h.options);
     }
-    // Errors neither reset nor advance the count; the two real misses are
-    // non-consecutive only through error gaps, which still totals two.
+    // Errors count as misses too now; two completed misses with one error
+    // between them is a loss either way.
     expect(h.lost()).toBe(1);
   });
 

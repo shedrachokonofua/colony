@@ -536,10 +536,24 @@ async function removeStartupOrphans(
  * `kubeconfig` or rely on automatic in-cluster/default config selection at
  * provision time, or inject a faked `client` for tests.
  */
+/**
+ * Startup orphan cleanup is PER PROCESS per namespace, never per engine
+ * instance. colonyd builds one engine for the agent runners and another for
+ * validation; with instance-scoped state the validator's first provision
+ * after a boot reaped every live agent sandbox in the namespace as an
+ * "orphan of the previous process" (2026-09-01: a 24-minute implement, two
+ * reviews - one of which then approved an MR with no repository under it).
+ * Tests that need a fresh cleanup get one via `resetStartupCleanupForTests`.
+ */
+const startupCleanups = new Map<string, Promise<void>>();
+
+export function resetStartupCleanupForTests(): void {
+  startupCleanups.clear();
+}
+
 export function createKubernetesEngine(
   options: KubernetesSandboxEngineOptions = {},
 ): SandboxEngine {
-  let startupCleanup: Promise<void> | undefined;
   return {
     async provision(
       profile: SandboxLaunchProfile,
@@ -565,12 +579,16 @@ export function createKubernetesEngine(
       // Agent sessions do not survive a colonyd process restart. Reap every
       // Sandbox CR from the previous process before admitting new work so
       // abandoned pods cannot strand namespace quota.
-      startupCleanup ??= removeStartupOrphans(
-        client,
-        namespace,
-        pollIntervalMs,
-        provisionTimeoutMs,
-      );
+      let startupCleanup = startupCleanups.get(namespace);
+      if (!startupCleanup) {
+        startupCleanup = removeStartupOrphans(
+          client,
+          namespace,
+          pollIntervalMs,
+          provisionTimeoutMs,
+        );
+        startupCleanups.set(namespace, startupCleanup);
+      }
       await startupCleanup;
 
       // Discover the served apiVersion from the cluster — never hardcoded.

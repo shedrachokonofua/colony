@@ -652,7 +652,19 @@ export async function workspaceProbeStep(
       },
       "workspace_probe_error",
     );
-    return false;
+    // A gone pod makes exec THROW (the exec WebSocket fails), and thrown
+    // probes used to count as nothing: three runs generated against
+    // reaped sandboxes for 26+ minutes with 13 consecutive probe errors
+    // each (2026-09-01). One throw is a blip; a streak is a dead pod.
+    state.misses += 1;
+    if (state.misses < 3) return false;
+    state.fired = true;
+    options.logger?.warn?.(
+      { runId: options.runId, sandboxId: options.sandboxId },
+      WORKSPACE_LOST_REASON,
+    );
+    options.onLost();
+    return true;
   }
   if (state.misses < 2) return false;
   state.fired = true;
