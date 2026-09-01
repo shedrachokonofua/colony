@@ -152,6 +152,16 @@ export async function createAgentWiring(
     sessionsDir: config.sessionsDir,
     onSandboxId: (runId: string, sandboxId: string) =>
       store?.setRunSandboxId(runId, sandboxId),
+    // Runtime failover reads the same cap + live count the dispatcher's
+    // slot picker does (tick.ts pickDispatchSlot); one definition of "free".
+    modelHasCapacity: (modelId: string) => {
+      const limit = config.modelParallelLimit(modelId);
+      return (
+        limit === null ||
+        store === undefined ||
+        store.activeRunCountByModel(modelId) < limit
+      );
+    },
   } as const;
 
   const architectLogger = roleLogger("architect", onRunEvent);

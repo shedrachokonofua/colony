@@ -466,6 +466,68 @@ describe("Pi model fallback", () => {
     expect(fallbackWarnings[0].fields.to).toBe("fallback");
   }, 350_000);
 
+  it("runtime failover skips a fallback model with no free dispatch slot", async () => {
+    // 2026-09-01: grok died, five concurrent reviews all fell over onto
+    // qwen (max_parallel_runs: 1) and every one walled at 45 minutes.
+    // Dispatch honored the cap; runtime failover never asked.
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const headSha = "d".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary: "Landed on the uncapped lane.",
+      findings: [],
+      head_sha: headSha,
+    };
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response) => {
+        if (model === "primary") return respondServiceUnavailable(response);
+        respondVerdictToolCall(response, model, envelope);
+      },
+    );
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-capped-leg-test-"));
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [
+          modelSpec(baseUrl, "capped"),
+          modelSpec(baseUrl, "open"),
+        ],
+        modelHasCapacity: (modelId) => modelId !== "capped",
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        maxTurns: 60,
+        runTimeoutMs: 300_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
+      },
+    );
+
+    const result = await runner.run({
+      runId: "capped-leg-contract",
+      packet: { goal: "Review the change", head_sha: headSha },
+      environment: { role: "reviewer" },
+    });
+
+    expect(requestedModels).not.toContain("capped");
+    expect(requestedModels).toContain("open");
+    expect(result.envelope).toEqual(envelope);
+    const fallback = warnings.filter((w) => w.message === "pi_model_fallback");
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0].fields.from).toBe("primary");
+    expect(fallback[0].fields.to).toBe("open");
+  }, 350_000);
+
   it("connection errors interleaved with successful turns never trigger model fallback", async () => {
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];
     let primaryRequests = 0;

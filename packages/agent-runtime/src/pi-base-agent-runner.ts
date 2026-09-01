@@ -727,6 +727,26 @@ export class PiBaseAgentRunner implements PiRunner {
       // error" can be a different model's quota 403 from twenty minutes ago
       // (2026-08-31: grok was demoted mid-run on kimi's stale error).
       let quotaScanFloor = 0;
+      // Runtime failover honors the same per-model caps dispatch does. A
+      // dead primary used to funnel every concurrent run onto the first
+      // fallback regardless of its cap (five reviews on a cap-1 leg, all
+      // walling; 2026-09-01). Skip capped candidates; when every remaining
+      // candidate is capped, take the next one anyway - a slow lane beats
+      // no lane, and dispatch will have seen the cap by the next attempt.
+      const nextCandidateIndex = (fromIndex: number): number | null => {
+        if (fromIndex + 1 >= resolvedModels.length) return null;
+        const hasCapacity = this.options.modelHasCapacity;
+        if (hasCapacity) {
+          for (let i = fromIndex + 1; i < resolvedModels.length; i += 1) {
+            if (hasCapacity(resolvedModels[i]!.id)) return i;
+          }
+          this.options.logger?.warn?.(
+            { runId, from: resolvedModels[fromIndex]?.id },
+            "pi_model_fallback_all_capped",
+          );
+        }
+        return fromIndex + 1;
+      };
       const lastAssistantQuotaError = (): string | null => {
         const messages = session?.agent.state.messages ?? [];
         for (let i = messages.length - 1; i >= quotaScanFloor; i -= 1) {
@@ -1046,7 +1066,15 @@ export class PiBaseAgentRunner implements PiRunner {
               // ends the run immediately.
               if (cancellationTriggered) throw err;
               if (timeoutTriggered) return true;
-              const next = models[index + 1];
+              // The candidate loop below advances by one; steer it onto
+              // the next candidate WITH capacity (see nextCandidateIndex).
+              const nextIndex = nextCandidateIndex(index);
+              const next =
+                nextIndex === null ? undefined : resolvedModels[nextIndex];
+              const advance = () => {
+                if (nextIndex !== null) index = nextIndex - 1;
+                return false;
+              };
               const errText = err instanceof Error ? err.message : String(err);
               if (CONNECTION_ERROR_RE.test(errText)) {
                 // Under budget this was a blip: the model stays and the
@@ -1073,7 +1101,7 @@ export class PiBaseAgentRunner implements PiRunner {
                   },
                   "pi_model_fallback",
                 );
-                return false;
+                return advance();
               }
               if (!next || failureReason !== undefined) {
                 throw err;
@@ -1087,7 +1115,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 },
                 "pi_model_fallback",
               );
-              return false;
+              return advance();
             }
           }
           activePhase = null;
@@ -1127,14 +1155,17 @@ export class PiBaseAgentRunner implements PiRunner {
             // now instead of spending jiggle backoff on a dead upstream (it
             // can be mute AND unreachable, so this precedes the stall path
             // the way a quota verdict forces the jiggle skip).
-            const next = resolvedModels[index + 1];
-            if (!next) {
+            const from = resolvedModels[index]?.id;
+            const nextIndex = nextCandidateIndex(index);
+            const next =
+              nextIndex === null ? undefined : resolvedModels[nextIndex];
+            if (!next || nextIndex === null) {
               failureReason = `provider_connection_failure: ${(
                 lastConnectionError ?? "repeated connection errors"
               ).slice(0, 160)}`;
               break;
             }
-            index += 1;
+            index = nextIndex;
             jigglesUsed = 0;
             connectionErrors = 0;
             await session.setModel(next);
@@ -1142,7 +1173,7 @@ export class PiBaseAgentRunner implements PiRunner {
             this.options.logger?.warn?.(
               {
                 runId,
-                from: resolvedModels[index - 1]?.id,
+                from,
                 to: next.id,
                 error: `provider_connection_exhausted: ${(
                   lastConnectionError ?? "repeated connection errors"
@@ -1171,8 +1202,9 @@ export class PiBaseAgentRunner implements PiRunner {
                 "pi_zero_output_jiggle",
               );
               await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
-            } else if (resolvedModels[index + 1]) {
-              index += 1;
+            } else if (nextCandidateIndex(index) !== null) {
+              const from = resolvedModels[index]?.id;
+              index = nextCandidateIndex(index)!;
               jigglesUsed = 0;
               connectionErrors = 0;
               const next = resolvedModels[index]!;
@@ -1181,6 +1213,7 @@ export class PiBaseAgentRunner implements PiRunner {
               this.options.logger?.warn?.(
                 {
                   runId,
+                  from,
                   to: next.id,
                   error: quotaError
                     ? `provider_quota_exhausted: ${quotaError.slice(0, 160)}`

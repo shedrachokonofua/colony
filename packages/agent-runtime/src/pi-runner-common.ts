@@ -81,6 +81,13 @@ export interface PiRunnerBaseOptions {
   readonly runTimeoutMs?: number;
   readonly scratchDir?: string;
   readonly engine?: SandboxEngine;
+  /**
+   * Does this model have a free dispatch slot right now? Injected by colonyd
+   * from the same store/config the dispatcher's slot picker reads, so
+   * runtime failover and dispatch agree on capacity. Absent: every
+   * candidate is assumed free (fake/test wiring).
+   */
+  readonly modelHasCapacity?: (modelId: string) => boolean;
   /** Durable session root; when set, runs persist session JSONL under it. */
   readonly sessionsDir?: string;
   /** Reports the sandbox id as soon as the sandbox is created (runs-table write-back). */
