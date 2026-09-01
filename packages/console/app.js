@@ -862,6 +862,69 @@ function demoWorld() {
       }),
     },
   ];
+  // The Running tab's rows navigate into their scope and select the task, so
+  // those two scopes need real tasks offline — not just list entries.
+  const [runningScope0, runningScope1] = generatedScopes;
+  const runningTasks = [
+    {
+      id: `${runningScope0.id}.0`,
+      scope_id: runningScope0.id,
+      title: `Draft ${runningScope0.title.toLowerCase()}`,
+      spec: "",
+      state: "merged",
+      state_version: 3,
+      branch: `colony/${runningScope0.id}.0`,
+      mr_iid: 40,
+      attempt: 0,
+      next_retry_at: null,
+      blocked_reason: null,
+      created_at: runningScope0.created_at,
+      updated_at: runningScope0.updated_at,
+    },
+    {
+      id: `${runningScope0.id}.1`,
+      scope_id: runningScope0.id,
+      title: `Land ${runningScope0.title.toLowerCase()}`,
+      spec: "",
+      state: "running",
+      state_version: 2,
+      branch: `colony/${runningScope0.id}.1`,
+      mr_iid: null,
+      attempt: 1,
+      next_retry_at: null,
+      blocked_reason: null,
+      created_at: runningScope0.created_at,
+      updated_at: new Date(now - 45 * 1000).toISOString(),
+    },
+  ];
+  const mrOpenTask = {
+    id: `${runningScope1.id}.0`,
+    scope_id: runningScope1.id,
+    title: `Land ${runningScope1.title.toLowerCase()}`,
+    spec: "",
+    state: "mr_open",
+    state_version: 3,
+    branch: `colony/${runningScope1.id}.0`,
+    mr_iid: 41,
+    attempt: 1,
+    next_retry_at: null,
+    blocked_reason: null,
+    created_at: runningScope1.created_at,
+    updated_at: runningScope1.updated_at,
+  };
+  const runningRun = {
+    id: "run-demo-running-1",
+    scope_id: runningScope0.id,
+    task_id: runningTasks[1].id,
+    kind: "implement",
+    status: "running",
+    model_id: "deepseek-v4-flash",
+    head_sha: null,
+    error: null,
+    evidence_json: null,
+    started_at: new Date(now - 45 * 1000).toISOString(),
+    finished_at: null,
+  };
   return {
     config: {
       gitlab_base_url: "https://gitlab.home.shdr.ch",
@@ -891,31 +954,41 @@ function demoWorld() {
     ],
     running: [
       {
-        scope_id: "col-d00",
-        scope_title: "Demo scope 00",
-        task_id: "col-d00.1",
-        task_title: "Wire /version into the health page",
-        task_state: "running",
-        attempt: 1,
-        run: {
-          id: "run-demo-running-1",
-          kind: "implement",
-          status: "running",
-          model_id: "deepseek-v4-flash",
-          started_at: new Date(Date.now() - 45 * 1000).toISOString(),
-        },
+        scope_id: runningScope0.id,
+        scope_title: runningScope0.title,
+        task_id: runningTasks[1].id,
+        task_title: runningTasks[1].title,
+        task_state: runningTasks[1].state,
+        attempt: runningTasks[1].attempt,
+        run: runningRun,
       },
       {
-        scope_id: "col-d01",
-        scope_title: "Demo scope 01",
-        task_id: "col-d01.0",
-        task_title: "Acceptance check for /version",
-        task_state: "mr_open",
-        attempt: 1,
+        scope_id: runningScope1.id,
+        scope_title: runningScope1.title,
+        task_id: mrOpenTask.id,
+        task_title: mrOpenTask.title,
+        task_state: mrOpenTask.state,
+        attempt: mrOpenTask.attempt,
         run: null,
       },
     ],
     detail: { scope, tasks, deps, runs },
+    // Detail payloads for the Running tab's two scopes, so activating a row
+    // offline lands on a sheet that actually contains the task.
+    runningDetails: {
+      [runningScope0.id]: {
+        scope: runningScope0,
+        tasks: runningTasks,
+        deps: [],
+        runs: [runningRun],
+      },
+      [runningScope1.id]: {
+        scope: runningScope1,
+        tasks: [mrOpenTask],
+        deps: [],
+        runs: [],
+      },
+    },
     runEvents,
     audit: [
       {
@@ -1458,6 +1531,23 @@ function renderDag(detail) {
     ${edgeMarkup}${nodeMarkup}
   </svg>`;
 }
+/**
+ * Select a task once its scope detail holds it. A Running-tab row navigates
+ * before the sheet's detail is loaded, so the selection waits here rather
+ * than being dropped: the sheet's selectedTask(detail) only finds tasks that
+ * are present.
+ */
+function consumePendingTaskSelection(detail) {
+  const taskId = state.pendingSelectTaskId;
+  if (!taskId || !detail) return;
+  if (!taskSelectionExists(detail, taskId)) return;
+  state.pendingSelectTaskId = null;
+  state.selectedTaskId = taskId;
+  state.drawerOpen = true;
+  state.confirm = null;
+  state.runEvents = null;
+}
+
 function taskSelectionExists(detail, taskId) {
   if (taskId.startsWith("plan:")) {
     const index = Number(taskId.slice(5));
@@ -3202,8 +3292,14 @@ async function refresh() {
         state.detail = scopeRow
           ? scopeRow.id === world.detail.scope.id
             ? world.detail
-            : { scope: scopeRow, tasks: [], deps: [], runs: [] }
+            : (world.runningDetails?.[scopeRow.id] ?? {
+                scope: scopeRow,
+                tasks: [],
+                deps: [],
+                runs: [],
+              })
           : null;
+        consumePendingTaskSelection(state.detail);
       } else {
         state.detail = null;
       }
@@ -3404,16 +3500,7 @@ async function refresh() {
       ]);
       state.detail = detail;
       state.audit = audit.events;
-      if (
-        state.pendingSelectTaskId &&
-        taskSelectionExists(detail, state.pendingSelectTaskId)
-      ) {
-        state.selectedTaskId = state.pendingSelectTaskId;
-        state.pendingSelectTaskId = null;
-        state.drawerOpen = true;
-        state.confirm = null;
-        state.runEvents = null;
-      }
+      consumePendingTaskSelection(detail);
       if (
         state.projectContext === null &&
         detail.project &&

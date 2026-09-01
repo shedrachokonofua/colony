@@ -180,9 +180,25 @@ describe("Running tab - Demo mode and live ticker", () => {
     expect(appSource).toContain("state.projectRunning = world.running");
   });
 
+  it("demo running rows resolve to real tasks so row navigation selects one", () => {
+    // A row navigates into its scope and selects the task, so the demo world
+    // must back each row with a detail payload that actually holds the task.
+    expect(appSource).toContain("runningDetails");
+    expect(appSource).toContain("consumePendingTaskSelection");
+    expect(appSource).toContain("consumePendingTaskSelection(state.detail)");
+    // The live scope-detail refresh consumes it too.
+    expect(
+      appSource.match(/consumePendingTaskSelection/g)?.length,
+    ).toBeGreaterThanOrEqual(3);
+  });
+
   it("hasVisibleRunningRun accounts for running tasks in projectRunning", () => {
     expect(appSource).toContain("state.projectRunning");
     expect(appSource).toContain("runningList.some");
+    // Ticking stays tied to visible rows: only the rendered running tab counts.
+    expect(appSource).toContain(
+      'state.projectTab === "running" && state.projectPage',
+    );
   });
 
   it("styles.css provides styles for running tab components", () => {
