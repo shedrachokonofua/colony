@@ -23,6 +23,11 @@ artifacts:
   local:
     dir: /var/lib/colonyd/artifacts
 
+# Same landmine as artifacts, second detonation (2026-09-01): the default
+# data/sessions resolves against cwd /workspace and EACCES'd every run at
+# session-manager creation. Keep absolute, on the PVC beside the DB.
+sessions_dir: /var/lib/colonyd/sessions
+
 hitl:
   mode: yolo
 

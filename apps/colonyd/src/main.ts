@@ -70,6 +70,13 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     sandboxEngineOverride: environment.COLONY_SANDBOX_ENGINE,
   });
 
+  // A run-storage dir that cannot be created must kill BOOT, loudly - not
+  // every run, quietly. The relative defaults resolve against cwd, which in
+  // the pod is a root-owned /workspace: artifacts detonated this way on
+  // 2026-08-30, sessions on 2026-09-01 (17 runs EACCES'd and re-blocked
+  // half the fleet before anyone noticed the pattern).
+  mkdirSync(config.sessionsDir, { recursive: true });
+
   // Provisioning is cheap and idempotent (in-process by default in fake
   // mode), so the validate engine is always created at boot.
   const validateEngine =
