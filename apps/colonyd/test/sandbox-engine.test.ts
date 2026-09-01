@@ -22,6 +22,7 @@ function stubConfig(): ColonyConfig {
     reviewMode: "off",
     artifacts: { kind: "local", local: { dir: "data/artifacts" } },
     sessionsDir: "data/sessions",
+    notifications: { enabled: false },
     oauthProviderKeys: [],
     forAgent: () => {
       throw new Error("stub forAgent not used");

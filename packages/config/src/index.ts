@@ -40,6 +40,8 @@ const envSchema = z.object({
   COLONYD_PORT: z.coerce.number().int().default(4400),
   COLONYD_DB_PATH: z.string().default("data/colonyd.db"),
   COLONYD_TICK_MS: z.coerce.number().int().default(15_000),
+  /** Notifier outbox loop interval (plan-awaiting-approval must push within seconds). */
+  COLONYD_NOTIFY_MS: z.coerce.number().int().default(5_000),
   /** Graceful-drain cap on shutdown (ms). In-flight runs get this long to finish
    * before the remainder are aborted. The deployed pod's terminationGracePeriodSeconds
    * must be >= COLONY_DRAIN_TIMEOUT_MS + 60s; that setting lives in the aether IaC repo
@@ -60,6 +62,8 @@ const envSchema = z.object({
 
   /** Base URL of the trace UI the console deep-links to (e.g. Grafana). */
   COLONY_TRACE_UI_BASE_URL: optionalNonEmptyString,
+  /** Base URL of the colony console the notifier deep-links (scope sheet is `#/<scope_id>`). */
+  COLONY_CONSOLE_BASE_URL: optionalNonEmptyString,
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -83,6 +87,8 @@ export {
   DEFAULT_ARTIFACTS_DIR,
   DEFAULT_CEILINGS,
   DEFAULT_KUBERNETES_SANDBOX,
+  NOTIFICATION_SEVERITIES,
+  NOTIFICATION_SEVERITY_ORDER,
   PI_API_KINDS,
   colonyConfigFileSchema,
   loadColonyConfig,
@@ -93,7 +99,10 @@ export {
   type HitlMode,
   type KubernetesSandboxConfig,
   type LocalArtifactsConfig,
+  type NotificationSeverity,
   type ResolvedArtifactsConfig,
+  type ResolvedNotificationSink,
+  type ResolvedNotificationsConfig,
   type ReviewMode,
   type LoadColonyConfigOptions,
   type PiApiKind,

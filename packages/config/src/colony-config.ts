@@ -205,6 +205,15 @@ export const s3ArtifactsSchema = z
 
 export type S3ArtifactBackendConfig = z.infer<typeof s3ArtifactsSchema>;
 
+export type ResolvedNotificationsConfig =
+  | { readonly enabled: false }
+  | {
+      readonly enabled: true;
+      readonly cooldownS: number;
+      readonly digestWindowS: number;
+      readonly sinks: readonly ResolvedNotificationSink[];
+    };
+
 /** Post-resolution artifacts config; the discriminator is `kind`. */
 export type ResolvedArtifactsConfig =
   | { readonly kind: "local"; readonly local: LocalArtifactsConfig }
@@ -220,6 +229,44 @@ const artifactsSchema = z
     kind: z.enum(["local", "s3"]).default("local"),
     local: localArtifactsSchema.optional(),
     s3: s3ArtifactsSchema.optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// Notifications.
+// ---------------------------------------------------------------------------
+
+export const NOTIFICATION_SEVERITIES = [
+  "info",
+  "warning",
+  "critical",
+] as const;
+
+export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
+
+/** Rank for min_severity filtering; higher = more severe. */
+export const NOTIFICATION_SEVERITY_ORDER: Record<NotificationSeverity, number> = {
+  info: 0,
+  warning: 1,
+  critical: 2,
+};
+
+const notificationSinkSchema = z
+  .object({
+    kind: z.literal("ntfy"),
+    /** Non-secret topic URL; any future credential arrives as an env-var name. */
+    url: z.string().url(),
+    /** Minimum severity that clears the sink; "warning" keeps progress-class info events off. */
+    min_severity: z.enum(NOTIFICATION_SEVERITIES).default("warning"),
+  })
+  .strict();
+
+const notificationsSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    cooldown_s: z.number().int().positive().default(300),
+    digest_window_s: z.number().int().positive().default(1800),
+    sinks: z.array(notificationSinkSchema).min(1),
   })
   .strict();
 
@@ -242,6 +289,7 @@ export const colonyConfigFileSchema = z
     hitl: hitlSchema,
     review: reviewSchema,
     artifacts: artifactsSchema.optional(),
+    notifications: notificationsSchema.optional(),
     /** Durable session root; defaults to `data/sessions`. */
     sessions_dir: z.string().min(1).optional(),
     providers: z.record(z.string().min(1), providerSchema).default({}),
@@ -316,6 +364,12 @@ export interface ResolvedAgentConfig {
   };
 }
 
+export interface ResolvedNotificationSink {
+  readonly kind: "ntfy";
+  readonly url: string;
+  readonly minSeverity: NotificationSeverity;
+}
+
 export interface ColonyConfig {
   readonly agentRuntime: "fake" | "pi";
   readonly sandbox: {
@@ -328,6 +382,8 @@ export interface ColonyConfig {
   readonly artifacts: ResolvedArtifactsConfig;
   /** Durable per-run session JSONL root; default `data/sessions`. */
   readonly sessionsDir: string;
+  /** Operator notifications; `{ enabled: false }` when absent or disabled. */
+  readonly notifications: ResolvedNotificationsConfig;
   /** Provider keys whose auth.kind === "oauth" — surface for the admin UI. */
   readonly oauthProviderKeys: readonly string[];
   forAgent(role: AgentRole): ResolvedAgentConfig;
@@ -449,6 +505,7 @@ export function loadColonyConfig(
 
   const artifacts = resolveArtifacts(file.artifacts, env);
   const sessionsDir = file.sessions_dir ?? DEFAULT_SESSIONS_DIR;
+  const notifications = resolveNotifications(file.notifications);
 
   // Collected once at load so lookups never re-scan the file shape. First
   // entry wins when several providers declare the same model id.
@@ -474,6 +531,7 @@ export function loadColonyConfig(
     reviewMode: file.review.mode,
     artifacts,
     sessionsDir,
+    notifications,
     oauthProviderKeys,
     forAgent(role) {
       const agentEntry = file.agents[role];
@@ -628,6 +686,27 @@ function resolveArtifacts(
   return {
     kind: "s3",
     s3: { ...section.s3, region: section.s3.region ?? "us-east-1" },
+  };
+}
+
+/**
+ * Resolve the notifications section. Absent or `enabled: false` collapses to
+ * the disabled variant so the daemon can decide "fully off" from that one
+ * field without touching sinks.
+ */
+function resolveNotifications(
+  section: z.infer<typeof notificationsSchema> | undefined,
+): ResolvedNotificationsConfig {
+  if (!section || !section.enabled) return { enabled: false };
+  return {
+    enabled: true,
+    cooldownS: section.cooldown_s,
+    digestWindowS: section.digest_window_s,
+    sinks: section.sinks.map((sink) => ({
+      kind: sink.kind,
+      url: sink.url,
+      minSeverity: sink.min_severity,
+    })),
   };
 }
 
