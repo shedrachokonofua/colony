@@ -42,6 +42,7 @@ describe("liveness watchdog", () => {
     const agent = fakeAgent();
     const failures: string[] = [];
     const unsubscribe = installRunGuards(agent as never, "run-1", {
+      abort: () => agent.abort(),
       livenessTimeoutMs: 30,
       onFailure: (reason) => failures.push(reason),
     });
@@ -55,6 +56,7 @@ describe("liveness watchdog", () => {
     const agent = fakeAgent();
     const failures: string[] = [];
     const unsubscribe = installRunGuards(agent as never, "run-2", {
+      abort: () => agent.abort(),
       livenessTimeoutMs: 40,
       onFailure: (reason) => failures.push(reason),
     });
@@ -71,6 +73,7 @@ describe("liveness watchdog", () => {
     const agent = fakeAgent();
     const failures: string[] = [];
     const unsubscribe = installRunGuards(agent as never, "run-3", {
+      abort: () => agent.abort(),
       livenessTimeoutMs: 30,
       onFailure: (reason) => failures.push(reason),
     });
@@ -91,6 +94,7 @@ describe("liveness watchdog", () => {
     const agent = fakeAgent();
     const failures: string[] = [];
     const unsubscribe = installRunGuards(agent as never, "run-wedge", {
+      abort: () => agent.abort(),
       livenessTimeoutMs: 10_000,
       toolWedgeTimeoutMs: 250,
       onFailure: (reason) => failures.push(reason),
@@ -115,6 +119,7 @@ describe("liveness watchdog", () => {
     const agent = fakeAgent();
     const failures: string[] = [];
     const unsubscribe = installRunGuards(agent as never, "run-4", {
+      abort: () => agent.abort(),
       livenessTimeoutMs: 20,
       onFailure: (reason) => failures.push(reason),
     });
@@ -139,6 +144,7 @@ describe("zero-output stall", () => {
     const agent = fakeAgent();
     let stalled = 0;
     installRunGuards(agent as never, "run-zo", {
+      abort: () => agent.abort(),
       zeroOutputStallTurns: 3,
       livenessTimeoutMs: 0,
       onZeroOutputStall: () => {
@@ -158,6 +164,7 @@ describe("zero-output stall", () => {
     const agent = fakeAgent();
     let stalled = 0;
     installRunGuards(agent as never, "run-zo2", {
+      abort: () => agent.abort(),
       zeroOutputStallTurns: 3,
       livenessTimeoutMs: 0,
       onZeroOutputStall: () => {
@@ -192,6 +199,7 @@ describe("run limit", () => {
       error() {},
     };
     const unsubscribe = installRunGuards(agent as never, "run-limit", {
+      abort: () => agent.abort(),
       maxTurns: 2,
       livenessTimeoutMs: 0,
       logger: capturing,

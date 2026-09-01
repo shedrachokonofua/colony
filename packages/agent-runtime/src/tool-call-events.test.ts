@@ -325,6 +325,7 @@ describe("installRunGuards evidence wiring", () => {
     const evidence = new RunEvidenceCollector("run-8", sink, []);
     const agent = fakeAgent();
     const unsubscribe = installRunGuards(agent as never, "run-8", {
+      abort: () => agent.abort(),
       evidence,
       rejectionToolName: "submit_implementer_completion",
       livenessTimeoutMs: 0,
@@ -382,6 +383,7 @@ describe("installRunGuards evidence wiring", () => {
     const evidence = new RunEvidenceCollector("run-segments", sink, []);
     const agent = fakeAgent();
     const unsubscribe = installRunGuards(agent as never, "run-segments", {
+      abort: () => agent.abort(),
       evidence,
       livenessTimeoutMs: 0,
       maxTurns: 100,
@@ -438,6 +440,7 @@ describe("installRunGuards evidence wiring", () => {
     const evidence = new RunEvidenceCollector("run-9", sink, []);
     const agent = fakeAgent();
     const unsubscribe = installRunGuards(agent as never, "run-9", {
+      abort: () => agent.abort(),
       evidence,
       rejectionToolName: "submit_implementer_completion",
       livenessTimeoutMs: 0,
@@ -492,6 +495,7 @@ describe("installRunGuards evidence wiring", () => {
     const evidence = new RunEvidenceCollector("run-10", sink, []);
     const agent = fakeAgent();
     const unsubscribe = installRunGuards(agent as never, "run-10", {
+      abort: () => agent.abort(),
       evidence,
       livenessTimeoutMs: 0,
       maxTurns: 100,

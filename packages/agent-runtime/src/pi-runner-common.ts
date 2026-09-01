@@ -94,6 +94,15 @@ export type PiModelResolver = (
 ) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
+  /**
+   * How the guard stops the run. MUST be a deliberate abort - the session's
+   * `abort()`, which sets the SDK's abort-in-progress latch. A bare
+   * `agent.abort()` carries no reason, and the SDK's turn recovery classes
+   * a reason-less abort as a dropped provider stream and RETRIES the turn:
+   * a child session that hit its turn guard spun 1700+ turns in a test and,
+   * live, pinned its parent reviewer 30 minutes past the wall (2026-09-01).
+   */
+  readonly abort: () => void;
   /** Evidence collector fed by the guard subscription; noop when unset. */
   readonly evidence?: RunEvidenceCollector;
   /**
@@ -730,7 +739,7 @@ export function installRunGuards(
             "pi_liveness_watchdog",
           );
           options.onFailure?.(TOOL_WEDGE_FAILURE_REASON);
-          agent.abort();
+          options.abort();
           return;
         }
         armWatchdog();
@@ -745,7 +754,7 @@ export function installRunGuards(
         "pi_liveness_watchdog",
       );
       options.onFailure?.(LIVENESS_FAILURE_REASON);
-      agent.abort();
+      options.abort();
     }, delay);
   };
   armWatchdog();
@@ -867,7 +876,7 @@ export function installRunGuards(
         "pi_run_limit_exceeded",
       );
       options.onFailure?.(reason);
-      agent.abort();
+      options.abort();
     }
   });
   return () => {

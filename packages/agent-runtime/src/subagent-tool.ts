@@ -5,6 +5,8 @@ import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 export interface SubagentRequest {
   readonly description: string;
   readonly prompt: string;
+  /** The parent turn's abort; the child must die with it. */
+  readonly signal: AbortSignal | undefined;
 }
 
 /**
@@ -75,12 +77,33 @@ export function createSubagentTool(spawn: SubagentSpawner): ToolDefinition {
       "returned here. Issue several task calls in one turn to parallelize " +
       "independent work.",
     parameters,
-    execute: async (_toolCallId, rawParams) => {
-      const params = rawParams as SubagentRequest;
+    // Custom tools receive (id, params, onUpdate, ctx, signal) - the
+    // CustomTool contract - not ToolDefinition's (id, params, signal, ...).
+    // The declared type lies; the fifth argument is the turn's abort.
+    execute: async (_toolCallId, rawParams, ...runtimeArgs: unknown[]) => {
+      const signal = runtimeArgs.find(
+        (value): value is AbortSignal => value instanceof AbortSignal,
+      );
+      const params = rawParams as Omit<SubagentRequest, "signal">;
       await acquire();
       let report: string;
       try {
-        report = await spawn(params);
+        // A child that never comes back (aborted mid-tool, upstream that
+        // never answers) must not pin the parent's turn: the parent's abort
+        // is the ceiling. 2026-09-01: a reviewer sat 70 minutes past its
+        // wall awaiting a child the wall had already aborted.
+        report = await Promise.race([
+          spawn({ ...params, signal }),
+          new Promise<never>((_, reject) => {
+            if (!signal) return;
+            if (signal.aborted) reject(new Error("subagent aborted"));
+            signal.addEventListener(
+              "abort",
+              () => reject(new Error("subagent aborted")),
+              { once: true },
+            );
+          }),
+        ]);
       } finally {
         release();
       }

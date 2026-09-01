@@ -289,6 +289,22 @@ export class PiBaseAgentRunner implements PiRunner {
     let session: AgentSession | undefined;
     let handle: SandboxHandle | undefined;
     let workspaceProbe: (() => void) | undefined;
+    // Live subagent sessions. A parent abort that leaves children running
+    // can never finalize: the task tool awaits a child that nobody told to
+    // stop, so the wedge watchdog, the run wall, and cancellation all fire
+    // and the run lives on as a lease-heartbeating zombie (71 minutes past
+    // a 45-minute wall, 2026-09-01). Every parent abort drains this first.
+    const childSessions = new Set<AgentSession>();
+    const abortRun = async (): Promise<void> => {
+      for (const child of childSessions) {
+        try {
+          await child.abort();
+        } catch {
+          // a child already gone is the goal
+        }
+      }
+      await session?.abort();
+    };
     const submitTool = this.profile.submitTool(
       (value) => {
         if (
@@ -300,7 +316,7 @@ export class PiBaseAgentRunner implements PiRunner {
           resolveDraftEnvelope?.();
           // A draft closes this candidate's phase pipeline. The SDK ignores the
           // submit tool's terminate hint, so abort the stale generation.
-          void session?.abort();
+          void abortRun();
           return;
         }
         capturedEnvelope = value;
@@ -414,7 +430,7 @@ export class PiBaseAgentRunner implements PiRunner {
     const clearTimeoutGuard = withRunTimeout(
       runId,
       this.options.runTimeoutMs,
-      () => session?.abort(),
+      () => void abortRun(),
       () => {
         failureReason ??= "timeout_without_envelope";
         timeoutTriggered = true;
@@ -423,7 +439,7 @@ export class PiBaseAgentRunner implements PiRunner {
     this.activeRuns.set(runId, {
       abort: async () => {
         cancellationTriggered = true;
-        await session?.abort();
+        await abortRun();
       },
     });
 
@@ -454,7 +470,7 @@ export class PiBaseAgentRunner implements PiRunner {
           sandboxId,
           onLost: () => {
             failureReason ??= WORKSPACE_LOST_REASON;
-            void session?.abort();
+            void abortRun();
           },
         });
       }
@@ -560,7 +576,7 @@ export class PiBaseAgentRunner implements PiRunner {
         ...toolNames.filter((name) => name !== submitTool.name),
         ...sandboxTools.map((tool) => tool.name),
       ];
-      const subagentTool = createSubagentTool(async ({ prompt }) => {
+      const subagentTool = createSubagentTool(async ({ prompt, signal }) => {
         const child = await createAgentSession(
           await buildSessionOptions({
             systemPrompt: buildSubagentSystemPrompt(),
@@ -591,8 +607,15 @@ export class PiBaseAgentRunner implements PiRunner {
           {
             maxTurns: 24,
             logger: this.options.logger,
+            abort: () => void child.session.abort(),
           },
         );
+        childSessions.add(child.session);
+        // The parent's turn abort (wall, watchdog, cancel) reaches the child
+        // directly; the tool's own race returns the parent's turn regardless.
+        const abortChild = () => void child.session.abort();
+        signal?.addEventListener("abort", abortChild, { once: true });
+        if (signal?.aborted) abortChild();
         try {
           await inTraceContext(request.environment, () =>
             child.session.prompt(prompt, { expandPromptTemplates: false }),
@@ -600,6 +623,8 @@ export class PiBaseAgentRunner implements PiRunner {
           await child.session.agent.waitForIdle();
           return report;
         } finally {
+          signal?.removeEventListener("abort", abortChild);
+          childSessions.delete(child.session);
           unsubscribeChildGuards();
           unsubscribeReport();
           child.session.dispose();
@@ -662,7 +687,7 @@ export class PiBaseAgentRunner implements PiRunner {
       });
       await session.sendGoalModeContext({ deliverAs: "nextTurn" });
       if (timeoutTriggered) {
-        void session.abort();
+        void abortRun();
       }
       let zeroOutputStalled = false;
       // Jiggle before failover: a provider that rate-limits by going mute
@@ -729,6 +754,7 @@ export class PiBaseAgentRunner implements PiRunner {
         onFailure: (reason) => {
           failureReason ??= reason;
         },
+        abort: () => void abortRun(),
         onZeroOutputStall: () => {
           zeroOutputStalled = true;
         },
