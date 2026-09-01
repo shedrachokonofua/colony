@@ -239,6 +239,21 @@ export class PiBaseAgentRunner implements PiRunner {
     const workTools = this.options.tools ?? this.profile.defaultTools;
     let failureReason: string | undefined;
     let timeoutTriggered = false;
+    /**
+     * Tools whose successful use proves the agent actually looked at the
+     * repository. Deliberately broad: grok-4.6 (Cursor-native priors)
+     * inspected a diff with glob + no-op edit probes + reading subagents,
+     * never once calling read/grep, and the old read/grep-only gate
+     * rejected its honest submits three times in one run (2026-09-01,
+     * b2896f12: 216 edit probes, 45 minutes, no envelope).
+     */
+    const REPOSITORY_INSPECTION_TOOLS: Record<string, true> = {
+      read: true,
+      grep: true,
+      glob: true,
+      bash: true,
+      task: true,
+    };
     let repositoryInspected = false;
     let cancellationTriggered = false;
 
@@ -710,7 +725,7 @@ export class PiBaseAgentRunner implements PiRunner {
           return {
             block: true,
             reason:
-              "Inspect repository source or tests with read/grep before submitting.",
+              "Inspect the repository first: read or search real source/test files (read, grep, glob, bash, or a task subagent) before submitting.",
           };
         }
         const authorized = await broker.authorizeTool?.({
@@ -758,7 +773,7 @@ export class PiBaseAgentRunner implements PiRunner {
         const base = await previousAfterToolCall?.(context, signal);
         if (
           !context.isError &&
-          (context.toolCall.name === "read" || context.toolCall.name === "grep")
+          REPOSITORY_INSPECTION_TOOLS[context.toolCall.name] === true
         ) {
           repositoryInspected = true;
         }
