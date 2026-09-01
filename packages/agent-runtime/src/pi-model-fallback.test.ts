@@ -444,8 +444,8 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        maxTurns: 8,
-        runTimeoutMs: 120_000,
+        maxTurns: 60,
+        runTimeoutMs: 300_000,
         logger: {
           warn: (fields: Record<string, unknown>, message: string) => {
             warnings.push({ fields, message });
@@ -473,7 +473,7 @@ describe("Pi model fallback", () => {
     );
     expect(fallbackWarnings[0].fields.from).toBe("primary");
     expect(fallbackWarnings[0].fields.to).toBe("fallback");
-  }, 240_000);
+  }, 350_000);
 
   it("connection errors interleaved with successful turns never trigger model fallback", async () => {
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];
@@ -558,11 +558,20 @@ describe("Pi model fallback", () => {
       },
       {
         model: modelSpec(baseUrl, "primary"),
-        fallbackModels: [modelSpec(baseUrl, "second"), modelSpec(baseUrl, "third")],
+        fallbackModels: [
+          modelSpec(baseUrl, "second"),
+          modelSpec(baseUrl, "third"),
+        ],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        maxTurns: 8,
-        runTimeoutMs: 120_000,
+        // Both dead legs must settle five errors each before "third" is
+        // reached: six settled turns per leg, at ~16s apiece while the SDK
+        // retries one dead upstream, so the wall has to cover ~200s (plus
+        // the two jiggles the stall path spends on a leg that goes mute
+        // before its connection budget is spent). maxTurns must exceed the
+        // turns a leg needs or the turn guard ends the run first.
+        maxTurns: 60,
+        runTimeoutMs: 600_000,
         logger: {
           warn: (fields: Record<string, unknown>, message: string) => {
             warnings.push({ fields, message });
@@ -606,7 +615,7 @@ describe("Pi model fallback", () => {
     expect(countOf(requestedModels, "second")).toBe(
       countOf(requestedModels, "primary"),
     );
-  }, 240_000);
+  }, 700_000);
 
   it("a single-model configuration never logs a model fallback on repeated connection errors", async () => {
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];

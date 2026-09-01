@@ -467,10 +467,10 @@ export class PiBaseAgentRunner implements PiRunner {
         Settings.isolated({
           "compaction.enabled": true,
           "retry.enabled": true,
-          // The SDK retries transient failures same-model with exponential
-          // backoff and defaults to 10 attempts. On a dead leg that burns
-          // the whole run wall inside one prompt before the runner ever
-          // sees an error, so bound the leg's own budget here too.
+          // The SDK's auto-retry re-prompts a transient failure same-model
+          // with exponential backoff, defaulting to 10 attempts. On a dead
+          // leg that spends the whole run wall inside one prompt, so bound
+          // the budget the leg may burn before the runner sees an error.
           "retry.maxRetries": 4,
           "todo.enabled": true,
           "todo.reminders": true,
@@ -967,22 +967,27 @@ export class PiBaseAgentRunner implements PiRunner {
               if (CONNECTION_ERROR_RE.test(errText)) {
                 // Under budget this was a blip: the model stays and the
                 // continuation loop re-prompts it. Over budget the leg is
-                // dead; with no candidate left the loop classifies it
-                // (invariant 7) instead of throwing past finalization.
+                // dead, and with no candidate left the failure is
+                // classified as infrastructure so the run keeps its
+                // attempt budget instead of throwing past finalization.
                 if (connectionErrors < MODEL_CONNECTION_ERROR_LIMIT) return true;
-                if (next) {
-                  this.options.logger?.warn?.(
-                    {
-                      runId,
-                      from: candidate.id,
-                      to: next.id,
-                      error: `provider_connection_exhausted: ${(
-                        lastConnectionError ?? errText
-                      ).slice(0, 160)}`,
-                    },
-                    "pi_model_fallback",
-                  );
+                if (!next) {
+                  failureReason = `provider_connection_failure: ${(
+                    lastConnectionError ?? errText
+                  ).slice(0, 160)}`;
+                  return false;
                 }
+                this.options.logger?.warn?.(
+                  {
+                    runId,
+                    from: candidate.id,
+                    to: next.id,
+                    error: `provider_connection_exhausted: ${(
+                      lastConnectionError ?? errText
+                    ).slice(0, 160)}`,
+                  },
+                  "pi_model_fallback",
+                );
                 return false;
               }
               this.options.logger?.warn?.(
