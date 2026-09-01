@@ -110,6 +110,16 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
    * wake/backoff/failover decision.
    */
   readonly onZeroOutputStall?: () => void;
+  /**
+   * Fired on EVERY assistant `message_end` with the turn's terminal state,
+   * so the runner can distinguish "this model answered" from "this model's
+   * transport died". Flag-only for the same reason as {@link onZeroOutputStall}:
+   * the guard reports, the runner owns the retry/failover decision.
+   */
+  readonly onAssistantMessage?: (message: {
+    readonly stopReason: string;
+    readonly errorMessage: string | undefined;
+  }) => void;
   readonly zeroOutputStallTurns?: number;
   /**
    * Max silence between agent events before the run is declared dead.
@@ -820,6 +830,11 @@ export function installRunGuards(
         "pi_turn_usage",
       );
       previousMessageAt = messageCompletedAt;
+      // Reported last so the guard's own accounting above is unaffected.
+      options.onAssistantMessage?.({
+        stopReason: event.message.stopReason,
+        errorMessage: event.message.errorMessage,
+      });
       if ((usage?.output ?? 0) === 0) {
         zeroOutputTurns += 1;
         if (zeroOutputTurns >= zeroOutputStallTurns) {
