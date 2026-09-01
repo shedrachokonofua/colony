@@ -1409,7 +1409,10 @@ describe("run adoption and sandbox id", () => {
     expect(store.adoptRun(runId, 60_000)).toBe(true);
     const after = store.getRun(runId)!;
     expect(after.adopted).toBe(1);
-    expect(new Date(after.lease_expires_at).getTime()).toBeGreaterThan(
+    // >= not >: startRun and adoptRun in the same millisecond legitimately
+    // produce identical now+ttl leases (CI job 19417 and a local full-suite
+    // run each lost this race on a different sibling test).
+    expect(new Date(after.lease_expires_at).getTime()).toBeGreaterThanOrEqual(
       new Date(before.lease_expires_at).getTime(),
     );
 
