@@ -733,7 +733,20 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (scope.status !== "blocked") {
       return conflict(c, new Error("scope is not blocked"));
     }
-    const target = ctx.store.listTasks(scope.id).length ? "active" : "planning";
+    const tasks = ctx.store.listTasks(scope.id);
+    // A scope blocked out of validation (replan budget spent) goes back to
+    // validating with a FRESH validate run: the replan budget is counted
+    // since the latest validate, so this is what makes unblock mean "try
+    // again" instead of "re-block on the next tick".
+    const validationBlocked =
+      tasks.length > 0 &&
+      tasks.every((task) => ["merged", "canceled"].includes(task.state)) &&
+      ctx.store.runsForScope(scope.id).some((run) => run.kind === "validate");
+    const target = validationBlocked
+      ? "validating"
+      : tasks.length
+        ? "active"
+        : "planning";
     try {
       ctx.store.setScopeStatus(scope.id, target, c.get("actor"), {
         reason: "operator_unblock",
@@ -745,6 +758,9 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       scope_id: scope.id,
       detail: { to: target },
     });
+    if (validationBlocked) {
+      void runValidation(ctx, ctx.store.getScope(scope.id)!);
+    }
     ctx.requestTick();
     return c.json(ctx.store.getScope(scope.id));
   });

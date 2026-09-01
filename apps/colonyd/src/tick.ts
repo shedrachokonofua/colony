@@ -17,6 +17,9 @@ import {
 } from "./runs/validate.js";
 import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
 import { isInfraError } from "./run-classification.js";
+
+/** Agent-caused replan failures after one failed validation before the scope blocks. */
+const MAX_VALIDATION_REPLAN_FAILURES = 3;
 /** Fire-and-forget run dispatch; records that this tick dispatched work. */
 type RunDispatcher = (run: Promise<void>) => void;
 
@@ -784,13 +787,28 @@ async function validateScopes(
       continue;
     }
     if (lastValidate.status === "succeeded") continue;
-    const lastArchitect = runs.filter((run) => run.kind === "architect").at(-1);
-    if (lastArchitect && lastArchitect.started_at > lastValidate.started_at) {
-      if (lastArchitect.status === "succeeded") {
-        const slot = pickDispatchSlot(ctx, "developer");
-        if (!slot.allowed) continue;
-        dispatch(runValidation(ctx, fresh));
-      }
+    const architectsSince = runs.filter(
+      (run) =>
+        run.kind === "architect" && run.started_at > lastValidate.started_at,
+    );
+    const lastArchitect = architectsSince.at(-1);
+    if (lastArchitect?.status === "succeeded") {
+      const slot = pickDispatchSlot(ctx, "developer");
+      if (!slot.allowed) continue;
+      dispatch(runValidation(ctx, fresh));
+      continue;
+    }
+    // A failed replan used to park the scope here forever: nothing retried
+    // the architect and nothing blocked the scope (col-3a0319cc sat seven
+    // hours behind a restart-killed replan, 2026-09-01). Infra deaths are
+    // free; agent failures are budgeted like every other retry.
+    const agentFailures = architectsSince.filter(
+      (run) => run.status === "failed" && !isInfraError(run.error),
+    ).length;
+    if (agentFailures >= MAX_VALIDATION_REPLAN_FAILURES) {
+      ctx.store.setScopeStatus(fresh.id, "blocked", SERVICE_ACTOR, {
+        blocked_reason: `validation replan failed ${agentFailures} times: ${lastArchitect?.error ?? "unknown"}`,
+      });
       continue;
     }
     if (fresh.extension_rounds >= MAX_EXTENSION_ROUNDS) {

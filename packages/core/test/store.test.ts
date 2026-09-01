@@ -89,6 +89,10 @@ describe("state machine", () => {
       ["validating", "active"],
       ["validating", "planning"],
       ["validating", "abandoned"],
+      // Validation replan budget spent -> blocked; operator unblock -> back
+      // to validating with a fresh validate run.
+      ["validating", "blocked"],
+      ["blocked", "validating"],
       ["blocked", "planning"],
       ["blocked", "active"],
       ["draft", "abandoned"],
@@ -111,7 +115,6 @@ describe("state machine", () => {
       ["planning", "done"],
       ["planning", "validating"],
       ["active", "planning"],
-      ["validating", "blocked"],
       ["draft", "validating"],
       ["abandoned", "active"],
       ["done", "abandoned"],

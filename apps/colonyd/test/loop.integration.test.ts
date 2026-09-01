@@ -1017,6 +1017,68 @@ describe("colonyd fake end-to-end loop", () => {
     expect(succeededRuns.length).toBeGreaterThanOrEqual(1);
   }, 30_000);
 
+  it("a restart-killed validation replan is retried, and agent-failed replans block the scope", async () => {
+    // col-3a0319cc, 2026-09-01: validate failed, the replanning architect
+    // died to a restart, and the scope sat seven hours - nothing retried
+    // the architect, nothing blocked the scope.
+    script.validateFail = true;
+    const scopeId = await createScope("stalled replan");
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      if (
+        handle.ctx.store
+          .runsForScope(scopeId)
+          .some((r) => r.kind === "validate" && r.status === "failed")
+      )
+        break;
+    }
+    const store = handle.ctx.store;
+    expect(store.getScope(scopeId)!.status).toBe("validating");
+    const architectsBefore = store
+      .runsForScope(scopeId)
+      .filter((r) => r.kind === "architect").length;
+
+    // Simulate the replan the restart killed: a failed architect row that
+    // started after the failed validate.
+    const dead = store.startRun({
+      scope_id: scopeId,
+      task_id: null,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+    });
+    store.finishRun(dead.id, "failed", { error: "process_restart" });
+
+    await tickAndSettle();
+    const architectsAfter = store
+      .runsForScope(scopeId)
+      .filter((r) => r.kind === "architect").length;
+    // Infra death is free: a fresh replan was dispatched.
+    expect(architectsAfter).toBeGreaterThan(architectsBefore + 1);
+    expect(store.getScope(scopeId)!.status).not.toBe("blocked");
+
+    // Three agent-caused replan failures after the validate: block, loudly.
+    for (let i = 0; i < 3; i += 1) {
+      const run = store.startRun({
+        scope_id: scopeId,
+        task_id: null,
+        kind: "architect",
+        lease_ttl_ms: 60_000,
+      });
+      store.finishRun(run.id, "failed", { error: "finalize_no_submission" });
+    }
+    // The retried replan may still be settling into a fresh (failing)
+    // validate; give the loop a few ticks to reach the budget check.
+    for (let i = 0; i < 5; i += 1) {
+      await tickAndSettle();
+      if (store.getScope(scopeId)!.status === "blocked") break;
+    }
+    const blocked = store.getScope(scopeId)!;
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.blocked_reason).toMatch(
+      /^validation replan failed [34] times/,
+    );
+  }, 30_000);
+
   it("every run kind's colony.run span carries the run row id", async () => {
     const seam = registerInMemorySpanExporter();
     try {
