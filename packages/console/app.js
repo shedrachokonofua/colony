@@ -1531,6 +1531,7 @@ function renderDag(detail) {
     ${edgeMarkup}${nodeMarkup}
   </svg>`;
 }
+
 /**
  * Select a task once its scope detail holds it. A Running-tab row navigates
  * before the sheet's detail is loaded, so the selection waits here rather
@@ -3292,7 +3293,7 @@ async function refresh() {
         state.detail = scopeRow
           ? scopeRow.id === world.detail.scope.id
             ? world.detail
-            : (world.runningDetails?.[scopeRow.id] ?? {
+            : (world.runningDetails[scopeRow.id] ?? {
                 scope: scopeRow,
                 tasks: [],
                 deps: [],
