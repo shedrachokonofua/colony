@@ -165,13 +165,18 @@ agents:
     thinking_level: high
     timeout_ms: 10800000
     max_turns: 400
+  # 2026-09-01: kimi's weekly window is exhausted with an unknown reset;
+  # leading with it made every review 403 at dispatch and pile onto the
+  # single qwen credential via runtime fallback (five concurrent reviews,
+  # five 45-minute walls). Grok leads until kimi's window returns; kimi
+  # stays in the chain to resume naturally when it does.
   reviewer:
     provider: openai_compatible
-    model: kimi-k3
+    model: grok-4.6
     fallback_models:
-      - grok-4.6
       - qwen3.8-max
       - deepseek-v4-pro
+      - kimi-k3
       - qwen3.8-27b
     thinking_level: xhigh
     timeout_ms: 2700000
