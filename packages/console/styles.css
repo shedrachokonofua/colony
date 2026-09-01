@@ -264,6 +264,15 @@ body {
   font-size: 0.88rem;
 }
 
+.banner-archived {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  background: var(--wash);
+  border: 1px solid var(--line-strong);
+  color: var(--navy);
+}
+
 /* ---------- Chips ---------- */
 
 .chip {
@@ -307,6 +316,12 @@ body {
   background: var(--danger-soft);
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
+}
+
+.chip[data-kind="archived"] {
+  background: var(--wash);
+  border-color: var(--line-strong);
+  color: var(--faint);
 }
 
 /* ---------- Buttons ---------- */
@@ -674,6 +689,43 @@ body {
 
 .project-card-repos a:hover {
   text-decoration: underline;
+}
+
+/* Archived rows are read-only: muted, and Unarchive is their only action. */
+.project-card.is-archived {
+  background: var(--wash);
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.project-card.is-archived:hover,
+.project-card.is-archived:focus-visible {
+  border-color: var(--line);
+}
+
+.project-card.is-archived .btn {
+  align-self: flex-start;
+}
+
+.project-card-link {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.project-card-link:hover {
+  text-decoration: underline;
+}
+
+.archived-section {
+  margin-top: 1.2rem;
+}
+
+.archived-head {
+  margin: 0 0 0.5rem;
+  font: 600 0.78rem var(--body);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
 }
 
 /* ---------- Project tabs + settings ---------- */

@@ -121,6 +121,7 @@ const state = {
   filesPage: null,
   projectFiles: null,
   projectTab: "scopes",
+  showArchived: false,
   briefOpen: false,
   confirmFile: null,
   replaceFileId: null,
@@ -954,6 +955,30 @@ function toggle(key) {
   paint();
 }
 
+/**
+ * The list-query suffix that reveals archived projects. Demo mode must not
+ * send it: the demo world has no archived projects and every extra query
+ * parameter is a divergence from the API's default page.
+ */
+function archivedQuery() {
+  return state.showArchived && !DEMO ? "&archived=1" : "";
+}
+
+/** Flip the archived-projects toggle; the 2.5s poll re-reads this state. */
+function toggleShowArchived() {
+  state.showArchived = !state.showArchived;
+  // Hiding archived projects must not leave the old page's rows on screen
+  // while the refetch is in flight: drop the page and refetch first, then
+  // paint. Showing them keeps the current rows, so it repaints immediately.
+  if (state.showArchived) {
+    paint();
+    void refresh();
+    return;
+  }
+  state.projectsPage = null;
+  void refresh();
+}
+
 function setProjectTab(tab) {
   state.projectTab = tab;
   state.briefOpen = false;
@@ -1610,6 +1635,35 @@ function abandonButton(scope) {
       </button>`;
 }
 
+/**
+ * Archived projects are read-only: the only action is Unarchive, and it
+ * needs no confirm step (it restores, it does not destroy).
+ */
+function unarchiveButton(projectName) {
+  return html`<button
+    class="btn"
+    @click=${() =>
+      mutate(`/projects/${encodeURIComponent(projectName)}/unarchive`)}
+  >
+    Unarchive
+  </button>`;
+}
+
+/** Going the other way hides the project, so it stays behind a confirm. */
+function archiveButton(projectName) {
+  return state.confirm === "archive"
+    ? html`<button
+        class="btn btn-rev"
+        @click=${() =>
+          mutate(`/projects/${encodeURIComponent(projectName)}/archive`)}
+      >
+        Confirm archive
+      </button>`
+    : html`<button class="btn btn-quiet" @click=${() => setConfirm("archive")}>
+        Archive project
+      </button>`;
+}
+
 function renderTopbar() {
   const id = routeScopeId();
   const scopeProject = id ? state.detail?.scope?.project_name || null : null;
@@ -1747,6 +1801,35 @@ function projectCard(project) {
   </a>`;
 }
 
+/**
+ * Read-only row for an archived project. The name is not a link target of
+ * its own — the row's only actions are View project (scopes stay visible
+ * through history) and Unarchive.
+ */
+function archivedProjectRow(project) {
+  return html`<div class="project-card project-row is-archived">
+    <span class="project-card-name">${project.name}</span>
+    <span class="project-card-meta">
+      <span class="chip" data-kind="archived">Archived</span>
+      <span class="mono">${rel(project.archived_at)}</span>
+      <span class="mono"
+        >${project.scope_count}
+        scope${project.scope_count === 1 ? "" : "s"}</span
+      >
+      <a class="project-card-link" href=${projectHref(project.name)}
+        >View project</a
+      >
+    </span>
+    <button
+      class="btn btn-quiet"
+      @click=${() =>
+        mutate(`/projects/${encodeURIComponent(project.name)}/unarchive`)}
+    >
+      Unarchive
+    </button>
+  </div>`;
+}
+
 function renderPager({ base, page, total, items, label }) {
   if (total <= PAGE_SIZE) return nothing;
   const from = (page - 1) * PAGE_SIZE + 1;
@@ -1767,7 +1850,11 @@ function renderPager({ base, page, total, items, label }) {
 
 function renderProjectList() {
   const page = state.projectsPage;
-  const rows = page?.projects ?? [];
+  const pageRows = page?.projects ?? [];
+  // The default fetch never returns archived projects, but a toggle flip
+  // repaints before its refetch lands — partition so the two never cross.
+  const rows = pageRows.filter((project) => !project.archived_at);
+  const archived = pageRows.filter((project) => project.archived_at);
   const total = page?.total ?? 0;
   const items = rows.length;
   const pageNo = page?.page ?? 1;
@@ -1780,6 +1867,13 @@ function renderProjectList() {
       <div class="board-head">
         <h1 class="board-title">Projects</h1>
         <div class="board-head-actions">
+          <button
+            class="btn btn-quiet"
+            aria-pressed=${state.showArchived}
+            @click=${toggleShowArchived}
+          >
+            ${state.showArchived ? "Hide archived" : "Show archived"}
+          </button>
           <a class="btn btn-solid" href="#/new-project">New project</a>
         </div>
       </div>
@@ -1788,16 +1882,27 @@ function renderProjectList() {
             <p>No projects yet</p>
             <a class="btn btn-solid" href="#/new-project">New project</a>
           </div>`
-        : items === 0
+        : items === 0 && archived.length === 0
           ? html`<div class="rack-empty">
               <p>Past the last page.</p>
               <a class="btn btn-solid" href=${hrefForPage(base, 1)}
                 >Back to page 1</a
               >
             </div>`
-          : html`<div class="project-cards">
-              ${repeat(rows, (project) => project.name, projectCard)}
-            </div>`}
+          : nothing}
+      ${items
+        ? html`<div class="project-cards">
+            ${repeat(rows, (project) => project.name, projectCard)}
+          </div>`
+        : nothing}
+      ${state.showArchived && archived.length
+        ? html`<section class="archived-section">
+            <p class="archived-head">Archived</p>
+            <div class="project-cards">
+              ${repeat(archived, (project) => project.name, archivedProjectRow)}
+            </div>
+          </section>`
+        : nothing}
       ${renderPager({
         base,
         page: pageNo,
@@ -1826,18 +1931,29 @@ function renderProjectPage() {
   const scopes = page.scopes ?? [];
   const description = projectDescription(page.project.context_doc);
   const tab = state.projectTab;
+  const archivedAt = page.project.archived_at ?? null;
   return html`
     ${state.error
       ? html`<div class="banner banner-error" role="alert">${state.error}</div>`
       : nothing}
     <div class="project-page" id="draw">
+      ${archivedAt
+        ? html`<div class="banner banner-archived" role="status">
+            Archived ${rel(archivedAt)}
+          </div>`
+        : nothing}
       <header class="board-head">
         <h1 class="board-title">${page.project.name}</h1>
-        <a
-          class="btn btn-solid"
-          href=${`#/new?project=${encodeURIComponent(page.project.name)}`}
-          >New scope</a
-        >
+        <div class="board-head-actions">
+          ${archivedAt
+            ? unarchiveButton(page.project.name)
+            : html`${archiveButton(page.project.name)}
+                <a
+                  class="btn btn-solid"
+                  href=${`#/new?project=${encodeURIComponent(page.project.name)}`}
+                  >New scope</a
+                >`}
+        </div>
       </header>
       ${description
         ? html`<p class="project-desc">${description}</p>`
@@ -3109,7 +3225,7 @@ async function refresh() {
     }
     state.projectPage = null;
     const projectsPage = await api(
-      `/projects?limit=${PAGE_SIZE}&offset=${offset}`,
+      `/projects?limit=${PAGE_SIZE}&offset=${offset}${archivedQuery()}`,
     );
     state.projectsPage = {
       projects: projectsPage.projects ?? [],
@@ -3223,6 +3339,7 @@ window.addEventListener("hashchange", () => {
   state.filesPage = null;
   state.projectFiles = null;
   state.projectTab = "scopes";
+  state.showArchived = false;
   state.briefOpen = false;
   state.confirmFile = null;
   state.replaceFileId = null;

@@ -169,6 +169,93 @@ describe("composer fixed-project behavior", () => {
   });
 });
 
+describe("archived projects", () => {
+  it("app.js offers a Show archived toggle in the index head", () => {
+    expect(appSource).toContain("Show archived");
+    expect(appSource).toContain("Hide archived");
+    // The toggle is list state, so it survives the 2.5s poll refresh.
+    expect(appSource).toMatch(/showArchived: false,/);
+    expect(appSource).toMatch(
+      /\$\{state\.showArchived \? "Hide archived" : "Show archived"\}/,
+    );
+    const reset = appSource.slice(
+      appSource.indexOf('window.addEventListener("hashchange"'),
+    );
+    expect(reset).toContain("state.showArchived = false;");
+  });
+
+  it("the list fetch adds archived=1 only when the toggle is on", () => {
+    expect(appSource).toMatch(
+      /api\(\s*`\/projects\?limit=\$\{PAGE_SIZE\}&offset=\$\{offset\}\$\{archivedQuery\(\)\}`/,
+    );
+    const helper = appSource.slice(
+      appSource.indexOf("function archivedQuery()"),
+    );
+    expect(helper.slice(0, helper.indexOf("\n}"))).toContain('"&archived=1"');
+    // Demo mode has no archived projects: it must keep the default query.
+    expect(helper.slice(0, helper.indexOf("\n}"))).toContain("!DEMO");
+  });
+
+  it("archived rows render read-only with an Unarchive action", () => {
+    expect(appSource).toMatch(/function archivedProjectRow\(project\)/);
+    expect(appSource).toContain('class="project-card project-row is-archived"');
+    expect(appSource).toContain('<span class="chip" data-kind="archived">');
+    expect(appSource).toContain(
+      "mutate(`/projects/${encodeURIComponent(project.name)}/unarchive`)",
+    );
+    // The archived rows are partitioned out of the live list, never rendered
+    // by the live card renderer.
+    expect(appSource).toMatch(
+      /pageRows\.filter\(\(project\) => !project\.archived_at\)/,
+    );
+    expect(appSource).toMatch(
+      /repeat\(archived, \(project\) => project\.name, archivedProjectRow\)/,
+    );
+  });
+
+  it("the project page shows an archived banner + Unarchive when archived", () => {
+    expect(appSource).toContain('class="banner banner-archived"');
+    expect(appSource).toMatch(
+      /archivedAt\s*\n\s*\? html`<div class="banner banner-archived"/,
+    );
+    const page = appSource.slice(
+      appSource.indexOf("function renderProjectPage()"),
+      appSource.indexOf("function renderProjectRail()"),
+    );
+    expect(page).toContain("unarchiveButton(page.project.name)");
+    expect(page).toContain("archiveButton(page.project.name)");
+    // New scope is a live-project action only.
+    expect(page).toMatch(/archivedAt\s*\n\s*\? unarchiveButton/);
+  });
+
+  it("archive is a two-step confirm, unarchive is not", () => {
+    const archive = appSource.slice(
+      appSource.indexOf("function archiveButton(projectName)"),
+      appSource.indexOf("function renderTopbar()"),
+    );
+    expect(archive).toContain('state.confirm === "archive"');
+    expect(archive).toContain('setConfirm("archive")');
+    expect(archive).toContain("Confirm archive");
+    expect(archive).toContain(
+      "mutate(`/projects/${encodeURIComponent(projectName)}/archive`)",
+    );
+    const unarchive = appSource.slice(
+      appSource.indexOf("function unarchiveButton(projectName)"),
+      appSource.indexOf("function archiveButton(projectName)"),
+    );
+    expect(unarchive).not.toContain("state.confirm");
+    expect(unarchive).toContain(
+      "mutate(`/projects/${encodeURIComponent(projectName)}/unarchive`)",
+    );
+  });
+
+  it("styles.css defines the archived banner and read-only row", () => {
+    expect(cssSource).toContain(".banner-archived {");
+    expect(cssSource).toContain('.chip[data-kind="archived"] {');
+    expect(cssSource).toContain(".project-card.is-archived {");
+  });
+});
+
 describe("project knowledge editor", () => {
   it("the textarea is only the Edit-brief view, never the default render", () => {
     // The editor must live behind the briefOpen branch, not next to an

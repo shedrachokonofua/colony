@@ -139,6 +139,33 @@ test.describe("console projects (demo)", () => {
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
 
+  test("the archived toggle leaves the demo index untouched", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+
+    await page.goto("/?demo=1#/");
+    await expect(page.locator(".pager-range")).toHaveText("1–25 of 28", {
+      timeout: 15000,
+    });
+    await page.getByRole("button", { name: "Show archived" }).click();
+    // No demo project is archived, so the pager and the cards are unchanged.
+    await expect(page.locator(".pager-range")).toHaveText("1–25 of 28", {
+      timeout: 15000,
+    });
+    await expect(page.locator(".archived-section")).toHaveCount(0, {
+      timeout: 15000,
+    });
+    await expect(page.locator(".project-card")).toHaveCount(25);
+    await page.getByRole("button", { name: "Hide archived" }).click();
+    await expect(page.locator(".pager-range")).toHaveText("1–25 of 28", {
+      timeout: 15000,
+    });
+
+    expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
+  });
+
   test("out-of-range pages route back to page 1", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
@@ -402,6 +429,105 @@ test.describe("console projects (live)", () => {
 
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
     void fileId;
+  });
+
+  test("archived projects: hidden by default, revealed read-only by the toggle", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+
+    const name = `e2e-arch-${Date.now()}`;
+    await createProjectViaApi(request, { name });
+    const liveName = `e2e-live-${Date.now()}`;
+    await createProjectViaApi(request, { name: liveName });
+    const archive = await request.post(
+      `/projects/${encodeURIComponent(name)}/archive`,
+      { headers: { "X-Actor-Id": "human:op-1" } },
+    );
+    expect(archive.ok(), `POST archive ${archive.status()}`).toBeTruthy();
+
+    // 1. Default index hides the archived project.
+    await page.goto("/#/");
+    const liveCard = page
+      .locator(".project-card", { hasText: liveName })
+      .first();
+    await expect(liveCard).toBeVisible({ timeout: 15000 });
+    await expect(page.locator(".project-card", { hasText: name })).toHaveCount(
+      0,
+      { timeout: 15000 },
+    );
+
+    // 2. Show archived reveals it read-only, with an Unarchive action.
+    await page.getByRole("button", { name: "Show archived" }).click();
+    const archivedCard = page
+      .locator(".project-card.is-archived", { hasText: name })
+      .first();
+    await expect(archivedCard).toBeVisible({ timeout: 15000 });
+    await expect(archivedCard.locator(".chip")).toContainText("Archived");
+    await expect(
+      archivedCard.getByRole("button", { name: "Unarchive" }),
+    ).toBeVisible();
+    // Live rows keep rendering as cards beside the archived section.
+    await expect(liveCard).toBeVisible({ timeout: 15000 });
+
+    // 3. Its project page shows the archived banner + Unarchive, and drops
+    //    the New scope action (read-only).
+    await page.goto(`/#/project/${encodeURIComponent(name)}`);
+    await expect(page.locator(".banner-archived")).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(page.locator(".banner-archived")).toContainText("Archived");
+    await expect(page.getByRole("button", { name: "Unarchive" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "New scope" })).toHaveCount(0);
+
+    // 4. Unarchive from the list returns it to the default list.
+    await page.goto("/#/");
+    await page.getByRole("button", { name: "Show archived" }).click();
+    await page
+      .locator(".project-card.is-archived", { hasText: name })
+      .first()
+      .getByRole("button", { name: "Unarchive" })
+      .click();
+    await expect(
+      page.locator(".project-card.is-archived", { hasText: name }),
+    ).toHaveCount(0, { timeout: 15000 });
+    // Hiding archived projects again still lists it: it is live now.
+    await page.getByRole("button", { name: "Hide archived" }).click();
+    await expect(
+      page.locator(".project-card", { hasText: name }).first(),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(page.locator(".archived-section")).toHaveCount(0, {
+      timeout: 15000,
+    });
+    // The banner is gone once it is live again.
+    await page.goto(`/#/project/${encodeURIComponent(name)}`);
+    await expect(page.locator(".banner-archived")).toHaveCount(0, {
+      timeout: 15000,
+    });
+    await expect(page.getByRole("link", { name: "New scope" })).toBeVisible({
+      timeout: 15000,
+    });
+
+    // 5. Archive is a two-step confirm on a live project.
+    await page.getByRole("button", { name: "Archive project" }).click();
+    const confirmArchive = page.getByRole("button", {
+      name: "Confirm archive",
+    });
+    await expect(confirmArchive).toBeVisible({ timeout: 15000 });
+    await confirmArchive.click();
+    await expect(page.locator(".banner-archived")).toBeVisible({
+      timeout: 15000,
+    });
+    await page.goto("/#/");
+    await expect(page.locator(".project-card", { hasText: name })).toHaveCount(
+      0,
+      { timeout: 15000 },
+    );
+
+    expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
 
   test("index pagination with live projects", async ({ page, request }) => {
