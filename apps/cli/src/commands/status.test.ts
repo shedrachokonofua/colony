@@ -30,7 +30,7 @@ function runsRow(id: string, overrides: Partial<RunsRow> = {}): RunsRow {
   return {
     id,
     kind: "code",
-    model: "claude-opus-4",
+    model_id: "claude-opus-4",
     status: "running",
     started_at: "2026-08-30T10:00:00.000Z",
     finished_at: null,
@@ -46,7 +46,7 @@ const RUNS: Record<string, RunsRow[]> = {
       finished_at: "2026-08-30T10:05:00.000Z",
     }),
   ],
-  "col-2": [runsRow("run-3", { model: "gpt-5" })],
+  "col-2": [runsRow("run-3", { model_id: "gpt-5" })],
 };
 
 interface StatusRoutes {

@@ -35,7 +35,7 @@ export async function run(
     return [
       r.id,
       r.kind,
-      r.model ?? "-",
+      r.model_id ?? "-",
       ansi(io.isTty, statusCode(r.status), r.status),
       ms === null ? "-" : formatDuration(ms),
     ];

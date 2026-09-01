@@ -134,6 +134,61 @@ describe("main", () => {
     expect(errors.join("")).toBe("NOT_FOUND (404): scope not found\n");
   });
 
+  it("labels a connection failure as a network error", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.reject(
+        Object.assign(new TypeError("Unable to connect"), {
+          code: "ConnectionRefused",
+        }),
+      )) as unknown as typeof fetch;
+    const errors: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      errors.push(
+        typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"),
+      );
+      return true;
+    }) as typeof process.stderr.write;
+    let code: number;
+    try {
+      code = await main(["scopes", "--token", "t", "--json"]);
+    } finally {
+      process.stderr.write = originalWrite;
+      globalThis.fetch = originalFetch;
+    }
+    expect(code).toBe(1);
+    expect(errors.join("")).toBe("network error: Unable to connect\n");
+  });
+
+  it("does not call missing-file errors a network error", async () => {
+    const errors: string[] = [];
+    const originalWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      errors.push(
+        typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"),
+      );
+      return true;
+    }) as typeof process.stderr.write;
+    let code: number;
+    try {
+      code = await main([
+        "context",
+        "p",
+        "--set",
+        "/nonexistent/x.md",
+        "--token",
+        "t",
+      ]);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    expect(code).toBe(1);
+    const text = errors.join("");
+    expect(text).toContain("ENOENT");
+    expect(text).not.toContain("network error");
+  });
+
   it("exits 2 on a usage error", async () => {
     const errors: string[] = [];
     const originalWrite = process.stderr.write.bind(process.stderr);

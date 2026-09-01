@@ -1,6 +1,5 @@
-import type { ColonyClient } from "../client.js";
+import { ApiError, type ColonyClient } from "../client.js";
 import type { ParsedCommand } from "../args.js";
-import { iterPages, toCursorPage } from "../cursor.js";
 import type { RunDetail } from "./run.js";
 
 export interface RunEvent {
@@ -62,19 +61,13 @@ export async function run(
     }
   };
 
-  // Backfill: walk pages backwards until the run's first event is printed.
-  for await (const page of iterPages<RunEvent>(async (beforeId) => {
-    const res = await client.get<EventPage>(
-      `/runs/${encodeURIComponent(id)}/events`,
-      {
-        before_id: beforeId,
-        limit: 100,
-      },
-    );
-    return toCursorPage(res);
-  })) {
-    print(page);
-  }
+  // First page only: the human view starts at the newest window and -f
+  // streams everything newer from there.
+  const first = await client.get<EventPage>(
+    `/runs/${encodeURIComponent(id)}/events`,
+    { limit: 100 },
+  );
+  print(first.events);
 
   if (!follow) return 0;
 
@@ -84,12 +77,19 @@ export async function run(
     );
     if (status.status !== "running") return 0;
     await sleep(POLL_INTERVAL_MS);
-    const res = await client.get<EventPage>(
-      `/runs/${encodeURIComponent(id)}/events`,
-      {
-        limit: 100,
-      },
-    );
+    let res: EventPage;
+    try {
+      res = await client.get<EventPage>(
+        `/runs/${encodeURIComponent(id)}/events`,
+        { limit: 100 },
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 0) {
+        process.stderr.write(`logs: ${err.message}; retrying\n`);
+        continue;
+      }
+      throw err;
+    }
     print(res.events.filter((event) => event.id > lastId));
   }
 }

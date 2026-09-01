@@ -29,7 +29,7 @@ function task(id: string, overrides: Partial<TaskRow> = {}): TaskRow {
     attempt: 1,
     mr_iid: null,
     branch: null,
-    model: "claude-opus-4",
+    model_id: "claude-opus-4",
     ...overrides,
   };
 }
@@ -38,7 +38,7 @@ function runRow(id: string, overrides: Partial<RunsRow> = {}): RunsRow {
   return {
     id,
     kind: "code",
-    model: "claude-opus-4",
+    model_id: "claude-opus-4",
     status: "succeeded",
     started_at: "2026-08-30T10:00:00.000Z",
     finished_at: "2026-08-30T10:05:00.000Z",
@@ -169,13 +169,13 @@ describe("scope", () => {
           state: "running",
           attempt: 2,
           mr_iid: 17,
-          model: "claude-opus-4",
+          model_id: "claude-opus-4",
         }),
         task("t-2", {
           title: "Ship",
           state: "pending",
           mr_iid: null,
-          model: null,
+          model_id: null,
         }),
       ],
     });
@@ -204,7 +204,7 @@ describe("scope", () => {
         runRow("run-5"),
         runRow("run-6", {
           kind: "validate",
-          model: null,
+          model_id: null,
           status: "running",
           finished_at: null,
         }),

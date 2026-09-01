@@ -12,7 +12,7 @@ export interface RunDetail {
   scope_id: string;
   task_id: string | null;
   kind: string;
-  model: string | null;
+  model_id: string | null;
   status: string;
   started_at: string;
   finished_at: string | null;
@@ -35,7 +35,7 @@ export async function run(
   const lines = [
     `${r.id}  ${ansi(io.isTty, statusCode(r.status), r.status)}`,
     `kind:     ${r.kind}`,
-    `model:    ${r.model ?? "-"}`,
+    `model:    ${r.model_id ?? "-"}`,
     `scope:    ${r.scope_id}`,
     `task:     ${r.task_id ?? "-"}`,
     `started:  ${r.started_at}`,

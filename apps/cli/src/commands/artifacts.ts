@@ -26,6 +26,19 @@ interface ArtifactRemote {
   error: { code: string; message: string; ref?: string };
 }
 
+/** Parse an ARTIFACT_REMOTE envelope; anything else is ordinary bytes. */
+function parseArtifactError(bytes: Buffer): ArtifactRemote | null {
+  try {
+    const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const error = (parsed as { error?: unknown }).error;
+    if (typeof error !== "object" || error === null) return null;
+    return { error } as ArtifactRemote;
+  } catch {
+    return null;
+  }
+}
+
 export async function run(
   cmd: ParsedCommand,
   client: ColonyClient,
@@ -81,9 +94,12 @@ async function download(
   const res = await client.raw(
     `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`,
   );
+  // Read the body exactly once, then sniff: an ARTIFACT_REMOTE envelope is
+  // JSON; everything else is artifact bytes.
+  const bytes = Buffer.from(await res.arrayBuffer());
   const contentType = res.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
-    const body = (await res.json()) as ArtifactRemote;
+    const body = parseArtifactError(bytes);
     if (body?.error?.code === "ARTIFACT_REMOTE") {
       if (io.json) {
         process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
@@ -95,7 +111,6 @@ async function download(
       return 0;
     }
   }
-  const bytes = Buffer.from(await res.arrayBuffer());
   writeFileSync(out, bytes);
   if (io.json) {
     process.stdout.write(

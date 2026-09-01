@@ -61,7 +61,7 @@ function runProgression(statuses: string[]): {
         scope_id: "col-1",
         task_id: "t-1",
         kind: "code",
-        model: "claude-opus-4",
+        model_id: "claude-opus-4",
         status,
         started_at: "2026-08-30T10:00:00.000Z",
         finished_at: null,
@@ -78,23 +78,14 @@ function lines(text: string): string[] {
 }
 
 describe("logs", () => {
-  it("backfills every page and prints #id event summary rows", async () => {
+  it("fetches only the first events page and prints #id summary rows", async () => {
     const { responder, queries } = pagedEvents([
-      {
-        events: [
-          event(1, "run.started", { task: "ship" }),
-          event(2, "log", { line: "hello" }),
-        ],
-        has_more: true,
-        oldest_id: 1,
-        newest_id: 2,
-      },
       {
         events: [
           event(3, "log", { line: "world" }),
           event(4, "run.finished", { ok: true }),
         ],
-        has_more: false,
+        has_more: true,
         oldest_id: 3,
         newest_id: 4,
       },
@@ -107,16 +98,11 @@ describe("logs", () => {
     } finally {
       out.restore();
     }
-    expect(calls.map((call) => call.path)).toEqual([
-      "/runs/x/events",
-      "/runs/x/events",
-    ]);
-    // First call carries no cursor; the next walks back by the previous oldest_id.
+    // One request: no backfill walk even though has_more was true.
+    expect(calls.map((call) => call.path)).toEqual(["/runs/x/events"]);
     expect(queries[0]!.before_id).toBeUndefined();
-    expect(queries[1]!.before_id).toBe(1);
+    expect(queries[0]!.limit).toBe(100);
     expect(lines(out.text())).toEqual([
-      "#1 run.started task=ship",
-      "#2 log line=hello",
       "#3 log line=world",
       "#4 run.finished ok=true",
     ]);
@@ -145,7 +131,7 @@ describe("logs", () => {
 
   it("follows without duplicating rows and stops once the run is no longer running", async () => {
     const { responder: eventsResponder, queries } = pagedEvents([
-      // Backfill: nothing recorded yet.
+      // First page: nothing recorded yet.
       { events: [], has_more: false, oldest_id: null, newest_id: null },
       {
         events: [event(1, "log", { line: "a" })],
@@ -187,7 +173,7 @@ describe("logs", () => {
     } finally {
       out.restore();
     }
-    // One backfill page plus one page per poll; polling stops on "succeeded".
+    // One first page plus one page per poll; polling stops on "succeeded".
     expect(queries).toHaveLength(4);
     expect(progression.polls()).toBe(4);
     expect(calls.filter((call) => call.path === "/runs/x/events")).toHaveLength(
@@ -206,18 +192,12 @@ describe("logs", () => {
     const { responder } = pagedEvents([
       {
         events: [
-          event(1, "run.started", { task: "ship" }),
-          event(2, "log", { line: "hello" }),
+          event(3, "run.started", { task: "ship" }),
+          event(4, "log", { line: "hello" }),
         ],
         has_more: true,
-        oldest_id: 1,
-        newest_id: 2,
-      },
-      {
-        events: [event(3, "run.finished", { ok: true })],
-        has_more: false,
         oldest_id: 3,
-        newest_id: 3,
+        newest_id: 4,
       },
     ]);
     const { client } = fakeClient({ "get /runs/x/events": responder });
@@ -239,7 +219,7 @@ describe("logs", () => {
           detail_json: string;
         },
     );
-    expect(parsed.map((row) => row.id)).toEqual([1, 2, 3]);
+    expect(parsed.map((row) => row.id)).toEqual([3, 4]);
     expect(parsed[1]!.event).toBe("log");
     expect(JSON.parse(parsed[1]!.detail_json)).toEqual({ line: "hello" });
   });

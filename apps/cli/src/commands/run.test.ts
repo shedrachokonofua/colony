@@ -12,7 +12,7 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
     scope_id: "col-1",
     task_id: "t-1",
     kind: "code",
-    model: "claude-opus-4",
+    model_id: "claude-opus-4",
     status: "running",
     started_at: "2026-08-30T10:00:00.000Z",
     finished_at: null,
@@ -177,7 +177,7 @@ describe("run", () => {
   });
 
   it("renders '-' for an absent model and a null task", async () => {
-    const payload = detail({ model: null, task_id: null });
+    const payload = detail({ model_id: null, task_id: null });
     const { client } = fakeClient(route(payload));
     const out = captureStdout();
     try {

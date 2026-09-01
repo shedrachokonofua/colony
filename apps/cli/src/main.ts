@@ -118,6 +118,7 @@ export async function main(argv: string[]): Promise<number> {
   try {
     return await handler(parsed, client, io);
   } catch (err) {
+    if (err instanceof UsageError) return usage(err);
     if (err instanceof ApiError) {
       if (err.status === 401 || err.status === 403) {
         process.stderr.write(
@@ -125,12 +126,20 @@ export async function main(argv: string[]): Promise<number> {
         );
         return 1;
       }
+      if (err.status === 0) {
+        process.stderr.write(`network error: ${err.message}\n`);
+        return 1;
+      }
       process.stderr.write(`${err.code} (${err.status}): ${err.message}\n`);
       return 1;
     }
-    if (err instanceof UsageError) return usage(err);
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`network error: ${message}\n`);
+    // Command-side I/O (missing --set file, closed stdin, …), keep the
+    // original prefix and stack; only the client wraps as ApiError.
+    if (err instanceof Error) {
+      process.stderr.write(`colony: ${err.stack ?? err.message}\n`);
+      return 1;
+    }
+    process.stderr.write(`colony: ${String(err)}\n`);
     return 1;
   }
 }

@@ -85,7 +85,7 @@ export async function run(
           r.id,
           scope.id,
           r.kind,
-          r.model ?? "-",
+          r.model_id ?? "-",
           ms === null ? "-" : formatDuration(ms),
         ];
       }),

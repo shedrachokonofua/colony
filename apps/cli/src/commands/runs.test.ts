@@ -11,7 +11,7 @@ function runsRow(id: string, overrides: Partial<RunsRow> = {}): RunsRow {
   return {
     id,
     kind: "code",
-    model: "claude-opus-4",
+    model_id: "claude-opus-4",
     status: "running",
     started_at: "2026-08-30T10:00:00.000Z",
     finished_at: null,
@@ -81,7 +81,7 @@ describe("runs", () => {
         }),
         runsRow("run-2", {
           kind: "validate",
-          model: null,
+          model_id: null,
           status: "succeeded",
           started_at: new Date(Date.now() - 4_500).toISOString(),
           finished_at: new Date(Date.now() - 1_500).toISOString(),

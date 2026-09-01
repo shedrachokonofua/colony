@@ -11,13 +11,13 @@ export interface TaskRow {
   attempt: number;
   mr_iid: number | null;
   branch: string | null;
-  model?: string | null;
+  model_id?: string | null;
 }
 
 export interface RunsRow {
   id: string;
   kind: string;
-  model: string | null;
+  model_id: string | null;
   status: string;
   started_at: string;
   finished_at: string | null;
@@ -83,7 +83,7 @@ export async function run(
       ansi(io.isTty, statusCode(task.state), task.state),
       String(task.attempt),
       task.mr_iid === null ? "-" : `!${task.mr_iid}`,
-      task.model ?? "-",
+      task.model_id ?? "-",
       task.title,
     ]);
     process.stdout.write(
@@ -97,7 +97,7 @@ export async function run(
       .map((r) => [
         r.id,
         r.kind,
-        r.model ?? "-",
+        r.model_id ?? "-",
         ansi(io.isTty, statusCode(r.status), r.status),
       ]);
     process.stdout.write(

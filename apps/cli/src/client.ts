@@ -19,11 +19,12 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, cause?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    if (cause !== undefined) this.cause = cause;
   }
 }
 
@@ -45,11 +46,26 @@ export function createClient(opts: {
       "x-actor": opts.actor,
     };
     if (body !== undefined) headers["content-type"] = "application/json";
-    return fetch(`${baseUrl}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    try {
+      return await fetch(`${baseUrl}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (err) {
+      // Transport-level failure (connection refused, DNS, reset). Wrap so the
+      // CLI can distinguish it from command-side I/O errors like a missing
+      // --set file: those carry a Node error `code`, this does not.
+      throw new ApiError(
+        0,
+        err instanceof Error &&
+          typeof (err as NodeJS.ErrnoException).code === "string"
+          ? String((err as NodeJS.ErrnoException).code)
+          : "NETWORK",
+        err instanceof Error ? err.message : String(err),
+        err,
+      );
+    }
   };
 
   const readError = async (res: Response): Promise<never> => {

@@ -161,6 +161,31 @@ describe("artifacts", () => {
     expect(existsSync(target)).toBe(false);
   });
 
+  it("writes JSON-typed artifact bytes without double-reading the body", async () => {
+    const target = tempPath("out.json");
+    const { client } = fakeClient({
+      "get /runs/x/artifacts/art-1": response(
+        new Response(JSON.stringify({ result: "ok", n: 42 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    });
+    const out = captureStdout();
+    try {
+      const code = await run(
+        parseArgs(["artifacts", "x", "get", "art-1", "-o", target]),
+        client,
+        IO,
+      );
+      expect(code).toBe(0);
+    } finally {
+      out.restore();
+    }
+    expect(readFileSync(target, "utf8")).toBe('{"result":"ok","n":42}');
+    expect(out.text()).toBe(`wrote 22 bytes to ${target}\n`);
+  });
+
   it("rejects `get` without -o at parse time", () => {
     expect(() => parseArgs(["artifacts", "x", "get", "art-1"])).toThrow(
       UsageError,

@@ -110,6 +110,22 @@ describe("createClient", () => {
     const res = await client.raw("/runs/r1/artifacts/a1");
     expect(await res.text()).toBe("bytes");
   });
+
+  it("wraps a fetch failure as a status-0 ApiError", async () => {
+    globalThis.fetch = (() =>
+      Promise.reject(
+        Object.assign(new TypeError("Unable to connect"), {
+          code: "ConnectionRefused",
+        }),
+      )) as unknown as typeof fetch;
+    const err = await client.get("/scopes").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    const api = err as ApiError;
+    expect(api.status).toBe(0);
+    expect(api.code).toBe("ConnectionRefused");
+    expect(api.message).toBe("Unable to connect");
+    expect((api.cause as Error).message).toBe("Unable to connect");
+  });
 });
 
 describe("withQuery", () => {
