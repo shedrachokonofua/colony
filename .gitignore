@@ -25,3 +25,6 @@ playwright-report/
 
 # Vendored console UI deps are script output (bun run vendor:ui) but committed
 # so a fresh clone serves them; VENDOR.md documents the exact versions.
+
+# Test-run outputs (gunzipped redacted transcripts et al.); fixtures stay committed.
+packages/agent-runtime/src/testdata/out/
