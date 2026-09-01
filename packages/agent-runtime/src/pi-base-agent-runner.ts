@@ -467,6 +467,11 @@ export class PiBaseAgentRunner implements PiRunner {
         Settings.isolated({
           "compaction.enabled": true,
           "retry.enabled": true,
+          // The SDK retries transient failures same-model with exponential
+          // backoff and defaults to 10 attempts. On a dead leg that burns
+          // the whole run wall inside one prompt before the runner ever
+          // sees an error, so bound the leg's own budget here too.
+          "retry.maxRetries": 4,
           "todo.enabled": true,
           "todo.reminders": true,
           "goal.enabled": true,
@@ -675,6 +680,16 @@ export class PiBaseAgentRunner implements PiRunner {
       // moving to the fallback (the next run returns to the primary anyway).
       const QUOTA_ERROR_RE =
         /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at|no deployments available/i;
+      // A leg whose only answers are transport/5xx failures is dead, but a
+      // single blip is not a verdict: five consecutive connection-class
+      // errors on the CURRENT model with no successful turn in between is
+      // the budget. Deliberately free of 429/rate-limit/quota/overload arms —
+      // those are the quota path's job and must keep failing over at once.
+      const CONNECTION_ERROR_RE =
+        /\b50[0234]\b|\b529\b|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fetch failed|socket hang up|connection.{0,12}(?:error|refused|reset|closed|timed? ?out)|service unavailable|bad gateway|gateway timeout|upstream.{0,8}(?:connect|request failed)|no capacity|network error|stream stall|Request timed out\b/i;
+      const CONNECTION_RETRY_PROMPT =
+        "The previous model request failed with a transient provider connection error. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
+      const MODEL_CONNECTION_ERROR_LIMIT = 5;
       // Scoped to messages produced by the CURRENT model: an errored turn
       // survives in history across setModel, and tool-call/reasoning turns
       // don't append plain assistant text - so an unscoped "newest assistant
@@ -691,6 +706,11 @@ export class PiBaseAgentRunner implements PiRunner {
         }
         return null;
       };
+      // Consecutive connection-class errors on the CURRENT model. Reset by
+      // any non-error turn and by every setModel, so a leg's budget is never
+      // spent by its predecessor.
+      let connectionErrors = 0;
+      let lastConnectionError: string | undefined;
       let jigglesUsed = 0;
       const sleep = (ms: number) =>
         new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -711,6 +731,23 @@ export class PiBaseAgentRunner implements PiRunner {
         },
         onZeroOutputStall: () => {
           zeroOutputStalled = true;
+        },
+        // The only place connectionErrors moves. A successful turn - even a
+        // text-only one the runner would otherwise never see - proves the
+        // leg is alive and clears the budget.
+        onAssistantMessage: (message) => {
+          if (message.stopReason !== "error") {
+            connectionErrors = 0;
+            lastConnectionError = undefined;
+            return;
+          }
+          if (
+            message.errorMessage !== undefined &&
+            CONNECTION_ERROR_RE.test(message.errorMessage)
+          ) {
+            connectionErrors += 1;
+            lastConnectionError = message.errorMessage;
+          }
         },
       });
       const previousBeforeToolCall = session.agent.beforeToolCall;
@@ -778,6 +815,7 @@ export class PiBaseAgentRunner implements PiRunner {
           repositoryInspected = true;
         }
         jigglesUsed = 0;
+        connectionErrors = 0;
         steering.observeToolCall(
           context.toolCall.name,
           context.args,
@@ -925,12 +963,34 @@ export class PiBaseAgentRunner implements PiRunner {
               if (!next || failureReason !== undefined) {
                 throw err;
               }
+              const errText = err instanceof Error ? err.message : String(err);
+              if (CONNECTION_ERROR_RE.test(errText)) {
+                // Under budget this was a blip: the model stays and the
+                // continuation loop re-prompts it. Over budget the leg is
+                // dead; with no candidate left the loop classifies it
+                // (invariant 7) instead of throwing past finalization.
+                if (connectionErrors < MODEL_CONNECTION_ERROR_LIMIT) return true;
+                if (next) {
+                  this.options.logger?.warn?.(
+                    {
+                      runId,
+                      from: candidate.id,
+                      to: next.id,
+                      error: `provider_connection_exhausted: ${(
+                        lastConnectionError ?? errText
+                      ).slice(0, 160)}`,
+                    },
+                    "pi_model_fallback",
+                  );
+                }
+                return false;
+              }
               this.options.logger?.warn?.(
                 {
                   runId,
                   from: candidate.id,
                   to: next.id,
-                  error: err instanceof Error ? err.message : String(err),
+                  error: errText,
                 },
                 "pi_model_fallback",
               );
@@ -946,6 +1006,7 @@ export class PiBaseAgentRunner implements PiRunner {
             if (index > 0) {
               await session.setModel(candidate);
               jigglesUsed = 0;
+              connectionErrors = 0;
               quotaScanFloor = session.agent.state.messages.length;
             }
             if (await runPromptPlan(candidate)) break;
@@ -968,7 +1029,40 @@ export class PiBaseAgentRunner implements PiRunner {
           failureReason === undefined
         ) {
           let prompt: string;
-          if (zeroOutputStalled) {
+          if (connectionErrors >= MODEL_CONNECTION_ERROR_LIMIT) {
+            // The leg settled its whole budget in transport errors. Fail over
+            // now instead of spending jiggle backoff on a dead upstream (it
+            // can be mute AND unreachable, so this precedes the stall path
+            // the way a quota verdict forces the jiggle skip).
+            const next = resolvedModels[index + 1];
+            if (!next) {
+              failureReason = `provider_connection_failure: ${(
+                lastConnectionError ?? "repeated connection errors"
+              ).slice(0, 160)}`;
+              break;
+            }
+            index += 1;
+            jigglesUsed = 0;
+            connectionErrors = 0;
+            await session.setModel(next);
+            quotaScanFloor = session.agent.state.messages.length;
+            this.options.logger?.warn?.(
+              {
+                runId,
+                from: resolvedModels[index - 1]?.id,
+                to: next.id,
+                error: `provider_connection_exhausted: ${(
+                  lastConnectionError ?? "repeated connection errors"
+                ).slice(0, 160)}`,
+              },
+              "pi_model_fallback",
+            );
+            prompt = CONNECTION_RETRY_PROMPT;
+          } else if (connectionErrors > 0) {
+            // Under budget: a blip, not a dead leg. Re-prompt the same model
+            // so one transient never costs a configured candidate.
+            prompt = CONNECTION_RETRY_PROMPT;
+          } else if (zeroOutputStalled) {
             zeroOutputStalled = false;
             const quotaError = lastAssistantQuotaError();
             if (quotaError) jigglesUsed = ZERO_OUTPUT_JIGGLES;
@@ -987,6 +1081,7 @@ export class PiBaseAgentRunner implements PiRunner {
             } else if (resolvedModels[index + 1]) {
               index += 1;
               jigglesUsed = 0;
+              connectionErrors = 0;
               const next = resolvedModels[index]!;
               await session.setModel(next);
               quotaScanFloor = session.agent.state.messages.length;
@@ -1033,6 +1128,16 @@ export class PiBaseAgentRunner implements PiRunner {
             }
           } catch (err) {
             if (cancellationTriggered) throw err;
+            // A transient thrown out of the steer prompt is the same blip the
+            // counter already tracks: stay on the model and re-prompt. Only a
+            // settled leg (budget spent) or a non-connection failure ends the
+            // loop, and neither is logged as a continuation failure.
+            if (
+              connectionErrors > 0 &&
+              connectionErrors < MODEL_CONNECTION_ERROR_LIMIT
+            ) {
+              continue;
+            }
             this.options.logger?.warn?.(
               {
                 runId,
