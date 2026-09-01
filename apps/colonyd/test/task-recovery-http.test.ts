@@ -136,6 +136,57 @@ describe("task recovery API", () => {
     ).toBe(true);
   });
 
+  it("request-changes stops a review in flight before requeueing the implementer", async () => {
+    // col-e3021988.10, 2026-09-01: request-changes requeued the task while
+    // grok was reviewing it, so the implementer and the reviewer ran side
+    // by side on a head the implementer was rewriting.
+    const { app, store, task, tickCount } = recoveryApp();
+    let current = store.transitionTask(
+      task.id,
+      task.state_version,
+      "running",
+      "svc:colonyd",
+      { attempt: 1 },
+    );
+    current = store.transitionTask(
+      current.id,
+      current.state_version,
+      "mr_open",
+      "svc:colonyd",
+      { mr_iid: 9, branch: "colony/t" },
+    );
+    const review = store.startRun({
+      scope_id: task.scope_id,
+      task_id: task.id,
+      kind: "review",
+      lease_ttl_ms: 60_000,
+    });
+    let settle!: () => void;
+    const execution = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    let aborted = false;
+    trackRun(review.id, execution, () => {
+      aborted = true;
+      store.finishRun(review.id, "canceled", { error: "aborted" });
+      settle();
+    });
+
+    const response = await app.request(`/tasks/${task.id}/request-changes`, {
+      method: "POST",
+      headers: { ...actorHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ feedback: "revert the backend edits" }),
+    });
+    expect(response.status).toBe(200);
+    expect(aborted).toBe(true);
+    expect(store.getRun(review.id)!.status).toBe("canceled");
+    const requeued = store.getTask(task.id)!;
+    expect(requeued.state).toBe("queued");
+    expect(requeued.attempt).toBe(2);
+    expect(requeued.human_feedback).toBe("revert the backend edits");
+    expect(tickCount()).toBe(1);
+  });
+
   it("refuses to requeue a run owned by another process", async () => {
     const { app, store, task, tickCount } = recoveryApp();
     const running = store.transitionTask(

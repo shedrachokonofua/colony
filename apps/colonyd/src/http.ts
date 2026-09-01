@@ -1135,13 +1135,43 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const parsed = feedbackBody.safeParse(await parseBody(c));
     if (!parsed.success) return badBody(c, parsed.error.message);
     ctx.store.setTaskFeedback(task.id, parsed.data.feedback);
+    // An mr_open task can have a review in flight. Requeueing the task
+    // without stopping it dispatches the implementer beside it: the review
+    // then verdicts a head the implementer is rewriting (col-e3021988.10,
+    // 2026-09-01). The feedback supersedes whatever the review would say.
+    const liveReviews = ctx.store
+      .runsForTask(task.id)
+      .filter((run) => run.status === "running" && run.kind === "review")
+      .map((run) => run.id);
+    if (liveReviews.length > 0) {
+      const stopped = await abortRunsAndWait(liveReviews);
+      if (!stopped.every(Boolean)) {
+        return c.json(
+          {
+            error: {
+              code: "RUN_NOT_LOCAL",
+              message: "active review is not owned by this colonyd process",
+            },
+          },
+          409,
+        );
+      }
+    }
+    // The aborted review's own bookkeeping may have bumped the task row.
+    const current = ctx.store.getTask(task.id);
+    if (!current || current.state !== "mr_open") {
+      return conflict(
+        c,
+        new Error("task state changed while its review was stopping"),
+      );
+    }
     try {
       const updated = ctx.store.transitionTask(
-        task.id,
-        task.state_version,
+        current.id,
+        current.state_version,
         "queued",
         c.get("actor"),
-        { attempt: task.attempt + 1, next_retry_at: null },
+        { attempt: current.attempt + 1, next_retry_at: null },
       );
       ctx.store.audit(c.get("actor"), "task.changes_requested", {
         scope_id: task.scope_id,
