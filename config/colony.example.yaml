@@ -23,6 +23,20 @@ hitl:
 review:
   mode: off
 
+# Operator push notifications (e.g. ntfy). Sinks receive events at or above
+# their min_severity; the default "warning" keeps progress-class events off —
+# set min_severity: info to also turn on progress-class events (run started,
+# task landed). cooldown_s is the minimum seconds between pushes per event
+# class; digest_window_s batches lower-severity notices into a digest.
+# notifications:
+#   enabled: true
+#   cooldown_s: 300
+#   digest_window_s: 1800
+#   sinks:
+#     - kind: ntfy
+#       url: https://ntfy.home.shdr.ch/colony
+#       min_severity: info
+
 # Web research (env-gated): set COLONY_SEARXNG_URL=https://searxng.home.shdr.ch to expose
 # web_search/web_fetch to all Pi agents (architect/developer/reviewer). No API key.
 
