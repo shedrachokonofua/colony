@@ -17,6 +17,7 @@ import {
 } from "./runs/validate.js";
 import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
 import { isInfraError } from "./run-classification.js";
+import { abortRunsAndWait } from "./runs/registry.js";
 
 /** Agent-caused replan failures after one failed validation before the scope blocks. */
 const MAX_VALIDATION_REPLAN_FAILURES = 3;
@@ -432,10 +433,23 @@ async function advanceMrOpenTasks(
       ) {
         continue;
       }
-      const attempt = task.attempt + 1;
+      // A review in flight is reviewing the head the rebase is about to
+      // replace. Requeueing beside it ran an implementer and a reviewer on
+      // col-c8f58a57.3 concurrently (2026-09-01); stop the review first.
+      const liveReviews = ctx.store
+        .activeRuns("review")
+        .filter((r) => r.task_id === task.id)
+        .map((r) => r.id);
+      if (liveReviews.length > 0) {
+        const stopped = await abortRunsAndWait(liveReviews);
+        if (!stopped.every(Boolean)) continue;
+      }
+      const current = ctx.store.getTask(task.id);
+      if (!current || current.state !== "mr_open") continue;
+      const attempt = current.attempt + 1;
       ctx.store.transitionTask(
-        task.id,
-        task.state_version,
+        current.id,
+        current.state_version,
         "queued",
         SERVICE_ACTOR,
         {

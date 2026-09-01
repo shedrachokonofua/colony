@@ -19,7 +19,7 @@ import type { AuditRow } from "@colony/core";
 import { registerInMemorySpanExporter } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
-import { awaitPendingRuns } from "../src/runs/registry.js";
+import { awaitPendingRuns, trackRun } from "../src/runs/registry.js";
 import { buildApp } from "../src/http.js";
 import type { GateFailure } from "../src/runs/merge-gate.js";
 import type { ValidateExecutor } from "../src/runs/validate.js";
@@ -805,6 +805,47 @@ describe("colonyd fake end-to-end loop", () => {
     handle.ctx.store.clearRetryDelay(taskId);
     await driveToDone(scopeId, 40);
     expect(handle.ctx.store.getTask(taskId)!.state).toBe("merged");
+  }, 30_000);
+
+  it("conflicted MR stops a review in flight before requeueing", async () => {
+    // col-c8f58a57.3, 2026-09-01: the review started on a head, the tick
+    // then saw the MR conflicted and requeued the task - dispatching an
+    // implementer beside the reviewer it never stopped.
+    script.singleTask = true;
+    const orig = provider.mergeRequests.get.bind(provider.mergeRequests);
+    provider.mergeRequests.get = async (repo, id) => ({
+      ...(await orig(repo, id)),
+      has_conflicts: true,
+    });
+    const scopeId = await createScope("conflicted under review");
+    const taskId = `${scopeId}.1`;
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; implement -> mr_open
+    const store = handle.ctx.store;
+    expect(store.getTask(taskId)!.state).toBe("mr_open");
+
+    // A review is live on the conflicted head.
+    const review = store.startRun({
+      scope_id: scopeId,
+      task_id: taskId,
+      kind: "review",
+      lease_ttl_ms: 60_000,
+    });
+    let aborted = false;
+    let settleReview!: () => void;
+    const execution = new Promise<void>((resolve) => {
+      settleReview = resolve;
+    });
+    trackRun(review.id, execution, () => {
+      aborted = true;
+      store.finishRun(review.id, "canceled", { error: "aborted" });
+      settleReview();
+    });
+
+    await tickAndSettle(); // conflict observed -> stop review -> requeue
+    expect(aborted).toBe(true);
+    expect(store.getRun(review.id)!.status).toBe("canceled");
+    expect(store.getTask(taskId)!.state).toBe("queued");
   }, 30_000);
 
   it("review rejection cap: three consecutive request_changes blocks the task and scope", async () => {
