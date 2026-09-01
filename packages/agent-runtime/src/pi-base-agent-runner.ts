@@ -81,6 +81,7 @@ import {
   WEB_TOOL_NAMES,
 } from "./web-tools.js";
 import type { WebToolsConfig } from "./web-tools.js";
+import { createFileSessionManager } from "./session-store.js";
 import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
@@ -227,6 +228,9 @@ export class PiBaseAgentRunner implements PiRunner {
 
     const runId = request.runId;
     const sandboxId = createSandboxId(this.profile.sandboxPrefix);
+    // Runs-table write-back: report the sandbox id the moment the sandbox is
+    // created, so a crash after this point still leaves an adoptable row.
+    this.options.onSandboxId?.(runId, sandboxId);
     const broker = runnerBroker(this.options);
     // The run's own provider token; redaction secrets for persisted evidence.
     const runToken = packetRepo(request.packet)?.credentials?.token;
@@ -470,7 +474,7 @@ export class PiBaseAgentRunner implements PiRunner {
        * prompt and tool set vary, so a child can never reach anything the
        * parent could not.
        */
-      const buildSessionOptions = (perSession: {
+      const buildSessionOptions = async (perSession: {
         systemPrompt: string;
         customTools: ToolDefinition[];
         toolNames: string[];
@@ -491,7 +495,11 @@ export class PiBaseAgentRunner implements PiRunner {
         scopedModels: resolvedModels.map((candidate) => ({ model: candidate })),
         settings: buildSettings(),
         systemPrompt: perSession.systemPrompt,
-        sessionManager: SessionManager.inMemory(cwd),
+        // Durable per-run transcript when a sessions root is configured;
+        // in-memory only otherwise, byte-identical to the pre-sessions behavior.
+        sessionManager: this.options.sessionsDir
+          ? await createFileSessionManager(this.options.sessionsDir, runId, cwd)
+          : SessionManager.inMemory(cwd),
         // Colony owns every tool a run may call: the sandbox-routed file/shell
         // tools when an engine is configured, plus the role's submit tool and
         // any web tools. Nothing may reach the daemon's own filesystem.
@@ -534,7 +542,7 @@ export class PiBaseAgentRunner implements PiRunner {
       ];
       const subagentTool = createSubagentTool(async ({ prompt }) => {
         const child = await createAgentSession(
-          buildSessionOptions({
+          await buildSessionOptions({
             systemPrompt: buildSubagentSystemPrompt(),
             customTools: childCustomTools,
             toolNames: childToolNames,
@@ -598,7 +606,7 @@ export class PiBaseAgentRunner implements PiRunner {
       ].join("\n");
 
       const result = await createAgentSession(
-        buildSessionOptions({
+        await buildSessionOptions({
           systemPrompt: `${this.profile.systemPrompt(request.packet)}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
           customTools: [
             ...customTools,
@@ -1039,7 +1047,7 @@ export class PiBaseAgentRunner implements PiRunner {
         try {
           const critique = this.options.critique;
           const critic = await createAgentSession(
-            buildSessionOptions({
+            await buildSessionOptions({
               systemPrompt: critique.systemPrompt,
               customTools: [],
               toolNames: [],

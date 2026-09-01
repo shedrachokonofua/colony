@@ -81,6 +81,10 @@ export interface PiRunnerBaseOptions {
   readonly runTimeoutMs?: number;
   readonly scratchDir?: string;
   readonly engine?: SandboxEngine;
+  /** Durable session root; when set, runs persist session JSONL under it. */
+  readonly sessionsDir?: string;
+  /** Reports the sandbox id as soon as the sandbox is created (runs-table write-back). */
+  readonly onSandboxId?: (runId: string, sandboxId: string) => void;
   /** Audit sink for run events and the artifact ledger; noop when unset. */
   readonly auditSink?: RunAuditSink;
 }

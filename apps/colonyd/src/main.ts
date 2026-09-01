@@ -114,6 +114,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         }),
       },
       createRunAuditSink(store, artifacts, logger),
+      store,
     ));
   if (config.reviewMode === "required" && !agents.reviewer) {
     throw new Error(
