@@ -11,12 +11,12 @@ export interface TaskRow {
   attempt: number;
   mr_iid: number | null;
   branch: string | null;
-  model_id?: string | null;
 }
 
 export interface RunsRow {
   id: string;
   kind: string;
+  task_id: string | null;
   model_id: string | null;
   status: string;
   started_at: string;
@@ -78,12 +78,13 @@ export async function run(
 
   if (tasks.length > 0) {
     process.stdout.write("\n");
+    const models = latestModelByTask(runs);
     const rows = tasks.map((task) => [
       task.id,
       ansi(io.isTty, statusCode(task.state), task.state),
       String(task.attempt),
       task.mr_iid === null ? "-" : `!${task.mr_iid}`,
-      task.model_id ?? "-",
+      models.get(task.id) ?? "-",
       task.title,
     ]);
     process.stdout.write(
@@ -136,6 +137,19 @@ function parseAcceptance(raw: string | null | undefined): string[] {
     }
     return String(item);
   });
+}
+
+/**
+ * Task rows carry no model column (tasks table, schema.sql); the model a task
+ * ran under lives on its runs, newest run winning.
+ */
+function latestModelByTask(runs: RunsRow[]): Map<string, string> {
+  const models = new Map<string, string>();
+  for (const run of runs) {
+    if (run.task_id !== null && run.model_id)
+      models.set(run.task_id, run.model_id);
+  }
+  return models;
 }
 
 /**

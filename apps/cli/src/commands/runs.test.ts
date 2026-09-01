@@ -11,6 +11,7 @@ function runsRow(id: string, overrides: Partial<RunsRow> = {}): RunsRow {
   return {
     id,
     kind: "code",
+    task_id: null,
     model_id: "claude-opus-4",
     status: "running",
     started_at: "2026-08-30T10:00:00.000Z",

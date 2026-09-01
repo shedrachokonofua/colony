@@ -29,7 +29,6 @@ function task(id: string, overrides: Partial<TaskRow> = {}): TaskRow {
     attempt: 1,
     mr_iid: null,
     branch: null,
-    model_id: "claude-opus-4",
     ...overrides,
   };
 }
@@ -38,6 +37,7 @@ function runRow(id: string, overrides: Partial<RunsRow> = {}): RunsRow {
   return {
     id,
     kind: "code",
+    task_id: null,
     model_id: "claude-opus-4",
     status: "succeeded",
     started_at: "2026-08-30T10:00:00.000Z",
@@ -169,15 +169,10 @@ describe("scope", () => {
           state: "running",
           attempt: 2,
           mr_iid: 17,
-          model_id: "claude-opus-4",
         }),
-        task("t-2", {
-          title: "Ship",
-          state: "pending",
-          mr_iid: null,
-          model_id: null,
-        }),
+        task("t-2", { title: "Ship", state: "pending", mr_iid: null }),
       ],
+      runs: [runRow("run-1", { task_id: "t-1", model_id: "claude-opus-4" })],
     });
     const { client } = fakeClient(route(payload));
     const out = captureStdout();
@@ -192,6 +187,32 @@ describe("scope", () => {
       "t-1   running  2        !17  claude-opus-4  Write tests",
     );
     expect(text).toContain("t-2   pending  1        -    -              Ship");
+  });
+
+  it("resolves the task model through the task's runs, not the task row", async () => {
+    // The server's tasks table has no model column: GET /scopes/:id returns
+    // raw task rows, so the model must come from the scope's run rows.
+    const payload = detail({
+      tasks: [
+        task("col-1.1", { title: "Write tests" }),
+        task("col-1.2", { title: "Ship" }),
+      ],
+      runs: [
+        runRow("run-1", { task_id: "col-1.1", model_id: "claude-opus-4" }),
+      ],
+    });
+    const { client } = fakeClient(route(payload));
+    const out = captureStdout();
+    try {
+      await run(parseArgs(["scope", "col-1"]), client, IO);
+    } finally {
+      out.restore();
+    }
+    const text = out.text();
+    expect(text).toContain(
+      "col-1.1  pending  1        -   claude-opus-4  Write tests",
+    );
+    expect(text).toContain("col-1.2  pending  1        -   -");
   });
 
   it("prints at most the five most recent runs", async () => {
