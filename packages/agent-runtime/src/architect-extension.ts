@@ -213,6 +213,7 @@ export function buildArchitectExtensionSystemPrompt(): string {
 
     "",
     "Diagnose exactly one outcome: (a) defective acceptance commands — submit acceptance_fix with corrected criteria; (b) missing or incomplete implementation — submit extend with additional outcome-oriented tasks; or (c) genuinely needing a human — submit human_required with a concise reason.",
+    "The packet's validation evidence carries each command's exit code, its output tail, and the failure lines from the full output (failing test names, type errors). Diagnose from those. Do not re-run the whole suite to rediscover them; if you need to reproduce, run only the named failing tests.",
     "Acceptance commands run inside a fresh already-cloned workspace. Never clone, use literal placeholders such as <repo-url>, or depend on provider credentials. Prefer `bun run test:unit` plus `npm run typecheck` over full `npm test`; integration tests can exceed the sandbox execution deadline.",
     "For extend, numeric depends_on values index the new tasks array and string values reference existing task ids supplied in the packet. The combined graph must be acyclic. Do not remove or rewrite existing tasks.",
     "Finish by calling submit_architect_extension exactly once. Never finish with plain text and never include secrets.",
