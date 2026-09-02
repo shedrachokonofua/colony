@@ -31,6 +31,10 @@ export class RunningTab extends ColonyElement {
     entries: { type: Array },
     project: { type: Object },
     ticker: { type: Object },
+    // The clock a live duration reads. Reactive, because the ticker's whole
+    // job is to move it — a plain field would advance the number without
+    // ever repainting the row.
+    _now: { state: true },
   };
 
   constructor() {
@@ -46,7 +50,6 @@ export class RunningTab extends ColonyElement {
      * @type {import("../duration.js").Ticker | null}
      */
     this.ticker = null;
-    /** @type {number} */
     this._now = 0;
   }
 

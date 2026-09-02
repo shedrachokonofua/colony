@@ -72,6 +72,8 @@ describe("demoWorld", () => {
       "project",
       "projects",
       "runEvents",
+      "running",
+      "runningDetails",
       "scopes",
     ]);
     expect(world.config).toEqual({
@@ -80,6 +82,30 @@ describe("demoWorld", () => {
       hitl_mode: "yolo",
       trace_ui_base_url: "https://traces.home.shdr.ch",
     });
+  });
+
+  it("feeds the project Running tab rows and their scope details", () => {
+    const world = demoWorld();
+    expect(world.running.length).toBeGreaterThan(0);
+    // Every row's scope has a detail payload holding that row's task, so
+    // activating a row offline lands on a sheet that can select it.
+    for (const entry of world.running) {
+      const detail = world.runningDetails[entry.scope_id];
+      expect(detail).toBeDefined();
+      expect(detail.scope.id).toBe(entry.scope_id);
+      expect(detail.tasks.some((task) => task.id === entry.task_id)).toBe(
+        true,
+      );
+    }
+    // The rows' scopes belong to the project whose tab renders them.
+    const owned = new Set(
+      world.scopes
+        .filter((scope) => scope.project_name === world.project.name)
+        .map((scope) => scope.id),
+    );
+    for (const entry of world.running) {
+      expect(owned.has(entry.scope_id)).toBe(true);
+    }
   });
 
   it("pins the demo project as the last of the fillers plus one empty project", () => {

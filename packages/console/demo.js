@@ -8,6 +8,7 @@ import {
   buildDemoFiles,
   buildDemoProject,
   buildDemoRunEvents,
+  buildDemoRunning,
   buildDemoScopes,
   buildEmptyProject,
   buildFillerProjects,
@@ -40,6 +41,7 @@ export function demoWorld() {
   demoFileStore.set("Empty workspace", []);
   const detail = buildDemoDetail(now);
   const scope = detail.scope;
+  const running = buildDemoRunning(now, projectScopes);
   return {
     config: {
       gitlab_base_url: "https://gitlab.home.shdr.ch",
@@ -68,6 +70,8 @@ export function demoWorld() {
       ...generatedScopes,
     ],
     detail,
+    running: running.entries,
+    runningDetails: running.details,
     runEvents: buildDemoRunEvents(now),
     audit: buildDemoAudit(now),
   };
