@@ -477,14 +477,14 @@ function sandboxEditTool(
       );
       const before = (await handle.readFile(relative)).toString("utf8");
       let after = before;
-      // A no-op edit is a read in disguise: grok, whose harness has no
-      // native read, probed files with oldText === newText - 212 times in
-      // one review, each a turn, until the 200-turn cap (2026-09-02). Say
-      // what to use instead; the capability stays.
+      // An edit that changes nothing is not an edit. (grok probed files
+      // this way, 212 times in one review; the cure for that lives in the
+      // bridge's tool dialect - here the contract just stays honest, and
+      // the message stays short: a longer teaching text made it loop.)
       const noop = params.edits.find((edit) => edit.oldText === edit.newText);
       if (noop) {
         throw new Error(
-          `edit rejected: this edit changes nothing (oldText equals newText). To inspect a file use read; to search use grep or glob. Edits are for changing content.`,
+          "edit rejected: oldText equals newText; nothing to change",
         );
       }
       for (const edit of params.edits) {
