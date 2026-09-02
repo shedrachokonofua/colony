@@ -90,9 +90,15 @@ describe("run events cursor pagination over HTTP", () => {
   it("returns the 200 newest rows by default with has_more true", async () => {
     const { app, store } = appAndStore();
     const run = await createRun(store, "paginate events");
-    for (let i = 1; i <= 250; i++) {
-      store.appendRunEvent(run.id, `event_${i}`, { i });
-    }
+    // One transaction: 250 autocommit writes are 250 fsyncs, which on the
+    // CI runner's disk crossed the 5s test deadline (2026-09-02).
+    store.db.transaction(() => {
+      store.db.transaction(() => {
+        for (let i = 1; i <= 250; i++) {
+          store.appendRunEvent(run.id, `event_${i}`, { i });
+        }
+      })();
+    })();
     const res = await app.request(`/runs/${run.id}/events`, ACTOR);
     expect(res.status).toBe(200);
     const page = (await res.json()) as Envelope;
