@@ -41,10 +41,16 @@ describe("helpText", () => {
 });
 
 describe("main", () => {
-  it("dispatches every read command to a handler", () => {
+  it("dispatches every command to a handler", () => {
     for (const name of [
       "scopes",
       "scope",
+      "open",
+      "approve",
+      "replan",
+      "abandon",
+      "revalidate",
+      "task",
       "runs",
       "run",
       "logs",

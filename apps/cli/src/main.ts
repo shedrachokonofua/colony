@@ -23,6 +23,9 @@ import { ApiError, createClient, type ColonyClient } from "./client.js";
 import { colorEnabled } from "./render.js";
 import * as scopes from "./commands/scopes.js";
 import * as scope from "./commands/scope.js";
+import * as scopeMutations from "./commands/scope-mutations.js";
+import * as open from "./commands/open.js";
+import * as task from "./commands/task.js";
 import * as runs from "./commands/runs.js";
 import * as runDetail from "./commands/run.js";
 import * as logs from "./commands/logs.js";
@@ -42,10 +45,16 @@ export type CommandModule = (
   io: CommandIo,
 ) => Promise<number>;
 
-/** Read commands only; mutation handlers land in a later slice. */
+/** Every CLI verb: reads plus the operator mutation commands. */
 export const COMMANDS: Record<string, CommandModule> = {
   scopes: scopes.run,
   scope: scope.run,
+  open: open.run,
+  approve: scopeMutations.run,
+  replan: scopeMutations.run,
+  abandon: scopeMutations.run,
+  revalidate: scopeMutations.run,
+  task: task.run,
   runs: runs.run,
   run: runDetail.run,
   logs: logs.run,
