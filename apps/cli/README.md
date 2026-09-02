@@ -70,7 +70,7 @@ The following global flags are supported by every subcommand:
 Every subcommand and its accepted flags:
 
 - `colony scopes [--project P] [--page N]`
-  List scopes across the system or filtered by project, paginated 20 per page.
+  List scopes across the system or filtered by project, paginated 25 per page.
 - `colony scope <id>`
   Show detailed status, task list, and run summaries for a scope.
 - `colony open <file|-> [--title T] [--project P] [--repo PATH] [--manual] [--create-project]`
@@ -97,13 +97,13 @@ Every subcommand and its accepted flags:
 - `colony runs <scope-id>`
   List all runs associated with a scope.
 - `colony run <run-id>`
-  Inspect a single run, showing its kind, status, model, timing, failure labels, and task spec.
+  Inspect a single run, showing its kind, status, model, scope, task, timing, and failure reason if failed.
 - `colony logs <run-id> [-f]`
   Stream or display event logs for a run. Pass `-f` (or `--follow`) to stream live events until completion.
 - `colony artifacts <run-id> [get <artifact-id> -o FILE]`
-  List artifacts produced by a run, or download an artifact to a local file using `get <artifact-id> -o FILE` (or `--output FILE`).
+  List artifacts produced by a run, or download an artifact to a local file using `get <artifact-id> -o FILE`.
 - `colony projects`
-  List all registered projects, showing default branch, active scopes, and context document size.
+  List all registered projects, showing name, scope count, file count, and last update timestamp.
 - `colony project <name>`
   Show details for a specific project.
 - `colony context <name> [--set <file|->]`
