@@ -323,13 +323,17 @@ export class PiBaseAgentRunner implements PiRunner {
       await session?.abort();
     };
 
+    // Critique engages only for a PHASED run of this packet. The capture used
+    // to test `this.profile.phases` for existence - always true for the
+    // architect - while the critique loop tested `phases(packet).length`,
+    // which is 0 for extension packets. An extension submission was parked
+    // as a draft nothing promoted, and every validation replan on every
+    // model ended 'finalize_no_submission' after an ACCEPTED submit
+    // (2026-09-02, nine runs in an hour). One predicate, both sides.
+    const phased = (this.profile.phases?.(request.packet)?.length ?? 0) > 0;
     const submitTool = this.profile.submitTool(
       (value) => {
-        if (
-          this.options.critique &&
-          this.profile.phases &&
-          !critiqueCompleted
-        ) {
+        if (this.options.critique && phased && !critiqueCompleted) {
           draftEnvelope = value;
           resolveDraftEnvelope?.();
           // A draft closes this candidate's phase pipeline. The SDK ignores the
@@ -344,9 +348,7 @@ export class PiBaseAgentRunner implements PiRunner {
       request.packet,
     );
     /** True while submissions route to the draft slot pending critique. */
-    const critiqueEngaged = Boolean(
-      this.options.critique && this.profile.phases,
-    );
+    const critiqueEngaged = Boolean(this.options.critique && phased);
     /** Whether a submission has landed: accepted, or a draft awaiting critique. */
     const submissionCaptured = (): boolean =>
       critiqueEngaged && !critiqueCompleted
@@ -1325,7 +1327,7 @@ export class PiBaseAgentRunner implements PiRunner {
       // revision prompt per run, all under the run deadline already armed.
       if (
         this.options.critique &&
-        (this.profile.phases?.(request.packet)?.length ?? 0) > 0 &&
+        phased &&
         draftEnvelope !== undefined &&
         !critiqueCompleted &&
         !timeoutTriggered &&

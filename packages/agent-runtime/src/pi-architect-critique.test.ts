@@ -387,6 +387,104 @@ describe("Pi architect critique", () => {
   });
 });
 
+describe("Pi architect extension under critique", () => {
+  it("an extension packet is unphased: its submission is accepted, not parked as a draft", async () => {
+    // With critique on, the capture routed EVERY architect submission to the
+    // draft slot because `profile.phases` exists - but the critique loop only
+    // runs when phases(packet) is non-empty, and extension packets have none.
+    // Nine validation replans in one hour ended 'finalize_no_submission'
+    // after an accepted submit (2026-09-02).
+    const extension = {
+      kind: "extend",
+      tasks: [{ title: "Pin the clock", spec: "Fix the flaky test." }],
+    };
+    const server = createServer((request: IncomingMessage, response) => {
+      request.resume();
+      request.on("end", () => {
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          connection: "keep-alive",
+          "cache-control": "no-cache",
+        });
+        response.write(
+          sseChunk(
+            "primary",
+            {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-ext",
+                  type: "function",
+                  function: {
+                    name: "submit_architect_extension",
+                    arguments: JSON.stringify(extension),
+                  },
+                },
+              ],
+            },
+            null,
+          ),
+        );
+        response.write(sseChunk("primary", {}, "tool_calls"));
+        response.end("data: [DONE]\n\n");
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing port");
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-extension-critique-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...ARCHITECT_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: {
+          id: "primary",
+          name: "primary",
+          api: "openai-completions",
+          provider: "test-gateway",
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 8_192,
+        },
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        runTimeoutMs: 60_000,
+        critique: ARCHITECT_CRITIQUE,
+      },
+    );
+    const result = await runner.run({
+      runId: "extension-under-critique",
+      packet: {
+        kind: "architect_scope_extension",
+        goal: "Repair validation",
+        head_sha: "c".repeat(40),
+        existing_tasks: [],
+        plan_summary: "v1",
+        current_acceptance: [],
+        validation_evidence: {},
+      } as never,
+      environment: { role: "architect" },
+    });
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toMatchObject({ kind: "extend" });
+  }, 60_000);
+});
+
 describe("parseCritiqueReport", () => {
   it("parses fenced JSON reports", () => {
     const report = parseCritiqueReport(
