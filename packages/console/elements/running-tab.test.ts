@@ -13,6 +13,27 @@ sharedDom();
 await import("./running-tab.js");
 
 /**
+ * A wall clock the test moves by hand. The element reads Date.now() on each
+ * tick, so pinning it makes the tick — not the passage of test time — the
+ * only thing that can change a rendered duration.
+ */
+function fakeClock(start) {
+  let now = start;
+  const realNow = Date.now;
+  return {
+    install() {
+      Date.now = () => now;
+    },
+    advance(ms) {
+      now += ms;
+    },
+    restore() {
+      Date.now = realNow;
+    },
+  };
+}
+
+/**
  * The injected clock: the element binds one callback and this drives it, so
  * a live duration advances without the test waiting on wall time.
  */
@@ -204,32 +225,32 @@ describe("running-tab rows", () => {
 
 describe("running-tab live durations", () => {
   it("advances a running row's duration on every tick", async () => {
-    // The ticker is injected, so the clock is the assertion: bind a row to a
-    // run that started 59s ago, drive one tick, and the duration must cross
-    // the minute boundary (59s -> 1m 00s) rather than sit on a stale value.
-    const ticker = manualTicker();
-    const el = makeTab([entry()], { ticker });
-    await el.updateComplete;
-    const duration = el.querySelector(".running-duration");
-    expect(duration.classList.contains("live")).toBe(true);
-    expect(duration.textContent).toBe("30s");
-    expect(duration.getAttribute("aria-label")).toMatch(/^running for /);
-    expect(duration.getAttribute("title")).toBe("PT30S");
-    el.entries = [
-      entry({
-        run: {
-          ...entry().run,
-          started_at: new Date(Date.now() - 60_000).toISOString(),
-        },
-      }),
-    ];
-    await el.updateComplete;
-    ticker.tick();
-    await el.updateComplete;
-    expect(duration.textContent).toBe("1m 00s");
-    expect(duration.getAttribute("aria-label")).toMatch(
-      /^running for 1 minute/,
-    );
+    // The clock is pinned, so the tick is the only thing that can move the
+    // duration: pin a run that started 30s before T0, advance the clock 30s,
+    // tick once, and the row must repaint 30s -> 1m 00s. A duration that
+    // only tracks `entries` would sit on the stale value.
+    const start = Date.parse("2026-08-30T12:00:00.000Z");
+    const clock = fakeClock(start);
+    clock.install();
+    try {
+      const ticker = manualTicker();
+      const el = makeTab([entry()], { ticker });
+      await el.updateComplete;
+      const duration = el.querySelector(".running-duration");
+      expect(duration.classList.contains("live")).toBe(true);
+      expect(duration.textContent).toBe("30s");
+      expect(duration.getAttribute("aria-label")).toMatch(/^running for /);
+      expect(duration.getAttribute("title")).toBe("PT30S");
+      clock.advance(30_000);
+      ticker.tick();
+      await el.updateComplete;
+      expect(duration.textContent).toBe("1m 00s");
+      expect(duration.getAttribute("aria-label")).toMatch(
+        /^running for 1 minute/,
+      );
+    } finally {
+      clock.restore();
+    }
   });
 
   it("renders a finished run's duration statically", async () => {

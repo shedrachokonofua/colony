@@ -156,7 +156,8 @@ export class ColonyApp extends ColonyElement {
      *
      * @type {import("./duration.js").Ticker | null}
      */
-    this.ticker = null;
+    this.ticker = createRunTicker();
+    this.ticker.onTick(() => this.tick());
     /** @type {ReturnType<typeof setInterval> | null} */
     this._pollTimer = null;
     /** @type {import("./shell-data.js").ShellState["api"]} */
@@ -166,7 +167,6 @@ export class ColonyApp extends ColonyElement {
   connectedCallback() {
     super.connectedCallback();
     this.auth = loadAuth();
-    this.ticker = createRunTicker();
     this._refresh = this._refresh.bind(this);
     window.addEventListener("hashchange", this);
     document.addEventListener("visibilitychange", this);
@@ -177,7 +177,6 @@ export class ColonyApp extends ColonyElement {
     this.addEventListener("colony-toggle", this);
     for (const type of LISTENED) this.addEventListener(type, this);
     this._pollTimer = startPolling(this);
-    this.ticker.onTick(() => this.requestUpdate());
     loadViewModule(this);
     void this._refresh();
   }
@@ -192,6 +191,59 @@ export class ColonyApp extends ColonyElement {
       this._pollTimer = null;
     }
     super.disconnectedCallback();
+  }
+
+  /**
+   * Start the duration clock when a live duration is on screen. Refresh is
+   * the only thing that can put one there, so it is the only starter; the
+   * tick stops itself once the duration is gone.
+   *
+   * @returns {boolean}
+   */
+  #syncTicker() {
+    if (!this.ticker || this.ticker.running()) return false;
+    if (!this.#hasVisibleRunningRun()) return false;
+    this.ticker.start();
+    return true;
+  }
+
+  /**
+   * One tick of the duration clock: repaint while a live duration is on
+   * screen, and stop the interval once none is. Repainting is the only way a
+   * running row's duration advances; stopping keeps an idle console off the
+   * 1s timer. Public because the ticker is only the clock — this is what a
+   * tick means.
+   */
+  tick() {
+    if (document.hidden || this.#isEditing() || !this.#hasVisibleRunningRun()) {
+      this.ticker?.stop();
+      return;
+    }
+    this.requestUpdate();
+  }
+
+  /**
+   * The rendered surfaces that can show a live duration: the scope sheet
+   * (drawer runs, plan architect runs, DAG nodes) and the project's Running
+   * tab.
+   *
+   * @returns {boolean}
+   */
+  #hasVisibleRunningRun() {
+    const runs = /** @type {any[]} */ (this.detail?.runs || []);
+    // Any running run on the current scope counts: drawer runs, plan
+    // architect runs, validation, and DAG live nodes all surface through the
+    // rendered sheet, so one check covers them.
+    if (runs.some((run) => run.status === "running")) return true;
+    return (this.projectRunning ?? []).some(
+      (entry) => entry?.run?.status === "running",
+    );
+  }
+
+  /** Typing a duration mid-render would drop keystrokes, so never repaint for one. */
+  #isEditing() {
+    const el = document.activeElement;
+    return el?.tagName === "INPUT" || el?.tagName === "TEXTAREA";
   }
 
   /**
@@ -221,10 +273,16 @@ export class ColonyApp extends ColonyElement {
   }
 
   // -- Refresh --------------------------------------------------------------
-  /** The single read path: route state onto this shell (shell-data.js). */
-  /** @returns {Promise<void>} */
-  _refresh() {
-    return refresh(this);
+  /**
+   * The single read path: route state onto this shell (shell-data.js). The
+   * duration clock starts and stops with what the read put on screen, so a
+   * live row ticks from the moment it lands.
+   *
+   * @returns {Promise<void>}
+   */
+  async _refresh() {
+    await refresh(this);
+    this.#syncTicker();
   }
 
   // -- Routing --------------------------------------------------------------

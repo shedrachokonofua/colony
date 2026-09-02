@@ -14,6 +14,31 @@ globalThis.location = { hash: "#/", search: "?demo=1" };
 
 const { ColonyApp } = await import("./colony-app.js");
 const { demoWorld } = await import("./demo.js");
+const { createRunTicker } = await import("./duration.js");
+
+/**
+ * A 1s interval the test drives by hand, so nothing waits on wall time.
+ * Returns the injected pair plus a tick(n) that fires the callbacks.
+ */
+function fakeTimers() {
+  let callback = () => {};
+  let cleared = 0;
+  return {
+    setIntervalFn: (fn) => {
+      callback = fn;
+      return 1;
+    },
+    clearIntervalFn: () => {
+      cleared += 1;
+    },
+    tick(n = 1) {
+      for (let i = 0; i < n; i++) callback();
+    },
+    get cleared() {
+      return cleared;
+    },
+  };
+}
 
 const realLocation = globalThis.location;
 
@@ -246,6 +271,81 @@ describe("project tab", () => {
     } finally {
       delete globalThis.history;
     }
+  });
+});
+
+// -- Duration ticker -----------------------------------------------------
+
+describe("duration ticker", () => {
+  it("starts when a refresh lands a live run, and not otherwise", async () => {
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    // The demo scope's detail carries a running run, so the clock starts.
+    await app._refresh();
+    expect(app.ticker.running()).toBe(true);
+    app.ticker.stop();
+
+    // An idle scope has no live duration to advance.
+    withHash("#/col-0badc0de");
+    const idle = makeShell();
+    await idle._refresh();
+    expect(idle.ticker.running()).toBe(false);
+  });
+
+  it("starts for a Running tab row's live run", async () => {
+    // The tab's rows are their own surface: a live run there ticks even when
+    // no scope sheet is open.
+    withHash("#/project/Operator%20console?tab=running");
+    const app = makeShell();
+    await app._refresh();
+    expect(app.projectRunning.length).toBeGreaterThan(0);
+    expect(app.ticker.running()).toBe(true);
+    app.ticker.stop();
+  });
+
+  it("stops itself once the live run is gone", async () => {
+    // A tick with nothing live on screen must not leave a 1s timer running:
+    // the interval is the only thing keeping the page awake between polls.
+    const timers = fakeTimers();
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.ticker = createRunTicker({
+      setIntervalFn: timers.setIntervalFn,
+      clearIntervalFn: timers.clearIntervalFn,
+    });
+    app.ticker.onTick(() => app.tick());
+    await app._refresh();
+    expect(app.ticker.running()).toBe(true);
+
+    // The run finishes: the next tick finds nothing live and stops.
+    app.detail = { ...app.detail, runs: [] };
+    app.projectRunning = [];
+    timers.tick();
+    expect(app.ticker.running()).toBe(false);
+    // ...and stays stopped, so no further tick can resurrect it.
+    timers.tick(3);
+    expect(app.ticker.running()).toBe(false);
+  });
+
+  it("keeps ticking while a live run is on screen", async () => {
+    const timers = fakeTimers();
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.ticker = createRunTicker({
+      setIntervalFn: timers.setIntervalFn,
+      clearIntervalFn: timers.clearIntervalFn,
+    });
+    app.ticker.onTick(() => app.tick());
+    await app._refresh();
+    timers.tick(3);
+    expect(app.ticker.running()).toBe(true);
+    app.ticker.stop();
   });
 });
 
