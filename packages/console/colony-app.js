@@ -215,7 +215,7 @@ export class ColonyApp extends ColonyElement {
    * tick means.
    */
   tick() {
-    if (document.hidden || this.#isEditing() || !this.#hasVisibleRunningRun()) {
+    if (document.hidden || !this.#hasVisibleRunningRun()) {
       this.ticker?.stop();
       return;
     }
@@ -238,12 +238,6 @@ export class ColonyApp extends ColonyElement {
     return (this.projectRunning ?? []).some(
       (entry) => entry?.run?.status === "running",
     );
-  }
-
-  /** Typing a duration mid-render would drop keystrokes, so never repaint for one. */
-  #isEditing() {
-    const el = document.activeElement;
-    return el?.tagName === "INPUT" || el?.tagName === "TEXTAREA";
   }
 
   /**
