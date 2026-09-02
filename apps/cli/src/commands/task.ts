@@ -153,10 +153,9 @@ async function requestChanges(
 }
 
 /**
- * `task <id> approve-merge --sha <sha>`: record the operator's approval to
- * merge at the MR head. The server reads the true MR head SHA from the
- * provider and takes no body; `--sha` stays in the parser as the operator's
- * recorded intent and is echoed here.
+ * `task <id> approve-merge --sha <sha>`: approve merging at that SHA.
+ * The body is `{ sha }` so the server can refuse with 409 HEAD_MOVED when
+ * the MR head has moved; this command does not retry at the new head.
  */
 async function approveMerge(
   cmd: ParsedCommand,
@@ -170,6 +169,7 @@ async function approveMerge(
   }
   const task = await client.post<TaskRow>(
     `/tasks/${encodeURIComponent(id)}/approve-merge`,
+    { sha },
   );
   if (io.json) {
     process.stdout.write(`${JSON.stringify(task, null, 2)}\n`);

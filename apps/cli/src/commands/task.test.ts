@@ -268,7 +268,7 @@ describe("task request-changes", () => {
 });
 
 describe("task approve-merge", () => {
-  it("POSTs approve-merge with no body and echoes the approved sha", async () => {
+  it("POSTs approve-merge with { sha } and echoes the approved sha", async () => {
     const { client, calls } = fakeClient(
       postRoute("approve-merge", { state: "mr_open", mr_iid: 7 }),
     );
@@ -288,9 +288,37 @@ describe("task approve-merge", () => {
         method: "post",
         path: "/tasks/col-1.1/approve-merge",
         query: undefined,
-        body: undefined,
+        body: { sha: "abc123" },
       },
     ]);
     expect(out.text()).toContain("merge approved at abc123: col-1.1");
+  });
+
+  it("surfaces 409 HEAD_MOVED and does not retry at the new head", async () => {
+    const message =
+      "MR head is def456, not abc123; re-read the diff before approving";
+    const { client, calls } = fakeClient({
+      "post /tasks/col-1.1/approve-merge": () =>
+        Promise.reject(new ApiError(409, "HEAD_MOVED", message)),
+    });
+    await expect(
+      run(
+        parseArgs(["task", "col-1.1", "approve-merge", "--sha", "abc123"]),
+        client,
+        IO,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "HEAD_MOVED",
+      message,
+    });
+    expect(calls).toEqual([
+      {
+        method: "post",
+        path: "/tasks/col-1.1/approve-merge",
+        query: undefined,
+        body: { sha: "abc123" },
+      },
+    ]);
   });
 });
