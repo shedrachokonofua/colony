@@ -24,16 +24,18 @@ export async function run(
   client: ColonyClient,
   io: { json: boolean; isTty: boolean },
 ): Promise<number> {
-  const goal = await readText(cmd.positional[0]!);
-  if (goal.trim() === "") {
-    throw new UsageError(
-      "goal is empty — pass a markdown file or `-` for stdin",
-    );
-  }
+  // Validate every flag before any I/O: a missing --repo must exit 2 even
+  // when the goal would come from a hanging stdin.
   const repoPath = stringFlag(cmd.flags, "repo");
   if (repoPath === undefined) {
     throw new UsageError(
       "open requires --repo PATH (the git repository to work in)",
+    );
+  }
+  const goal = await readText(cmd.positional[0]!);
+  if (goal.trim() === "") {
+    throw new UsageError(
+      "goal is empty — pass a markdown file or `-` for stdin",
     );
   }
   const title = stringFlag(cmd.flags, "title");
