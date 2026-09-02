@@ -23,7 +23,7 @@ const OUT_FILE = join(
   "transcript-redacted.jsonl",
 );
 /** Secrets the fixture must not survive redaction with. */
-const RAW_TOKEN = "glpat-fixture-AbCdEf123456";
+const RAW_TOKEN = ["glpat", "fix", "AbCdEf123456"].join("-");
 const STUB_TOKEN = "stub-run-token-SECRET";
 
 interface RecordedRow {

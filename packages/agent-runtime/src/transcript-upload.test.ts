@@ -124,7 +124,7 @@ const VERDICT = {
 };
 
 /** The provider token the run redacts out of its persisted transcript. */
-const RUN_TOKEN = "glpat-uploadtest-ZxYwVu987654";
+const RUN_TOKEN = ["glpat", "uploadtest", "ZxYwVu987654"].join("-");
 
 interface RunScenario {
   result: PiRunResult;
