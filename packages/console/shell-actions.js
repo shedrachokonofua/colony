@@ -107,7 +107,7 @@ export function openTaskInScope(app, scopeId, taskId) {
  * Flip an open-state property by key — the catalog's single toggle route.
  *
  * @param {import("./shell-data.js").ShellState} app
- * @param {"goalOpen" | "planOpen" | "briefOpen" | "settingsOpen" | "showArchived"} key
+ * @param {"goalOpen" | "planOpen" | "briefOpen" | "showArchived"} key
  */
 export function toggle(app, key) {
   // Showing archived rows must not leave the old page's rows on screen

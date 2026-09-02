@@ -57,7 +57,6 @@ function archivedQuery(app) {
  * @property {boolean} goalOpen
  * @property {boolean} planOpen
  * @property {boolean} briefOpen
- * @property {boolean} settingsOpen
  * @property {{ title: string, markdown: string } | null} reader
  * @property {{ doc: string, status: string | null } | null} projectContext
  * @property {{ name: string, project: Record<string, any> | null, scopes: any[], total: number, offset: number, page: number } | null} projectPage

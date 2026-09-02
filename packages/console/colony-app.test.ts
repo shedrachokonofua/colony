@@ -13,6 +13,7 @@ sharedDom();
 globalThis.location = { hash: "#/", search: "?demo=1" };
 
 const { ColonyApp } = await import("./colony-app.js");
+const { demoWorld } = await import("./demo.js");
 
 const realLocation = globalThis.location;
 
@@ -28,6 +29,7 @@ function makeShell() {
 
 afterEach(() => {
   globalThis.location = realLocation;
+  delete globalThis.history;
 });
 
 // -- Routing ---------------------------------------------------------------
@@ -189,6 +191,107 @@ describe("pagination (_page)", () => {
     const app = makeShell();
     app._page(0, "projects");
     expect(globalThis.location.hash).toBe("#/");
+  });
+});
+
+// -- Project tab ----------------------------------------------------------
+
+describe("project tab", () => {
+  it("reads the tab from the hash on construct and on hashchange", () => {
+    withHash("#/project/Operator%20console?tab=running");
+    expect(makeShell().projectTab).toBe("running");
+    withHash("#/project/Operator%20console?tab=nope");
+    expect(makeShell().projectTab).toBe("scopes");
+    withHash("#/project/Operator%20console");
+    expect(makeShell().projectTab).toBe("scopes");
+  });
+
+  it("writes the tab into the URL without a hashchange", () => {
+    // A hashchange would reset the very page state the tab switch is meant
+    // to preserve, so the tab rides on replaceState.
+    withHash("#/project/Operator%20console");
+    const app = makeShell();
+    let hashchanges = 0;
+    window.addEventListener("hashchange", () => {
+      hashchanges += 1;
+    });
+    app.navigate = () => {
+      throw new Error("the tab must not navigate");
+    };
+    // happy-dom's location stub is inert, so route replaceState back into it
+    // the way a browser does: the hash changes, the document does not.
+    globalThis.history = {
+      replaceState(_state, _title, url) {
+        globalThis.location = { ...globalThis.location, hash: url };
+      },
+    };
+    try {
+      app.handleEvent(
+        new window.CustomEvent("colony-project-tab", {
+          detail: { tab: "running" },
+        }),
+      );
+      expect(globalThis.location.hash).toBe(
+        "#/project/Operator%20console?tab=running",
+      );
+      expect(app.projectTab).toBe("running");
+      expect(hashchanges).toBe(0);
+      // Scopes is the default tab, so selecting it drops ?tab= again.
+      app.handleEvent(
+        new window.CustomEvent("colony-project-tab", {
+          detail: { tab: "scopes" },
+        }),
+      );
+      expect(globalThis.location.hash).toBe("#/project/Operator%20console");
+    } finally {
+      delete globalThis.history;
+    }
+  });
+});
+
+// -- Running row deep-link ------------------------------------------------
+
+describe("colony-open-task", () => {
+  it("parks the task id and navigates to its scope", () => {
+    withHash("#/project/Operator%20console?tab=running");
+    const app = makeShell();
+    app.handleEvent(
+      new window.CustomEvent("colony-open-task", {
+        detail: { scopeId: "col-abc", taskId: "col-abc.1" },
+      }),
+    );
+    expect(app.pendingSelectTaskId).toBe("col-abc.1");
+    expect(globalThis.location.hash).toBe("#/col-abc");
+  });
+
+  it("selects the parked task once the scope's detail holds it", async () => {
+    // The row navigates before the sheet's detail has loaded, so the id is
+    // parked; the refresh that lands the detail is what selects it. Without
+    // this, a Running-tab row click would land on a scope with no drawer.
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.pendingSelectTaskId = entry.task_id;
+    await app._refresh();
+    expect(app.detail?.scope.id).toBe(entry.scope_id);
+    expect(app.selectedTaskId).toBe(entry.task_id);
+    expect(app.drawerOpen).toBe(true);
+    expect(app.pendingSelectTaskId).toBeNull();
+  });
+
+  it("keeps a parked id that the detail does not hold", async () => {
+    // A task the scope never had must not select a phantom row: the id stays
+    // parked until a detail actually contains it.
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.pendingSelectTaskId = "col-nope.9";
+    await app._refresh();
+    expect(app.selectedTaskId).toBeNull();
+    expect(app.drawerOpen).toBe(false);
+    expect(app.pendingSelectTaskId).toBe("col-nope.9");
   });
 });
 
