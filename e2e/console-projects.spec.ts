@@ -333,7 +333,11 @@ test.describe("console projects (live)", () => {
     await expect(fixed).toBeVisible({ timeout: 15000 });
     await expect(fixed).toContainText(name);
     await expect(page.locator('input[name="project"]')).toHaveCount(0);
+    // Title is mandatory (the API 400s without it), so the composer requires
+    // it even when the project is fixed.
+    const titleText = `Fixed composer ${Date.now()}`;
     const goalText = `Fixed composer goal ${Date.now()}`;
+    await page.locator('input[name="title"]').fill(titleText);
     await page.locator('textarea[name="goal"]').fill(goalText);
     await page.locator('input[name="path"]').fill("so/console-e2e");
     await page.getByRole("button", { name: "Open scope" }).click();
