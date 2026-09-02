@@ -1,6 +1,8 @@
 /**
  * Relative age of an ISO timestamp ("just now", "4m ago", "3h ago"), ported
  * from the monolith (app.js rel) so feed timestamps read identically.
+ * @param {string | null | undefined} iso
+ * @returns {string} the relative age, the raw input for unparseable values.
  */
 export function rel(iso) {
   if (!iso) return "—";

@@ -6,6 +6,9 @@ import { formatDuration } from "./duration.js";
  * so the shape is re-validated here field by field; anything that fails is
  * treated as "no prediction" and renders nothing.
  */
+/**
+ * @param {import("./cost-prediction.d.ts").TaskWithCostPrediction} task
+ */
 export function parseCostPrediction(task) {
   const raw = task?.cost_prediction_json;
   if (raw == null || typeof raw !== "string" || raw === "") return null;
@@ -35,6 +38,9 @@ export function parseCostPrediction(task) {
   return parsed;
 }
 
+/**
+ * @param {import("./cost-prediction.d.ts").CostPrediction} prediction
+ */
 export function costPredictionLines(prediction) {
   return [
     `predicted ${formatDuration(prediction.predicted_ms)} · budget ${formatDuration(prediction.budget_ms)}`,

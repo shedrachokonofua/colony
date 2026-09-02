@@ -18,13 +18,19 @@ import { graphModel, layoutDag } from "../dag.js";
 import { formatDuration, runDurationMs } from "../duration.js";
 import { KIND_LABEL } from "../kind-label.js";
 
+/**
+ * The running run for one task, for the node's live label.
+ * @param {import("../dag.js").DagDetail | null | undefined} detail
+ * @param {string} taskId
+ * @returns {any} the task's running run row, or undefined
+ */
 function liveRunFor(detail, taskId) {
-  return (detail?.runs || []).find(
-    (run) => run.status === "running" && run.task_id === taskId,
-  );
+  const runs = /** @type {any[]} */ (detail?.runs || []);
+  return runs.find((run) => run.status === "running" && run.task_id === taskId);
 }
 
 /** Trailing serial of a task id (`#1`) or plan node (`#1` via `plan:1`). */
+/** @param {import("../dag.js").DagNode} node */
 function nodeTail(node) {
   return node.id.slice(node.id.lastIndexOf(node.proposed ? ":" : ".") + 1);
 }
@@ -38,11 +44,14 @@ export class TaskDag extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {import("../dag.js").DagDetail | null} */
     this.detail = null;
+    /** @type {string | null} */
     this.selectedTaskId = null;
     this.drawerOpen = true;
   }
 
+  /** @param {string} taskId */
   #select(taskId) {
     this.dispatchEvent(
       new CustomEvent("colony-select-task", {
@@ -52,6 +61,7 @@ export class TaskDag extends ColonyElement {
     );
   }
 
+  /** @param {KeyboardEvent} event @param {string} taskId */
   #keydown(event, taskId) {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
@@ -62,7 +72,8 @@ export class TaskDag extends ColonyElement {
     const detail = this.detail;
     const { nodes, edges } = graphModel(detail);
     if (!nodes.length) {
-      const runningPlan = (detail?.runs || []).some(
+      const runs = /** @type {any[]} */ (detail?.runs || []);
+      const runningPlan = runs.some(
         (run) => run.kind === "architect" && run.status === "running",
       );
       return html`<p class="note">
@@ -94,6 +105,7 @@ export class TaskDag extends ColonyElement {
       (node) => node.id,
       (node) => {
         const box = pos.get(node.id);
+        if (!box) return svg``;
         const live = liveRunFor(detail, node.id);
         const selected = this.selectedTaskId === node.id && this.drawerOpen;
         return svg`<g
@@ -105,7 +117,11 @@ export class TaskDag extends ColonyElement {
             "is-live": Boolean(live),
           })}
           data-state=${node.state}>
-          <rect class=${classMap({ "node-box": true, "is-proposed": node.proposed })}
+          <rect
+            class=${classMap({
+              "node-box": true,
+              "is-proposed": Boolean(node.proposed),
+            })}
             x=${box.x} y=${box.y} width=${box.w} height=${box.h} />
           <rect class="node-bar" x=${box.x + 5} y=${box.y + 5} width="3" height=${box.h - 10} />
           <foreignObject x=${box.x} y=${box.y} width=${box.w} height=${box.h}>
@@ -127,7 +143,10 @@ export class TaskDag extends ColonyElement {
             aria-label=${node.title}
             x=${box.x} y=${box.y} width=${box.w} height=${box.h}
             @click=${() => this.#select(node.id)}
-            @keydown=${(event) => this.#keydown(event, node.id)} />
+            @keydown=${
+              /** @param {KeyboardEvent} event */ (event) =>
+                this.#keydown(event, node.id)
+            } />
         </g>`;
       },
     );

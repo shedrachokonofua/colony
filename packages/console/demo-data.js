@@ -11,9 +11,13 @@ export const DEMO_SHA_B = "b9c0d1e2f30415263748a9b0c1d2e3f401234567";
 // The gate run must look perpetually "running", so its start moves with now.
 export const DEMO_GATE_STARTED = new Date(Date.now() - 12 * 1000).toISOString();
 
+/** @typedef {import("./demo-data.d.ts").DemoScope} Scope */
+/** @typedef {import("./demo-data.d.ts").DemoStatusCounts} StatusCounts */
+
 // Filler projects: DEMO_PROJECT_COUNT - 1 of them, each strictly newer than
 // the demo project, so "Operator console" sorts at index DEMO_PROJECT_COUNT - 1
 // = offset 25 — the first row of the homepage's page 2.
+/** @param {number} now */
 export function buildFillerProjects(now) {
   return Array.from({ length: DEMO_PROJECT_COUNT - 1 }, (_, i) => ({
     name: `Demo project ${String(i).padStart(2, "0")}`,
@@ -40,6 +44,7 @@ export function buildFillerProjects(now) {
 // Generated Operator-console scopes. Hand-authored scopes are newer than
 // every generated one but are not owned by this project, so d25 is exactly
 // the 26th row (offset 25): the first row of the project's scopes page 2.
+/** @param {number} now */
 export function buildDemoScopes(now) {
   return Array.from({ length: DEMO_SCOPES_IN_PROJECT }, (_, i) => {
     const created = new Date(now - (i + 3) * 3600_000);
@@ -70,9 +75,16 @@ const ZERO_STATUS_COUNTS = {
   abandoned: 0,
 };
 
+/** @param {number} now @param {readonly Scope[]} scopes @param {readonly { byte_size: number }[]} files */
 export function buildDemoProject(now, scopes, files) {
+  /** @type {StatusCounts} */
   const statusCounts = { ...ZERO_STATUS_COUNTS };
-  for (const s of scopes) statusCounts[s.status] += 1;
+  for (const s of scopes) {
+    // Every generated scope status is a tracked key, so naming the index
+    // beats widening the counts object to accept any string.
+    const status = /** @type {keyof StatusCounts} */ (s.status);
+    statusCounts[status] += 1;
+  }
   const demoProject = {
     name: "Operator console",
     context_doc:
@@ -101,6 +113,7 @@ export function buildDemoProject(now, scopes, files) {
 
 // A second demo project with no brief, no files, and no scopes so the
 // empty states are visible offline.
+/** @param {number} now */
 export function buildEmptyProject(now) {
   return {
     name: "Empty workspace",
@@ -116,6 +129,7 @@ export function buildEmptyProject(now) {
   };
 }
 
+/** @param {number} now */
 export function buildDemoFiles(now) {
   return [
     {
@@ -139,6 +153,7 @@ export function buildDemoFiles(now) {
   ];
 }
 
+/** @param {number} now */
 export function buildDemoDetail(now) {
   const scope = {
     id: "col-a1b2c3d4",
@@ -311,6 +326,7 @@ export function buildDemoDetail(now) {
   return { scope, tasks, deps, runs };
 }
 
+/** @param {number} now */
 export function buildDemoRunEvents(now) {
   return [
     {
@@ -342,6 +358,7 @@ export function buildDemoRunEvents(now) {
   ];
 }
 
+/** @param {number} now */
 export function buildDemoAudit(now) {
   return [
     {

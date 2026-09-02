@@ -1,6 +1,8 @@
 // <validation-card>: the scope's acceptance criteria and their latest
 // validate-run results. Ported from renderValidationCard (app.js). A failed
-// validating scope offers colony-confirm {kind:"revalidate"}.
+// validating scope offers colony-task-action revalidate; a blocked one (the
+// replan budget exhausted) offers the operator unblock, both ported from the
+// monolith's a393cfd retry logic.
 import { ColonyElement, classMap, html, nothing, repeat } from "../base.js";
 import {
   durationAriaLabel,
@@ -9,6 +11,7 @@ import {
   runDurationMs,
 } from "../duration.js";
 
+/** @param {string | null | undefined} raw @returns {any} */
 function parseEvidence(raw) {
   if (!raw) return null;
   try {
@@ -18,6 +21,7 @@ function parseEvidence(raw) {
   }
 }
 
+/** @param {{ acceptance_json?: string | null } | null | undefined} scope @returns {any} */
 function parseAcceptance(scope) {
   if (!scope?.acceptance_json) return null;
   try {
@@ -36,23 +40,23 @@ export class ValidationCard extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {Record<string, any> | null} */
     this.scope = null;
+    /** @type {Record<string, any> | null} */
     this.detail = null;
   }
 
-  #confirm(kind) {
-    this.dispatchEvent(
-      new CustomEvent("colony-confirm", { bubbles: true, detail: { kind } }),
-    );
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
+  #emit(type, detail = {}) {
+    this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
 
   render() {
     const scope = this.scope;
     if (!scope) return nothing;
     const acceptance = parseAcceptance(scope);
-    const validateRuns = (this.detail?.runs || []).filter(
-      (run) => run.kind === "validate",
-    );
+    const detailRuns = /** @type {any[]} */ (this.detail?.runs || []);
+    const validateRuns = detailRuns.filter((run) => run.kind === "validate");
     if ((!acceptance || !acceptance.length) && !validateRuns.length) {
       return nothing;
     }
@@ -63,7 +67,8 @@ export class ValidationCard extends ColonyElement {
     const evidence = latest ? parseEvidence(latest.evidence_json) : null;
     const results = Array.isArray(evidence?.results) ? evidence.results : [];
     const failedCount = results.filter(
-      (result) => result.exit_code !== 0,
+      /** @param {{exit_code: number}} result */ (result) =>
+        result.exit_code !== 0,
     ).length;
     const failed = Boolean(latest && latest.status === "failed");
     const running = Boolean(latest && latest.status === "running");
@@ -101,10 +106,16 @@ export class ValidationCard extends ColonyElement {
               })()}
             </p>`
           : nothing}
-        ${scope.status === "validating" && failed
+        ${(scope.status === "validating" || scope.status === "blocked") &&
+        failed
           ? html`<button
               class="btn btn-solid validation-retry"
-              @click=${() => this.#confirm("revalidate")}
+              @click=${() =>
+                this.#emit("colony-task-action", {
+                  path: `/scopes/${scope.id}/${
+                    scope.status === "blocked" ? "unblock" : "revalidate"
+                  }`,
+                })}
             >
               Run validation again
             </button>`
@@ -112,9 +123,11 @@ export class ValidationCard extends ColonyElement {
         <ul class="validation-list">
           ${repeat(
             acceptance || [],
-            (item, i) => i,
+            /** @type {(item: any, i: number) => number} */ ((item, i) => i),
             (item, i) => {
-              const result = results.find((r) => r.index === i);
+              const result = results.find(
+                (/** @type {any} */ r) => r.index === i,
+              );
               const pending = !result;
               const itemFailed = result && result.exit_code !== 0;
               return html`<li

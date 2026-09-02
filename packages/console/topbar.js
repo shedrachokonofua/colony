@@ -46,9 +46,13 @@ export class ColonyTopbar extends ColonyElement {
   constructor() {
     super();
     this.actor = "";
+    /** @type {Record<string, any> | null} */
     this.config = null;
+    /** @type {{ username: string } | null} */
     this.auth = null;
+    /** @type {Record<string, any> | null} */
     this.oidc = null;
+    /** @type {{ scope?: { project_name?: string | null } } | null} */
     this.detail = null;
     this._draftActor = "";
   }
@@ -71,8 +75,11 @@ export class ColonyTopbar extends ColonyElement {
   }
 
   /** Changes commit on change/Enter (like the monolith's saveActor). */
+  /** @param {{ target: { value?: string | null } } | Event} event */
   #saveActor(event) {
-    const actor = String(event.target.value ?? "").trim();
+    const actor = String(
+      /** @type {{ value?: string | null }} */ (event.target)?.value ?? "",
+    ).trim();
     this._draftActor = actor;
     if (!actor || actor === this.actor) return;
     this.dispatchEvent(
@@ -83,6 +90,7 @@ export class ColonyTopbar extends ColonyElement {
     );
   }
 
+  /** @param {SubmitEvent} event */
   #submitActor(event) {
     event.preventDefault();
     this.#saveActor({ target: { value: this._draftActor } });
@@ -114,29 +122,42 @@ export class ColonyTopbar extends ColonyElement {
             </button>
           </div>`
         : html`<div class="sign"></div>`
-      : html`<form class="sign" @submit=${(e) => this.#submitActor(e)}>
+      : html`<form
+          class="sign"
+          @submit=${/** @param {SubmitEvent} e */ (e) => this.#submitActor(e)}
+        >
           <label>
             <span>Operator</span>
             <input
               name="actor"
               .value=${this._draftActor || this.actor}
               spellcheck="false"
-              @change=${(e) => this.#saveActor(e)}
+              @change=${/** @param {Event} e */ (e) => this.#saveActor(e)}
             />
           </label>
         </form>`;
     return html`<header class="topbar">
-      <a class="brand" href="#/" @click=${(e) => this.#navigate(e, "#/")}
+      <a
+        class="brand"
+        href="#/"
+        @click=${/** @param {MouseEvent} e */ (e) => this.#navigate(e, "#/")}
         >${brandMark()}<span>COLONY</span></a
       >
       <nav class="crumbs" aria-label="Breadcrumb">
-        <a href="#/" @click=${(e) => this.#navigate(e, "#/")}>Projects</a>
+        <a
+          href="#/"
+          @click=${/** @param {MouseEvent} e */ (e) => this.#navigate(e, "#/")}
+          >Projects</a
+        >
         ${projectName
           ? html`<span class="crumb-sep">/</span>
               <a
                 class="crumb"
                 href=${projectHref(projectName)}
-                @click=${(e) => this.#navigate(e, projectHref(projectName))}
+                @click=${
+                  /** @param {MouseEvent} e */ (e) =>
+                    this.#navigate(e, projectHref(projectName))
+                }
                 >${projectName}</a
               >`
           : nothing}
@@ -157,7 +178,10 @@ export class ColonyTopbar extends ColonyElement {
               <a
                 class="crumb"
                 href=${projectHref(scopeProject)}
-                @click=${(e) => this.#navigate(e, projectHref(scopeProject))}
+                @click=${
+                  /** @param {MouseEvent} e */ (e) =>
+                    this.#navigate(e, projectHref(scopeProject))
+                }
                 >${scopeProject}</a
               >`
           : nothing}
@@ -166,24 +190,11 @@ export class ColonyTopbar extends ColonyElement {
               <span class="crumb mono">${scopeId}</span>`
           : nothing}
       </nav>
-      <div class="nav-new">
-        <a
-          class="btn btn-quiet"
-          href="#/new-project"
-          @click=${(e) => this.#navigate(e, "#/new-project")}
-          >New project</a
-        >
-        <a
-          class="btn btn-quiet"
-          href="#/new"
-          @click=${(e) => this.#navigate(e, "#/new")}
-          >New scope</a
-        >
-      </div>
       ${account}
     </header>`;
   }
 
+  /** @param {MouseEvent} event @param {string} href */
   #navigate(event, href) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
       return;

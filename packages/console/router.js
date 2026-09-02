@@ -17,7 +17,8 @@ export function routeScopeId() {
     PROJECT_ROUTE.test(hash)
   )
     return null;
-  return hash;
+  const id = hash.split("?")[0];
+  return id || null;
 }
 
 export function routeIsNew() {
@@ -43,10 +44,12 @@ export function routeProjectName() {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/** @param {string} name */
 export function projectHref(name) {
   return `#/project/${encodeURIComponent(name)}`;
 }
 
+/** @param {string} name */
 export function projectFilesHref(name) {
   return `#/project/${encodeURIComponent(name)}/files`;
 }

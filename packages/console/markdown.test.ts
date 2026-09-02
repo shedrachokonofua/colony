@@ -105,6 +105,10 @@ describe("mdInline", () => {
 });
 
 describe("mdFragment", () => {
+  // mdFragment builds its fragment through the document, so this block needs
+  // the package's one shared happy-dom window installed.
+  sharedDom();
+
   it("parses rendered markdown into detached template content", () => {
     const frag = mdFragment("# Hi\n\n- one");
     expect(frag.querySelectorAll("h2")).toHaveLength(1);

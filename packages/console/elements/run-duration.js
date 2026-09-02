@@ -24,6 +24,7 @@ export class RunDuration extends ColonyElement {
   constructor() {
     super();
     this.startedAt = "";
+    /** @type {string | null} */
     this.finishedAt = null;
     this._now = 0;
   }
@@ -38,6 +39,7 @@ export class RunDuration extends ColonyElement {
     super.disconnectedCallback();
   }
 
+  /** @param {Map<string, unknown>} changed */
   updated(changed) {
     super.updated(changed);
     // The clock runs only while the run has no end; finishing (or a new run

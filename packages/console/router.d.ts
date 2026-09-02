@@ -10,4 +10,7 @@ export function routeIsManageFiles(): boolean;
 export function routeProjectFilesName(): string | null;
 export function routeProjectName(): string | null;
 export function projectHref(name: string): string;
+
+export function projectFilesHref(name: string): string;
+
 export function hashQueryProject(): string | null;

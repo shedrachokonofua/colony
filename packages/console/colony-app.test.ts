@@ -253,7 +253,7 @@ describe("hashchange handler", () => {
     expect(app.viewModule?.route).toBe("newProject");
     expect(app.viewModule?.loading).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    // new-project has no view module yet (later task); the shell recovers.
-    expect(app.viewModule).toBeNull();
+    // project-create registers and resolves: the shell shows it.
+    expect(app.viewModule).toEqual({ route: "newProject", loading: false });
   });
 });

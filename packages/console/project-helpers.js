@@ -88,9 +88,16 @@ export function formatRunningEmptyTallies(taskStateCounts) {
   return `${queued} queued · ${blocked} blocked`;
 }
 
-/** Connected repositories deduped by repo_path, preserving first-seen order. */
+/**
+ * Connected repositories deduped by repo_path, preserving first-seen order.
+ * @template {{ repo_id?: string, repo_path?: string | null }} T
+ * @param {T[] | null | undefined} repositories
+ * @returns {T[]}
+ */
 export function distinctRepos(repositories) {
+  /** @type {Set<string>} */
   const seen = new Set();
+  /** @type {T[]} */
   const out = [];
   for (const repo of repositories ?? []) {
     if (!repo?.repo_path || seen.has(repo.repo_path)) continue;
@@ -100,13 +107,20 @@ export function distinctRepos(repositories) {
   return out;
 }
 
+/**
+ * @param {string | null | undefined} context_doc
+ * @param {number | null | undefined} file_count
+ */
 export function knowledgeText(context_doc, file_count) {
   const brief = context_doc ? "Brief" : "No brief";
   const n = file_count ?? 0;
   return `${brief} · ${n} reference file${n === 1 ? "" : "s"}`;
 }
 
-/** First non-heading paragraph of the brief, flattened to one plain line. */
+/**
+ * First non-heading paragraph of the brief, flattened to one plain line.
+ * @param {string | null | undefined} context_doc
+ */
 export function projectDescription(context_doc) {
   const doc = String(context_doc ?? "");
   for (const block of doc.split(/\n\s*\n/)) {
@@ -119,6 +133,9 @@ export function projectDescription(context_doc) {
   return "";
 }
 
+/**
+ * @param {Array<{ repo_id?: string, repo_path: string | null | undefined }> | null | undefined} repositories
+ */
 export function repoSummaryText(repositories) {
   const repos = distinctRepos(repositories);
   if (repos.length === 0) return "No connected repositories";
@@ -128,16 +145,21 @@ export function repoSummaryText(repositories) {
   return `${count} connected repo${count === 1 ? "" : "s"} · ${shown.join(" · ")}${more}`;
 }
 
+/** @param {unknown} fixedProject @param {unknown} formValue */
 export function resolveComposerProject(fixedProject, formValue) {
   const fixed = fixedProject != null ? String(fixedProject).trim() : "";
   if (fixed) return fixed;
   return String(formValue ?? "").trim();
 }
 
+/** @param {unknown} name @param {unknown} context_doc */
 export function buildNewProjectPayload(name, context_doc) {
   const trimmedName = String(name ?? "").trim();
   if (!trimmedName) return null;
   const doc = String(context_doc ?? "").trim();
+  // context_doc is only sent when non-empty, so the payload is built as a
+  // typed Record rather than widened from a `{ name }` literal.
+  /** @type {{ name: string, context_doc?: string }} */
   const body = { name: trimmedName };
   if (doc) body.context_doc = doc;
   return body;

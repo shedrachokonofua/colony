@@ -28,15 +28,19 @@ export class ProjectContextCard extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {Record<string, any> | null} */
     this.project = null;
     this.contextDoc = "";
+    /** @type {Array<Record<string, any>>} */
     this.files = [];
     this.editing = false;
+    /** @type {string | null} */
     this.saveStatus = null;
     this._contextDraft = "";
     this._focused = false;
   }
 
+  /** @param {Map<string, unknown>} changed */
   willUpdate(changed) {
     super.willUpdate(changed);
     // Adopt a new doc from the server unless the operator is typing in the
@@ -56,11 +60,13 @@ export class ProjectContextCard extends ColonyElement {
     }
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
 
   /** Links route through colony-navigate; modified clicks keep the anchor. */
+  /** @param {MouseEvent} event @param {string} href */
   #nav(event, href) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
       return;
@@ -68,12 +74,15 @@ export class ProjectContextCard extends ColonyElement {
     this.#emit("colony-navigate", { href });
   }
 
+  /** @param {SubmitEvent} event */
   #submit(event) {
     event.preventDefault();
     this.#emit("colony-save-context", {
       project: this.project?.name ?? null,
       context_doc: String(
-        new FormData(event.target).get("project-context") ?? "",
+        new FormData(/** @type {HTMLFormElement} */ (event.target)).get(
+          "project-context",
+        ) ?? "",
       ),
     });
   }
@@ -83,15 +92,22 @@ export class ProjectContextCard extends ColonyElement {
   // templates — lit's cleanup trips over a part sitting beside another
   // part when the branch swaps under happy-dom.
   #editor() {
-    return html`<form class="project-context" @submit=${(e) => this.#submit(e)}>
+    return html`<form
+        class="project-context"
+        @submit=${/** @param {SubmitEvent} e */ (e) => this.#submit(e)}
+      >
         <textarea
           name="project-context"
           class="mono"
           placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
           .value=${this._contextDraft}
-          @input=${(event) => {
-            this._contextDraft = event.target.value;
-          }}
+          @input=${
+            /** @param {InputEvent} event */ (event) => {
+              this._contextDraft = /** @type {HTMLInputElement} */ (
+                event.target
+              ).value;
+            }
+          }
           @focus=${() => {
             this._focused = true;
           }}
@@ -118,6 +134,7 @@ export class ProjectContextCard extends ColonyElement {
       ${this.#fileList()}`;
   }
 
+  /** @param {string} doc */
   #editButton(doc) {
     return html`<button
       class="btn btn-quiet"
@@ -127,6 +144,10 @@ export class ProjectContextCard extends ColonyElement {
     </button>`;
   }
 
+  /**
+   * Read-only preview branch: rendered markdown + file list.
+   * @param {string} doc
+   */
   #preview(doc) {
     return doc
       ? html`<div class="knowledge-preview">
@@ -139,6 +160,7 @@ export class ProjectContextCard extends ColonyElement {
 
   /** The file summary and the Manage files link, shared by both branches. */
   #fileList() {
+    /** @type {Array<{filename: string, media_type: string, byte_size: number}>} */
     const files = this.files ?? [];
     return html`${files.length
         ? html`<ul class="file-list">
@@ -153,9 +175,11 @@ export class ProjectContextCard extends ColonyElement {
           </ul>`
         : nothing}<a
         class="btn btn-quiet"
-        href=${projectFilesHref(this.project.name)}
-        @click=${(event) =>
-          this.#nav(event, projectFilesHref(this.project.name))}
+        href=${projectFilesHref(this.project?.name ?? "")}
+        @click=${
+          /** @param {MouseEvent} event */ (event) =>
+            this.#nav(event, projectFilesHref(this.project?.name ?? ""))
+        }
         >Manage files</a
       >`;
   }

@@ -32,8 +32,9 @@ export class ScopeCreate extends ColonyElement {
     this._seeded = false;
   }
 
-  willUpdate() {
-    super.willUpdate();
+  /** @param {Map<PropertyKey, unknown>} changed */
+  willUpdate(changed) {
+    super.willUpdate(changed);
     // Seed once from ?project= — after that the operator's typing wins, so a
     // poll-driven re-render can never reset the field they are filling in.
     if (!this._seeded) {
@@ -42,13 +43,15 @@ export class ScopeCreate extends ColonyElement {
     }
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
 
+  /** @param {SubmitEvent} event */
   #submit(event) {
     event.preventDefault();
-    const form = new FormData(event.target);
+    const form = new FormData(/** @type {HTMLFormElement} */ (event.target));
     const goal = String(this._goalDraft ?? "").trim();
     const path = String(this._pathDraft ?? "").trim();
     if (!goal || !path) return;
@@ -68,7 +71,10 @@ export class ScopeCreate extends ColonyElement {
       <aside class="card create-card">
         <p class="card-head">Open a scope</p>
         <div class="card-body">
-          <form class="composer" @submit=${(e) => this.#submit(e)}>
+          <form
+            class="composer"
+            @submit=${/** @param {SubmitEvent} e */ (e) => this.#submit(e)}
+          >
             <p class="composer-hint">
               Colony plans the work, opens merge requests, and merges what
               passes. Write the goal like a brief for an engineer who cannot ask
@@ -87,9 +93,13 @@ export class ScopeCreate extends ColonyElement {
                     placeholder="Project this scope belongs to"
                     autocomplete="off"
                     .value=${this._projectDraft ?? ""}
-                    @input=${(event) => {
-                      this._projectDraft = event.target.value;
-                    }}
+                    @input=${
+                      /** @param {InputEvent} event */ (event) => {
+                        this._projectDraft = /** @type {HTMLInputElement} */ (
+                          event.target
+                        ).value;
+                      }
+                    }
                   />
                 </label>`}
             <label class="field">
@@ -101,9 +111,13 @@ export class ScopeCreate extends ColonyElement {
                 placeholder="Short label for the board"
                 autocomplete="off"
                 .value=${this._titleDraft ?? ""}
-                @input=${(event) => {
-                  this._titleDraft = event.target.value;
-                }}
+                @input=${
+                  /** @param {InputEvent} event */ (event) => {
+                    this._titleDraft = /** @type {HTMLInputElement} */ (
+                      event.target
+                    ).value;
+                  }
+                }
               />
             </label>
             <label class="field">
@@ -114,9 +128,13 @@ export class ScopeCreate extends ColonyElement {
                 rows="12"
                 placeholder="What should the factory build?"
                 .value=${this._goalDraft ?? ""}
-                @input=${(event) => {
-                  this._goalDraft = event.target.value;
-                }}
+                @input=${
+                  /** @param {InputEvent} event */ (event) => {
+                    this._goalDraft = /** @type {HTMLTextAreaElement} */ (
+                      event.target
+                    ).value;
+                  }
+                }
               ></textarea>
             </label>
             <label class="field">
@@ -127,9 +145,13 @@ export class ScopeCreate extends ColonyElement {
                 placeholder="so/my-repo"
                 autocomplete="off"
                 .value=${this._pathDraft ?? ""}
-                @input=${(event) => {
-                  this._pathDraft = event.target.value;
-                }}
+                @input=${
+                  /** @param {InputEvent} event */ (event) => {
+                    this._pathDraft = /** @type {HTMLInputElement} */ (
+                      event.target
+                    ).value;
+                  }
+                }
               />
             </label>
             <label class="field">
@@ -137,9 +159,13 @@ export class ScopeCreate extends ColonyElement {
               <select
                 name="approvals"
                 .value=${this._approvals ?? "manual"}
-                @change=${(event) => {
-                  this._approvals = event.target.value;
-                }}
+                @change=${
+                  /** @param {Event} event */ (event) => {
+                    this._approvals = /** @type {HTMLSelectElement} */ (
+                      event.target
+                    ).value;
+                  }
+                }
               >
                 <option value="manual">
                   Manual — you approve the plan and every merge
@@ -154,17 +180,19 @@ export class ScopeCreate extends ColonyElement {
               <a
                 class="btn btn-quiet"
                 href="#/"
-                @click=${(event) => {
-                  if (
-                    event.metaKey ||
-                    event.ctrlKey ||
-                    event.shiftKey ||
-                    event.button
-                  )
-                    return;
-                  event.preventDefault();
-                  this.#emit("colony-navigate", { href: "#/" });
-                }}
+                @click=${
+                  /** @param {MouseEvent} event */ (event) => {
+                    if (
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.button
+                    )
+                      return;
+                    event.preventDefault();
+                    this.#emit("colony-navigate", { href: "#/" });
+                  }
+                }
                 >Cancel</a
               >
             </div>

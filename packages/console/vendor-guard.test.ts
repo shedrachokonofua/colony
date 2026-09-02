@@ -58,7 +58,7 @@ function isMapped(spec: string, imports: Record<string, string>): boolean {
 describe("console no-build guard", () => {
   it("scans the console .js files outside vendor/", () => {
     const files = walkJsFiles(consoleDir);
-    expect(files).toContain(join(consoleDir, "app.js"));
+    expect(files).toContain(join(consoleDir, "main.js"));
     expect(files.some((f) => f.includes(`${consoleDir}/vendor/`))).toBe(false);
   });
 

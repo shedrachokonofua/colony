@@ -3,6 +3,10 @@ const TRACE_ID_SLOT = "{trace_id}";
 // Builds the run's trace deep link. The configured base either embeds the id
 // via a literal `{trace_id}` placeholder (URL-encoded, so Grafana Explore
 // JSON params work) or, without a placeholder, gets the id appended verbatim.
+/**
+ * @param {import("./trace-link.d.ts").TraceLinkConfig} config
+ * @param {import("./trace-link.d.ts").TraceLinkRun} run
+ */
 export function traceHref(config, run) {
   const base = config?.trace_ui_base_url;
   const id = run?.trace_id;

@@ -5,10 +5,11 @@
 import { ColonyElement, html, nothing } from "../base.js";
 import { rel } from "../rel-time.js";
 
+/** @param {{ event: string, detail_json?: string | null }} row */
 function rowDetail(row) {
   let detail;
   try {
-    const d = JSON.parse(row.detail_json);
+    const d = JSON.parse(row.detail_json || "");
     if (row.event === "pi_model_fallback" && d.from && d.to) {
       detail = `${d.from} → ${d.to}`;
     } else if (typeof d.phase === "string" && d.phase) {
@@ -30,7 +31,9 @@ export class RunFeed extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {{ runId: string, rows: Array<{at: string, event: string, detail_json?: string | null}> } | null} */
     this.feed = null;
+    /** @type {Record<string, any> | null} */
     this.run = null;
   }
 

@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "bun --watch apps/colonyd/src/main.ts",
     "vendor:ui": "bun run scripts/vendor-ui.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/console/tsconfig.json",
     "test": "bun test apps packages scripts",
     "test:unit": "git ls-files 'apps/**/*.test.ts' 'packages/**/*.test.ts' 'scripts/*.test.ts' | grep -v '\\.integration\\.test\\.ts$' | xargs bun test",
     "test:e2e": "playwright test",

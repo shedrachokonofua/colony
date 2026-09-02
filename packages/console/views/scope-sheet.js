@@ -15,6 +15,7 @@ import "../elements/task-dag.js";
 import "../elements/task-drawer.js";
 import "../elements/validation-card.js";
 
+/** @param {Record<string, any> | null | undefined} scope */
 function scopeTitle(scope) {
   if (!scope) return "";
   if (scope.title) return scope.title;
@@ -23,15 +24,22 @@ function scopeTitle(scope) {
     : scope.goal;
 }
 
+/** @param {Record<string, any> | null | undefined} detail @returns {any} */
 function latestValidateRun(detail) {
-  const runs = (detail?.runs || []).filter((run) => run.kind === "validate");
+  const runs = /** @type {any[]} */ (detail?.runs || []).filter(
+    (run) => run.kind === "validate",
+  );
   return runs
     .slice()
-    .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+    .sort(
+      (/** @type {any} */ a, /** @type {any} */ b) =>
+        Date.parse(a.started_at) - Date.parse(b.started_at),
+    )
     .pop();
 }
 
 /** The monolith's waitingOnYou (app.js): the banner line for the sheet. */
+/** @param {Record<string, any> | null | undefined} scope @param {any[]} tasks @param {Record<string, any> | null | undefined} detail */
 function waitingOnYou(scope, tasks, detail) {
   if (!scope) return "";
   if (scope.status === "planning" && scope.plan_json) {
@@ -39,7 +47,7 @@ function waitingOnYou(scope, tasks, detail) {
   }
   if (scope.status === "planning") return "Architect is drawing the plan.";
   if (scope.status === "validating") {
-    const latest = latestValidateRun(detail);
+    const latest = latestValidateRun(detail ?? undefined);
     if (latest?.status === "failed") {
       return "Validation failed — fix the goal on the default branch, then run validation again.";
     }
@@ -82,42 +90,58 @@ export class ScopeSheet extends ColonyElement {
     scopeRunEvents: { type: Object },
     error: { type: String },
     config: { type: Object },
-    // The shell's armed confirm kind (merge/stop/cancel/abandon…); the
-    // abandon button renders its Confirm step while it matches.
+    // The shell's armed confirm kind (merge/stop/cancel/abandon/approve-plan…); the
+    // abandon/approve-plan button renders its Confirm step while it matches.
     confirm: { type: String },
   };
 
   constructor() {
     super();
+    /** @type {Record<string, any> | null} */
     this.detail = null;
+    /** @type {Array<Record<string, any>>} */
     this.audit = [];
+    /** @type {string | null} */
     this.selectedTaskId = null;
     this.drawerOpen = false;
     this.goalOpen = false;
     this.planOpen = false;
+    /** @type {Record<string, any> | null} */
     this.runEvents = null;
+    /** @type {Record<string, any> | null} */
     this.scopeRunEvents = null;
     this.error = "";
+    /** @type {Record<string, any> | null} */
     this.config = null;
+    /** @type {string | null} */
     this.confirm = null;
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
 
+  /** @param {Record<string, any> | null | undefined} scope */
   #abandonVisible(scope) {
-    return Boolean(scope) && !["done", "abandoned"].includes(scope.status);
+    return (
+      Boolean(scope) &&
+      !"done abandoned".split(" ").includes(/** @type {any} */ (scope).status)
+    );
   }
 
   /** The monolith's abandonButton (app.js): arm with a confirm, then emit
    * colony-abandon {scopeId} — the event the shell's _abandon listens for. */
+  /** @param {Record<string, any> | null | undefined} scope */
   #abandonButton(scope) {
     if (!this.#abandonVisible(scope)) return nothing;
     return this.confirm === "abandon"
       ? html`<button
           class="btn btn-rev"
-          @click=${() => this.#emit("colony-abandon", { scopeId: scope.id })}
+          @click=${() =>
+            this.#emit("colony-abandon", {
+              scopeId: /** @type {any} */ (scope).id,
+            })}
         >
           Confirm abandon
         </button>`
@@ -133,9 +157,14 @@ export class ScopeSheet extends ColonyElement {
   // monolith's renderSheet fallback — from a `plan:<i>` id while the plan is
   // still unapproved: <task-drawer> renders those as the proposed-task drawer
   // from the bare id plus detail.
+  /** @param {Record<string, any> | null} detail @returns {Record<string, any> | null} */
   #drawerTask(detail) {
     if (!detail || !this.selectedTaskId) return null;
-    const task = detail.tasks.find((task) => task.id === this.selectedTaskId);
+    const tasks = /** @type {any[]} */ (detail.tasks ?? []);
+    const task = tasks.find(
+      /** @param {Record<string, any>} task */ (task) =>
+        task.id === this.selectedTaskId,
+    );
     if (task) return task;
     return this.selectedTaskId.startsWith("plan:")
       ? { id: this.selectedTaskId }

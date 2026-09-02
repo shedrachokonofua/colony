@@ -41,12 +41,20 @@ describe("run-line", () => {
   it("renders kind label, status and meta with monolith classes", async () => {
     const el = makeLine();
     await el.updateComplete;
-    const root = el.querySelector("div.run-line");
+    const root = el.querySelector("div.run");
     expect(root.getAttribute("data-status")).toBe("succeeded");
     expect(el.querySelector(".kind")?.textContent).toContain("build");
     expect(el.querySelector(".kind")?.textContent).toContain("succeeded");
     expect(el.querySelector(".meta")?.textContent).toContain("glm-5.3-flash");
     expect(el.querySelector(".meta")?.textContent).toContain("abcdef1");
+  });
+
+  it("carries the monolith's rel() age on the meta line", async () => {
+    const el = makeLine();
+    await el.updateComplete;
+    expect(el.querySelector(".meta")?.textContent).toMatch(
+      /\d+[sdh] ago|just now/,
+    );
   });
 
   it("maps every run kind through KIND_LABEL", async () => {
@@ -108,7 +116,7 @@ describe("run-line", () => {
   it("shows the run error on the meta line", async () => {
     const el = makeLine({ status: "failed", error: "boom" });
     await el.updateComplete;
-    expect(el.querySelector("div.run-line").getAttribute("data-status")).toBe(
+    expect(el.querySelector("div.run").getAttribute("data-status")).toBe(
       "failed",
     );
     expect(el.querySelector(".meta")?.textContent).toContain("boom");
@@ -118,7 +126,7 @@ describe("run-line", () => {
     const el = document.createElement("run-line");
     document.body.append(el);
     await el.updateComplete;
-    expect(el.querySelector("div.run-line")).toBeNull();
+    expect(el.querySelector("div.run")).toBeNull();
   });
 
   it("renders a cost-prediction line when a task with one is attached", async () => {

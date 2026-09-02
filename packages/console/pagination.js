@@ -1,3 +1,4 @@
+/** @param {string} hash */
 export function pageFromHash(hash) {
   const q = String(hash).split("?")[1];
   if (!q) return 1;
@@ -10,15 +11,18 @@ export function pageFromHash(hash) {
   return page;
 }
 
+/** @param {string} base @param {number} page */
 export function hrefForPage(base, page) {
   if (page === 1) return base;
   return `${base}?page=${page}`;
 }
 
+/** @param {number} page @param {number} total @param {number} limit */
 export function outOfRange(page, total, limit) {
   return total > 0 && (page - 1) * limit >= total;
 }
 
+/** @param {number} total @param {number} limit */
 export function pageCount(total, limit) {
   return Math.ceil(total / limit);
 }
