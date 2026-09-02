@@ -1995,6 +1995,46 @@ export class Store {
       .get(...bindings) as { one: number } | null | undefined;
     return row !== null && row !== undefined;
   }
+
+  // ---------------------------------------------------------------------
+  // Outbox (audit tail + meta cursor)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Outbox tail: audit rows strictly after `afterId`, monotonic id order.
+   * `null` means "from the beginning" (audit ids start at 1, so 0 is safe).
+   * Unlike listAudit's newest-first console paging, this walks the append-only
+   * log forwards — the direction a notifier consumer replays events in.
+   */
+  auditRowsAfter(afterId: number | null, limit: number): AuditRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM audit WHERE id > @afterId ORDER BY id ASC LIMIT @limit`,
+      )
+      .all(named({ afterId: afterId ?? 0, limit })) as AuditRow[];
+  }
+
+  /** Read a `meta` row; null when the key is absent. */
+  getMetaValue(key: string): string | null {
+    const row = this.db
+      .prepare(`SELECT value FROM meta WHERE key = ?`)
+      .get(key) as { value: string } | null | undefined;
+    return row?.value ?? null;
+  }
+
+  /**
+   * Write-or-overwrite a `meta` row (the table has no append-only trigger, so
+   * a plain upsert is legal). Durable-cursor storage: the caller owns when to
+   * advance the value.
+   */
+  setMetaValue(key: string, value: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO meta (key, value) VALUES (@key, @value)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(named({ key, value }));
+  }
 }
 
 /** Reject cyclic depends_on graphs (Kahn's algorithm). */
