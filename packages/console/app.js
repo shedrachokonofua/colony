@@ -12,6 +12,12 @@ import {
 import { costPredictionLines, parseCostPrediction } from "./cost-prediction.js";
 import { traceHref } from "./trace-link.js";
 import {
+  deriveRunningRow,
+  formatRunningEmptyTallies,
+  parseProjectTab,
+  serializeProjectTabHref,
+} from "./project-helpers.js";
+import {
   hrefForPage,
   outOfRange,
   pageCount,
@@ -24,7 +30,7 @@ const DEMO = new URLSearchParams(location.search).has("demo");
 // Demo-safe read paths: project detail, its context, its scope page, and the
 // project list (the homepage) so the whole console is driveable offline.
 const DEMO_READS =
-  /^\/projects\/[^/?]+(?:\/context|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
+  /^\/projects\/[^/?]+(?:\/context|\/running|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
 
 // Demo volume: enough projects and scopes to exercise page 2 on both surfaces.
 const DEMO_PROJECT_COUNT = 27;
@@ -120,7 +126,9 @@ const state = {
   projectsPage: null,
   filesPage: null,
   projectFiles: null,
-  projectTab: "scopes",
+  projectRunning: null,
+  pendingSelectTaskId: null,
+  projectTab: hashQueryTab(),
   showArchived: false,
   briefOpen: false,
   confirmFile: null,
@@ -325,6 +333,10 @@ function routeProjectName() {
 
 function projectHref(name) {
   return `#/project/${encodeURIComponent(name)}`;
+}
+
+function hashQueryTab() {
+  return parseProjectTab(location.hash);
 }
 
 /** The `?project=` query of the current hash route, or null when absent. */
@@ -602,6 +614,14 @@ function demoWorld() {
     ).toISOString(),
     scope_count: projectScopes.length,
     status_counts: statusCounts,
+    task_state_counts: {
+      queued: 4,
+      running: 1,
+      mr_open: 1,
+      merged: 12,
+      blocked: 2,
+      canceled: 0,
+    },
     last_activity_at: new Date(
       Math.max(...projectScopes.map((s) => Date.parse(s.updated_at))),
     ).toISOString(),
@@ -631,6 +651,14 @@ function demoWorld() {
       blocked: 0,
       done: 0,
       abandoned: 0,
+    },
+    task_state_counts: {
+      queued: 0,
+      running: 0,
+      mr_open: 0,
+      merged: 0,
+      blocked: 0,
+      canceled: 0,
     },
     last_activity_at: null,
     file_count: 0,
@@ -834,6 +862,69 @@ function demoWorld() {
       }),
     },
   ];
+  // The Running tab's rows navigate into their scope and select the task, so
+  // those two scopes need real tasks offline — not just list entries.
+  const [runningScope0, runningScope1] = generatedScopes;
+  const runningTasks = [
+    {
+      id: `${runningScope0.id}.0`,
+      scope_id: runningScope0.id,
+      title: `Draft ${runningScope0.title.toLowerCase()}`,
+      spec: "",
+      state: "merged",
+      state_version: 3,
+      branch: `colony/${runningScope0.id}.0`,
+      mr_iid: 40,
+      attempt: 0,
+      next_retry_at: null,
+      blocked_reason: null,
+      created_at: runningScope0.created_at,
+      updated_at: runningScope0.updated_at,
+    },
+    {
+      id: `${runningScope0.id}.1`,
+      scope_id: runningScope0.id,
+      title: `Land ${runningScope0.title.toLowerCase()}`,
+      spec: "",
+      state: "running",
+      state_version: 2,
+      branch: `colony/${runningScope0.id}.1`,
+      mr_iid: null,
+      attempt: 1,
+      next_retry_at: null,
+      blocked_reason: null,
+      created_at: runningScope0.created_at,
+      updated_at: new Date(now - 45 * 1000).toISOString(),
+    },
+  ];
+  const mrOpenTask = {
+    id: `${runningScope1.id}.0`,
+    scope_id: runningScope1.id,
+    title: `Land ${runningScope1.title.toLowerCase()}`,
+    spec: "",
+    state: "mr_open",
+    state_version: 3,
+    branch: `colony/${runningScope1.id}.0`,
+    mr_iid: 41,
+    attempt: 1,
+    next_retry_at: null,
+    blocked_reason: null,
+    created_at: runningScope1.created_at,
+    updated_at: runningScope1.updated_at,
+  };
+  const runningRun = {
+    id: "run-demo-running-1",
+    scope_id: runningScope0.id,
+    task_id: runningTasks[1].id,
+    kind: "implement",
+    status: "running",
+    model_id: "deepseek-v4-flash",
+    head_sha: null,
+    error: null,
+    evidence_json: null,
+    started_at: new Date(now - 45 * 1000).toISOString(),
+    finished_at: null,
+  };
   return {
     config: {
       gitlab_base_url: "https://gitlab.home.shdr.ch",
@@ -861,7 +952,43 @@ function demoWorld() {
       },
       ...generatedScopes,
     ],
+    running: [
+      {
+        scope_id: runningScope0.id,
+        scope_title: runningScope0.title,
+        task_id: runningTasks[1].id,
+        task_title: runningTasks[1].title,
+        task_state: runningTasks[1].state,
+        attempt: runningTasks[1].attempt,
+        run: runningRun,
+      },
+      {
+        scope_id: runningScope1.id,
+        scope_title: runningScope1.title,
+        task_id: mrOpenTask.id,
+        task_title: mrOpenTask.title,
+        task_state: mrOpenTask.state,
+        attempt: mrOpenTask.attempt,
+        run: null,
+      },
+    ],
     detail: { scope, tasks, deps, runs },
+    // Detail payloads for the Running tab's two scopes, so activating a row
+    // offline lands on a sheet that actually contains the task.
+    runningDetails: {
+      [runningScope0.id]: {
+        scope: runningScope0,
+        tasks: runningTasks,
+        deps: [],
+        runs: [runningRun],
+      },
+      [runningScope1.id]: {
+        scope: runningScope1,
+        tasks: [mrOpenTask],
+        deps: [],
+        runs: [],
+      },
+    },
     runEvents,
     audit: [
       {
@@ -915,6 +1042,11 @@ async function mutate(path, body) {
     state.error = err instanceof Error ? err.message : String(err);
     paint();
   }
+}
+
+function openTaskInScope(scopeId, taskId) {
+  state.pendingSelectTaskId = taskId;
+  openScope(scopeId);
 }
 
 function openScope(id) {
@@ -982,6 +1114,13 @@ function toggleShowArchived() {
 function setProjectTab(tab) {
   state.projectTab = tab;
   state.briefOpen = false;
+  const projectName = routeProjectName();
+  if (projectName) {
+    const newHash = serializeProjectTabHref(location.hash, projectName, tab);
+    if (newHash !== location.hash) {
+      history.replaceState(null, "", newHash);
+    }
+  }
   paint();
 }
 
@@ -1392,6 +1531,24 @@ function renderDag(detail) {
     ${edgeMarkup}${nodeMarkup}
   </svg>`;
 }
+
+/**
+ * Select a task once its scope detail holds it. A Running-tab row navigates
+ * before the sheet's detail is loaded, so the selection waits here rather
+ * than being dropped: the sheet's selectedTask(detail) only finds tasks that
+ * are present.
+ */
+function consumePendingTaskSelection(detail) {
+  const taskId = state.pendingSelectTaskId;
+  if (!taskId || !detail) return;
+  if (!taskSelectionExists(detail, taskId)) return;
+  state.pendingSelectTaskId = null;
+  state.selectedTaskId = taskId;
+  state.drawerOpen = true;
+  state.confirm = null;
+  state.runEvents = null;
+}
+
 function taskSelectionExists(detail, taskId) {
   if (taskId.startsWith("plan:")) {
     const index = Number(taskId.slice(5));
@@ -1914,6 +2071,84 @@ function renderProjectList() {
   `;
 }
 
+function renderRunningRow(entry) {
+  const row = deriveRunningRow(entry);
+  const nowMs = Date.now();
+  const runMs = row.hasRun && row.run ? runDurationMs(row.run, nowMs) : null;
+  const durationLabel =
+    row.hasRun && row.run ? durationAriaLabel(row.run, nowMs) : undefined;
+  const durationText = runMs !== null ? formatDuration(runMs) : "—";
+  const durationIso = runMs !== null ? isoDuration(runMs) : undefined;
+  const runKind = row.runKind ? (KIND_LABEL[row.runKind] ?? row.runKind) : "";
+  const runInfo = [runKind, row.runModel].filter(Boolean).join(" · ");
+
+  return html`
+    <div
+      class="running-row"
+      tabindex="0"
+      role="button"
+      @click=${() => openTaskInScope(row.scopeId, row.taskId)}
+      @keydown=${(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openTaskInScope(row.scopeId, row.taskId);
+        }
+      }}
+    >
+      <div class="running-main">
+        <span
+          class="scope-chip mono"
+          @click=${(e) => {
+            e.stopPropagation();
+            openScope(row.scopeId);
+          }}
+          >${row.scopeTitle}</span
+        >
+        <span class="running-task-title">${row.taskTitle}</span>
+      </div>
+      <div class="running-meta">
+        <span class="badge" data-state=${row.taskState}>${row.taskState}</span>
+        <span class="running-attempt mono">${row.attemptText}</span>
+        ${runInfo
+          ? html`<span class="running-run-info">${runInfo}</span>`
+          : nothing}
+        <span
+          class=${classMap({
+            "running-duration": true,
+            mono: true,
+            live: row.isRunning,
+          })}
+          aria-label=${durationLabel || nothing}
+          title=${durationIso || nothing}
+          >${durationText}</span
+        >
+      </div>
+    </div>
+  `;
+}
+
+function renderRunningTab() {
+  const page = state.projectPage;
+  const list = state.projectRunning ?? [];
+  if (!list.length) {
+    const counts = page?.project?.task_state_counts;
+    const tallies = formatRunningEmptyTallies(counts);
+    return html`<div class="running-empty rack-empty">
+      <p>Nothing running right now.</p>
+      ${tallies
+        ? html`<p class="running-tallies mono">${tallies}</p>`
+        : nothing}
+    </div>`;
+  }
+  return html`<div class="running-list">
+    ${repeat(
+      list,
+      (entry) => `${entry.scope_id}:${entry.task_id}`,
+      renderRunningRow,
+    )}
+  </div>`;
+}
+
 function renderProjectPage() {
   const page = state.projectPage;
   if (!page?.name) return renderProjectList();
@@ -1978,6 +2213,7 @@ function renderProjectPage() {
       <nav class="tabs" role="tablist" aria-label="Project sections">
         ${[
           ["scopes", "Scopes"],
+          ["running", "Running"],
           ["settings", "Settings"],
         ].map(
           ([id, label]) =>
@@ -1993,30 +2229,34 @@ function renderProjectPage() {
       </nav>
       ${tab === "settings"
         ? html`<div class="project-settings">${renderProjectRail()}</div>`
-        : html`<section class="project-scopes">
-            ${page.total > 0 && scopes.length === 0
-              ? html`<div class="rack-empty">
-                  <p>Past the last page.</p>
-                  <a class="btn btn-solid" href=${hrefForPage(base, 1)}
-                    >Back to page 1</a
-                  >
-                  <a class="btn btn-quiet" href="#/">All projects</a>
-                </div>`
-              : scopes.length
-                ? html`<div class="rack">
-                    ${repeat(scopes, (scope) => scope.id, scopeCard)}
+        : tab === "running"
+          ? html`<section class="project-running">
+              ${renderRunningTab()}
+            </section>`
+          : html`<section class="project-scopes">
+              ${page.total > 0 && scopes.length === 0
+                ? html`<div class="rack-empty">
+                    <p>Past the last page.</p>
+                    <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                      >Back to page 1</a
+                    >
+                    <a class="btn btn-quiet" href="#/">All projects</a>
                   </div>`
-                : html`<p class="rack-empty">
-                    No scopes in this project yet.
-                  </p>`}
-            ${renderPager({
-              base,
-              page: page.page,
-              total: page.total,
-              items: scopes.length,
-              label: "Project scope pages",
-            })}
-          </section>`}
+                : scopes.length
+                  ? html`<div class="rack">
+                      ${repeat(scopes, (scope) => scope.id, scopeCard)}
+                    </div>`
+                  : html`<p class="rack-empty">
+                      No scopes in this project yet.
+                    </p>`}
+              ${renderPager({
+                base,
+                page: page.page,
+                total: page.total,
+                items: scopes.length,
+                label: "Project scope pages",
+              })}
+            </section>`}
     </div>
   `;
 }
@@ -3053,8 +3293,14 @@ async function refresh() {
         state.detail = scopeRow
           ? scopeRow.id === world.detail.scope.id
             ? world.detail
-            : { scope: scopeRow, tasks: [], deps: [], runs: [] }
+            : (world.runningDetails[scopeRow.id] ?? {
+                scope: scopeRow,
+                tasks: [],
+                deps: [],
+                runs: [],
+              })
           : null;
+        consumePendingTaskSelection(state.detail);
       } else {
         state.detail = null;
       }
@@ -3097,6 +3343,7 @@ async function refresh() {
           offset: start,
           page: pageNo,
         };
+        state.projectRunning = world.running ?? [];
         // Same seeding path as live refresh(): read the stored doc through
         // the demo-served GET so the editor prefills offline. Local edits
         // are kept in demoContextStore so an edited brief survives re-render.
@@ -3123,9 +3370,11 @@ async function refresh() {
           offset: 0,
           page: pageNo,
         };
+        state.projectRunning = [];
         state.projectFiles = found ? (demoFileStore.get(demoName) ?? []) : [];
       } else {
         state.projectPage = null;
+        state.projectRunning = null;
         // Sort the demo world's projects exactly like the API (row
         // updated_at DESC, name), then page. This keeps the demo ordering
         // pin: "Operator console" lands at offset 25, page 2.
@@ -3185,6 +3434,7 @@ async function refresh() {
         page: pageNo,
       };
       state.projectPage = null;
+      state.projectRunning = null;
       state.error = "";
       paint();
       return;
@@ -3193,13 +3443,16 @@ async function refresh() {
     if (projectName) {
       // The project route owns this refresh: it must not touch board or sheet
       // state, and it must preserve an in-flight editor status ("Saved.").
-      const [project, scopesPage] = await Promise.all([
+      const [project, scopesPage, runningRows] = await Promise.all([
         api(`/projects/${encodeURIComponent(projectName)}`, {
           notFound: "null",
         }),
         api(
           `/scopes?limit=${PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
         ),
+        api(`/projects/${encodeURIComponent(projectName)}/running`, {
+          notFound: "null",
+        }),
       ]);
       state.projectPage = {
         name: projectName,
@@ -3209,6 +3462,7 @@ async function refresh() {
         offset,
         page: pageNo,
       };
+      state.projectRunning = Array.isArray(runningRows) ? runningRows : [];
       // Seed the editor from the same read the save round-trips through, so
       // prefill cannot drift from what Save will persist. An unknown project
       // has no document to read.
@@ -3229,6 +3483,7 @@ async function refresh() {
       return;
     }
     state.projectPage = null;
+    state.projectRunning = null;
     const projectsPage = await api(
       `/projects?limit=${PAGE_SIZE}&offset=${offset}${archivedQuery()}`,
     );
@@ -3246,6 +3501,7 @@ async function refresh() {
       ]);
       state.detail = detail;
       state.audit = audit.events;
+      consumePendingTaskSelection(detail);
       if (
         state.projectContext === null &&
         detail.project &&
@@ -3343,7 +3599,8 @@ window.addEventListener("hashchange", () => {
   state.projectsPage = null;
   state.filesPage = null;
   state.projectFiles = null;
-  state.projectTab = "scopes";
+  state.projectRunning = null;
+  state.projectTab = hashQueryTab();
   state.showArchived = false;
   state.briefOpen = false;
   state.confirmFile = null;
@@ -3364,12 +3621,22 @@ function isEditing() {
 
 function hasVisibleRunningRun() {
   const detail = state.detail;
-  if (!detail) return false;
-  const runs = detail.runs || [];
-  // Any running run on the current scope is considered visible:
-  // drawer runs, plan achitect runs, validation, or DAG live nodes all
-  // surface through the rendered sheet so a single check covers them.
-  return runs.some((run) => run.status === "running");
+  if (detail) {
+    const runs = detail.runs || [];
+    // Any running run on the current scope is considered visible:
+    // drawer runs, plan architect runs, validation, or DAG live nodes all
+    // surface through the rendered sheet so a single check covers them.
+    if (runs.some((run) => run.status === "running")) return true;
+  }
+  if (state.projectTab === "running" && state.projectPage) {
+    const runningList = state.projectRunning;
+    if (Array.isArray(runningList)) {
+      if (runningList.some((entry) => entry?.run?.status === "running")) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function syncDurationTicker() {

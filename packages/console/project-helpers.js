@@ -1,4 +1,92 @@
-// Pure helpers for the project surfaces: card text, dedupe, form payloads.
+// Pure helpers for the project surfaces: card text, dedupe, form payloads, tab routing, row models.
+
+export const VALID_PROJECT_TABS = ["scopes", "settings", "running"];
+
+/**
+ * Parse the tab from a hash query string or full hash, falling back to "scopes".
+ */
+export function parseProjectTab(hashOrQuery) {
+  if (!hashOrQuery) return "scopes";
+  const queryStr = hashOrQuery.includes("?")
+    ? hashOrQuery.split("?")[1]
+    : hashOrQuery;
+  const tab = new URLSearchParams(queryStr).get("tab");
+  if (tab && VALID_PROJECT_TABS.includes(tab)) {
+    return tab;
+  }
+  return "scopes";
+}
+
+/**
+ * Build or update a project href (#/project/<name>?...) with the target tab,
+ * preserving any other existing query parameters (like ?project=).
+ */
+export function serializeProjectTabHref(currentHash, projectName, targetTab) {
+  const base = `#/project/${encodeURIComponent(projectName)}`;
+  const qIndex = (currentHash || "").indexOf("?");
+  const params = new URLSearchParams(
+    qIndex >= 0 ? currentHash.slice(qIndex + 1) : "",
+  );
+
+  if (!targetTab || targetTab === "scopes") {
+    params.delete("tab");
+  } else if (VALID_PROJECT_TABS.includes(targetTab)) {
+    params.set("tab", targetTab);
+  }
+
+  const queryStr = params.toString();
+  return queryStr ? `${base}?${queryStr}` : base;
+}
+
+/**
+ * Derives presentation fields for a running-task entry.
+ * Element shape: { scope_id, scope_title, task_id, task_title, task_state, attempt, run: { id, kind, status, model_id, started_at } | null }
+ */
+export function deriveRunningRow(entry) {
+  const scopeId = entry?.scope_id ?? "";
+  const scopeTitle = entry?.scope_title || scopeId;
+  const taskId = entry?.task_id ?? "";
+  const taskTitle = entry?.task_title || taskId;
+  const taskState = entry?.task_state ?? "queued";
+  const attempt = Number.isFinite(entry?.attempt) ? Number(entry.attempt) : 0;
+  const attemptText = `attempt ${attempt}`;
+
+  const run = entry?.run ?? null;
+  const hasRun = run !== null && typeof run === "object";
+  const runKind = hasRun ? (run.kind ?? "") : "";
+  const runModel = hasRun ? (run.model_id ?? "") : "";
+  const startedAt = hasRun ? (run.started_at ?? null) : null;
+  const isRunning = hasRun && run.status === "running";
+
+  return {
+    scopeId,
+    scopeTitle,
+    taskId,
+    taskTitle,
+    taskState,
+    attempt,
+    attemptText,
+    hasRun,
+    runKind,
+    runModel,
+    startedAt,
+    isRunning,
+    run,
+  };
+}
+
+/**
+ * Format the empty-state tally line for the Running tab.
+ * e.g. "Nothing running right now." plus "N queued · N blocked" when task_state_counts is present.
+ */
+export function formatRunningEmptyTallies(taskStateCounts) {
+  if (!taskStateCounts || typeof taskStateCounts !== "object") {
+    return null;
+  }
+  const queued = Number(taskStateCounts.queued ?? 0);
+  const blocked = Number(taskStateCounts.blocked ?? 0);
+  return `${queued} queued · ${blocked} blocked`;
+}
 
 /** Connected repositories deduped by repo_path, preserving first-seen order. */
 export function distinctRepos(repositories) {

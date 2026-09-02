@@ -1,11 +1,14 @@
 // @ts-nocheck
 import { describe, expect, it } from "bun:test";
+import { sharedDom } from "./elements/test-dom.js";
 import {
   escapeHtml,
   mdFragment,
   mdInline,
   renderMarkdown,
 } from "./markdown.js";
+
+sharedDom();
 
 describe("escapeHtml", () => {
   it("escapes every HTML-significant character", () => {
