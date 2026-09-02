@@ -2,8 +2,9 @@ import {
   controlPatch,
   controlReset,
   createProjectViaApi,
-  createScopeViaApiAndWaitForPlan,
+  createScopeViaApi,
   pollScope,
+  waitForPlan,
   waitForTaskState,
 } from "./helpers.js";
 import { expect, test, type APIRequestContext } from "@playwright/test";
@@ -31,12 +32,13 @@ test.describe("console project running tab", () => {
 
     // Seed a fully merged scope FIRST while the implementer runs freely: its
     // tasks must reach a terminal state and stay out of the running list.
-    const mergedScopeId = await createScopeViaApiAndWaitForPlan(request, {
+    const mergedScopeId = await createScopeViaApi(request, {
       title: mergedTitle,
       goal: `Merged scope goal ${Date.now()}`,
       approvals: "manual",
       project: name,
     });
+    await waitForPlan(request, mergedScopeId);
     const mergedTaskId = await driveScopeToMerged(request, mergedScopeId);
 
     // Hold the implementer's developer runs open so the running fixture task
@@ -45,12 +47,13 @@ test.describe("console project running tab", () => {
     // merged scope above is already terminal, so this cannot disturb it.
     await controlPatch(request, { implementerStall: true });
 
-    const runningScopeId = await createScopeViaApiAndWaitForPlan(request, {
+    const runningScopeId = await createScopeViaApi(request, {
       title: runningTitle,
       goal: `Running scope goal ${Date.now()}`,
       approvals: "manual",
       project: name,
     });
+    await waitForPlan(request, runningScopeId);
     const approve = await request.post(
       `/scopes/${encodeURIComponent(runningScopeId)}/approve-plan`,
       { headers: HEADERS },
