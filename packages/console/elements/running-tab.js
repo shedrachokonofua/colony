@@ -27,9 +27,14 @@ import {
 import "./run-duration.js";
 
 export class RunningTab extends ColonyElement {
+  /** @type {import("../duration.js").Unsubscribe | null} */
+  #unsubscribe = null;
+
   static properties = {
     entries: { type: Array },
     project: { type: Object },
+    // Not a lifecycle owner: subscribing to a clock does not make it this
+    // element's to start or stop.
     ticker: { type: Object },
     // The clock a live duration reads. Reactive, because the ticker's whole
     // job is to move it — a plain field would advance the number without
@@ -47,6 +52,12 @@ export class RunningTab extends ColonyElement {
      * The clock behind a row's live duration. Injected (never constructed
      * here) so a test can drive ticks without waiting on wall time; null
      * means durations render finished-or-static.
+     *
+     * The tab borrows it: it subscribes on connect and unsubscribes on
+     * disconnect. It must never start or stop the clock — the shell owns
+     * when the interval runs, and the project page mounts this element only
+     * while the Running tab is active, so a clock stopped on disconnect
+     * would stay dead for every other surface that shares it.
      * @type {import("../duration.js").Ticker | null}
      */
     this.ticker = null;
@@ -55,17 +66,33 @@ export class RunningTab extends ColonyElement {
 
   connectedCallback() {
     super.connectedCallback();
-    if (this.ticker) {
-      this.ticker.onTick(() => {
-        this._now = Date.now();
-      });
-      this.ticker.start();
-    }
+    this.#subscribe();
   }
 
   disconnectedCallback() {
-    this.ticker?.stop();
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
     super.disconnectedCallback();
+  }
+
+  /**
+   * Bind the clock without touching its lifecycle. Re-subscribing on a new
+   * ticker drops the previous binding first.
+   */
+  #subscribe() {
+    if (!this.ticker || this.#unsubscribe) return;
+    this.#unsubscribe = this.ticker.subscribe(() => {
+      this._now = Date.now();
+    });
+  }
+
+  /** @param {Map<string, unknown>} changed */
+  updated(changed) {
+    super.updated(changed);
+    if (!changed.has("ticker")) return;
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+    this.#subscribe();
   }
 
   /** @param {string} type @param {Record<string, unknown>} detail */

@@ -157,7 +157,7 @@ export class ColonyApp extends ColonyElement {
      * @type {import("./duration.js").Ticker | null}
      */
     this.ticker = createRunTicker();
-    this.ticker.onTick(() => this.tick());
+    this.ticker.subscribe(() => this.tick());
     /** @type {ReturnType<typeof setInterval> | null} */
     this._pollTimer = null;
     /** @type {import("./shell-data.js").ShellState["api"]} */

@@ -5,6 +5,7 @@
 // monolith's a393cfd retry logic.
 import { ColonyElement, classMap, html, nothing, repeat } from "../base.js";
 import {
+  createRunTicker,
   durationAriaLabel,
   formatDuration,
   isoDuration,
@@ -36,7 +37,14 @@ export class ValidationCard extends ColonyElement {
   static properties = {
     scope: { type: Object },
     detail: { type: Object },
+    // Reactive, because the ticker's only job is to move it: a plain field
+    // would advance the clock behind the render and never repaint.
+    _now: { state: true },
   };
+
+  #ticker = createRunTicker();
+  /** @type {import("../duration.js").Unsubscribe | null} */
+  #unsubscribe = null;
 
   constructor() {
     super();
@@ -44,6 +52,48 @@ export class ValidationCard extends ColonyElement {
     this.scope = null;
     /** @type {Record<string, any> | null} */
     this.detail = null;
+    this._now = 0;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.#unsubscribe = this.#ticker.subscribe(() => {
+      this._now = Date.now();
+    });
+    this.#syncTicker();
+  }
+
+  disconnectedCallback() {
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+    this.#ticker.stop();
+    super.disconnectedCallback();
+  }
+
+  /** @param {Map<string, unknown>} changed */
+  updated(changed) {
+    super.updated(changed);
+    // The summary's duration is the only reason to hold a 1s interval, and
+    // only while the latest validate run has no end.
+    if (changed.has("detail")) this.#syncTicker();
+  }
+
+  #syncTicker() {
+    if (this.#latestValidateRun()?.status === "running") this.#ticker.start();
+    else this.#ticker.stop();
+  }
+
+  /**
+   * The newest validate run, by start time — the one the summary's duration
+   * reads. Returns undefined when the card has none.
+   * @returns {any}
+   */
+  #latestValidateRun() {
+    const runs = /** @type {any[]} */ (this.detail?.runs || []);
+    return runs
+      .filter((run) => run.kind === "validate")
+      .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
+      .pop();
   }
 
   /** @param {string} type @param {Record<string, unknown>} [detail] */
@@ -60,10 +110,8 @@ export class ValidationCard extends ColonyElement {
     if ((!acceptance || !acceptance.length) && !validateRuns.length) {
       return nothing;
     }
-    const latest = validateRuns
-      .slice()
-      .sort((a, b) => Date.parse(a.started_at) - Date.parse(b.started_at))
-      .pop();
+    const now = this._now || Date.now();
+    const latest = this.#latestValidateRun();
     const evidence = latest ? parseEvidence(latest.evidence_json) : null;
     const results = Array.isArray(evidence?.results) ? evidence.results : [];
     const failedCount = results.filter(
@@ -93,14 +141,14 @@ export class ValidationCard extends ColonyElement {
             >
               ${summary}${(() => {
                 if (!latest) return nothing;
-                const ms = runDurationMs(latest, Date.now());
+                const ms = runDurationMs(latest, now);
                 if (ms === null) return nothing;
                 return html` ·
                   <time
                     class="dur"
                     datetime=${isoDuration(ms)}
                     title=${`started ${latest.started_at}${latest.finished_at ? `, finished ${latest.finished_at}` : ""}`}
-                    aria-label=${durationAriaLabel(latest, Date.now())}
+                    aria-label=${durationAriaLabel(latest, now)}
                     >${formatDuration(ms)}</time
                   >`;
               })()}

@@ -34,22 +34,31 @@ function fakeClock(start) {
 }
 
 /**
- * The injected clock: the element binds one callback and this drives it, so
- * a live duration advances without the test waiting on wall time.
+ * The injected clock: the element subscribes one callback and this drives
+ * it, so a live duration advances without the test waiting on wall time.
+ * start/stop are spies — the element borrows the shell's clock, so a clock
+ * it stops on disconnect would kill every other surface sharing it.
  */
 function manualTicker() {
-  let callback = () => {};
+  const callbacks = new Set();
+  const calls = { start: 0, stop: 0 };
   return {
-    onTick(fn) {
-      callback = fn;
+    calls,
+    subscribe(fn) {
+      callbacks.add(fn);
+      return () => callbacks.delete(fn);
     },
-    start() {},
-    stop() {},
+    start() {
+      calls.start += 1;
+    },
+    stop() {
+      calls.stop += 1;
+    },
     running() {
       return false;
     },
     tick() {
-      callback();
+      for (const callback of callbacks) callback();
     },
   };
 }
@@ -262,5 +271,45 @@ describe("running-tab live durations", () => {
     expect(duration.classList.contains("live")).toBe(false);
     expect(duration.textContent).toBe("1m 05s");
     expect(duration.getAttribute("aria-label")).toMatch(/^ran for /);
+  });
+
+  it("borrows the clock: it neither starts nor stops it, and unsubscribes on disconnect", async () => {
+    // The ticker is the shell's interval and the Running tab is only one of
+    // its consumers: the project page mounts this element solely while the
+    // Running tab is active, so stopping the clock on disconnect would
+    // leave every other live surface frozen for the rest of the session.
+    const ticker = manualTicker();
+    const el = makeTab([entry()], { ticker });
+    await el.updateComplete;
+    expect(ticker.calls.start).toBe(0);
+    expect(ticker.calls.stop).toBe(0);
+
+    el.remove();
+    expect(ticker.calls.stop).toBe(0);
+    // Unsubscribed, so later ticks cannot reach a detached element.
+    const ticked = () => ticker.tick();
+    expect(ticked).not.toThrow();
+  });
+
+  it("re-binds when the shell hands down a different clock", async () => {
+    const first = manualTicker();
+    const second = manualTicker();
+    const el = makeTab([entry()], { ticker: first });
+    await el.updateComplete;
+    const duration = el.querySelector(".running-duration");
+    expect(duration.textContent).toBe("30s");
+
+    el.ticker = second;
+    await el.updateComplete;
+    expect(second.calls.start).toBe(0);
+    // The old clock no longer reaches the element; the new one does.
+    first.tick();
+    await el.updateComplete;
+    expect(el.querySelector(".running-duration").textContent).toBe("30s");
+    second.tick();
+    await el.updateComplete;
+    expect(el.querySelector(".running-duration").textContent).toMatch(
+      /^\d+m|\d+s$/,
+    );
   });
 });

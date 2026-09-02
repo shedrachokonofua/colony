@@ -11,8 +11,10 @@ export function durationAriaLabel(run: DurationRun, nowMs: number): string;
 
 export function isoDuration(ms: number): string;
 
+export type Unsubscribe = () => void;
+
 export type Ticker = {
-  onTick(fn: () => void): void;
+  subscribe(fn: () => void): Unsubscribe;
   start(): void;
   stop(): void;
   running(): boolean;

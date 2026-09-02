@@ -84,9 +84,10 @@ export function isoDuration(ms) {
 }
 
 /**
- * A 1s clock whose callback is bound after construction: the consumer owns
- * what a tick does, and `onTick` may be replaced between runs while the
- * interval keeps its identity.
+ * A 1s clock any number of consumers can listen to. Subscribing returns the
+ * unsubscribe, and no consumer can dislodge another's callback: a clock with
+ * a single replacable callback is a race between whoever binds last and a
+ * freeze for whoever bound first.
  *
  * @param {{ intervalMs?: number, setIntervalFn?: typeof setInterval, clearIntervalFn?: typeof clearInterval }} [options]
  */
@@ -97,16 +98,23 @@ export function createRunTicker({
 } = {}) {
   const setFn = setIntervalFn ?? globalThis.setInterval.bind(globalThis);
   const clearFn = clearIntervalFn ?? globalThis.clearInterval.bind(globalThis);
+  /** @type {Set<() => void>} */
+  const subscribers = new Set();
   let id = /** @type {ReturnType<typeof setInterval> | null} */ (null);
-  let callback = /** @type {() => void} */ (() => {});
   return {
-    /** @param {() => void} fn */
-    onTick(fn) {
-      callback = fn;
+    /**
+     * @param {() => void} fn
+     * @returns {() => void} the unsubscribe
+     */
+    subscribe(fn) {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
     },
     start() {
       if (id !== null) return;
-      id = setFn(() => callback(), intervalMs);
+      id = setFn(() => {
+        for (const fn of subscribers) fn();
+      }, intervalMs);
     },
     stop() {
       if (id === null) return;

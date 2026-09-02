@@ -18,6 +18,8 @@ export class RunDuration extends ColonyElement {
   };
 
   #ticker = createRunTicker();
+  /** @type {import("../duration.js").Unsubscribe | null} */
+  #unsubscribe = null;
 
   constructor() {
     super();
@@ -29,13 +31,15 @@ export class RunDuration extends ColonyElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.#ticker.onTick(() => {
+    this.#unsubscribe = this.#ticker.subscribe(() => {
       this._now = Date.now();
     });
     this.#syncTicker();
   }
 
   disconnectedCallback() {
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
     this.#ticker.stop();
     super.disconnectedCallback();
   }

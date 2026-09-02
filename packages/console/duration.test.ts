@@ -181,12 +181,12 @@ function manualTicker(onTick = mock(() => {})) {
     setIntervalFn: timers.setIntervalFn as never,
     clearIntervalFn: timers.clearIntervalFn as never,
   });
-  ticker.onTick(onTick);
-  return { timers, ticker, onTick };
+  const unsubscribe = ticker.subscribe(onTick);
+  return { timers, ticker, onTick, unsubscribe };
 }
 
 describe("createRunTicker", () => {
-  it("fires onTick once per interval", () => {
+  it("fires each subscriber once per interval", () => {
     const { timers, ticker, onTick } = manualTicker();
     ticker.start();
     expect(onTick).not.toHaveBeenCalled();
@@ -198,14 +198,32 @@ describe("createRunTicker", () => {
     ticker.stop();
   });
 
-  it("calls the callback bound through onTick, latest binding wins", () => {
+  it("keeps every subscriber: a second binding cannot dislodge the first", () => {
+    // The clock is shared (the shell's ticker and one per live surface), so
+    // binding a second consumer must add to the first, never replace it —
+    // a replaced callback freezes whoever bound it first.
     const { timers, ticker, onTick } = manualTicker();
     const second = mock(() => {});
+    ticker.subscribe(second);
     ticker.start();
-    ticker.onTick(second);
+    timers.tick();
+    expect(onTick).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    ticker.stop();
+  });
+
+  it("drops a subscriber on unsubscribe and leaves the others ticking", () => {
+    const { timers, ticker, onTick, unsubscribe } = manualTicker();
+    const second = mock(() => {});
+    ticker.subscribe(second);
+    ticker.start();
+    unsubscribe();
     timers.tick();
     expect(onTick).toHaveBeenCalledTimes(0);
     expect(second).toHaveBeenCalledTimes(1);
+    // Unsubscribing stops the callback, not the clock: the interval is the
+    // shell's to stop.
+    expect(ticker.running()).toBe(true);
     ticker.stop();
   });
 

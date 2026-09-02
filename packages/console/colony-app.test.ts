@@ -317,7 +317,7 @@ describe("duration ticker", () => {
       setIntervalFn: timers.setIntervalFn,
       clearIntervalFn: timers.clearIntervalFn,
     });
-    app.ticker.onTick(() => app.tick());
+    app.ticker.subscribe(() => app.tick());
     await app._refresh();
     expect(app.ticker.running()).toBe(true);
 
@@ -341,7 +341,7 @@ describe("duration ticker", () => {
       setIntervalFn: timers.setIntervalFn,
       clearIntervalFn: timers.clearIntervalFn,
     });
-    app.ticker.onTick(() => app.tick());
+    app.ticker.subscribe(() => app.tick());
     await app._refresh();
     timers.tick(3);
     expect(app.ticker.running()).toBe(true);

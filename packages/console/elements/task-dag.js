@@ -15,7 +15,11 @@ import {
   svg,
 } from "../base.js";
 import { graphModel, layoutDag } from "../dag.js";
-import { formatDuration, runDurationMs } from "../duration.js";
+import {
+  createRunTicker,
+  formatDuration,
+  runDurationMs,
+} from "../duration.js";
 import { KIND_LABEL } from "../kind-label.js";
 
 /**
@@ -40,7 +44,14 @@ export class TaskDag extends ColonyElement {
     detail: { type: Object },
     selectedTaskId: { type: String },
     drawerOpen: { type: Boolean },
+    // Reactive, because the ticker's only job is to move it: a plain field
+    // would advance the number behind the shell's back and never repaint.
+    _now: { state: true },
   };
+
+  #ticker = createRunTicker();
+  /** @type {import("../duration.js").Unsubscribe | null} */
+  #unsubscribe = null;
 
   constructor() {
     super();
@@ -49,6 +60,41 @@ export class TaskDag extends ColonyElement {
     /** @type {string | null} */
     this.selectedTaskId = null;
     this.drawerOpen = true;
+    this._now = 0;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.#unsubscribe = this.#ticker.subscribe(() => {
+      this._now = Date.now();
+    });
+    this.#syncTicker();
+  }
+
+  disconnectedCallback() {
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+    this.#ticker.stop();
+    super.disconnectedCallback();
+  }
+
+  /** @param {Map<string, unknown>} changed */
+  updated(changed) {
+    super.updated(changed);
+    // A node's live label is the only reason to hold a 1s interval; a new
+    // detail can start or end every run on the graph.
+    if (changed.has("detail")) this.#syncTicker();
+  }
+
+  #syncTicker() {
+    if (this.#hasLiveRun()) this.#ticker.start();
+    else this.#ticker.stop();
+  }
+
+  /** @returns {boolean} */
+  #hasLiveRun() {
+    const runs = /** @type {any[]} */ (this.detail?.runs || []);
+    return runs.some((run) => run.status === "running");
   }
 
   /** @param {string} taskId */
@@ -83,7 +129,7 @@ export class TaskDag extends ColonyElement {
       </p>`;
     }
     const { pos, width, height } = layoutDag(nodes, edges);
-    const now = Date.now();
+    const now = this._now || Date.now();
     const edgeMarkup = repeat(
       edges,
       (edge) => `${edge.depends_on_task_id}->${edge.task_id}`,
