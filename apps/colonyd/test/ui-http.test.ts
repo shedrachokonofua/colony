@@ -539,6 +539,9 @@ describe("operator controls", () => {
         'HTTP-Code: 404\nMessage: Unknown API Status Code!\nBody: "{\\"kind\\":\\"Status\\",\\"message\\":\\"sandboxes.agents.x-k8s.io \\\\\\"colony-12ada898\\\\\\" not found\\"}"',
       ),
     ).toBe(true);
+    expect(
+      isInfraError('Agent "Main" was replaced during session initialization.'),
+    ).toBe(true);
     expect(isInfraError("envelope invalid")).toBe(false);
     expect(isInfraError("timeout_without_envelope")).toBe(false);
     expect(isInfraError(null)).toBe(false);
