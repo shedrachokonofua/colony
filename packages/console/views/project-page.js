@@ -1,28 +1,28 @@
-// <project-page>: a project's own page — breadcrumbs, head, scope list, and
-// the settings rail. Ported from renderProjectPage + renderProjectRail
-// (app.js). Property-down: projectPage {name, project, scopes, total,
-// offset, page}, contextDoc, files, editing, saveStatus, settingsOpen,
-// config, error. Events-up: colony-page {page, surface:"project"},
-// colony-navigate, and colony-toggle {key:"settingsOpen"} from the
-// Scopes/Settings tabs.
+// <project-page>: a project's own page — breadcrumbs, head, scope list, the
+// running tab, and the settings rail. Ported from renderProjectPage +
+// renderProjectRail (app.js). Property-down: projectPage {name, project,
+// scopes, total, offset, page}, projectRunning, tab, contextDoc, files,
+// editing, saveStatus, config, error. Events-up: colony-page {page,
+// surface:"project"}, colony-navigate, colony-project-tab {tab} from the
+// Scopes/Running/Settings switcher, and whatever the tab's own element emits.
 //
-// The monolith gates the rail behind a Scopes/Settings tab switcher; here
-// the tab is a property the shell drives, so the rail's visibility is the
-// shell's call rather than state the view owns. The tabs emit the bare
-// {key:"settingsOpen"} form every sibling element uses, and the shell's
-// _toggle flips that key: a {key, value} pair would be dropped, since
-// _toggle only reads the key. Clicking the already-active tab emits
-// nothing — the monolith's setProjectTab was idempotent, and a bare toggle
-// would otherwise switch to the other surface.
+// The tab is a property the shell drives (it owns the URL's ?tab=), so which
+// surface shows is the shell's call rather than state this view owns. The
+// switcher emits the tab it was clicked to, never a bare toggle: with three
+// surfaces a toggle could not say which one to land on, and clicking the
+// active tab emits nothing because the monolith's setProjectTab was
+// idempotent.
 import { ColonyElement, html, nothing, repeat } from "../base.js";
 import { rel } from "../rel-time.js";
 import { hrefForPage, pageCount } from "../pagination.js";
 import { projectHref } from "../router.js";
 import { distinctRepos, projectDescription } from "../project-helpers.js";
 import "../elements/project-context-card.js";
+import "../elements/running-tab.js";
 
 const PAGE_SIZE = 25;
 
+/** @param {Record<string, any> | null | undefined} scope */
 function scopeTitle(scope) {
   if (!scope) return "";
   if (scope.title) return scope.title;
@@ -34,32 +34,52 @@ function scopeTitle(scope) {
 export class ProjectPage extends ColonyElement {
   static properties = {
     projectPage: { type: Object },
+    projectRunning: { type: Array },
+    tab: { type: String },
+    ticker: { type: Object },
     contextDoc: { type: String },
     files: { type: Array },
     editing: { type: Boolean },
     saveStatus: { type: String },
-    settingsOpen: { type: Boolean },
+    confirm: { type: String },
     config: { type: Object },
     error: { type: String },
   };
 
+  /**
+   * The switcher's surfaces: [tab id, label]. Scopes is the default tab, so
+   * it owns no ?tab= in the URL.
+   */
   static TABS = [
-    [false, "Scopes"],
-    [true, "Settings"],
+    ["scopes", "Scopes"],
+    ["running", "Running"],
+    ["settings", "Settings"],
   ];
 
   constructor() {
     super();
+    /** @type {{ name: string, project: Record<string, any> | null, scopes?: any[], total?: number, page?: number } | null} */
     this.projectPage = null;
+    /** @type {import("../project-helpers.js").RunningEntry[]} */
+    this.projectRunning = [];
+    /** @type {import("../project-helpers.js").ProjectTab} */
+    this.tab = "scopes";
+    /** @type {import("../duration.js").Ticker | null} */
+    this.ticker = null;
     this.contextDoc = "";
+    /** @type {Array<Record<string, any>>} */
     this.files = [];
     this.editing = false;
+    /** @type {string | null} */
     this.saveStatus = null;
-    this.settingsOpen = false;
+    /** @type {string | null} */
+    this.confirm = null;
+    /** @type {{ gitlab_base_url?: string } | null} */
     this.config = null;
     this.error = "";
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
@@ -68,6 +88,7 @@ export class ProjectPage extends ColonyElement {
    * The monolith's renderPager (app.js): Previous / "from–to of total" / Next
    * over a fixed base hash. Anchors carry the real hash so a reload lands on
    * the same page; colony-page is what the shell routes.
+   * @param {{ base: string, page: number, total: number, items: number, label: string }} args
    */
   #pager({ base, page, total, items, label }) {
     if (total <= PAGE_SIZE) return nothing;
@@ -78,20 +99,27 @@ export class ProjectPage extends ColonyElement {
       <a
         class="btn btn-quiet"
         href=${hrefForPage(base, Math.max(1, page - 1))}
-        @click=${(event) => this.#page(event, Math.max(1, page - 1))}
+        @click=${
+          /** @param {MouseEvent} event */ (event) =>
+            this.#page(event, Math.max(1, page - 1))
+        }
         >Previous</a
       >
       <span class="pager-range mono">${from}–${to} of ${total}</span>
       <a
         class="btn btn-quiet"
         href=${hrefForPage(base, Math.min(last, page + 1))}
-        @click=${(event) => this.#page(event, Math.min(last, page + 1))}
+        @click=${
+          /** @param {MouseEvent} event */ (event) =>
+            this.#page(event, Math.min(last, page + 1))
+        }
         >Next</a
       >
     </nav>`;
   }
 
   /** Crumb links route through colony-navigate; modified clicks keep the anchor. */
+  /** @param {MouseEvent} event @param {string} href */
   #nav(event, href) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
       return;
@@ -100,6 +128,7 @@ export class ProjectPage extends ColonyElement {
   }
 
   /** Pager clicks route through colony-page; modified clicks keep the anchor. */
+  /** @param {MouseEvent} event @param {number} page */
   #page(event, page) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
       return;
@@ -107,18 +136,22 @@ export class ProjectPage extends ColonyElement {
     this.#emit("colony-page", { page, surface: "project" });
   }
 
-  /** The monolith's Scopes/Settings switcher (app.js). */
+  /**
+   * The monolith's Scopes/Running/Settings switcher (app.js setProjectTab):
+   * aria-selected marks the live surface, and a click emits the tab it names
+   * so the shell can put it in the URL.
+   */
   #tabs() {
     return html`<nav class="tabs" role="tablist" aria-label="Project sections">
       ${ProjectPage.TABS.map(
-        ([settings, label]) =>
+        ([id, label]) =>
           html`<button
             class="tab"
             role="tab"
-            aria-selected=${this.settingsOpen === settings}
+            aria-selected=${this.tab === id}
             @click=${() => {
-              if (this.settingsOpen === settings) return;
-              this.#emit("colony-toggle", { key: "settingsOpen" });
+              if (this.tab === id) return;
+              this.#emit("colony-project-tab", { tab: id });
             }}
           >
             ${label}
@@ -127,12 +160,52 @@ export class ProjectPage extends ColonyElement {
     </nav>`;
   }
 
+  /** The monolith's unarchiveButton (app.js): immediate, no confirm. */
+  /** @param {string} projectName */
+  #unarchiveButton(projectName) {
+    return html`<button
+      class="btn"
+      @click=${() =>
+        this.#emit("colony-task-action", {
+          path: `/projects/${encodeURIComponent(projectName)}/unarchive`,
+        })}
+    >
+      Unarchive
+    </button>`;
+  }
+
+  /**
+   * The monolith's archiveButton (app.js): going the other way hides the
+   * project, so it stays behind a confirm.
+   */
+  /** @param {string} projectName */
+  #archiveButton(projectName) {
+    return this.confirm === "archive"
+      ? html`<button
+          class="btn btn-rev"
+          @click=${() =>
+            this.#emit("colony-task-action", {
+              path: `/projects/${encodeURIComponent(projectName)}/archive`,
+            })}
+        >
+          Confirm archive
+        </button>`
+      : html`<button
+          class="btn btn-quiet"
+          @click=${() => this.#emit("colony-confirm", { kind: "archive" })}
+        >
+          Archive project
+        </button>`;
+  }
+
+  /** @param {string} path */
   #repoUrl(path) {
     const base = String(this.config?.gitlab_base_url ?? "").replace(/\/$/, "");
     return base && path ? `${base}/${path}` : "";
   }
 
   /** The monolith's scopeCard (app.js): one clickable row per scope. */
+  /** @param {Record<string, any>} scope */
   #scopeCard(scope) {
     return html`<button
       class="scope-card"
@@ -150,7 +223,10 @@ export class ProjectPage extends ColonyElement {
           ? html`<a
               class="scope-project"
               href=${projectHref(scope.project_name)}
-              @click=${(event) => event.stopPropagation()}
+              @click=${
+                /** @param {MouseEvent} event */ (event) =>
+                  event.stopPropagation()
+              }
               >${scope.project_name}</a
             >`
           : nothing}
@@ -158,10 +234,25 @@ export class ProjectPage extends ColonyElement {
     </button>`;
   }
 
+  /**
+   * The monolith's Running tab surface (app.js): the in-flight rows inside
+   * the .project-running section the e2e specs key on.
+   */
+  #running() {
+    return html`<section class="project-running">
+      <running-tab
+        .entries=${this.projectRunning ?? []}
+        .project=${this.projectPage?.project ?? null}
+        .ticker=${this.ticker}
+      ></running-tab>
+    </section>`;
+  }
+
   /** The monolith's renderProjectRail (app.js): brief card + repos. */
   #rail() {
-    const project = this.projectPage.project;
-    const repos = distinctRepos(project.repositories);
+    const project = this.projectPage?.project;
+    if (!project) return nothing;
+    const repos = distinctRepos(project.repositories ?? []);
     return html`<div class="project-settings">
       <project-context-card
         .project=${project}
@@ -178,7 +269,7 @@ export class ProjectPage extends ColonyElement {
                 ${repos.map(
                   (repo) =>
                     html`<li>
-                      <a href=${this.#repoUrl(repo.repo_path)}
+                      <a href=${this.#repoUrl(repo.repo_path ?? "")}
                         >${repo.repo_path}</a
                       >
                     </li>`,
@@ -206,24 +297,39 @@ export class ProjectPage extends ColonyElement {
     const base = projectHref(page.project.name);
     const scopes = page.scopes ?? [];
     const description = projectDescription(page.project.context_doc);
+    const archivedAt = page.project.archived_at ?? null;
     return html`${this.error
         ? html`<div class="banner banner-error" role="alert">
             ${this.error}
           </div>`
         : nothing}
       <div class="project-page" id="draw">
+        ${archivedAt
+          ? html`<div class="banner banner-archived" role="status">
+              Archived ${rel(archivedAt)}
+            </div>`
+          : nothing}
         <nav class="crumbs" aria-label="Breadcrumb">
-          <a href="#/" @click=${(e) => this.#nav(e, "#/")}>Projects</a>
+          <a
+            href="#/"
+            @click=${/** @param {MouseEvent} e */ (e) => this.#nav(e, "#/")}
+            >Projects</a
+          >
           <span class="crumb-sep">/</span>
           <span class="crumb">${page.project.name}</span>
         </nav>
         <header class="board-head">
           <h1 class="board-title">${page.project.name}</h1>
-          <a
-            class="btn btn-solid"
-            href=${`#/new?project=${encodeURIComponent(page.project.name)}`}
-            >New scope</a
-          >
+          <div class="board-head-actions">
+            ${archivedAt
+              ? this.#unarchiveButton(page.project.name)
+              : html`${this.#archiveButton(page.project.name)}
+                  <a
+                    class="btn btn-solid"
+                    href=${`#/new?project=${encodeURIComponent(page.project.name)}`}
+                    >New scope</a
+                  >`}
+          </div>
         </header>
         ${description
           ? html`<p class="project-desc">${description}</p>`
@@ -246,36 +352,38 @@ export class ProjectPage extends ColonyElement {
             </p>`
           : nothing}
         ${this.#tabs()}
-        ${this.settingsOpen
-          ? this.#rail()
-          : html`<section class="project-scopes">
-                ${page.total > 0 && scopes.length === 0
-                  ? html`<div class="rack-empty">
-                      <p>Past the last page.</p>
-                      <a class="btn btn-solid" href=${hrefForPage(base, 1)}
-                        >Back to page 1</a
-                      >
-                      <a class="btn btn-quiet" href="#/">All projects</a>
-                    </div>`
-                  : scopes.length
-                    ? html`<div class="rack">
-                        ${repeat(
-                          scopes,
-                          (scope) => scope.id,
-                          (s) => this.#scopeCard(s),
-                        )}
+        ${this.tab === "running"
+          ? this.#running()
+          : this.tab === "settings"
+            ? this.#rail()
+            : html`<section class="project-scopes">
+                  ${(page.total ?? 0) > 0 && scopes.length === 0
+                    ? html`<div class="rack-empty">
+                        <p>Past the last page.</p>
+                        <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                          >Back to page 1</a
+                        >
+                        <a class="btn btn-quiet" href="#/">All projects</a>
                       </div>`
-                    : html`<p class="rack-empty">
-                        No scopes in this project yet.
-                      </p>`}
-              </section>
-              ${this.#pager({
-                base,
-                page: page.page,
-                total: page.total,
-                items: scopes.length,
-                label: "Project scope pages",
-              })}`}
+                    : scopes.length
+                      ? html`<div class="rack">
+                          ${repeat(
+                            scopes,
+                            (scope) => scope.id,
+                            (s) => this.#scopeCard(s),
+                          )}
+                        </div>`
+                      : html`<p class="rack-empty">
+                          No scopes in this project yet.
+                        </p>`}
+                </section>
+                ${this.#pager({
+                  base,
+                  page: page.page ?? 1,
+                  total: page.total ?? 0,
+                  items: scopes.length,
+                  label: "Project scope pages",
+                })}`}
       </div>`;
   }
 }

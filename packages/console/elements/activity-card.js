@@ -10,6 +10,7 @@ export class ActivityCard extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {Array<Record<string, any>>} */
     this.audit = [];
   }
 

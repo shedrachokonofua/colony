@@ -136,10 +136,12 @@ describe("project-list structure", () => {
     expect(el.querySelector(".rack-empty")?.textContent).toContain(
       "Past the last page.",
     );
-    [...el.querySelectorAll(".rack-empty button")]
-      .find((b) => b.textContent.includes("Back to page 1"))
-      .click();
-    expect(seen).toEqual([["colony-page", { page: 1, surface: "projects" }]]);
+    expect(el.querySelector(".rack-empty a.btn")?.textContent).toContain(
+      "Back to page 1",
+    );
+    expect(el.querySelector(".rack-empty a.btn")?.getAttribute("href")).toBe(
+      "#/",
+    );
   });
 
   it("shows the error banner with role=alert", async () => {

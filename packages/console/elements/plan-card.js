@@ -10,6 +10,7 @@ import { rel } from "../rel-time.js";
 import "./run-feed.js";
 import "./run-line.js";
 
+/** @param {string | null | undefined} raw @returns {{ [key: string]: any }} */
 function parseAuditDetail(raw) {
   if (!raw) return {};
   try {
@@ -20,26 +21,36 @@ function parseAuditDetail(raw) {
   }
 }
 
+/**
+ * The plan as the reader renders it: title line per task, acceptance block.
+ * @param {Record<string, any>} scope
+ * @param {import("../dag.js").Plan} plan
+ */
 export function planMarkdown(scope, plan) {
   const title = scope.title || scope.goal;
   const parts = [`# Plan — ${title}`, "", plan.summary || ""];
   if (Array.isArray(plan.acceptance) && plan.acceptance.length) {
     parts.push("", "## Acceptance criteria");
     for (const a of plan.acceptance) {
-      parts.push(`- ${a.description}`, "", "```", a.command, "```");
+      parts.push(`- ${a.description ?? ""}`, "", "```", a.command ?? "", "```");
     }
   }
-  (plan.tasks || []).forEach((task, index) => {
-    const deps = (task.depends_on || []).length
-      ? ` (depends on ${task.depends_on.join(", ")})`
-      : "";
-    parts.push(
-      "",
-      `## Task ${index}: ${task.title}${deps}`,
-      "",
-      task.spec || "",
-    );
-  });
+  (plan.tasks || []).forEach(
+    (
+      /** @type {import("../dag.js").PlanTask} */ task,
+      /** @type {number} */ index,
+    ) => {
+      const deps = (task.depends_on ?? []).length
+        ? ` (depends on ${(task.depends_on ?? []).join(", ")})`
+        : "";
+      parts.push(
+        "",
+        `## Task ${index}: ${task.title}${deps}`,
+        "",
+        task.spec || "",
+      );
+    },
+  );
   return parts.join("\n");
 }
 
@@ -55,14 +66,20 @@ export class PlanCard extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {Record<string, any> | null} */
     this.scope = null;
+    /** @type {Record<string, any> | null} */
     this.detail = null;
+    /** @type {Array<Record<string, any>>} */
     this.audit = [];
     this.planOpen = false;
+    /** @type {Record<string, any> | null} */
     this.scopeRunEvents = null;
+    /** @type {import("../trace-link.js").TraceLinkConfig & Record<string, any> | null} */
     this.config = null;
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
@@ -72,14 +89,18 @@ export class PlanCard extends ColonyElement {
     const detail = this.detail;
     if (!scope) return nothing;
     const plan = parsePlan(scope.plan_json);
-    const architectRuns = (detail?.runs || []).filter(
-      (run) => run.kind === "architect",
-    );
+    const detailRuns = /** @type {any[]} */ (detail?.runs || []);
+    const architectRuns = detailRuns.filter((run) => run.kind === "architect");
     const replanRequests = (this.audit ?? []).flatMap((row) => {
       if (row.action !== "plan.replan_requested") return [];
       const feedback = parseAuditDetail(row.detail_json).feedback;
       return typeof feedback === "string" && feedback.trim()
-        ? [{ ...row, feedback }]
+        ? [
+            /** @type {{ id: any, at: string, actor: string, feedback: string }} */ ({
+              ...row,
+              feedback,
+            }),
+          ]
         : [];
     });
     if (!plan && !architectRuns.length) return nothing;
@@ -149,7 +170,9 @@ export class PlanCard extends ColonyElement {
                 <button
                   class="btn btn-solid"
                   @click=${() =>
-                    this.#emit("colony-confirm", { kind: "approve-plan" })}
+                    this.#emit("colony-task-action", {
+                      path: `/scopes/${scope.id}/approve-plan`,
+                    })}
                 >
                   Approve plan
                 </button>
@@ -157,17 +180,21 @@ export class PlanCard extends ColonyElement {
               </div>
               <form
                 class="feedback"
-                @submit=${(event) => {
-                  event.preventDefault();
-                  this.#emit("colony-feedback", {
-                    path: `/scopes/${scope.id}/replan`,
-                    body: {
-                      feedback: String(
-                        new FormData(event.target).get("feedback") ?? "",
-                      ),
-                    },
-                  });
-                }}
+                @submit=${
+                  /** @param {SubmitEvent} event */ (event) => {
+                    event.preventDefault();
+                    this.#emit("colony-feedback", {
+                      path: `/scopes/${scope.id}/replan`,
+                      body: {
+                        feedback: String(
+                          new FormData(
+                            /** @type {HTMLFormElement} */ (event.target),
+                          ).get("feedback") ?? "",
+                        ),
+                      },
+                    });
+                  }
+                }
               >
                 <textarea
                   name="feedback"
@@ -197,20 +224,26 @@ export class PlanCard extends ColonyElement {
     </aside>`;
   }
 
+  /** @param {import("../dag.js").Plan | null} plan */
   #planTaskList(plan) {
     return html`<ol class="plan-tasks">
-      ${plan.tasks.map(
-        (task, index) =>
-          html`<li>
-            <button
-              class="plan-task"
-              @click=${() =>
-                this.#emit("colony-select-task", { taskId: `plan:${index}` })}
-            >
-              ${task.title}
-            </button>
-          </li>`,
-      )}
+      ${
+        /** @type {import("../dag.js").Plan} */ (plan).tasks.map(
+          (
+            /** @type {import("../dag.js").PlanTask} */ task,
+            /** @type {number} */ index,
+          ) =>
+            html`<li>
+              <button
+                class="plan-task"
+                @click=${() =>
+                  this.#emit("colony-select-task", { taskId: `plan:${index}` })}
+              >
+                ${task.title}
+              </button>
+            </li>`,
+        )
+      }
     </ol>`;
   }
 }

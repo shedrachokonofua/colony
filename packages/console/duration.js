@@ -1,3 +1,4 @@
+/** @param {import("./duration.d.ts").DurationRun} run @param {number} nowMs */
 export function runDurationMs(run, nowMs) {
   const started = run.started_at;
   if (started == null || started === "") return null;
@@ -16,6 +17,7 @@ export function runDurationMs(run, nowMs) {
   return diff;
 }
 
+/** @param {number} ms */
 export function formatDuration(ms) {
   if (ms < 1000) return "<1s";
   if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
@@ -29,6 +31,7 @@ export function formatDuration(ms) {
   return `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
+/** @param {number} ms */
 function formatVerbose(ms) {
   if (ms < 1000) return "less than 1 second";
   const totalSec = Math.floor(ms / 1000);
@@ -46,6 +49,10 @@ function formatVerbose(ms) {
   return `${m} minute${m === 1 ? "" : "s"} ${s} second${s === 1 ? "" : "s"}`;
 }
 
+/**
+ * @param {import("./duration.d.ts").DurationRun} run
+ * @param {number} nowMs
+ */
 export function durationAriaLabel(run, nowMs) {
   const ms = runDurationMs(run, nowMs);
   const started = run.started_at;
@@ -57,6 +64,7 @@ export function durationAriaLabel(run, nowMs) {
   return `running for ${durationText}, started ${started}`;
 }
 
+/** @param {number} ms */
 function toIsoDuration(ms) {
   if (ms < 1000) return "PT0S";
   const totalSec = Math.floor(ms / 1000);
@@ -70,21 +78,43 @@ function toIsoDuration(ms) {
   return out;
 }
 
+/** @param {number} ms */
 export function isoDuration(ms) {
   return toIsoDuration(ms);
 }
 
-export function createRunTicker(
-  onTick,
-  { intervalMs = 1000, setIntervalFn, clearIntervalFn } = {},
-) {
+/**
+ * A 1s clock any number of consumers can listen to. Subscribing returns the
+ * unsubscribe, and no consumer can dislodge another's callback: a clock with
+ * a single replacable callback is a race between whoever binds last and a
+ * freeze for whoever bound first.
+ *
+ * @param {{ intervalMs?: number, setIntervalFn?: typeof setInterval, clearIntervalFn?: typeof clearInterval }} [options]
+ */
+export function createRunTicker({
+  intervalMs = 1000,
+  setIntervalFn,
+  clearIntervalFn,
+} = {}) {
   const setFn = setIntervalFn ?? globalThis.setInterval.bind(globalThis);
   const clearFn = clearIntervalFn ?? globalThis.clearInterval.bind(globalThis);
-  let id = null;
+  /** @type {Set<() => void>} */
+  const subscribers = new Set();
+  let id = /** @type {ReturnType<typeof setInterval> | null} */ (null);
   return {
+    /**
+     * @param {() => void} fn
+     * @returns {() => void} the unsubscribe
+     */
+    subscribe(fn) {
+      subscribers.add(fn);
+      return () => subscribers.delete(fn);
+    },
     start() {
       if (id !== null) return;
-      id = setFn(onTick, intervalMs);
+      id = setFn(() => {
+        for (const fn of subscribers) fn();
+      }, intervalMs);
     },
     stop() {
       if (id === null) return;

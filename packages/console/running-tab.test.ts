@@ -1,17 +1,47 @@
+// The project Running tab, pinned against the modules that actually ship it:
+// ?tab= routing round-trip (parse -> serialize), the row model every entry is
+// derived into, the empty state's tallies line, and the demo/live data paths
+// that feed the surface. Markup assertions live with the element that renders
+// them (elements/running-tab.test.ts, views/project-page.test.ts).
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildDemoScopes } from "./demo-data.js";
+import { buildDemoRunning } from "./demo-running.js";
 import {
   deriveRunningRow,
   formatRunningEmptyTallies,
   parseProjectTab,
   serializeProjectTabHref,
 } from "./project-helpers.js";
+import type {
+  DerivedRunningRow,
+  ProjectTab,
+  RunningEntry,
+} from "./project-helpers.d.ts";
+
+// demo.js reads location.search at module top level and bun tests run with
+// no location global, so seed one and pull demo.js in after it.
+//
+// The seed must match the console's other suites (?demo=1): DEMO is a
+// module-level constant, so whichever suite imports demo.js first freezes
+// demo mode for the whole bun process. Seeding an empty search here would
+// turn demo mode off for every suite that loads after this one, and the
+// shell's demo reads would find no live run.
+// Unconditional, not just when absent: a happy-dom location aliased in by
+// an earlier suite carries search:"", which would freeze demo mode off for
+// the whole process the same way.
+Object.defineProperty(globalThis, "location", {
+  value: { hash: "#/", search: "?demo=1" },
+  configurable: true,
+  writable: true,
+});
+const { DEMO_READS } = await import("./demo.js");
 
 const here = dirname(fileURLToPath(import.meta.url));
-const appSource = readFileSync(join(here, "app.js"), "utf8");
 const cssSource = readFileSync(join(here, "styles.css"), "utf8");
+const shellSource = readFileSync(join(here, "shell-data.js"), "utf8");
 
 describe("Running tab - Tab routing round-trip", () => {
   it("parses ?tab=running and valid tabs, falling back to 'scopes' on invalid/absent tab", () => {
@@ -65,9 +95,24 @@ describe("Running tab - Tab routing round-trip", () => {
       ),
     ).toBe("#/project/colony?project=other");
   });
+
+  it("round-trips every tab through parse(serialize(...))", () => {
+    const tabs: ProjectTab[] = ["scopes", "running", "settings"];
+    for (const tab of tabs) {
+      const href = serializeProjectTabHref("#/project/colony", "colony", tab);
+      expect(parseProjectTab(href)).toBe(tab);
+    }
+  });
+
+  it("escapes a project name that needs encoding", () => {
+    const href = serializeProjectTabHref("#/project/a b", "a b", "running");
+    expect(href).toBe("#/project/a%20b?tab=running");
+    // The pager's ?page= rides alongside the tab without either losing it.
+    expect(parseProjectTab(`${href}&page=2`)).toBe("running");
+  });
 });
 
-describe("Running tab - Row model derivation and markup", () => {
+describe("Running tab - Row model derivation", () => {
   it("derives row model for an entry with a live run", () => {
     const startedAt = new Date(Date.now() - 30_000).toISOString();
     const entry = {
@@ -99,6 +144,7 @@ describe("Running tab - Row model derivation and markup", () => {
     expect(derived.runModel).toBe("deepseek-v4-flash");
     expect(derived.startedAt).toBe(startedAt);
     expect(derived.isRunning).toBe(true);
+    expect(derived.run?.status).toBe("running");
   });
 
   it("derives row model for an entry with run: null (e.g. mr_open)", () => {
@@ -127,14 +173,16 @@ describe("Running tab - Row model derivation and markup", () => {
     expect(derived.isRunning).toBe(false);
   });
 
-  it("app.js source renders scope chip, task title, state badge, attempt, run kind & model, and navigation", () => {
-    expect(appSource).toContain("scope-chip");
-    expect(appSource).toContain("running-task-title");
-    expect(appSource).toContain("data-state=");
-    expect(appSource).toContain("running-attempt");
-    expect(appSource).toContain("openTaskInScope");
-    expect(appSource).toContain("openScope");
-    expect(appSource).toContain("pendingSelectTaskId");
+  it("falls back to the ids for a row with no titles", () => {
+    const derived = deriveRunningRow({
+      scope_id: "col-789",
+      task_id: "col-789.2",
+      run: null,
+    });
+    expect(derived.scopeTitle).toBe("col-789");
+    expect(derived.taskTitle).toBe("col-789.2");
+    expect(derived.taskState).toBe("queued");
+    expect(derived.attemptText).toBe("attempt 0");
   });
 });
 
@@ -157,47 +205,72 @@ describe("Running tab - Empty state", () => {
     expect(formatRunningEmptyTallies(undefined)).toBe(null);
   });
 
-  it("app.js renders 'Nothing running right now.' and tallies", () => {
-    expect(appSource).toContain("Nothing running right now.");
-    expect(appSource).toContain("running-tallies");
+  it("formats empty tallies correctly when present", () => {
+    expect(
+      formatRunningEmptyTallies({
+        queued: 1,
+        blocked: 0,
+        running: 0,
+        mr_open: 0,
+        merged: 0,
+        canceled: 0,
+      }),
+    ).toBe("1 queued · 0 blocked");
   });
 });
 
 describe("Running tab - Demo mode and live ticker", () => {
   it("DEMO_READS matches /projects/<name>/running", () => {
-    const demoReadsMatch = appSource.match(/const DEMO_READS =\s*(\/[^\n]+);/);
-    expect(demoReadsMatch).not.toBeNull();
-    const regexStr = demoReadsMatch![1];
-    // Evaluate regex from source string
-    const regex = eval(regexStr);
-    expect(regex.test("/projects/Operator%20console/running")).toBe(true);
-    expect(regex.test("/projects/colony/running")).toBe(true);
-  });
-
-  it("demo world provides running rows and task_state_counts on demoProject", () => {
-    expect(appSource).toContain("task_state_counts:");
-    expect(appSource).toContain("running:");
-    expect(appSource).toContain("state.projectRunning = world.running");
+    expect(DEMO_READS.test("/projects/Operator%20console/running")).toBe(true);
+    expect(DEMO_READS.test("/projects/colony/running")).toBe(true);
+    // The running read is the only /running path that resolves offline; a
+    // deeper one would fall through to the live API and fail the demo.
+    expect(DEMO_READS.test("/projects/colony/running/extra")).toBe(false);
   });
 
   it("demo running rows resolve to real tasks so row navigation selects one", () => {
-    // A row navigates into its scope and selects the task, so the demo world
-    // must back each row with a detail payload that actually holds the task.
-    expect(appSource).toContain("runningDetails");
-    expect(appSource).toContain("consumePendingTaskSelection");
-    expect(appSource).toContain("consumePendingTaskSelection(state.detail)");
-    // The live scope-detail refresh consumes it too.
-    expect(
-      appSource.match(/consumePendingTaskSelection/g)?.length,
-    ).toBeGreaterThanOrEqual(3);
+    const now = Date.parse("2026-08-30T12:00:00.000Z");
+    const scopes = buildDemoScopes(now);
+    const { entries, details } = buildDemoRunning(now, scopes);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      const derived = deriveRunningRow(entry);
+      // Every row's scope has a detail payload containing its task, so a row
+      // click lands on a sheet that can actually select the task.
+      const detail = details[derived.scopeId];
+      expect(detail).toBeDefined();
+      expect(detail.scope.id).toBe(derived.scopeId);
+      expect(
+        detail.tasks.some(
+          (task: Record<string, unknown>) => task.id === derived.taskId,
+        ),
+      ).toBe(true);
+    }
   });
 
-  it("hasVisibleRunningRun accounts for running tasks in projectRunning", () => {
-    expect(appSource).toContain("state.projectRunning");
-    expect(appSource).toContain("runningList.some");
-    // Ticking stays tied to visible rows: only the rendered running tab counts.
-    expect(appSource).toContain(
-      'state.projectTab === "running" && state.projectPage',
+  it("demo rows carry a live run and a past-run row, both typed for the row model", () => {
+    const now = Date.parse("2026-08-30T12:00:00.000Z");
+    const { entries } = buildDemoRunning(now, buildDemoScopes(now));
+    const derived = entries.map((entry: RunningEntry) =>
+      deriveRunningRow(entry),
+    );
+    const live = derived.filter((row: DerivedRunningRow) => row.isRunning);
+    const idle = derived.filter((row: DerivedRunningRow) => !row.hasRun);
+    expect(live.length).toBe(1);
+    expect(live[0].runModel).toBeTruthy();
+    expect(live[0].startedAt).toBeTruthy();
+    expect(idle.length).toBe(1);
+    expect(idle[0].taskState).toBe("mr_open");
+  });
+
+  it("live refresh reads the project's running rows", () => {
+    // The route's read must be in the project branch of refresh(), next to
+    // the scopes page it shares the project with.
+    expect(shellSource).toContain(
+      "`/projects/${encodeURIComponent(projectName)}/running`",
+    );
+    expect(shellSource).toContain(
+      "app.projectRunning = Array.isArray(runningRows) ? runningRows : [];",
     );
   });
 

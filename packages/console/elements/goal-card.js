@@ -19,6 +19,7 @@ export class GoalCard extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {Record<string, any> | null} */
     this.scope = null;
     this.goalOpen = false;
     this.error = "";

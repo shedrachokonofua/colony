@@ -18,10 +18,12 @@ export class ProjectCreate extends ColonyElement {
     this._contextDraft = "";
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
 
+  /** @param {SubmitEvent} event */
   #submit(event) {
     event.preventDefault();
     const name = String(this._nameDraft ?? "").trim();
@@ -37,7 +39,10 @@ export class ProjectCreate extends ColonyElement {
       <aside class="card create-card">
         <p class="card-head">New project</p>
         <div class="card-body">
-          <form class="composer" @submit=${(e) => this.#submit(e)}>
+          <form
+            class="composer"
+            @submit=${/** @param {SubmitEvent} e */ (e) => this.#submit(e)}
+          >
             <label class="field">
               <span>Name</span>
               <input
@@ -47,9 +52,13 @@ export class ProjectCreate extends ColonyElement {
                 placeholder="Project name"
                 autocomplete="off"
                 .value=${this._nameDraft ?? ""}
-                @input=${(event) => {
-                  this._nameDraft = event.target.value;
-                }}
+                @input=${
+                  /** @param {InputEvent} event */ (event) => {
+                    this._nameDraft = /** @type {HTMLInputElement} */ (
+                      event.target
+                    ).value;
+                  }
+                }
               />
             </label>
             <label class="field">
@@ -59,9 +68,13 @@ export class ProjectCreate extends ColonyElement {
                 rows="10"
                 placeholder="Background every agent packet in this project carries: architecture notes, conventions, constraints."
                 .value=${this._contextDraft ?? ""}
-                @input=${(event) => {
-                  this._contextDraft = event.target.value;
-                }}
+                @input=${
+                  /** @param {InputEvent} event */ (event) => {
+                    this._contextDraft = /** @type {HTMLTextAreaElement} */ (
+                      event.target
+                    ).value;
+                  }
+                }
               ></textarea>
             </label>
             <div class="create-actions">
@@ -71,17 +84,19 @@ export class ProjectCreate extends ColonyElement {
               <a
                 class="btn btn-quiet"
                 href="#/"
-                @click=${(event) => {
-                  if (
-                    event.metaKey ||
-                    event.ctrlKey ||
-                    event.shiftKey ||
-                    event.button
-                  )
-                    return;
-                  event.preventDefault();
-                  this.#emit("colony-navigate", { href: "#/" });
-                }}
+                @click=${
+                  /** @param {MouseEvent} event */ (event) => {
+                    if (
+                      event.metaKey ||
+                      event.ctrlKey ||
+                      event.shiftKey ||
+                      event.button
+                    )
+                      return;
+                    event.preventDefault();
+                    this.#emit("colony-navigate", { href: "#/" });
+                  }
+                }
                 >Cancel</a
               >
             </div>

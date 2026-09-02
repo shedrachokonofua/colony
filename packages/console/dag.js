@@ -1,27 +1,38 @@
 // Task-graph layout: longest-path column assignment plus a fixed-box grid,
 // and the graph model that maps a project detail (or its plan) onto it.
 
+/**
+ * @param {import("./dag.d.ts").DagNode[]} nodes
+ * @param {import("./dag.d.ts").DagEdge[]} edges
+ * @returns {import("./dag.d.ts").DagLayout}
+ */
 export function layoutDag(nodes, edges) {
   const ids = nodes.map((node) => node.id);
-  const incoming = new Map(ids.map((id) => [id, []]));
+  const incoming = /** @type {Map<string, string[]>} */ (
+    new Map(ids.map((id) => [id, []]))
+  );
   for (const edge of edges) {
-    if (incoming.has(edge.task_id)) {
-      incoming.get(edge.task_id).push(edge.depends_on_task_id);
-    }
+    const deps = incoming.get(edge.task_id);
+    if (deps) deps.push(edge.depends_on_task_id);
   }
-  const level = new Map();
-  const visiting = new Set();
+  const level = /** @type {Map<string, number>} */ (new Map());
+  const visiting = /** @type {Set<string>} */ (new Set());
+  /** @type {(id: string) => number} */
   const depthOf = (id) => {
-    if (level.has(id)) return level.get(id);
+    const cached = level.get(id);
+    if (cached !== undefined) return cached;
     if (visiting.has(id)) return 0;
     visiting.add(id);
-    const preds = (incoming.get(id) || []).filter((pred) => ids.includes(pred));
+    const preds = /** @type {string[]} */ (incoming.get(id) || []).filter(
+      (pred) => ids.includes(pred),
+    );
     const depth = preds.length ? Math.max(...preds.map(depthOf)) + 1 : 0;
     visiting.delete(id);
     level.set(id, depth);
     return depth;
   };
   ids.forEach(depthOf);
+  /** @type {string[][]} */
   const columns = [];
   for (const id of ids) {
     const depth = level.get(id) || 0;
@@ -33,7 +44,9 @@ export function layoutDag(nodes, edges) {
   const padY = 16;
   const w = 224;
   const h = 76;
-  const pos = new Map();
+  const pos = /** @type {Map<string, import("./dag.d.ts").DagBox>} */ (
+    new Map()
+  );
   columns.forEach((column, x) => {
     column.forEach((id, y) => {
       pos.set(id, { x: padX + x * colW, y: padY + y * rowH, w, h });
@@ -45,6 +58,10 @@ export function layoutDag(nodes, edges) {
   return { pos, width, height };
 }
 
+/**
+ * @param {import("./dag.d.ts").DagDetail | null | undefined} detail
+ * @returns {{ nodes: import("./dag.d.ts").DagNode[], edges: import("./dag.d.ts").DagEdge[] }}
+ */
 export function graphModel(detail) {
   if (!detail) return { nodes: [], edges: [] };
   if (detail.tasks.length) {
@@ -78,6 +95,10 @@ export function graphModel(detail) {
 
 // The scope's plan_json is the same document the DAG falls back to and the
 // plan/task surfaces read, so one parser serves all of them.
+/**
+ * @param {string | null | undefined} raw
+ * @returns {import("./dag.d.ts").Plan | null}
+ */
 export function parsePlan(raw) {
   if (!raw) return null;
   try {

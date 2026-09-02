@@ -9,7 +9,9 @@ import { sharedDom } from "./elements/test-dom.js";
 // process with one module cache); the shared window must be installed before
 // topbar.js (and therefore base.js/lit) is imported.
 sharedDom();
-globalThis.location = { hash: "#/", search: "" };
+// Matches the console's other suites: topbar.js does not reach demo.js,
+// but this stub is the process-wide location every later suite reads.
+globalThis.location = { hash: "#/", search: "?demo=1" };
 
 await import("./topbar.js");
 

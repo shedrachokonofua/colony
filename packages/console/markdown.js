@@ -2,6 +2,7 @@
 // Escapes EVERYTHING first, then rebuilds a small grammar: headings, fenced
 // code, lists, blockquotes, bold/italic/inline code, http(s) links.
 
+/** @param {unknown} text */
 export function escapeHtml(text) {
   return String(text)
     .replaceAll("&", "&amp;")
@@ -10,6 +11,7 @@ export function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+/** @param {string} text */
 export function mdInline(text) {
   return text
     .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -21,11 +23,14 @@ export function mdInline(text) {
     );
 }
 
+/** @param {string} source */
 export function renderMarkdown(source) {
   const lines = escapeHtml(source).split("\n");
   const out = [];
-  let list = null; // "ul" | "ol"
+  /** @type {"ul" | "ol" | null} */
+  let list = null;
   let fence = false;
+  /** @type {string[]} */
   let fenceBuf = [];
   const closeList = () => {
     if (list) out.push(`</${list}>`);
@@ -64,14 +69,17 @@ export function renderMarkdown(source) {
     }
     const ul = line.match(/^\s*[-*]\s+(.*)$/);
     const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (ul || ol) {
+    // Both captures are required groups, so a non-null match always carries
+    // its [1]; narrowing once here keeps the item body out of null range.
+    const item = ul ?? ol;
+    if (item) {
       const kind = ul ? "ul" : "ol";
       if (list !== kind) {
         closeList();
         out.push(`<${kind}>`);
         list = kind;
       }
-      out.push(`<li>${mdInline((ul || ol)[1])}</li>`);
+      out.push(`<li>${mdInline(item[1])}</li>`);
       continue;
     }
     if (/^\s*&gt;\s?/.test(line)) {
@@ -94,6 +102,7 @@ export function renderMarkdown(source) {
   return out.join("\n");
 }
 
+/** @param {string} markdown */
 export function mdFragment(markdown) {
   // Our renderer escapes all input before rebuilding markup, so this HTML is
   // console-authored, never agent-authored.

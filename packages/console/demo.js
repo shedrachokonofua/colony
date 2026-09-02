@@ -12,13 +12,14 @@ import {
   buildEmptyProject,
   buildFillerProjects,
 } from "./demo-data.js";
+import { buildDemoRunning } from "./demo-running.js";
 
 export const DEMO = new URLSearchParams(location.search).has("demo");
 
 // Demo-safe read paths: project detail, its context, its scope page, and the
 // project list (the homepage) so the whole console is driveable offline.
 export const DEMO_READS =
-  /^\/projects\/[^/?]+(?:\/context|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
+  /^\/projects\/[^/?]+(?:\/context|\/running|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
 
 // Demo brief/file edits are purely local state: they must never hit the
 // network, but the same affordances stay visible.
@@ -40,6 +41,7 @@ export function demoWorld() {
   demoFileStore.set("Empty workspace", []);
   const detail = buildDemoDetail(now);
   const scope = detail.scope;
+  const running = buildDemoRunning(now, projectScopes);
   return {
     config: {
       gitlab_base_url: "https://gitlab.home.shdr.ch",
@@ -68,6 +70,8 @@ export function demoWorld() {
       ...generatedScopes,
     ],
     detail,
+    running: running.entries,
+    runningDetails: running.details,
     runEvents: buildDemoRunEvents(now),
     audit: buildDemoAudit(now),
   };

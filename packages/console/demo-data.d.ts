@@ -42,6 +42,29 @@ export interface DemoProject {
   repositories: Array<{ repo_id: string; repo_path: string }>;
 }
 
+/** One GET /projects/:name/running row, as the demo world builds it. */
+export interface DemoRunningEntry {
+  scope_id: string;
+  scope_title: string | null;
+  task_id: string;
+  task_title: string | null;
+  task_state: string;
+  attempt: number;
+  run: {
+    id: string;
+    scope_id: string;
+    task_id: string;
+    kind: string;
+    status: string;
+    model_id: string | null;
+    head_sha: string | null;
+    error: string | null;
+    evidence_json: string | null;
+    started_at: string;
+    finished_at: string | null;
+  } | null;
+}
+
 export interface DemoFile {
   id: string;
   filename: string;

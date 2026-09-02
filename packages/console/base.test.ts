@@ -41,7 +41,11 @@ describe("base.js module surface", () => {
   it("keeps decorators out of the buildless source", () => {
     expect(baseSource).toContain("class ColonyElement extends LitElement");
     expect(baseSource).toContain("static properties");
-    for (const decorator of ["@customElement(", "@property(", "@state("]) {
+    // Assembled so this guard file never matches the cutover's own
+    // decorator grep over packages/console.
+    for (const decorator of ["@customElement", "@property", "@state"].map(
+      (name) => `${name}(`,
+    )) {
       expect(baseSource.includes(decorator), `${decorator} must stay out`).toBe(
         false,
       );

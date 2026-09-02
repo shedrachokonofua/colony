@@ -17,6 +17,7 @@ import { parsePlan } from "../dag.js";
 import "./run-feed.js";
 import "./run-line.js";
 
+/** @param {string | null | undefined} sha */
 function shortSha(sha) {
   return sha && sha.length >= 7 ? sha.slice(0, 7) : "—";
 }
@@ -38,21 +39,31 @@ export class TaskDrawer extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {Record<string, any> | null} */
     this.task = null;
+    /** @type {Record<string, any> | null} */
     this.scope = null;
+    /** @type {Record<string, any> | null} */
     this.detail = null;
+    /** @type {Record<string, any> | null} */
     this.runEvents = null;
+    /** @type {import("../trace-link.js").TraceLinkConfig & Record<string, any> | null} */
     this.config = null;
+    /** @type {string | null} */
     this.confirm = null;
     this._amendDraft = "";
     this._feedbackDraft = "";
+    /** @type {Map<string, { amend: string, feedback: string }>} */
     this._drafts = new Map();
   }
 
+  /** @param {Map<string, unknown>} changed */
   willUpdate(changed) {
     super.willUpdate(changed);
     if (changed.has("task")) {
-      const old = changed.get("task");
+      const old = /** @type {Record<string, any> | undefined} */ (
+        changed.get("task")
+      );
       if (old?.id)
         this._drafts.set(old.id, {
           amend: this._amendDraft,
@@ -64,14 +75,17 @@ export class TaskDrawer extends ColonyElement {
     }
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
 
+  /** @param {string} action */
   #action(action) {
-    this.#emit("colony-task-action", { taskId: this.task.id, action });
+    this.#emit("colony-task-action", { taskId: this.task?.id, action });
   }
 
+  /** @param {string} path @param {Record<string, unknown>} body */
   #feedback(path, body) {
     this.#emit("colony-feedback", { path, body });
   }
@@ -80,14 +94,19 @@ export class TaskDrawer extends ColonyElement {
   // when the binding changes, so keystrokes survive the 2.5s poll repaint.
   // The @input handlers keep the per-task drafts current for willUpdate's
   // stash; the submit forms read the DOM like the monolith's submitFeedback.
+  /** @param {InputEvent} event */
   #amendInput(event) {
-    this._amendDraft = event.target.value;
+    this._amendDraft = /** @type {HTMLTextAreaElement} */ (event.target).value;
   }
 
+  /** @param {InputEvent} event */
   #feedbackInput(event) {
-    this._feedbackDraft = event.target.value;
+    this._feedbackDraft = /** @type {HTMLTextAreaElement} */ (
+      event.target
+    ).value;
   }
 
+  /** @param {{ state?: string }} task @param {string} [label] */
   #drawerHead(task, label = "Task detail") {
     return html`<div class="drawer-head">
       <span class="chip" data-kind=${task.state}>${task.state}</span>
@@ -135,9 +154,8 @@ export class TaskDrawer extends ColonyElement {
     const scope = this.scope;
     if (!task || !scope) return nothing;
     if (this.#planTaskId()) return this.#planDrawer();
-    const runs = (this.detail?.runs || []).filter(
-      (run) => run.task_id === task.id,
-    );
+    const detailRuns = /** @type {any[]} */ (this.detail?.runs || []);
+    const runs = detailRuns.filter((run) => run.task_id === task.id);
     const sha = [...runs].reverse().find((run) => run.head_sha)?.head_sha;
     const base = String(this.config?.gitlab_base_url ?? "").replace(/\/$/, "");
     const mr =
@@ -187,20 +205,26 @@ export class TaskDrawer extends ColonyElement {
         ${task.state === "mr_open"
           ? html`<form
               class="feedback"
-              @submit=${(event) => {
-                event.preventDefault();
-                this.#feedback(`/tasks/${task.id}/request-changes`, {
-                  feedback: String(
-                    new FormData(event.target).get("feedback") ?? "",
-                  ),
-                });
-              }}
+              @submit=${
+                /** @param {SubmitEvent} event */ (event) => {
+                  event.preventDefault();
+                  this.#feedback(`/tasks/${task.id}/request-changes`, {
+                    feedback: String(
+                      new FormData(
+                        /** @type {HTMLFormElement} */ (event.target),
+                      ).get("feedback") ?? "",
+                    ),
+                  });
+                }
+              }
             >
               <textarea
                 name="feedback"
                 required
                 .value=${this._feedbackDraft}
-                @input=${(e) => this.#feedbackInput(e)}
+                @input=${
+                  /** @param {InputEvent} e */ (e) => this.#feedbackInput(e)
+                }
                 placeholder="Feedback for the agent — requeues the task with your notes."
               ></textarea>
               <button class="btn" type="submit">Request changes</button>
@@ -209,20 +233,26 @@ export class TaskDrawer extends ColonyElement {
         ${!["merged", "canceled"].includes(task.state)
           ? html`<form
               class="feedback"
-              @submit=${(event) => {
-                event.preventDefault();
-                this.#feedback(`/tasks/${task.id}/amend-spec`, {
-                  feedback: String(
-                    new FormData(event.target).get("feedback") ?? "",
-                  ),
-                });
-              }}
+              @submit=${
+                /** @param {SubmitEvent} event */ (event) => {
+                  event.preventDefault();
+                  this.#feedback(`/tasks/${task.id}/amend-spec`, {
+                    feedback: String(
+                      new FormData(
+                        /** @type {HTMLFormElement} */ (event.target),
+                      ).get("feedback") ?? "",
+                    ),
+                  });
+                }
+              }
             >
               <textarea
                 name="feedback"
                 required
                 .value=${this._amendDraft}
-                @input=${(e) => this.#amendInput(e)}
+                @input=${
+                  /** @param {InputEvent} e */ (e) => this.#amendInput(e)
+                }
                 placeholder="Amend the spec — authoritative for the implementer AND the reviewer."
               ></textarea>
               <button class="btn" type="submit">Amend spec</button>
@@ -251,6 +281,7 @@ export class TaskDrawer extends ColonyElement {
     </aside>`;
   }
 
+  /** @param {import("../cost-prediction.js").TaskWithCostPrediction & Record<string, any>} task */
   #costPrediction(task) {
     const prediction = parseCostPrediction(task);
     if (!prediction) return nothing;
@@ -268,6 +299,7 @@ export class TaskDrawer extends ColonyElement {
     </div>`;
   }
 
+  /** @param {Record<string, any>} task */
   #actionButtons(task) {
     const buttons = [];
     if (task.state === "blocked") {

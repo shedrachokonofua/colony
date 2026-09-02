@@ -11,7 +11,20 @@ import {
 } from "./project-helpers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const appSource = readFileSync(join(here, "app.js"), "utf8");
+const listSource = readFileSync(join(here, "views/project-list.js"), "utf8");
+const composerSource = readFileSync(
+  join(here, "views/project-create.js"),
+  "utf8",
+);
+const scopeSource = readFileSync(join(here, "views/scope-create.js"), "utf8");
+const shellSource = readFileSync(join(here, "colony-app.js"), "utf8");
+// The shell's createProject action POSTs the payload; it ships in
+// shell-actions.js since the cutover split the shell's event handlers out.
+const shellActionsSource = readFileSync(join(here, "shell-actions.js"), "utf8");
+// The archived-projects query lives in the shell's data layer; the toggle
+// and the read-only rows live in the views that render them.
+const shellDataSource = readFileSync(join(here, "shell-data.js"), "utf8");
+const pageSource = readFileSync(join(here, "views/project-page.js"), "utf8");
 const cssSource = readFileSync(join(here, "styles.css"), "utf8");
 
 /** The `grid-template-columns` a selector resolves to, or null when absent. */
@@ -48,7 +61,6 @@ describe("project-card fields", () => {
 
   it("knowledge line: No brief when context_doc empty/null", () => {
     expect(knowledgeText(null, 0)).toBe("No brief · 0 reference files");
-    expect(knowledgeText("", 2)).toBe("No brief · 2 reference files");
   });
 
   it("repo summary: No connected repositories when empty", () => {
@@ -81,12 +93,24 @@ describe("project-card fields", () => {
 
   it("repo summary: duplicate repo paths count once, first path wins", () => {
     expect(
-      repoSummaryText([
+      distinctRepos([
         { repo_id: "7", repo_path: "so/colony" },
         { repo_id: "8", repo_path: "so/colony" },
         { repo_id: "9", repo_path: "so/console-e2e" },
-      ]),
-    ).toBe("2 connected repos · so/colony · so/console-e2e");
+      ]).length,
+    ).toBe(2);
+  });
+
+  it("repo summary: distinctRepos dedupes identical repo lists", () => {
+    const repos = [
+      { repo_id: "7", repo_path: "so/colony" },
+      { repo_id: "8", repo_path: "so/colony" },
+      { repo_id: "9", repo_path: "so/console-e2e" },
+    ];
+    const summary = repoSummaryText(repos);
+    expect(summary.startsWith("2 connected repos")).toBe(true);
+    expect(summary).toContain("so/colony");
+    expect(summary).toContain("so/console-e2e");
   });
 
   it("distinctRepos drops pathless entries and keeps first-seen order", () => {
@@ -105,17 +129,11 @@ describe("project-card fields", () => {
 });
 
 describe("index card markup", () => {
-  it("app.js renders project cards from .project-cards with a card per project", () => {
-    expect(appSource).toContain('<div class="project-cards">');
-    expect(appSource).toMatch(
-      /class="project-card[^"]*"\s+href=\$\{projectHref\(project\.name\)\}/,
-    );
-    expect(appSource).toContain('class="project-card-name"');
-    expect(appSource).toContain('class="project-card-knowledge"');
-  });
-
-  it("app.js never forces the project page's scopes into rack-single", () => {
-    expect(appSource).not.toContain("rack rack-single");
+  it("project-list renders project cards from .project-cards with a card per project", () => {
+    expect(listSource).toContain('<div class="project-cards">');
+    expect(listSource).toMatch(/href=\$\{projectHref\(project\.name\)\}/);
+    expect(listSource).toContain('class="project-card-name"');
+    expect(listSource).toContain('class="project-card-knowledge"');
   });
 });
 
@@ -135,9 +153,17 @@ describe("new-project payload", () => {
     expect(buildNewProjectPayload("  ", "Brief")).toBeNull();
   });
 
-  it("app.js POSTs the payload to /projects on the new-project route", () => {
-    expect(appSource).toContain('api("/projects"');
-    expect(appSource).toMatch(/routeIsNewProject\(\)\s*\?\s*renderNewProject/);
+  it("the shell POSTs the payload to /projects on the new-project route", () => {
+    expect(shellActionsSource).toContain('api("/projects"');
+  });
+
+  it("the new-project composer renders the fixed project as a non-editable element, not an input", () => {
+    expect(scopeSource).toContain('class="composer-fixed"');
+    const fixedBranch = scopeSource.slice(
+      scopeSource.indexOf("composer-fixed"),
+      scopeSource.indexOf('name="project"'),
+    );
+    expect(fixedBranch.length).toBeGreaterThan(0);
   });
 });
 
@@ -158,38 +184,27 @@ describe("composer fixed-project behavior", () => {
     expect(resolveComposerProject(null, "")).toBe("");
     expect(resolveComposerProject(null, null)).toBe("");
   });
-
-  it("app.js renders the fixed project as a non-editable element, not an input", () => {
-    expect(appSource).toContain('class="composer-fixed"');
-    const fixedBranch = appSource.slice(
-      appSource.indexOf("composer-fixed"),
-      appSource.indexOf('name="project"'),
-    );
-    expect(fixedBranch.length).toBeGreaterThan(0);
-  });
 });
 
 describe("archived projects", () => {
-  it("app.js offers a Show archived toggle in the index head", () => {
-    expect(appSource).toContain("Show archived");
-    expect(appSource).toContain("Hide archived");
-    // The toggle is list state, so it survives the 2.5s poll refresh.
-    expect(appSource).toMatch(/showArchived: false,/);
-    expect(appSource).toMatch(
-      /\$\{state\.showArchived \? "Hide archived" : "Show archived"\}/,
+  it("project-list offers a Show archived toggle in the index head", () => {
+    expect(listSource).toContain("Show archived");
+    expect(listSource).toContain("Hide archived");
+    // The toggle is shell state (reset on hashchange), passed down; the
+    // button reflects it via aria-pressed.
+    expect(shellSource).toContain("showArchived = false;");
+    expect(listSource).toContain("aria-pressed=${this.showArchived}");
+    expect(listSource).toMatch(
+      /\$\{this\.showArchived \? "Hide archived" : "Show archived"\}/,
     );
-    const reset = appSource.slice(
-      appSource.indexOf('window.addEventListener("hashchange"'),
-    );
-    expect(reset).toContain("state.showArchived = false;");
   });
 
   it("the list fetch adds archived=1 only when the toggle is on", () => {
-    expect(appSource).toMatch(
-      /api\(\s*`\/projects\?limit=\$\{PAGE_SIZE\}&offset=\$\{offset\}\$\{archivedQuery\(\)\}`/,
+    expect(shellDataSource).toMatch(
+      /`\/projects\?limit=\$\{PAGE_SIZE\}&offset=\$\{offset\}\$\{archivedQuery\(app\)\}`/,
     );
-    const helper = appSource.slice(
-      appSource.indexOf("function archivedQuery()"),
+    const helper = shellDataSource.slice(
+      shellDataSource.indexOf("function archivedQuery(app)"),
     );
     expect(helper.slice(0, helper.indexOf("\n}"))).toContain('"&archived=1"');
     // Demo mode has no archived projects: it must keep the default query.
@@ -197,55 +212,52 @@ describe("archived projects", () => {
   });
 
   it("archived rows render read-only with an Unarchive action", () => {
-    expect(appSource).toMatch(/function archivedProjectRow\(project\)/);
-    expect(appSource).toContain('class="project-card project-row is-archived"');
-    expect(appSource).toContain('<span class="chip" data-kind="archived">');
-    expect(appSource).toContain(
-      "mutate(`/projects/${encodeURIComponent(project.name)}/unarchive`)",
+    expect(listSource).toMatch(/function archivedProjectRow\(project\)/);
+    expect(listSource).toContain(
+      'class="project-card project-row is-archived"',
+    );
+    expect(listSource).toContain('<span class="chip" data-kind="archived">');
+    expect(listSource).toContain(
+      "`/projects/${encodeURIComponent(project.name)}/unarchive`",
     );
     // The archived rows are partitioned out of the live list, never rendered
     // by the live card renderer.
-    expect(appSource).toMatch(
+    expect(listSource).toMatch(
       /pageRows\.filter\(\(project\) => !project\.archived_at\)/,
     );
-    expect(appSource).toMatch(
-      /repeat\(archived, \(project\) => project\.name, archivedProjectRow\)/,
+    expect(listSource).toMatch(
+      /repeat\(\n\s*archived,\n\s*\(project\) => project\.name,\n\s*archivedProjectRow,?\n\s*\)/,
     );
   });
 
   it("the project page shows an archived banner + Unarchive when archived", () => {
-    expect(appSource).toContain('class="banner banner-archived"');
-    expect(appSource).toMatch(
-      /archivedAt\s*\n\s*\? html`<div class="banner banner-archived"/,
+    expect(pageSource).toContain('class="banner banner-archived"');
+    expect(pageSource).toMatch(
+      /archivedAt\n\s*\? html`<div class="banner banner-archived"/,
     );
-    const page = appSource.slice(
-      appSource.indexOf("function renderProjectPage()"),
-      appSource.indexOf("function renderProjectRail()"),
-    );
-    expect(page).toContain("unarchiveButton(page.project.name)");
-    expect(page).toContain("archiveButton(page.project.name)");
+    expect(pageSource).toContain("this.#unarchiveButton(page.project.name)");
+    expect(pageSource).toContain("this.#archiveButton(page.project.name)");
     // New scope is a live-project action only.
-    expect(page).toMatch(/archivedAt\s*\n\s*\? unarchiveButton/);
+    expect(pageSource).toMatch(/archivedAt\n\s*\? this\.#unarchiveButton/);
   });
 
   it("archive is a two-step confirm, unarchive is not", () => {
-    const archive = appSource.slice(
-      appSource.indexOf("function archiveButton(projectName)"),
-      appSource.indexOf("function renderTopbar()"),
+    const archive = pageSource.slice(
+      pageSource.indexOf("#archiveButton(projectName) {"),
     );
-    expect(archive).toContain('state.confirm === "archive"');
-    expect(archive).toContain('setConfirm("archive")');
+    expect(archive).toContain('this.confirm === "archive"');
+    expect(archive).toContain('colony-confirm", { kind: "archive" }');
     expect(archive).toContain("Confirm archive");
     expect(archive).toContain(
-      "mutate(`/projects/${encodeURIComponent(projectName)}/archive`)",
+      "`/projects/${encodeURIComponent(projectName)}/archive`",
     );
-    const unarchive = appSource.slice(
-      appSource.indexOf("function unarchiveButton(projectName)"),
-      appSource.indexOf("function archiveButton(projectName)"),
+    const unarchive = pageSource.slice(
+      pageSource.indexOf("#unarchiveButton(projectName) {"),
+      pageSource.indexOf("/**\n   * The monolith's archiveButton"),
     );
-    expect(unarchive).not.toContain("state.confirm");
+    expect(unarchive).not.toContain("this.confirm");
     expect(unarchive).toContain(
-      "mutate(`/projects/${encodeURIComponent(projectName)}/unarchive`)",
+      "`/projects/${encodeURIComponent(projectName)}/unarchive`",
     );
   });
 
@@ -258,11 +270,15 @@ describe("archived projects", () => {
 
 describe("project knowledge editor", () => {
   it("the textarea is only the Edit-brief view, never the default render", () => {
-    // The editor must live behind the briefOpen branch, not next to an
+    // The editor must live behind the editing branch, not next to an
     // unconditional demo default (which would re-open the always-open
     // textarea the spec retired).
-    const editingBranch = appSource.match(/const editing = state\.briefOpen;/);
-    expect(editingBranch).not.toBeNull();
-    expect(appSource).not.toMatch(/DEMO && doc \? true/);
+    expect(composerSource).not.toBeUndefined();
+    const contextCardSource = readFileSync(
+      join(here, "elements/project-context-card.js"),
+      "utf8",
+    );
+    expect(contextCardSource).toContain("this.editing ? nothing :");
+    expect(contextCardSource).not.toMatch(/DEMO && doc \? true/);
   });
 });

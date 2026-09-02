@@ -3,9 +3,15 @@ import { afterEach, describe, expect, it } from "bun:test";
 
 // demo.js reads location.search at module top level; bun tests run without
 // any location global, so seed one and pull demo.js in after it.
+//
+// The seed must match the console's other suites (?demo=1): DEMO is a
+// module-level constant, so whichever suite imports demo.js first freezes
+// demo mode for the whole bun process. Seeding an empty search here would
+// switch demo mode off for every suite that loads after this one, and the
+// shell's demo reads would find no live run.
 const realLocation = globalThis.location ?? {
-  hash: "",
-  search: "",
+  hash: "#/",
+  search: "?demo=1",
 };
 Object.defineProperty(globalThis, "location", {
   value: realLocation,
@@ -72,6 +78,8 @@ describe("demoWorld", () => {
       "project",
       "projects",
       "runEvents",
+      "running",
+      "runningDetails",
       "scopes",
     ]);
     expect(world.config).toEqual({
@@ -80,6 +88,28 @@ describe("demoWorld", () => {
       hitl_mode: "yolo",
       trace_ui_base_url: "https://traces.home.shdr.ch",
     });
+  });
+
+  it("feeds the project Running tab rows and their scope details", () => {
+    const world = demoWorld();
+    expect(world.running.length).toBeGreaterThan(0);
+    // Every row's scope has a detail payload holding that row's task, so
+    // activating a row offline lands on a sheet that can select it.
+    for (const entry of world.running) {
+      const detail = world.runningDetails[entry.scope_id];
+      expect(detail).toBeDefined();
+      expect(detail.scope.id).toBe(entry.scope_id);
+      expect(detail.tasks.some((task) => task.id === entry.task_id)).toBe(true);
+    }
+    // The rows' scopes belong to the project whose tab renders them.
+    const owned = new Set(
+      world.scopes
+        .filter((scope) => scope.project_name === world.project.name)
+        .map((scope) => scope.id),
+    );
+    for (const entry of world.running) {
+      expect(owned.has(entry.scope_id)).toBe(true);
+    }
   });
 
   it("pins the demo project as the last of the fillers plus one empty project", () => {

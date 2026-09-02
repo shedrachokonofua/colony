@@ -22,6 +22,7 @@ export class MarkdownReader extends ColonyElement {
     this.classList.add("md");
   }
 
+  /** @param {Map<string, unknown>} changed */
   updated(changed) {
     super.updated(changed);
     // Render only on an actual markdown change: a poll that re-sends the

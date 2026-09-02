@@ -23,17 +23,22 @@ export class ProjectFiles extends ColonyElement {
 
   constructor() {
     super();
+    /** @type {{ name: string, project: Record<string, any> | null, files?: any[], total?: number, page?: number } | null} */
     this.filesPage = null;
+    /** @type {string | null} */
     this.confirmFile = null;
+    /** @type {string | null} */
     this.replaceFileId = null;
     this.error = "";
   }
 
+  /** @param {string} type @param {Record<string, unknown>} [detail] */
   #emit(type, detail = {}) {
     this.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
   }
 
   /** Crumb / back links route through colony-navigate; modified clicks keep it. */
+  /** @param {MouseEvent} event @param {string} href */
   #nav(event, href) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
       return;
@@ -41,6 +46,7 @@ export class ProjectFiles extends ColonyElement {
     this.#emit("colony-navigate", { href });
   }
 
+  /** @param {{ base: string, page: number, total: number, items: number, label: string }} args */
   #pager({ base, page, total, items, label }) {
     if (total <= PAGE_SIZE) return nothing;
     const last = Math.max(1, pageCount(total, PAGE_SIZE));
@@ -50,19 +56,26 @@ export class ProjectFiles extends ColonyElement {
       <a
         class="btn btn-quiet"
         href=${hrefForPage(base, Math.max(1, page - 1))}
-        @click=${(event) => this.#page(event, Math.max(1, page - 1))}
+        @click=${
+          /** @param {MouseEvent} event */ (event) =>
+            this.#page(event, Math.max(1, page - 1))
+        }
         >Previous</a
       >
       <span class="pager-range mono">${from}–${to} of ${total}</span>
       <a
         class="btn btn-quiet"
         href=${hrefForPage(base, Math.min(last, page + 1))}
-        @click=${(event) => this.#page(event, Math.min(last, page + 1))}
+        @click=${
+          /** @param {MouseEvent} event */ (event) =>
+            this.#page(event, Math.min(last, page + 1))
+        }
         >Next</a
       >
     </nav>`;
   }
 
+  /** @param {MouseEvent} event @param {number} page */
   #page(event, page) {
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
       return;
@@ -72,6 +85,7 @@ export class ProjectFiles extends ColonyElement {
 
   /** The monolith's fileRow (app.js): a row plus its two-step destructive
    * controls and the inline replace form. */
+  /** @param {Record<string, any>} file */
   #fileRow(file) {
     const replacing = this.replaceFileId === file.id;
     // Each conditional part sits flush against its parent's tags: a newline
@@ -118,18 +132,23 @@ export class ProjectFiles extends ColonyElement {
       ${form}</div>`;
   }
 
+  /** @param {Record<string, any>} file */
   #replaceForm(file) {
     return html`<form
       class="composer"
-      @submit=${(event) => {
-        event.preventDefault();
-        const form = new FormData(event.target);
-        this.#emit("colony-file-replace", {
-          fileId: file.id,
-          media_type: String(form.get("media_type") ?? ""),
-          content: String(form.get("content") ?? ""),
-        });
-      }}
+      @submit=${
+        /** @param {SubmitEvent} event */ (event) => {
+          event.preventDefault();
+          const form = new FormData(
+            /** @type {HTMLFormElement} */ (event.target),
+          );
+          this.#emit("colony-file-replace", {
+            fileId: file.id,
+            media_type: String(form.get("media_type") ?? ""),
+            content: String(form.get("content") ?? ""),
+          });
+        }
+      }
     >
       <label class="field">
         <span>Media type</span>
@@ -165,6 +184,9 @@ export class ProjectFiles extends ColonyElement {
     }
     const files = page.files ?? [];
     const base = projectFilesHref(page.project.name);
+    // Precomputed so the <h1> stays a prettier one-liner (like project-page):
+    // splitting it across lines grows its textContent and breaks the pin.
+    const title = `${page.project?.name ?? page.name} · files`;
     return html`${this.error
         ? html`<div class="banner banner-error" role="alert">
             ${this.error}
@@ -172,17 +194,19 @@ export class ProjectFiles extends ColonyElement {
         : nothing}
       <div class="project-page" id="draw">
         <header class="board-head">
-          <h1 class="board-title">${page.project.name} · files</h1>
+          <h1 class="board-title">${title}</h1>
           <a
             class="btn btn-quiet"
-            href=${projectHref(page.project.name)}
-            @click=${(event) =>
-              this.#nav(event, projectHref(page.project.name))}
+            href=${projectHref(page.name)}
+            @click=${
+              /** @param {MouseEvent} event */ (event) =>
+                this.#nav(event, projectHref(page.name))
+            }
             >Back to project</a
           >
         </header>
         <section class="project-files">
-          ${page.total > 0 && files.length === 0
+          ${(page.total ?? 0) > 0 && files.length === 0
             ? html`<div class="rack-empty">
                 <p>Past the last page.</p>
                 <a class="btn btn-solid" href=${hrefForPage(base, 1)}
@@ -199,8 +223,8 @@ export class ProjectFiles extends ColonyElement {
         </section>
         ${this.#pager({
           base,
-          page: page.page,
-          total: page.total,
+          page: page.page ?? 1,
+          total: page.total ?? 0,
           items: files.length,
           label: "Project file pages",
         })}
@@ -209,15 +233,19 @@ export class ProjectFiles extends ColonyElement {
           <div class="card-body">
             <form
               class="composer"
-              @submit=${(event) => {
-                event.preventDefault();
-                const form = new FormData(event.target);
-                this.#emit("colony-file-upload", {
-                  filename: String(form.get("filename") ?? ""),
-                  media_type: String(form.get("media_type") ?? ""),
-                  content: String(form.get("content") ?? ""),
-                });
-              }}
+              @submit=${
+                /** @param {SubmitEvent} event */ (event) => {
+                  event.preventDefault();
+                  const form = new FormData(
+                    /** @type {HTMLFormElement} */ (event.target),
+                  );
+                  this.#emit("colony-file-upload", {
+                    filename: String(form.get("filename") ?? ""),
+                    media_type: String(form.get("media_type") ?? ""),
+                    content: String(form.get("content") ?? ""),
+                  });
+                }
+              }
             >
               <label class="field">
                 <span>Filename</span>

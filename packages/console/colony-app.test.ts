@@ -13,6 +13,32 @@ sharedDom();
 globalThis.location = { hash: "#/", search: "?demo=1" };
 
 const { ColonyApp } = await import("./colony-app.js");
+const { demoWorld } = await import("./demo.js");
+const { createRunTicker } = await import("./duration.js");
+
+/**
+ * A 1s interval the test drives by hand, so nothing waits on wall time.
+ * Returns the injected pair plus a tick(n) that fires the callbacks.
+ */
+function fakeTimers() {
+  let callback = () => {};
+  let cleared = 0;
+  return {
+    setIntervalFn: (fn) => {
+      callback = fn;
+      return 1;
+    },
+    clearIntervalFn: () => {
+      cleared += 1;
+    },
+    tick(n = 1) {
+      for (let i = 0; i < n; i++) callback();
+    },
+    get cleared() {
+      return cleared;
+    },
+  };
+}
 
 const realLocation = globalThis.location;
 
@@ -28,6 +54,7 @@ function makeShell() {
 
 afterEach(() => {
   globalThis.location = realLocation;
+  delete globalThis.history;
 });
 
 // -- Routing ---------------------------------------------------------------
@@ -192,6 +219,182 @@ describe("pagination (_page)", () => {
   });
 });
 
+// -- Project tab ----------------------------------------------------------
+
+describe("project tab", () => {
+  it("reads the tab from the hash on construct and on hashchange", () => {
+    withHash("#/project/Operator%20console?tab=running");
+    expect(makeShell().projectTab).toBe("running");
+    withHash("#/project/Operator%20console?tab=nope");
+    expect(makeShell().projectTab).toBe("scopes");
+    withHash("#/project/Operator%20console");
+    expect(makeShell().projectTab).toBe("scopes");
+  });
+
+  it("writes the tab into the URL without a hashchange", () => {
+    // A hashchange would reset the very page state the tab switch is meant
+    // to preserve, so the tab rides on replaceState.
+    withHash("#/project/Operator%20console");
+    const app = makeShell();
+    let hashchanges = 0;
+    window.addEventListener("hashchange", () => {
+      hashchanges += 1;
+    });
+    app.navigate = () => {
+      throw new Error("the tab must not navigate");
+    };
+    // happy-dom's location stub is inert, so route replaceState back into it
+    // the way a browser does: the hash changes, the document does not.
+    globalThis.history = {
+      replaceState(_state, _title, url) {
+        globalThis.location = { ...globalThis.location, hash: url };
+      },
+    };
+    try {
+      app.handleEvent(
+        new window.CustomEvent("colony-project-tab", {
+          detail: { tab: "running" },
+        }),
+      );
+      expect(globalThis.location.hash).toBe(
+        "#/project/Operator%20console?tab=running",
+      );
+      expect(app.projectTab).toBe("running");
+      expect(hashchanges).toBe(0);
+      // Scopes is the default tab, so selecting it drops ?tab= again.
+      app.handleEvent(
+        new window.CustomEvent("colony-project-tab", {
+          detail: { tab: "scopes" },
+        }),
+      );
+      expect(globalThis.location.hash).toBe("#/project/Operator%20console");
+    } finally {
+      delete globalThis.history;
+    }
+  });
+});
+
+// -- Duration ticker -----------------------------------------------------
+
+describe("duration ticker", () => {
+  it("starts when a refresh lands a live run, and not otherwise", async () => {
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    // The demo scope's detail carries a running run, so the clock starts.
+    await app._refresh();
+    expect(app.ticker.running()).toBe(true);
+    app.ticker.stop();
+
+    // An idle scope has no live duration to advance.
+    withHash("#/col-0badc0de");
+    const idle = makeShell();
+    await idle._refresh();
+    expect(idle.ticker.running()).toBe(false);
+  });
+
+  it("starts for a Running tab row's live run", async () => {
+    // The tab's rows are their own surface: a live run there ticks even when
+    // no scope sheet is open.
+    withHash("#/project/Operator%20console?tab=running");
+    const app = makeShell();
+    await app._refresh();
+    expect(app.projectRunning.length).toBeGreaterThan(0);
+    expect(app.ticker.running()).toBe(true);
+    app.ticker.stop();
+  });
+
+  it("stops itself once the live run is gone", async () => {
+    // A tick with nothing live on screen must not leave a 1s timer running:
+    // the interval is the only thing keeping the page awake between polls.
+    const timers = fakeTimers();
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.ticker = createRunTicker({
+      setIntervalFn: timers.setIntervalFn,
+      clearIntervalFn: timers.clearIntervalFn,
+    });
+    app.ticker.subscribe(() => app.tick());
+    await app._refresh();
+    expect(app.ticker.running()).toBe(true);
+
+    // The run finishes: the next tick finds nothing live and stops.
+    app.detail = { ...app.detail, runs: [] };
+    app.projectRunning = [];
+    timers.tick();
+    expect(app.ticker.running()).toBe(false);
+    // ...and stays stopped, so no further tick can resurrect it.
+    timers.tick(3);
+    expect(app.ticker.running()).toBe(false);
+  });
+
+  it("keeps ticking while a live run is on screen", async () => {
+    const timers = fakeTimers();
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.ticker = createRunTicker({
+      setIntervalFn: timers.setIntervalFn,
+      clearIntervalFn: timers.clearIntervalFn,
+    });
+    app.ticker.subscribe(() => app.tick());
+    await app._refresh();
+    timers.tick(3);
+    expect(app.ticker.running()).toBe(true);
+    app.ticker.stop();
+  });
+});
+
+// -- Running row deep-link ------------------------------------------------
+
+describe("colony-open-task", () => {
+  it("parks the task id and navigates to its scope", () => {
+    withHash("#/project/Operator%20console?tab=running");
+    const app = makeShell();
+    app.handleEvent(
+      new window.CustomEvent("colony-open-task", {
+        detail: { scopeId: "col-abc", taskId: "col-abc.1" },
+      }),
+    );
+    expect(app.pendingSelectTaskId).toBe("col-abc.1");
+    expect(globalThis.location.hash).toBe("#/col-abc");
+  });
+
+  it("selects the parked task once the scope's detail holds it", async () => {
+    // The row navigates before the sheet's detail has loaded, so the id is
+    // parked; the refresh that lands the detail is what selects it. Without
+    // this, a Running-tab row click would land on a scope with no drawer.
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.pendingSelectTaskId = entry.task_id;
+    await app._refresh();
+    expect(app.detail?.scope.id).toBe(entry.scope_id);
+    expect(app.selectedTaskId).toBe(entry.task_id);
+    expect(app.drawerOpen).toBe(true);
+    expect(app.pendingSelectTaskId).toBeNull();
+  });
+
+  it("keeps a parked id that the detail does not hold", async () => {
+    // A task the scope never had must not select a phantom row: the id stays
+    // parked until a detail actually contains it.
+    const world = demoWorld();
+    const entry = world.running.find((row) => row.run !== null);
+    withHash(`#/${entry.scope_id}`);
+    const app = makeShell();
+    app.pendingSelectTaskId = "col-nope.9";
+    await app._refresh();
+    expect(app.selectedTaskId).toBeNull();
+    expect(app.drawerOpen).toBe(false);
+    expect(app.pendingSelectTaskId).toBe("col-nope.9");
+  });
+});
+
 // -- hashchange ------------------------------------------------------------
 
 describe("hashchange handler", () => {
@@ -253,7 +456,7 @@ describe("hashchange handler", () => {
     expect(app.viewModule?.route).toBe("newProject");
     expect(app.viewModule?.loading).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    // new-project has no view module yet (later task); the shell recovers.
-    expect(app.viewModule).toBeNull();
+    // project-create registers and resolves: the shell shows it.
+    expect(app.viewModule).toEqual({ route: "newProject", loading: false });
   });
 });

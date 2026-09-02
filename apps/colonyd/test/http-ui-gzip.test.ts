@@ -55,7 +55,7 @@ describe("UI gzip serving", () => {
   it("serves gzipped js, css, html, and svg when the client advertises gzip", async () => {
     const app = gzipApp();
     for (const [route, file, type] of [
-      ["/ui/app.js", "app.js", /javascript/],
+      ["/ui/main.js", "main.js", /javascript/],
       ["/ui/styles.css", "styles.css", /text\/css/],
       ["/", "index.html", /text\/html/],
       ["/ui/favicon.svg", "favicon.svg", /svg/],
@@ -74,12 +74,12 @@ describe("UI gzip serving", () => {
 
   it("serves raw bytes without gzip when Accept-Encoding is absent", async () => {
     const app = gzipApp();
-    const res = await app.request("/ui/app.js");
+    const res = await app.request("/ui/main.js");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-encoding")).toBeNull();
     expect(res.headers.get("vary")).toBe("accept-encoding");
     expect(Buffer.from(await res.arrayBuffer())).toEqual(
-      readFileSync(join(staticDir, "app.js")),
+      readFileSync(join(staticDir, "main.js")),
     );
   });
 

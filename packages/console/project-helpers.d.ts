@@ -1,6 +1,10 @@
-export const VALID_PROJECT_TABS: readonly string[];
+export type ProjectTab = "scopes" | "settings" | "running";
 
-export function parseProjectTab(hashOrQuery: string | null | undefined): string;
+export const VALID_PROJECT_TABS: readonly ProjectTab[];
+
+export function parseProjectTab(
+  hashOrQuery: string | null | undefined,
+): ProjectTab;
 
 export function serializeProjectTabHref(
   currentHash: string | null | undefined,
@@ -8,19 +12,38 @@ export function serializeProjectTabHref(
   targetTab: string,
 ): string;
 
-export interface RunningRowInput {
-  scope_id?: string;
-  scope_title?: string;
-  task_id?: string;
-  task_title?: string;
-  task_state?: string;
-  attempt?: number;
-  run?: {
-    id?: string;
-    kind?: string;
-    status?: string;
+/** One GET /projects/:name/running entry, as the API serves it. */
+export interface RunningEntry {
+  scope_id: string;
+  scope_title?: string | null;
+  task_id: string;
+  task_title?: string | null;
+  task_state?: string | null;
+  attempt?: number | null;
+  run: {
+    id: string;
+    kind?: string | null;
+    status?: string | null;
     model_id?: string | null;
     started_at?: string | null;
+    finished_at?: string | null;
+  } | null;
+}
+
+export interface RunningRowInput {
+  scope_id?: string;
+  scope_title?: string | null;
+  task_id?: string;
+  task_title?: string | null;
+  task_state?: string | null;
+  attempt?: number | null;
+  run?: {
+    id?: string;
+    kind?: string | null;
+    status?: string | null;
+    model_id?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
   } | null;
 }
 
@@ -40,8 +63,13 @@ export interface DerivedRunningRow {
   run: RunningRowInput["run"];
 }
 
+/** A row the running surfaces key on: the API entry plus its derived fields. */
+export interface RunningRow extends DerivedRunningRow {
+  scopeId: string;
+}
+
 export function deriveRunningRow(
-  entry: RunningRowInput | null | undefined,
+  entry: RunningEntry | RunningRowInput | null | undefined,
 ): DerivedRunningRow;
 
 export function formatRunningEmptyTallies(

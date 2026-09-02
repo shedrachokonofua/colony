@@ -218,7 +218,7 @@ describe("project-page settings rail", () => {
   it("composes <project-context-card> and the deduped repo list", async () => {
     const el = makePage(pageOf({ scopes: [] }), {
       editing: true,
-      settingsOpen: true,
+      tab: "settings",
       contextDoc: "# Brief\n\nOperator-facing console.",
     });
     await el.updateComplete;
@@ -238,7 +238,7 @@ describe("project-page settings rail", () => {
 
   it("hands the files and save status down to the card", async () => {
     const el = makePage(pageOf({ scopes: [] }), {
-      settingsOpen: true,
+      tab: "settings",
       files: [
         { filename: "notes.md", media_type: "text/markdown", byte_size: 12 },
       ],
@@ -256,55 +256,105 @@ describe("project-page settings rail", () => {
   });
 });
 
-describe("project-page settings tab", () => {
+describe("project-page tabs", () => {
   it("shows the scopes rack and hides the rail while the Scopes tab is active", async () => {
     const el = makePage(pageOf({ scopes: [scope("col-a")] }));
     await el.updateComplete;
-    expect(el.settingsOpen).toBe(false);
+    expect(el.tab).toBe("scopes");
     expect(el.querySelector(".project-scopes")).toBeTruthy();
     expect(el.querySelector(".project-settings")).toBeNull();
+    expect(el.querySelector(".project-running")).toBeNull();
   });
 
   it("swaps to the rail on the Settings tab, hiding the scope rack", async () => {
     const el = makePage(pageOf({ scopes: [scope("col-a")] }), {
-      settingsOpen: true,
+      tab: "settings",
     });
     await el.updateComplete;
     expect(el.querySelector(".project-scopes")).toBeNull();
+    expect(el.querySelector(".project-running")).toBeNull();
     expect(el.querySelector(".project-settings")).toBeTruthy();
   });
 
-  it("bubbles the bare colony-toggle only from the inactive tab, and marks aria-selected", async () => {
-    // _toggle(detail.key) flips a shell property by name: a {key, value}
-    // pair would set projectTab to "settings", which no handler reads and
-    // no render compares, so the Settings tab could never open. Clicking
-    // the already-active tab emits nothing: the monolith's setProjectTab
-    // was idempotent, and a bare toggle would switch to the other surface.
+  it("swaps to the running surface on the Running tab", async () => {
+    const el = makePage(pageOf({ scopes: [scope("col-a")] }), {
+      tab: "running",
+      projectRunning: [
+        {
+          scope_id: "col-a",
+          scope_title: "Scope col-a",
+          task_id: "col-a.0",
+          task_title: "Land it",
+          task_state: "running",
+          attempt: 2,
+          run: {
+            id: "run-1",
+            kind: "implement",
+            status: "running",
+            model_id: "deepseek-v4-flash",
+            started_at: new Date(Date.now() - 45_000).toISOString(),
+            finished_at: null,
+          },
+        },
+      ],
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".project-scopes")).toBeNull();
+    expect(el.querySelector(".project-settings")).toBeNull();
+    const running = el.querySelector(".project-running");
+    expect(running).toBeTruthy();
+    const row = running.querySelector(".running-row");
+    expect(row.querySelector(".scope-chip").textContent).toBe("Scope col-a");
+    expect(row.querySelector(".running-task-title").textContent).toBe(
+      "Land it",
+    );
+    expect(
+      row.querySelector('.running-meta .badge[data-state="running"]')
+        ?.textContent,
+    ).toBe("running");
+    expect(row.querySelector(".running-attempt").textContent).toBe("attempt 2");
+    expect(row.querySelector(".running-run-info").textContent).toBe(
+      "build · deepseek-v4-flash",
+    );
+    const duration = row.querySelector(".running-duration");
+    expect(duration.classList.contains("live")).toBe(true);
+    expect(duration.textContent).toMatch(/^4[45]s$/);
+  });
+
+  it("emits the clicked tab, never from the already-active one, and marks aria-selected", async () => {
+    // The switcher names the tab it was clicked to: a bare toggle cannot say
+    // which of three surfaces to land on. Clicking the active tab emits
+    // nothing, because the monolith's setProjectTab was idempotent.
     const el = makePage(pageOf({ scopes: [] }));
     const seen = [];
-    el.addEventListener("colony-toggle", (event) => seen.push(event.detail));
+    el.addEventListener("colony-project-tab", (event) =>
+      seen.push(event.detail),
+    );
     await el.updateComplete;
     const tabs = [...el.querySelectorAll(".tabs .tab")];
     expect(tabs.map((t) => t.textContent.trim())).toEqual([
       "Scopes",
+      "Running",
       "Settings",
     ]);
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");
     expect(tabs[1].getAttribute("aria-selected")).toBe("false");
+    expect(tabs[2].getAttribute("aria-selected")).toBe("false");
     tabs[0].click();
+    tabs[2].click();
     tabs[1].click();
-    el.settingsOpen = true;
+    el.tab = "running";
     await el.updateComplete;
+    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
     tabs[1].click();
-    tabs[0].click();
-    expect(seen).toEqual([{ key: "settingsOpen" }, { key: "settingsOpen" }]);
+    expect(seen).toEqual([{ tab: "settings" }, { tab: "running" }]);
   });
 
-  it("swaps the rack for the rail as settingsOpen flips", async () => {
+  it("swaps the rack for the rail as the tab flips", async () => {
     const el = makePage(pageOf({ scopes: [scope("col-a")] }));
     await el.updateComplete;
     expect(el.querySelector(".project-settings")).toBeNull();
-    el.settingsOpen = true;
+    el.tab = "settings";
     await el.updateComplete;
     expect(el.querySelector(".project-settings")).toBeTruthy();
   });
@@ -312,7 +362,7 @@ describe("project-page settings tab", () => {
   it("shows the empty repo note when none are connected", async () => {
     const el = makePage(
       pageOf({ project: { ...PROJECT, repositories: [] }, scopes: [] }),
-      { settingsOpen: true },
+      { tab: "settings" },
     );
     await el.updateComplete;
     expect(el.querySelector(".repo-list")).toBeNull();

@@ -35,10 +35,10 @@ afterEach(() => {
 });
 
 describe("run-list", () => {
-  it("renders one run-line per run inside section.run-list", async () => {
+  it("renders one run-line per run inside the .runs wrapper", async () => {
     const el = makeList([run("r1"), run("r2"), run("r3")]);
     await el.updateComplete;
-    expect(el.querySelector("section.run-list")).toBeTruthy();
+    expect(el.querySelector("section.runs")).toBeTruthy();
     expect([...el.querySelectorAll("run-line")].length).toBe(3);
     expect(el.querySelector("run-line").run.id).toBe("r1");
   });
@@ -65,7 +65,7 @@ describe("run-list", () => {
     expect(
       el
         .querySelectorAll("run-line")[0]
-        .querySelector("div.run-line")
+        .querySelector("div.run")
         .getAttribute("data-status"),
     ).toBe("failed");
   });

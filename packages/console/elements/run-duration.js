@@ -17,27 +17,34 @@ export class RunDuration extends ColonyElement {
     _now: { state: true },
   };
 
-  #ticker = createRunTicker(() => {
-    this._now = Date.now();
-  });
+  #ticker = createRunTicker();
+  /** @type {import("../duration.js").Unsubscribe | null} */
+  #unsubscribe = null;
 
   constructor() {
     super();
     this.startedAt = "";
+    /** @type {string | null} */
     this.finishedAt = null;
     this._now = 0;
   }
 
   connectedCallback() {
     super.connectedCallback();
+    this.#unsubscribe = this.#ticker.subscribe(() => {
+      this._now = Date.now();
+    });
     this.#syncTicker();
   }
 
   disconnectedCallback() {
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
     this.#ticker.stop();
     super.disconnectedCallback();
   }
 
+  /** @param {Map<string, unknown>} changed */
   updated(changed) {
     super.updated(changed);
     // The clock runs only while the run has no end; finishing (or a new run

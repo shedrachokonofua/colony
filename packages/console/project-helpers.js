@@ -1,9 +1,14 @@
 // Pure helpers for the project surfaces: card text, dedupe, form payloads, tab routing, row models.
 
+/** @typedef {"scopes" | "settings" | "running"} ProjectTab */
+
+/** @type {readonly ProjectTab[]} */
 export const VALID_PROJECT_TABS = ["scopes", "settings", "running"];
 
 /**
  * Parse the tab from a hash query string or full hash, falling back to "scopes".
+ * @param {string | null | undefined} hashOrQuery
+ * @returns {ProjectTab}
  */
 export function parseProjectTab(hashOrQuery) {
   if (!hashOrQuery) return "scopes";
@@ -20,6 +25,9 @@ export function parseProjectTab(hashOrQuery) {
 /**
  * Build or update a project href (#/project/<name>?...) with the target tab,
  * preserving any other existing query parameters (like ?project=).
+ * @param {string | null | undefined} currentHash
+ * @param {string} projectName
+ * @param {ProjectTab | string} targetTab
  */
 export function serializeProjectTabHref(currentHash, projectName, targetTab) {
   const base = `#/project/${encodeURIComponent(projectName)}`;
@@ -39,8 +47,29 @@ export function serializeProjectTabHref(currentHash, projectName, targetTab) {
 }
 
 /**
+ * A GET /projects/:name/running entry, as the API serves it.
+ *
+ * @typedef {{
+ *   scope_id: string,
+ *   scope_title?: string | null,
+ *   task_id: string,
+ *   task_title?: string | null,
+ *   task_state?: string | null,
+ *   attempt?: number | null,
+ *   run: {
+ *     id: string,
+ *     kind?: string | null,
+ *     status?: string | null,
+ *     model_id?: string | null,
+ *     started_at?: string | null,
+ *     finished_at?: string | null,
+ *   } | null,
+ * }} RunningEntry
+ */
+
+/**
  * Derives presentation fields for a running-task entry.
- * Element shape: { scope_id, scope_title, task_id, task_title, task_state, attempt, run: { id, kind, status, model_id, started_at } | null }
+ * @param {RunningEntry | null | undefined} entry
  */
 export function deriveRunningRow(entry) {
   const scopeId = entry?.scope_id ?? "";
@@ -78,6 +107,8 @@ export function deriveRunningRow(entry) {
 /**
  * Format the empty-state tally line for the Running tab.
  * e.g. "Nothing running right now." plus "N queued · N blocked" when task_state_counts is present.
+ * @param {Record<string, number> | null | undefined} taskStateCounts
+ * @returns {string | null}
  */
 export function formatRunningEmptyTallies(taskStateCounts) {
   if (!taskStateCounts || typeof taskStateCounts !== "object") {
@@ -88,9 +119,16 @@ export function formatRunningEmptyTallies(taskStateCounts) {
   return `${queued} queued · ${blocked} blocked`;
 }
 
-/** Connected repositories deduped by repo_path, preserving first-seen order. */
+/**
+ * Connected repositories deduped by repo_path, preserving first-seen order.
+ * @template {{ repo_id?: string, repo_path?: string | null }} T
+ * @param {T[] | null | undefined} repositories
+ * @returns {T[]}
+ */
 export function distinctRepos(repositories) {
+  /** @type {Set<string>} */
   const seen = new Set();
+  /** @type {T[]} */
   const out = [];
   for (const repo of repositories ?? []) {
     if (!repo?.repo_path || seen.has(repo.repo_path)) continue;
@@ -100,13 +138,20 @@ export function distinctRepos(repositories) {
   return out;
 }
 
+/**
+ * @param {string | null | undefined} context_doc
+ * @param {number | null | undefined} file_count
+ */
 export function knowledgeText(context_doc, file_count) {
   const brief = context_doc ? "Brief" : "No brief";
   const n = file_count ?? 0;
   return `${brief} · ${n} reference file${n === 1 ? "" : "s"}`;
 }
 
-/** First non-heading paragraph of the brief, flattened to one plain line. */
+/**
+ * First non-heading paragraph of the brief, flattened to one plain line.
+ * @param {string | null | undefined} context_doc
+ */
 export function projectDescription(context_doc) {
   const doc = String(context_doc ?? "");
   for (const block of doc.split(/\n\s*\n/)) {
@@ -119,6 +164,9 @@ export function projectDescription(context_doc) {
   return "";
 }
 
+/**
+ * @param {Array<{ repo_id?: string, repo_path: string | null | undefined }> | null | undefined} repositories
+ */
 export function repoSummaryText(repositories) {
   const repos = distinctRepos(repositories);
   if (repos.length === 0) return "No connected repositories";
@@ -128,16 +176,21 @@ export function repoSummaryText(repositories) {
   return `${count} connected repo${count === 1 ? "" : "s"} · ${shown.join(" · ")}${more}`;
 }
 
+/** @param {unknown} fixedProject @param {unknown} formValue */
 export function resolveComposerProject(fixedProject, formValue) {
   const fixed = fixedProject != null ? String(fixedProject).trim() : "";
   if (fixed) return fixed;
   return String(formValue ?? "").trim();
 }
 
+/** @param {unknown} name @param {unknown} context_doc */
 export function buildNewProjectPayload(name, context_doc) {
   const trimmedName = String(name ?? "").trim();
   if (!trimmedName) return null;
   const doc = String(context_doc ?? "").trim();
+  // context_doc is only sent when non-empty, so the payload is built as a
+  // typed Record rather than widened from a `{ name }` literal.
+  /** @type {{ name: string, context_doc?: string }} */
   const body = { name: trimmedName };
   if (doc) body.context_doc = doc;
   return body;

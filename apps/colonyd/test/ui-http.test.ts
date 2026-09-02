@@ -81,7 +81,7 @@ describe("operator console", () => {
     expect(res.headers.get("content-type")).toMatch(/text\/html/);
     const html = await res.text();
     expect(html).toContain("Operator console");
-    expect(html).toContain("/ui/app.js");
+    expect(html).toContain("/ui/main.js");
   });
 
   it("serves CSS, JS, and fonts without an actor", async () => {
@@ -90,7 +90,7 @@ describe("operator console", () => {
     expect(css.status).toBe(200);
     expect(css.headers.get("content-type")).toMatch(/text\/css/);
 
-    const js = await app.request("/ui/app.js");
+    const js = await app.request("/ui/main.js");
     expect(js.status).toBe(200);
     expect(js.headers.get("content-type")).toMatch(/javascript/);
 
@@ -105,9 +105,9 @@ describe("operator console", () => {
     );
     const app = appWithStore();
 
-    const js = await app.request("/ui/app.js");
+    const js = await app.request("/ui/main.js");
     expect(js.status).toBe(200);
-    expect(await js.text()).toBe(readFileSync(join(pkgDir, "app.js"), "utf8"));
+    expect(await js.text()).toBe(readFileSync(join(pkgDir, "main.js"), "utf8"));
 
     const root = await app.request("/");
     expect(root.status).toBe(200);
