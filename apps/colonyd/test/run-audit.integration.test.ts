@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { resetEnvCache } from "@colony/config";
 import { FakeProviderAdapter } from "@colony/provider";
@@ -44,6 +45,16 @@ const ENVELOPE = {
   ],
 };
 
+function initGitRepo(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  execSync("git init -b main", { cwd: dir, stdio: "pipe" });
+  execSync('git config user.email "colony-test@example.com"', { cwd: dir, stdio: "pipe" });
+  execSync('git config user.name "colony-test"', { cwd: dir, stdio: "pipe" });
+  writeFileSync(join(dir, "README.md"), "test repo\n", "utf8");
+  execSync("git add README.md", { cwd: dir, stdio: "pipe" });
+  execSync('git commit -m "initial commit"', { cwd: dir, stdio: "pipe" });
+}
+
 /**
  * Stub OpenAI completions server that executes a tool call and bash command
  * before submitting the decomposition envelope.
@@ -78,7 +89,19 @@ async function startModelStub(): Promise<ModelStubHandle> {
 
       let chunks: Array<{ delta: Record<string, unknown>; finish: string | null }>;
 
-      if (content.includes("## Phase: consolidate")) {
+      if (content.includes("## Critique")) {
+        // Architect critique pass: return approval
+        chunks = [
+          {
+            delta: {
+              role: "assistant",
+              content: JSON.stringify({ verdict: "approve", findings: [] }),
+            },
+            finish: null,
+          },
+          { delta: {}, finish: "stop" },
+        ];
+      } else if (content.includes("## Phase: consolidate")) {
         // Phase 3: Submit final architect decomposition
         chunks = [
           {
@@ -100,7 +123,7 @@ async function startModelStub(): Promise<ModelStubHandle> {
           },
           { delta: {}, finish: "tool_calls" },
         ];
-      } else if (content.includes("## Phase: explore") || content.includes("## Phase: decompose")) {
+      } else if (content.includes("## Phase: survey") || content.includes("## Phase: decompose")) {
         // If the model hasn't called bash yet in this phase, emit a bash tool call
         const hasToolResult = (parsed.messages ?? []).some(
           (m) => m.role === "tool",
@@ -133,7 +156,7 @@ async function startModelStub(): Promise<ModelStubHandle> {
             {
               delta: {
                 role: "assistant",
-                content: "Exploration complete.",
+                content: "Phase exploration complete.",
               },
               finish: null,
             },
@@ -178,12 +201,15 @@ async function startModelStub(): Promise<ModelStubHandle> {
 describe("run audit end-to-end integration over in-process sandbox engine", () => {
   let dir: string;
   let artifactsDir: string;
+  let gitRepoDir: string;
   let provider: FakeProviderAdapter;
   let handle: ColonydHandle | undefined;
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), "colonyd-run-audit-"));
     artifactsDir = join(dir, "artifacts");
+    gitRepoDir = join(dir, "git-repo");
+    initGitRepo(gitRepoDir);
     const configPath = join(dir, "colony.yaml");
     const stub = await startModelStub();
 
@@ -217,7 +243,6 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
         "  architect:",
         "    provider: fake_llm",
         "    model: fake-model",
-        "    critique: false",
         "  developer:",
         "    provider: fake_llm",
         "    model: fake-model",
@@ -250,7 +275,7 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
 
     const repo = await provider.repos.create({
       name: "run-audit-e2e",
-      path: "so/run-audit-e2e",
+      path: gitRepoDir,
     });
 
     const scope = handle.ctx.store.createScope({
@@ -310,5 +335,5 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
     const auditDetail = JSON.parse(runFinishedAudit!.detail_json) as Record<string, unknown>;
     expect(auditDetail["run_id"]).toBe(run.id);
     expect(auditDetail["status"]).toBe("succeeded");
-  });
+  }, 30_000);
 });
