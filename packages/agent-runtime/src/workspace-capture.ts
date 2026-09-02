@@ -236,7 +236,11 @@ const manifest = {
 process.stdout.write(JSON.stringify(manifest));
 ' "${input.parentSha}" "${shadowCommitSha}"`;
 
-    const manifestRes = await execInSandbox(input.handle, manifestScript, 30_000);
+    const manifestRes = await execInSandbox(
+      input.handle,
+      manifestScript,
+      30_000,
+    );
     if (manifestRes.exitCode !== 0 || !manifestRes.stdout.trim()) {
       return fail(
         `manifest generation failed (exit ${manifestRes.exitCode}): ${manifestRes.stderr || manifestRes.stdout}`,
@@ -247,7 +251,9 @@ process.stdout.write(JSON.stringify(manifest));
     try {
       manifestObj = JSON.parse(manifestRes.stdout);
     } catch (e) {
-      return fail(`invalid manifest JSON produced: ${manifestRes.stdout.slice(0, 200)}`);
+      return fail(
+        `invalid manifest JSON produced: ${manifestRes.stdout.slice(0, 200)}`,
+      );
     }
 
     const manifestJson = JSON.stringify(manifestObj, null, 2);

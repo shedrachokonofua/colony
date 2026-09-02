@@ -378,15 +378,30 @@ describe("captureWorkspace", () => {
               stdio: ["ignore", "pipe", "pipe"],
               timeout: request.timeoutMs ?? 60_000,
             });
-            onData?.({ kind: "stdout", seq: ++seq, data: stdout.toString("utf8") });
+            onData?.({
+              kind: "stdout",
+              seq: ++seq,
+              data: stdout.toString("utf8"),
+            });
             return { exitCode: 0, durationMs: 10 };
           } catch (err: unknown) {
-            const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; status?: number };
-            return { exitCode: typeof e.status === "number" ? e.status : 1, durationMs: 10 };
+            const e = err as {
+              stdout?: Buffer | string;
+              stderr?: Buffer | string;
+              status?: number;
+            };
+            return {
+              exitCode: typeof e.status === "number" ? e.status : 1,
+              durationMs: 10,
+            };
           }
         },
-        async readFile() { throw new Error("not implemented"); },
-        async writeFile() { throw new Error("not implemented"); },
+        async readFile() {
+          throw new Error("not implemented");
+        },
+        async writeFile() {
+          throw new Error("not implemented");
+        },
         async destroy() {},
       };
 
@@ -404,7 +419,9 @@ describe("captureWorkspace", () => {
 
       expect(res).toBeDefined();
       expect(res!.ref).toBe(`refs/colony/runs/${runId}`);
-      const failEvent = events.find((e) => e.event === "workspace_capture_failed");
+      const failEvent = events.find(
+        (e) => e.event === "workspace_capture_failed",
+      );
       expect(failEvent).toBeUndefined();
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
@@ -450,9 +467,13 @@ describe("captureWorkspace", () => {
       });
 
       expect(res).toBeUndefined();
-      const failEvent = events.find((e) => e.event === "workspace_capture_failed");
+      const failEvent = events.find(
+        (e) => e.event === "workspace_capture_failed",
+      );
       expect(failEvent).toBeDefined();
-      expect(failEvent?.detail.error).toContain("putArtifact did not store the workspace manifest");
+      expect(failEvent?.detail.error).toContain(
+        "putArtifact did not store the workspace manifest",
+      );
       // Must not have recorded workspace_ref event or artifact row
       const wsRefEvent = events.find((e) => e.event === "workspace_ref");
       expect(wsRefEvent).toBeUndefined();
