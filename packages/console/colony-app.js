@@ -2,23 +2,11 @@
 // demo-aware API client, Keycloak PKCE auth (auth.js), and the
 // property-down/events-up hub every view element plugs into. Light DOM (see
 // base.js) so styles.css keeps styling it. The mechanics live in their
-// modules: shell-data.js (refresh/poll/view loading), shell-actions.js +
-// shell-events.js (the colony-* event bus), shell-view.js (the route's
-// element), api-client.js (fetch + auth headers).
+// modules: shell-data.js (refresh/poll/view loading), shell-routing.js (route
+// parsing and the navigation reset), shell-actions.js + shell-events.js (the
+// colony-* event bus), shell-view.js (the route's element), api-client.js
+// (fetch + auth headers).
 import { ColonyElement, html, nothing } from "./base.js";
-import { pageFromHash, hrefForPage } from "./pagination.js";
-import {
-  routeScopeId,
-  routeIsNew,
-  routeIsNewProject,
-  routeIsManageFiles,
-  routeProjectFilesName,
-  routeProjectName,
-  projectHref,
-  projectFilesHref,
-  hashQueryProject,
-  hashQueryTab,
-} from "./router.js";
 import {
   loadAuth,
   beginLogin,
@@ -32,7 +20,9 @@ import "./topbar.js";
 import "./signin.js";
 import { createApi } from "./api-client.js";
 import { createRunTicker } from "./duration.js";
+import { hashQueryTab } from "./router.js";
 import { refresh, loadViewModule, startPolling } from "./shell-data.js";
+import { parseRoute, onHashChange, pageTo } from "./shell-routing.js";
 import { renderView, renderReaderOverlay } from "./shell-view.js";
 import { LISTENED, handleEvent } from "./shell-events.js";
 import {
@@ -240,63 +230,11 @@ export class ColonyApp extends ColonyElement {
   // -- Routing --------------------------------------------------------------
 
   #parseRoute() {
-    const hash = location.hash.replace(/^#\/?/, "");
-    if (routeIsNew()) {
-      this.currentRoute = {
-        name: "newScope",
-        params: { project: hashQueryProject() },
-      };
-      return;
-    }
-    if (routeIsNewProject()) {
-      this.currentRoute = { name: "newProject", params: {} };
-      return;
-    }
-    if (routeIsManageFiles()) {
-      this.currentRoute = {
-        name: "files",
-        params: { name: routeProjectFilesName() },
-      };
-      return;
-    }
-    const projectName = routeProjectName();
-    if (projectName) {
-      this.currentRoute = { name: "project", params: { name: projectName } };
-      return;
-    }
-    const scopeId = routeScopeId();
-    if (scopeId) {
-      this.currentRoute = { name: "scope", params: { id: scopeId } };
-      return;
-    }
-    this.currentRoute = {
-      name: "list",
-      params: { page: pageFromHash(location.hash) },
-    };
+    this.currentRoute = parseRoute();
   }
 
   _onHashChange() {
-    this.selectedTaskId = null;
-    this.drawerOpen = false;
-    this.runEvents = null;
-    this.confirm = null;
-    this.goalOpen = false;
-    this.planOpen = false;
-    this.projectContext = null;
-    this.projectPage = null;
-    this.projectRunning = null;
-    this.projectsPage = null;
-    this.filesPage = null;
-    this.projectFiles = null;
-    this.briefOpen = false;
-    this.confirmFile = null;
-    this.replaceFileId = null;
-    this.newProjectDraft = null;
-    this.showArchived = false;
-    this.#parseRoute();
-    this.projectTab = hashQueryTab();
-    loadViewModule(this);
-    void this._refresh();
+    onHashChange(this);
   }
 
   // -- Auth -----------------------------------------------------------------
@@ -368,18 +306,7 @@ export class ColonyApp extends ColonyElement {
    */
   /** @param {number | string} page @param {"projects" | "project" | "files"} surface */
   _page(page, surface) {
-    const pageNo = Math.max(1, Number(page) || 1);
-    /** @type {{ name?: string }} */
-    const params = /** @type {{ name?: string }} */ (
-      /** @type {unknown} */ (this.currentRoute.params)
-    );
-    const base =
-      surface === "project"
-        ? projectHref(params.name ?? "")
-        : surface === "files"
-          ? projectFilesHref(params.name ?? "")
-          : "#/";
-    this.navigate(hrefForPage(base, pageNo));
+    pageTo(this, page, surface);
   }
 
   // -- Render ---------------------------------------------------------------

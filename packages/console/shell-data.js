@@ -1,18 +1,18 @@
-// The shell's data layer: everything that maps a route onto shell state.
-// _refresh is the single read path — config/auth bootstrap, then the route's
-// page read (list, project sheet, or manage-files) — and demo mode serves the
-// same state slots from the offline world. The view registry loads through
-// the same seam so a route's module graph stays off the shell's critical path.
+// The shell's data layer: the live read path that maps a route onto shell
+// state — config/auth bootstrap, then the route's page read (list, project
+// sheet, or manage-files). The offline branch lives in shell-demo.js. The view
+// registry loads through the same seam so a route's module graph stays off the
+// shell's critical path.
 import { pageFromHash } from "./pagination.js";
 import {
   routeProjectName,
   routeProjectFilesName,
   routeScopeId,
 } from "./router.js";
-import { DEMO, demoWorld, demoContextStore, demoFileStore } from "./demo.js";
-import { createRunTicker } from "./duration.js";
-import { parsePlan } from "./dag.js";
+import { DEMO } from "./demo.js";
 import { VIEW_ROUTES } from "./view-routes.js";
+import { refreshDemo } from "./shell-demo.js";
+import { consumePendingTaskSelection } from "./shell-selection.js";
 
 export const PAGE_SIZE = 25;
 const POLL_MS = 2500;
@@ -218,133 +218,6 @@ export async function refresh(app) {
   } catch (err) {
     app.error = err instanceof Error ? err.message : String(err);
   }
-}
-
-/** Demo mode: serve the offline world through the same state slots. */
-/** @param {ShellState} app */
-function refreshDemo(app) {
-  const world = demoWorld();
-  app.config = world.config;
-  const id = routeScopeId();
-  if (id) {
-    const scopeRow = world.scopes.find((s) => s.id === id) ?? null;
-    app.detail = scopeRow
-      ? scopeRow.id === world.detail.scope.id
-        ? world.detail
-        : (world.runningDetails?.[scopeRow.id] ?? {
-            scope: scopeRow,
-            tasks: [],
-            deps: [],
-            runs: [],
-          })
-      : null;
-    consumePendingTaskSelection(app, app.detail);
-  } else {
-    app.detail = null;
-  }
-  const demoName = routeProjectName();
-  const filesName = routeProjectFilesName();
-  const pageNo = pageFromHash(location.hash);
-  if (filesName) {
-    const found = world.projects.find((p) => p.name === filesName) ?? null;
-    const files = demoFileStore.get(filesName) ?? [];
-    const start = (pageNo - 1) * PAGE_SIZE;
-    app.filesPage = {
-      name: filesName,
-      project: found,
-      files: files.slice(start, start + PAGE_SIZE),
-      total: files.length,
-      offset: start,
-      page: pageNo,
-    };
-    app.projectPage = null;
-  } else {
-    app.filesPage = null;
-  }
-  if (demoName === world.project.name) {
-    const owned = world.scopes
-      .filter((scope) => scope.project_name === demoName)
-      .sort(
-        (a, b) =>
-          Date.parse(b.updated_at) - Date.parse(a.updated_at) ||
-          (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
-      );
-    const start = (pageNo - 1) * PAGE_SIZE;
-    app.projectPage = {
-      name: demoName,
-      project: world.project,
-      scopes: owned.slice(start, start + PAGE_SIZE),
-      total: owned.length,
-      offset: start,
-      page: pageNo,
-    };
-    app.projectRunning = world.running ?? [];
-    if (app.projectContext === null) {
-      const stored = demoContextStore.has(demoName)
-        ? { context_doc: demoContextStore.get(demoName) }
-        : { context_doc: world.project.context_doc ?? "" };
-      app.projectContext = { doc: stored.context_doc ?? "", status: null };
-    }
-    app.projectFiles = demoFileStore.get(demoName) ?? [];
-  } else if (demoName) {
-    const found = world.projects.find((p) => p.name === demoName) ?? null;
-    app.projectPage = {
-      name: demoName,
-      project: found,
-      scopes: [],
-      total: 0,
-      offset: 0,
-      page: pageNo,
-    };
-    app.projectRunning = [];
-    app.projectFiles = found ? (demoFileStore.get(demoName) ?? []) : [];
-  } else {
-    app.projectPage = null;
-    app.projectRunning = null;
-    const ordered = [...world.projects].sort(
-      (a, b) =>
-        Date.parse(b.updated_at) - Date.parse(a.updated_at) ||
-        (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
-    );
-    const start = (pageNo - 1) * PAGE_SIZE;
-    app.projectsPage = {
-      projects: ordered.slice(start, start + PAGE_SIZE),
-      total: ordered.length,
-      offset: start,
-      page: pageNo,
-    };
-  }
-  app.audit = world.audit;
-  if (app.drawerOpen && app.selectedTaskId === "col-a1b2c3d4.1") {
-    app.runEvents = { runId: "run-gate-1", rows: world.runEvents };
-  }
-  app.error = "";
-}
-
-/**
- * Select a task once its scope detail holds it. A Running-tab row navigates
- * before the sheet's detail is loaded, so the selection waits here rather
- * than being dropped: the sheet only finds tasks the detail contains.
- *
- * @param {ShellState} app
- * @param {Record<string, any> | null} detail
- */
-function consumePendingTaskSelection(app, detail) {
-  const taskId = app.pendingSelectTaskId;
-  if (!taskId || !detail) return;
-  const tasks = /** @type {any[]} */ (detail.tasks ?? []);
-  if (!taskId.startsWith("plan:")) {
-    if (!tasks.some((task) => task.id === taskId)) return;
-  } else {
-    const index = Number(taskId.slice(5));
-    const plan = parsePlan(detail.scope?.plan_json);
-    if (!Number.isInteger(index) || !plan?.tasks[index]) return;
-  }
-  app.pendingSelectTaskId = null;
-  app.selectedTaskId = taskId;
-  app.drawerOpen = true;
-  app.confirm = null;
-  app.runEvents = null;
 }
 
 /** Live agent feed for the drawer's most recent running run, if any. */

@@ -8,11 +8,11 @@ import {
   buildDemoFiles,
   buildDemoProject,
   buildDemoRunEvents,
-  buildDemoRunning,
   buildDemoScopes,
   buildEmptyProject,
   buildFillerProjects,
 } from "./demo-data.js";
+import { buildDemoRunning } from "./demo-running.js";
 
 export const DEMO = new URLSearchParams(location.search).has("demo");
 

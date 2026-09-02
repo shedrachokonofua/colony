@@ -7,15 +7,19 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildDemoRunning, buildDemoScopes } from "./demo-data.js";
+import { buildDemoScopes } from "./demo-data.js";
+import { buildDemoRunning } from "./demo-running.js";
 import {
   deriveRunningRow,
   formatRunningEmptyTallies,
   parseProjectTab,
   serializeProjectTabHref,
 } from "./project-helpers.js";
-import type { ProjectTab } from "./project-helpers.d.ts";
-import type { DerivedRunningRow, RunningEntry } from "./project-helpers.d.ts";
+import type {
+  DerivedRunningRow,
+  ProjectTab,
+  RunningEntry,
+} from "./project-helpers.d.ts";
 
 // demo.js reads location.search at module top level and bun tests run with
 // no location global, so seed one and pull demo.js in after it. (demo.test.ts
