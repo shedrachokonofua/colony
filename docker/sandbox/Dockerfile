@@ -23,6 +23,13 @@ RUN apt-get update \
 # and every validate on 2026-09-01 failed five tests that pass on the pinned
 # runtime. Bump all three together (Dockerfile, flake.nix, here).
 RUN npm install -g bun@1.3.14
+# The PVC mounts /workspace root-owned (fsGroup fixes the group, not the
+# owner) while the transferred files are uid 1000. git's ownership check
+# looks at the repo ROOT, sees root != node, and refuses every command:
+# `git ls-files` printed nothing, so `xargs bun test` ran the whole tree
+# including Playwright specs, and every agent burned turns rediscovering
+# `safe.directory` (2026-09-02). Trust the workspace at the system level.
+RUN git config --system --add safe.directory /workspace
 # Test-suite browser contract (see task specs): Playwright configs point
 # executablePath here instead of downloading browsers per run.
 ENV COLONY_TEST_CHROMIUM_PATH=/usr/bin/chromium
