@@ -743,6 +743,58 @@ describe("colonyd fake end-to-end loop", () => {
     expect(audit.filter((action) => action === "mr.reused")).toHaveLength(1);
   }, 30_000);
 
+  it("no review starts on a provider MR head that lags the implementer's push", async () => {
+    // col-66b8a6c8.6, 2026-09-02: GitLab reported the previous head for a
+    // tick after the push; the review ran on it and its verdict was dead
+    // at the gate. Stale facts fail closed, like missing ones.
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `stale-head-${Date.now()}.db`), {
+      reviewRequired: true,
+    });
+    script.singleTask = true;
+    script.distinctShas = true;
+    // The provider lags: while `lagging`, it reports a head one behind.
+    let lagging = false;
+    const origGet = provider.mergeRequests.get.bind(provider.mergeRequests);
+    provider.mergeRequests.get = async (repo, id) => {
+      const mr = await origGet(repo, id);
+      return lagging ? { ...mr, head_commit_sha: "0".repeat(40) } : mr;
+    };
+
+    const scopeId = await createScope("stale head");
+    const taskId = `${scopeId}.1`;
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; implement -> mr_open
+    const store = handle.ctx.store;
+    expect(store.getTask(taskId)!.state).toBe("mr_open");
+    const pushed = store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement")
+      .at(-1)!.head_sha!;
+
+    lagging = true;
+    await tickAndSettle(); // provider lagging: no review may start
+    await tickAndSettle();
+    const staleReviews = store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "review");
+    expect(staleReviews).toHaveLength(0);
+
+    lagging = false;
+    await driveToDone(scopeId, 40); // provider caught up: review + merge
+    const reviews = store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "review");
+    expect(reviews.length).toBeGreaterThanOrEqual(1);
+    for (const review of reviews) {
+      const evidence = JSON.parse(review.evidence_json ?? "{}") as {
+        head_sha?: string;
+      };
+      expect(evidence.head_sha).toBe(pushed);
+    }
+    expect(store.getTask(taskId)!.state).toBe("merged");
+  }, 30_000);
+
   it("review verdict at a newer head is accepted when it matches the MR's current head", async () => {
     await handle.shutdown();
     handle = await bootHeadless(join(dir, `head-advance-${Date.now()}.db`), {

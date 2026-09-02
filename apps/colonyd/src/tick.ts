@@ -19,6 +19,9 @@ import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
 import { isInfraError } from "./run-classification.js";
 import { abortRunsAndWait } from "./runs/registry.js";
 
+/** How long after a push the provider's MR head may still report the previous commit. */
+const PROVIDER_HEAD_LAG_MS = 3 * 60_000;
+
 /** Agent-caused replan failures after one failed validation before the scope blocks. */
 const MAX_VALIDATION_REPLAN_FAILURES = 3;
 /** Fire-and-forget run dispatch; records that this tick dispatched work. */
@@ -371,6 +374,20 @@ async function advanceMrOpenTasks(
     }
 
     const headSha = mr.head_commit_sha;
+    // GitLab's MR head lags a fresh push by a tick or two. A review
+    // dispatched in that window reviews the PREVIOUS head and its verdict
+    // is worthless at the gate (col-66b8a6c8.6 reviewed a6c5971 after the
+    // implementer had pushed 0984cfc, 2026-09-02). The implement run row
+    // carries the pushed head: when the provider disagrees within the lag
+    // window, wait. Beyond it a mismatch means the branch genuinely moved
+    // (rebase, operator push) and the provider is the truth again.
+    const pushed = lastImplementRun(ctx, task.id);
+    const providerHeadLagging =
+      pushed?.status === "succeeded" &&
+      !!pushed.head_sha &&
+      pushed.head_sha !== headSha &&
+      !!pushed.finished_at &&
+      Date.now() - Date.parse(pushed.finished_at) < PROVIDER_HEAD_LAG_MS;
     const lastGate = ctx.store
       .runsForTask(task.id)
       .filter((r) => r.kind === "merge_gate")
@@ -508,6 +525,9 @@ async function advanceMrOpenTasks(
         ) {
           continue;
         }
+        // Only review dispatch waits on a lagging provider head; a verdict
+        // that matches the provider's current head is authoritative above.
+        if (providerHeadLagging) continue;
         const slot = pickDispatchSlot(ctx, "reviewer");
         if (!slot.allowed) continue;
         dispatch(
