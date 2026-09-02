@@ -33,6 +33,7 @@ import * as artifacts from "./commands/artifacts.js";
 import { context, run as projects } from "./commands/projects.js";
 import * as audit from "./commands/audit.js";
 import * as status from "./commands/status.js";
+import { createTuiApp } from "./tui/app.js";
 
 export interface CommandIo {
   json: boolean;
@@ -175,8 +176,36 @@ if (isDirectRun()) {
     process.stdout.write(helpText());
     process.exit(0);
   } else if (argv.length === 0) {
-    process.stderr.write(helpText());
-    process.exit(2);
+    if (process.stdin.isTTY) {
+      let credentials;
+      try {
+        credentials = resolveCredentials({}, process.env, homedir());
+      } catch (err) {
+        process.exit(usage(err));
+      }
+      const client = createClient({
+        baseUrl: resolveServer({}, process.env),
+        token: credentials.token,
+        actor: resolveActor({}, process.env),
+      });
+      const clock = {
+        now: () => Date.now(),
+        sleep: (ms: number) =>
+          new Promise<void>((resolve) => setTimeout(resolve, ms)),
+      };
+      const app = createTuiApp({
+        client,
+        clock,
+        out: (s) => process.stdout.write(s),
+        cols: process.stdout.columns || 80,
+        rows: process.stdout.rows || 24,
+      });
+      await app.start();
+      process.exit(0);
+    } else {
+      process.stderr.write(helpText());
+      process.exit(2);
+    }
   } else {
     process.exit(await main(argv));
   }
