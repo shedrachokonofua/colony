@@ -1,6 +1,3 @@
-import { statusCode } from "../commands/scopes.js";
-import { ansi } from "../render.js";
-
 export interface ScopeRow {
   id: string;
   title: string;
@@ -91,6 +88,8 @@ export function renderFrame(
     }
   }
 
+  const isTasksFocused = state.focus === "tasks";
+
   for (const group of STATUS_GROUPS) {
     const scopes = grouped[group] ?? [];
     if (scopes.length === 0) continue;
@@ -123,7 +122,7 @@ export function renderFrame(
 
   // 2. Build Right Top Pane lines (task list)
   const taskLines: string[] = [];
-  taskLines.push("TASKS");
+  taskLines.push(isTasksFocused ? "TASKS [FOCUS]" : "TASKS");
   if (state.tasks.length === 0) {
     taskLines.push("  (no tasks)");
   } else {

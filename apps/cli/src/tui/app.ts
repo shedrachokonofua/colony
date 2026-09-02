@@ -101,6 +101,43 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
   const seenEventIds = new Set<number>();
   let activeRunId: string | null = null;
 
+  let processing = false;
+  const keyQueue: string[] = [];
+
+  let onData: (data: Buffer | string) => void = () => {};
+
+  const processQueue = async () => {
+    if (processing) return;
+    processing = true;
+    while (keyQueue.length > 0 && running) {
+      const nextKey = keyQueue.shift()!;
+      await withLock(async () => {
+        await handleKey(nextKey);
+      });
+    }
+    processing = false;
+  };
+
+  const enqueueKey = (ch: string) => {
+    keyQueue.push(ch);
+    void processQueue();
+  };
+
+  // Mutex / execution lock to serialize poll cycles, actions, and editor
+  let busy = false;
+  const withLock = async (fn: () => Promise<void>) => {
+    while (busy && running) {
+      await deps.clock.sleep(20);
+    }
+    if (!running) return;
+    busy = true;
+    try {
+      await fn();
+    } finally {
+      busy = false;
+    }
+  };
+
   const editorLauncher =
     deps.editor ??
     (async (initialText: string): Promise<string | null> => {
@@ -111,9 +148,12 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
       );
       writeFileSync(tmpPath, initialText, "utf8");
 
-      // Temporarily exit raw mode for editor
+      // Temporarily exit raw mode and detach listener for editor
       if (process.stdin.isTTY && process.stdin.setRawMode) {
         process.stdin.setRawMode(false);
+      }
+      if (!deps.in) {
+        process.stdin.removeListener("data", onData);
       }
 
       try {
@@ -145,8 +185,12 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
       } catch {
         return null;
       } finally {
+        if (!deps.in) {
+          process.stdin.on("data", onData);
+        }
         if (process.stdin.isTTY && process.stdin.setRawMode) {
           process.stdin.setRawMode(true);
+          process.stdin.resume();
         }
         try {
           unlinkSync(tmpPath);
@@ -204,7 +248,7 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
         const runs = detail.runs ?? [];
         const taskModels: Record<string, string> = {};
         for (const r of runs) {
-          if (r.task_id && r.model_id && !taskModels[r.task_id]) {
+          if (r.task_id && r.model_id) {
             taskModels[r.task_id] = r.model_id;
           }
         }
@@ -604,7 +648,7 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
 
       // Setup input handling
       let buffer = "";
-      const onData = (data: Buffer | string) => {
+      onData = (data: Buffer | string) => {
         const str = data.toString();
         buffer += str;
         while (buffer.length > 0) {
@@ -613,14 +657,14 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
             if (buffer.length >= 3) {
               const seq = buffer.slice(0, 3);
               buffer = buffer.slice(3);
-              void handleKey(seq);
+              enqueueKey(seq);
             } else {
               break; // Wait for next char
             }
           } else {
             const ch = buffer[0]!;
             buffer = buffer.slice(1);
-            void handleKey(ch);
+            enqueueKey(ch);
           }
         }
       };
@@ -631,20 +675,26 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
 
       try {
         // Initial poll and render
-        await poll();
-        render();
+        await withLock(async () => {
+          await poll();
+          render();
+        });
 
         while (running) {
           if (deps.in) {
             const nextKey = deps.in();
             if (nextKey !== null) {
-              await handleKey(nextKey);
+              await withLock(async () => {
+                await handleKey(nextKey);
+              });
             }
           }
           await deps.clock.sleep(POLL_CADENCE_MS);
           if (!running) break;
-          await poll();
-          render();
+          await withLock(async () => {
+            await poll();
+            render();
+          });
         }
       } finally {
         process.removeListener("SIGINT", sigHandler);
