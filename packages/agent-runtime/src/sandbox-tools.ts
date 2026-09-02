@@ -360,16 +360,25 @@ function sandboxReadTool(
       const numbered = window
         .map((line, index) => `${start + index + 1}:${line}`)
         .join("\n");
-      const truncated =
-        buffer.byteLength > MAX_TOOL_OUTPUT_BYTES || end < lines.length;
+      // A window that ends before the file does is NOT truncation - say how
+      // much is left and how to get it. "… truncated" on every limited read
+      // convinced grok a file was corrupt ("run-resume.ts is truncated, I'll
+      // rewrite it", 44 turns, 2026-09-02). Only the byte cap truncates.
+      const byteCapped = buffer.byteLength > MAX_TOOL_OUTPUT_BYTES;
+      const remaining = Math.max(0, lines.length - end);
+      const footer = byteCapped
+        ? `\n… file exceeds ${MAX_TOOL_OUTPUT_BYTES} bytes; output cut at the cap. Read narrower windows with offset/limit.`
+        : remaining > 0
+          ? `\n… ${remaining} more line(s) not shown (file has ${lines.length}); read offset=${end + 1} to continue.`
+          : "";
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: truncated ? `${numbered}\n… truncated` : numbered,
-          },
-        ],
-        details: { path: params.path, lines: window.length, truncated },
+        content: [{ type: "text" as const, text: `${numbered}${footer}` }],
+        details: {
+          path: params.path,
+          lines: window.length,
+          truncated: byteCapped,
+          remaining,
+        },
       };
     },
   };
