@@ -55,6 +55,7 @@ function recoveryApp() {
       oidcClientId: "colony",
       oidcRequiredRole: "",
       traceUiBaseUrl: "",
+      consoleBaseUrl: "",
     },
     draining: { isDraining: () => false },
     requestTick() {

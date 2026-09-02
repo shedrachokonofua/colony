@@ -133,6 +133,7 @@ function oidcApp() {
       oidcClientId: CLIENT,
       oidcRequiredRole: "admin",
       traceUiBaseUrl: "",
+      consoleBaseUrl: "",
     },
     draining: { isDraining: () => false },
     requestTick() {},

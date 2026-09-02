@@ -15,3 +15,6 @@ export * from "./ntfy.js";
 
 // sinks.ts
 export * from "./sinks.js";
+
+// loop.ts
+export * from "./loop.js";

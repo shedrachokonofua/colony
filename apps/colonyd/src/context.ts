@@ -38,6 +38,8 @@ export interface ColonydContext {
     readonly oidcRequiredRole: string;
     /** Trace-UI deep-link base for the console; empty when unconfigured. */
     readonly traceUiBaseUrl: string;
+    /** Console base deep-link URL; empty when unconfigured. */
+    readonly consoleBaseUrl: string;
   };
   /** Request an immediate tick (single-flight guarded by main). */
   requestTick(): void;

@@ -157,6 +157,7 @@ async function offlineCtx(
       oidcClientId: "colony",
       oidcRequiredRole: "",
       traceUiBaseUrl: "",
+      consoleBaseUrl: "",
     },
     requestTick() {},
     validateExecutor: async () => ({

@@ -26,6 +26,10 @@ import {
 import { buildApp } from "./http.js";
 import { consoleLogger } from "./logging.js";
 import {
+  createNotifierLoop,
+  type NotifierLoop,
+} from "./notifications/index.js";
+import {
   abortRuns,
   activeTrackedRunIds,
   awaitPendingRuns,
@@ -45,6 +49,8 @@ export interface BootOptions {
   readonly validateExecutor?: ColonydContext["validateExecutor"];
   /** Test seam: override the sandbox engine used for scope validation. */
   readonly validateEngine?: ColonydContext["validateEngine"];
+  /** Test seam: override fetch implementation for notifications. */
+  readonly notifierFetchImpl?: typeof fetch;
   /** Test seam: skip the HTTP server + interval timer. */
   readonly headless?: boolean;
 }
@@ -53,6 +59,8 @@ export interface ColonydHandle {
   readonly ctx: ColonydContext;
   /** Run one tick (single-flight guarded). Exported for tests. */
   tick(): Promise<void>;
+  /** Notifier loop handle (present only when notifications are enabled). */
+  readonly notifier?: NotifierLoop;
   /** Graceful shutdown: stop timer + server, drain runs, close store. */
   shutdown(): Promise<void>;
   /** Bounded drain state machine; `shutdown()` awaits `drain.wait()`. */
@@ -198,6 +206,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       oidcClientId: environment.COLONY_OIDC_CLIENT_ID,
       oidcRequiredRole: environment.COLONY_OIDC_REQUIRED_ROLE,
       traceUiBaseUrl: environment.COLONY_TRACE_UI_BASE_URL ?? "",
+      consoleBaseUrl: environment.COLONY_CONSOLE_BASE_URL ?? "",
     },
     requestTick: () => {
       void runTick();
@@ -205,7 +214,18 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     draining: drain,
   };
 
-  let interval: ReturnType<typeof setInterval> | undefined;
+  const notifier = config.notifications.enabled
+    ? createNotifierLoop({
+        store: ctx.store,
+        logger: ctx.logger,
+        notifications: config.notifications,
+        consoleBaseUrl: environment.COLONY_CONSOLE_BASE_URL ?? "",
+        fetchImpl: options.notifierFetchImpl,
+      })
+    : undefined;
+
+  let tickInterval: NodeJS.Timeout | undefined;
+  let notifierInterval: NodeJS.Timeout | undefined;
   let server: ReturnType<typeof serve> | undefined;
 
   if (!options.headless) {
@@ -215,11 +235,18 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       { port: environment.COLONYD_PORT },
       "colonyd http server listening",
     );
-    interval = setInterval(() => {
+    tickInterval = setInterval(() => {
       void runTick();
     }, environment.COLONYD_TICK_MS);
     // Startup recovery + immediate first reconciliation.
     void runTick();
+
+    if (notifier) {
+      notifierInterval = setInterval(() => {
+        void notifier.run();
+      }, environment.COLONYD_NOTIFY_MS);
+      void notifier.run();
+    }
   }
 
   let shuttingDown = false;
@@ -227,7 +254,8 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     if (shuttingDown) return;
     shuttingDown = true;
     drain.beginDrain();
-    clearInterval(interval);
+    clearInterval(tickInterval);
+    clearInterval(notifierInterval);
     if (server) {
       const { promise, resolve } = Promise.withResolvers<void>();
       server.close(() => resolve());
@@ -238,7 +266,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     await shutdownTelemetry();
   };
 
-  return { ctx, tick: runTick, shutdown, drain };
+  return { ctx, tick: runTick, notifier, shutdown, drain };
 }
 
 const isDirectRun =
