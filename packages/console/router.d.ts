@@ -14,3 +14,8 @@ export function projectHref(name: string): string;
 export function projectFilesHref(name: string): string;
 
 export function hashQueryProject(): string | null;
+
+export function hashQueryTab():
+  | "scopes"
+  | "settings"
+  | "running";

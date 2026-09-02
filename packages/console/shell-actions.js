@@ -5,9 +5,11 @@
 // functions their live counterparts use.
 import {
   routeProjectFilesName,
+  routeProjectName,
   hashQueryProject,
   projectHref,
 } from "./router.js";
+import { serializeProjectTabHref } from "./project-helpers.js";
 import { DEMO, demoContextStore, demoFileStore } from "./demo.js";
 import {
   buildNewProjectPayload,
@@ -66,6 +68,41 @@ export function closeDrawer(app) {
 /** @param {import("./shell-data.js").ShellState} app @param {string} kind */
 export function confirmAction(app, kind) {
   app.confirm = kind;
+}
+
+/**
+ * Switch the project page's surface. The tab rides in the URL so a reload
+ * (or a shared link) lands on it, but replaceState — not navigate — because
+ * the tab is a facet of the current route, and a hashchange would reset the
+ * page state the switch is meant to preserve.
+ *
+ * @param {import("./shell-data.js").ShellState} app
+ * @param {import("./project-helpers.js").ProjectTab} tab
+ */
+export function setProjectTab(app, tab) {
+  app.projectTab = tab;
+  app.briefOpen = false;
+  const projectName = routeProjectName();
+  if (projectName) {
+    app.replaceHref(
+      serializeProjectTabHref(location.hash, projectName, tab),
+    );
+  }
+}
+
+/**
+ * Open a scope and select one of its tasks. A Running-tab row navigates
+ * before the sheet's detail has loaded, so the task id is parked on the
+ * shell: the refresh that lands the detail consumes it. Navigating picks up
+ * the scope now, selection follows once the sheet can resolve it.
+ *
+ * @param {import("./shell-data.js").ShellState} app
+ * @param {string} scopeId
+ * @param {string} taskId
+ */
+export function openTaskInScope(app, scopeId, taskId) {
+  app.pendingSelectTaskId = taskId;
+  app.navigate(`#/${scopeId}`);
 }
 
 /**

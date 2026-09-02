@@ -84,20 +84,29 @@ export function isoDuration(ms) {
 }
 
 /**
- * @param {() => void} onTick
+ * A 1s clock whose callback is bound after construction: the consumer owns
+ * what a tick does, and `onTick` may be replaced between runs while the
+ * interval keeps its identity.
+ *
  * @param {{ intervalMs?: number, setIntervalFn?: typeof setInterval, clearIntervalFn?: typeof clearInterval }} [options]
  */
-export function createRunTicker(
-  onTick,
-  { intervalMs = 1000, setIntervalFn, clearIntervalFn } = {},
-) {
+export function createRunTicker({
+  intervalMs = 1000,
+  setIntervalFn,
+  clearIntervalFn,
+} = {}) {
   const setFn = setIntervalFn ?? globalThis.setInterval.bind(globalThis);
   const clearFn = clearIntervalFn ?? globalThis.clearInterval.bind(globalThis);
   let id = /** @type {ReturnType<typeof setInterval> | null} */ (null);
+  let callback = /** @type {() => void} */ (() => {});
   return {
+    /** @param {() => void} fn */
+    onTick(fn) {
+      callback = fn;
+    },
     start() {
       if (id !== null) return;
-      id = setFn(onTick, intervalMs);
+      id = setFn(() => callback(), intervalMs);
     },
     stop() {
       if (id === null) return;

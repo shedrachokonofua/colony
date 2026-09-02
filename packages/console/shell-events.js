@@ -8,6 +8,8 @@ import {
   closeDrawer,
   confirmAction,
   toggle,
+  setProjectTab,
+  openTaskInScope,
   saveContext,
   confirmFile,
   toggleReplaceFile,
@@ -35,6 +37,8 @@ export const LISTENED = [
   "colony-close-drawer",
   "colony-confirm",
   "colony-toggle",
+  "colony-project-tab",
+  "colony-open-task",
   "colony-save-context",
   "colony-file-confirm",
   "colony-file-replace-toggle",
@@ -85,6 +89,12 @@ export function handleEvent(app, event) {
       break;
     case "colony-toggle":
       toggle(app, detail.key);
+      break;
+    case "colony-project-tab":
+      setProjectTab(app, detail.tab);
+      break;
+    case "colony-open-task":
+      openTaskInScope(app, detail.scopeId, detail.taskId);
       break;
     case "colony-save-context":
       void saveContext(app, detail.project, detail.context_doc);

@@ -17,6 +17,7 @@ import {
   projectHref,
   projectFilesHref,
   hashQueryProject,
+  hashQueryTab,
 } from "./router.js";
 import {
   loadAuth,
@@ -30,6 +31,7 @@ import {
 import "./topbar.js";
 import "./signin.js";
 import { createApi } from "./api-client.js";
+import { createRunTicker } from "./duration.js";
 import { refresh, loadViewModule, startPolling } from "./shell-data.js";
 import { renderView, renderReaderOverlay } from "./shell-view.js";
 import { LISTENED, handleEvent } from "./shell-events.js";
@@ -37,6 +39,8 @@ import {
   saveActor,
   closeDrawer,
   closeReader,
+  setProjectTab,
+  openTaskInScope,
   mutate as shellMutate,
 } from "./shell-actions.js";
 
@@ -79,6 +83,9 @@ export class ColonyApp extends ColonyElement {
     reader: { state: true },
     projectContext: { state: true },
     projectPage: { state: true },
+    projectRunning: { state: true },
+    projectTab: { state: true },
+    pendingSelectTaskId: { state: true },
     projectsPage: { state: true },
     filesPage: { state: true },
     projectFiles: { state: true },
@@ -126,6 +133,12 @@ export class ColonyApp extends ColonyElement {
     this.projectContext = null;
     /** @type {import("./shell-data.js").ShellState["projectPage"]} */
     this.projectPage = null;
+    /** @type {import("./shell-data.js").ShellState["projectRunning"]} */
+    this.projectRunning = null;
+    /** @type {import("./shell-data.js").ShellState["projectTab"]} */
+    this.projectTab = hashQueryTab();
+    /** @type {string | null} */
+    this.pendingSelectTaskId = null;
     /** @type {import("./shell-data.js").ShellState["projectsPage"]} */
     this.projectsPage = null;
     /** @type {import("./shell-data.js").ShellState["filesPage"]} */
@@ -148,6 +161,14 @@ export class ColonyApp extends ColonyElement {
     this.currentRoute = { name: "list", params: {} };
     /** @type {import("./shell-data.js").ViewModuleState | null} */
     this.viewModule = null;
+    /**
+     * The 1s clock behind a live Running-tab duration. The shell owns it
+     * (one interval, not one per row) and hands it down; the consumer binds
+     * what a tick does.
+     *
+     * @type {import("./duration.js").Ticker | null}
+     */
+    this.ticker = null;
     /** @type {ReturnType<typeof setInterval> | null} */
     this._pollTimer = null;
     /** @type {import("./shell-data.js").ShellState["api"]} */
@@ -157,6 +178,7 @@ export class ColonyApp extends ColonyElement {
   connectedCallback() {
     super.connectedCallback();
     this.auth = loadAuth();
+    this.ticker = createRunTicker();
     this._refresh = this._refresh.bind(this);
     window.addEventListener("hashchange", this);
     document.addEventListener("visibilitychange", this);
@@ -167,6 +189,7 @@ export class ColonyApp extends ColonyElement {
     this.addEventListener("colony-toggle", this);
     for (const type of LISTENED) this.addEventListener(type, this);
     this._pollTimer = startPolling(this);
+    this.ticker.onTick(() => this.requestUpdate());
     loadViewModule(this);
     void this._refresh();
   }
@@ -175,6 +198,7 @@ export class ColonyApp extends ColonyElement {
     document.removeEventListener("visibilitychange", this);
     document.removeEventListener("keydown", this);
     for (const type of LISTENED) this.removeEventListener(type, this);
+    this.ticker?.stop();
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
@@ -262,16 +286,17 @@ export class ColonyApp extends ColonyElement {
     this.planOpen = false;
     this.projectContext = null;
     this.projectPage = null;
+    this.projectRunning = null;
     this.projectsPage = null;
     this.filesPage = null;
     this.projectFiles = null;
     this.briefOpen = false;
-    this.settingsOpen = false;
     this.confirmFile = null;
     this.replaceFileId = null;
     this.newProjectDraft = null;
     this.showArchived = false;
     this.#parseRoute();
+    this.projectTab = hashQueryTab();
     loadViewModule(this);
     void this._refresh();
   }
@@ -324,6 +349,17 @@ export class ColonyApp extends ColonyElement {
   navigate(href) {
     if (!href || location.hash === href) return;
     location.hash = href;
+  }
+
+  /**
+   * Swap the URL without a hashchange: the tab lives in the same route, so
+   * navigating to it would reset the very page state the tab switches.
+   *
+   * @param {string} href
+   */
+  replaceHref(href) {
+    if (!href || location.hash === href) return;
+    history.replaceState(null, "", href);
   }
 
   /**

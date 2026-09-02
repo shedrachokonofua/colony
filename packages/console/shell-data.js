@@ -10,6 +10,8 @@ import {
   routeScopeId,
 } from "./router.js";
 import { DEMO, demoWorld, demoContextStore, demoFileStore } from "./demo.js";
+import { createRunTicker } from "./duration.js";
+import { parsePlan } from "./dag.js";
 import { VIEW_ROUTES } from "./view-routes.js";
 
 export const PAGE_SIZE = 25;
@@ -48,6 +50,7 @@ function archivedQuery(app) {
  * @property {Record<string, any> | null} detail
  * @property {Array<Record<string, any>>} audit
  * @property {string | null} selectedTaskId
+ * @property {string | null} pendingSelectTaskId
  * @property {boolean} drawerOpen
  * @property {{ runId: string, rows: any[] } | null} runEvents
  * @property {{ runId: string, rows: any[] } | null} scopeRunEvents
@@ -60,6 +63,8 @@ function archivedQuery(app) {
  * @property {{ name: string, project: Record<string, any> | null, scopes: any[], total: number, offset: number, page: number } | null} projectPage
  * @property {{ projects: any[], total: number, offset: number, page: number } | null} projectsPage
  * @property {{ name: string, project: Record<string, any> | null, files: any[], total: number, offset: number, page: number } | null} filesPage
+ * @property {import("./project-helpers.js").RunningEntry[] | null} projectRunning
+ * @property {import("./project-helpers.js").ProjectTab} projectTab
  * @property {any[] | null} projectFiles
  * @property {string | null} confirm
  * @property {string | null} confirmFile
@@ -69,6 +74,7 @@ function archivedQuery(app) {
  * @property {boolean} showArchived
  * @property {{ name: string, params: Record<string, any> }} currentRoute
  * @property {ViewModuleState | null} viewModule
+ * @property {import("./duration.js").Ticker | null} ticker
  * @property {(path: string, options?: { method?: string, body?: string, headers?: Record<string, string>, notFound?: "null" }) => Promise<any>} api
  * @property {() => Promise<void>} _refresh
  * @property {() => void} beginLogin
@@ -76,6 +82,7 @@ function archivedQuery(app) {
  * @property {() => Promise<void>} completeLogin
  * @property {() => Promise<void>} ensureFreshToken
  * @property {(href: string) => void} navigate
+ * @property {(href: string) => void} replaceHref
  * @property {(page: number | string, surface: "projects" | "project" | "files") => void} _page
  */
 
@@ -127,6 +134,7 @@ export async function refresh(app) {
         page: pageNo,
       };
       app.projectPage = null;
+      app.projectRunning = null;
       app.error = "";
       return;
     }
@@ -134,13 +142,16 @@ export async function refresh(app) {
     if (projectName) {
       // The project route owns this refresh: it must not touch board or
       // sheet state, and it must preserve an in-flight editor "Saved.".
-      const [project, scopesPage] = await Promise.all([
+      const [project, scopesPage, runningRows] = await Promise.all([
         app.api(`/projects/${encodeURIComponent(projectName)}`, {
           notFound: "null",
         }),
         app.api(
           `/scopes?limit=${PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
         ),
+        app.api(`/projects/${encodeURIComponent(projectName)}/running`, {
+          notFound: "null",
+        }),
       ]);
       app.projectPage = {
         name: projectName,
@@ -150,6 +161,7 @@ export async function refresh(app) {
         offset,
         page: pageNo,
       };
+      app.projectRunning = Array.isArray(runningRows) ? runningRows : [];
       // Seed the editor from the same read Save round-trips through so the
       // prefill cannot drift from what Save persists.
       if (app.projectContext === null && project) {
@@ -168,6 +180,7 @@ export async function refresh(app) {
       return;
     }
     app.projectPage = null;
+    app.projectRunning = null;
     const projectsPage = await app.api(
       `/projects?limit=${PAGE_SIZE}&offset=${offset}${archivedQuery(app)}`,
     );
@@ -185,6 +198,7 @@ export async function refresh(app) {
       ]);
       app.detail = detail;
       app.audit = audit.events;
+      consumePendingTaskSelection(app, detail);
       if (
         app.projectContext === null &&
         detail.project &&
@@ -218,8 +232,14 @@ function refreshDemo(app) {
     app.detail = scopeRow
       ? scopeRow.id === world.detail.scope.id
         ? world.detail
-        : { scope: scopeRow, tasks: [], deps: [], runs: [] }
+        : (world.runningDetails?.[scopeRow.id] ?? {
+            scope: scopeRow,
+            tasks: [],
+            deps: [],
+            runs: [],
+          })
       : null;
+    consumePendingTaskSelection(app, app.detail);
   } else {
     app.detail = null;
   }
@@ -259,6 +279,7 @@ function refreshDemo(app) {
       offset: start,
       page: pageNo,
     };
+    app.projectRunning = world.running ?? [];
     if (app.projectContext === null) {
       const stored = demoContextStore.has(demoName)
         ? { context_doc: demoContextStore.get(demoName) }
@@ -276,9 +297,11 @@ function refreshDemo(app) {
       offset: 0,
       page: pageNo,
     };
+    app.projectRunning = [];
     app.projectFiles = found ? (demoFileStore.get(demoName) ?? []) : [];
   } else {
     app.projectPage = null;
+    app.projectRunning = null;
     const ordered = [...world.projects].sort(
       (a, b) =>
         Date.parse(b.updated_at) - Date.parse(a.updated_at) ||
@@ -297,6 +320,32 @@ function refreshDemo(app) {
     app.runEvents = { runId: "run-gate-1", rows: world.runEvents };
   }
   app.error = "";
+}
+
+/**
+ * Select a task once its scope detail holds it. A Running-tab row navigates
+ * before the sheet's detail is loaded, so the selection waits here rather
+ * than being dropped: the sheet only finds tasks the detail contains.
+ *
+ * @param {ShellState} app
+ * @param {Record<string, any> | null} detail
+ */
+function consumePendingTaskSelection(app, detail) {
+  const taskId = app.pendingSelectTaskId;
+  if (!taskId || !detail) return;
+  const tasks = /** @type {any[]} */ (detail.tasks ?? []);
+  if (!taskId.startsWith("plan:")) {
+    if (!tasks.some((task) => task.id === taskId)) return;
+  } else {
+    const index = Number(taskId.slice(5));
+    const plan = parsePlan(detail.scope?.plan_json);
+    if (!Number.isInteger(index) || !plan?.tasks[index]) return;
+  }
+  app.pendingSelectTaskId = null;
+  app.selectedTaskId = taskId;
+  app.drawerOpen = true;
+  app.confirm = null;
+  app.runEvents = null;
 }
 
 /** Live agent feed for the drawer's most recent running run, if any. */

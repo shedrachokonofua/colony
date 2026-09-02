@@ -16,6 +16,29 @@ export interface DemoScope {
   context_doc?: string;
 }
 
+/** One GET /projects/:name/running row, as the demo world serves it. */
+export interface DemoRunningEntry {
+  scope_id: string;
+  scope_title: string | null;
+  task_id: string;
+  task_title: string | null;
+  task_state: string;
+  attempt: number;
+  run: {
+    id: string;
+    scope_id: string;
+    task_id: string;
+    kind: string;
+    status: string;
+    model_id: string | null;
+    head_sha: string | null;
+    error: string | null;
+    evidence_json: string | null;
+    started_at: string;
+    finished_at: string | null;
+  } | null;
+}
+
 /** One demo project row (buildDemoProject / buildFillerProjects). */
 export interface DemoProject {
   name: string;
@@ -52,6 +75,21 @@ export function demoWorld(): {
     deps: Array<Record<string, unknown>>;
     runs: Array<Record<string, unknown>>;
   };
+  /** The Running tab's rows for the demo project. */
+  running: DemoRunningEntry[];
+  /**
+   * Detail payloads for the scopes owning a Running-tab row, so activating a
+   * row offline lands on a sheet that actually contains the task.
+   */
+  runningDetails: Record<
+    string,
+    {
+      scope: DemoScope;
+      tasks: Array<Record<string, unknown>>;
+      deps: Array<Record<string, unknown>>;
+      runs: Array<Record<string, unknown>>;
+    }
+  >;
   runEvents: Array<Record<string, unknown>>;
   audit: Array<Record<string, unknown>>;
 };

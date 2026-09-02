@@ -174,15 +174,20 @@ function manualTimers(): ManualTimers {
   };
 }
 
+function manualTicker(onTick = mock(() => {})) {
+  const timers = manualTimers();
+  const ticker = createRunTicker({
+    intervalMs: 1000,
+    setIntervalFn: timers.setIntervalFn as never,
+    clearIntervalFn: timers.clearIntervalFn as never,
+  });
+  ticker.onTick(onTick);
+  return { timers, ticker, onTick };
+}
+
 describe("createRunTicker", () => {
   it("fires onTick once per interval", () => {
-    const timers = manualTimers();
-    const onTick = mock(() => {});
-    const ticker = createRunTicker(onTick, {
-      intervalMs: 1000,
-      setIntervalFn: timers.setIntervalFn as never,
-      clearIntervalFn: timers.clearIntervalFn as never,
-    });
+    const { timers, ticker, onTick } = manualTicker();
     ticker.start();
     expect(onTick).not.toHaveBeenCalled();
     expect(timers.setIntervalFn).toHaveBeenCalledTimes(1);
@@ -193,13 +198,19 @@ describe("createRunTicker", () => {
     ticker.stop();
   });
 
+  it("calls the callback bound through onTick, latest binding wins", () => {
+    const { timers, ticker, onTick } = manualTicker();
+    const second = mock(() => {});
+    ticker.start();
+    ticker.onTick(second);
+    timers.tick();
+    expect(onTick).toHaveBeenCalledTimes(0);
+    expect(second).toHaveBeenCalledTimes(1);
+    ticker.stop();
+  });
+
   it("start is idempotent", () => {
-    const timers = manualTimers();
-    const onTick = mock(() => {});
-    const ticker = createRunTicker(onTick, {
-      setIntervalFn: timers.setIntervalFn as never,
-      clearIntervalFn: timers.clearIntervalFn as never,
-    });
+    const { timers, ticker, onTick } = manualTicker();
     ticker.start();
     ticker.start();
     expect(timers.setIntervalFn).toHaveBeenCalledTimes(1);
@@ -209,12 +220,7 @@ describe("createRunTicker", () => {
   });
 
   it("stop is idempotent and clears the interval it created", () => {
-    const timers = manualTimers();
-    const onTick = mock(() => {});
-    const ticker = createRunTicker(onTick, {
-      setIntervalFn: timers.setIntervalFn as never,
-      clearIntervalFn: timers.clearIntervalFn as never,
-    });
+    const { timers, ticker, onTick } = manualTicker();
     ticker.start();
     ticker.stop();
     ticker.stop();
@@ -225,14 +231,7 @@ describe("createRunTicker", () => {
   });
 
   it("running() reflects state", () => {
-    const timers = manualTimers();
-    const ticker = createRunTicker(
-      mock(() => {}),
-      {
-        setIntervalFn: timers.setIntervalFn as never,
-        clearIntervalFn: timers.clearIntervalFn as never,
-      },
-    );
+    const { ticker } = manualTicker();
     expect(ticker.running()).toBe(false);
     ticker.start();
     expect(ticker.running()).toBe(true);

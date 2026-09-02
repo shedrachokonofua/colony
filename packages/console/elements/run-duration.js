@@ -17,9 +17,7 @@ export class RunDuration extends ColonyElement {
     _now: { state: true },
   };
 
-  #ticker = createRunTicker(() => {
-    this._now = Date.now();
-  });
+  #ticker = createRunTicker();
 
   constructor() {
     super();
@@ -31,6 +29,9 @@ export class RunDuration extends ColonyElement {
 
   connectedCallback() {
     super.connectedCallback();
+    this.#ticker.onTick(() => {
+      this._now = Date.now();
+    });
     this.#syncTicker();
   }
 

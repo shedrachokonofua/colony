@@ -1,25 +1,24 @@
-// <project-page>: a project's own page — breadcrumbs, head, scope list, and
-// the settings rail. Ported from renderProjectPage + renderProjectRail
-// (app.js). Property-down: projectPage {name, project, scopes, total,
-// offset, page}, contextDoc, files, editing, saveStatus, settingsOpen,
-// config, error. Events-up: colony-page {page, surface:"project"},
-// colony-navigate, and colony-toggle {key:"settingsOpen"} from the
-// Scopes/Settings tabs.
+// <project-page>: a project's own page — breadcrumbs, head, scope list, the
+// running tab, and the settings rail. Ported from renderProjectPage +
+// renderProjectRail (app.js). Property-down: projectPage {name, project,
+// scopes, total, offset, page}, projectRunning, tab, contextDoc, files,
+// editing, saveStatus, config, error. Events-up: colony-page {page,
+// surface:"project"}, colony-navigate, colony-project-tab {tab} from the
+// Scopes/Running/Settings switcher, and whatever the tab's own element emits.
 //
-// The monolith gates the rail behind a Scopes/Settings tab switcher; here
-// the tab is a property the shell drives, so the rail's visibility is the
-// shell's call rather than state the view owns. The tabs emit the bare
-// {key:"settingsOpen"} form every sibling element uses, and the shell's
-// _toggle flips that key: a {key, value} pair would be dropped, since
-// _toggle only reads the key. Clicking the already-active tab emits
-// nothing — the monolith's setProjectTab was idempotent, and a bare toggle
-// would otherwise switch to the other surface.
+// The tab is a property the shell drives (it owns the URL's ?tab=), so which
+// surface shows is the shell's call rather than state this view owns. The
+// switcher emits the tab it was clicked to, never a bare toggle: with three
+// surfaces a toggle could not say which one to land on, and clicking the
+// active tab emits nothing because the monolith's setProjectTab was
+// idempotent.
 import { ColonyElement, html, nothing, repeat } from "../base.js";
 import { rel } from "../rel-time.js";
 import { hrefForPage, pageCount } from "../pagination.js";
 import { projectHref } from "../router.js";
 import { distinctRepos, projectDescription } from "../project-helpers.js";
 import "../elements/project-context-card.js";
+import "../elements/running-tab.js";
 
 const PAGE_SIZE = 25;
 
@@ -35,32 +34,44 @@ function scopeTitle(scope) {
 export class ProjectPage extends ColonyElement {
   static properties = {
     projectPage: { type: Object },
+    projectRunning: { type: Array },
+    tab: { type: String },
+    ticker: { type: Object },
     contextDoc: { type: String },
     files: { type: Array },
     editing: { type: Boolean },
     saveStatus: { type: String },
-    settingsOpen: { type: Boolean },
     confirm: { type: String },
     config: { type: Object },
     error: { type: String },
   };
 
+  /**
+   * The switcher's surfaces: [tab id, label]. Scopes is the default tab, so
+   * it owns no ?tab= in the URL.
+   */
   static TABS = [
-    [false, "Scopes"],
-    [true, "Settings"],
+    ["scopes", "Scopes"],
+    ["running", "Running"],
+    ["settings", "Settings"],
   ];
 
   constructor() {
     super();
     /** @type {{ name: string, project: Record<string, any> | null, scopes?: any[], total?: number, page?: number } | null} */
     this.projectPage = null;
+    /** @type {import("../project-helpers.js").RunningEntry[]} */
+    this.projectRunning = [];
+    /** @type {import("../project-helpers.js").ProjectTab} */
+    this.tab = "scopes";
+    /** @type {import("../duration.js").Ticker | null} */
+    this.ticker = null;
     this.contextDoc = "";
     /** @type {Array<Record<string, any>>} */
     this.files = [];
     this.editing = false;
     /** @type {string | null} */
     this.saveStatus = null;
-    this.settingsOpen = false;
     /** @type {string | null} */
     this.confirm = null;
     /** @type {{ gitlab_base_url?: string } | null} */
@@ -125,18 +136,22 @@ export class ProjectPage extends ColonyElement {
     this.#emit("colony-page", { page, surface: "project" });
   }
 
-  /** The monolith's Scopes/Settings switcher (app.js). */
+  /**
+   * The monolith's Scopes/Running/Settings switcher (app.js setProjectTab):
+   * aria-selected marks the live surface, and a click emits the tab it names
+   * so the shell can put it in the URL.
+   */
   #tabs() {
     return html`<nav class="tabs" role="tablist" aria-label="Project sections">
       ${ProjectPage.TABS.map(
-        ([settings, label]) =>
+        ([id, label]) =>
           html`<button
             class="tab"
             role="tab"
-            aria-selected=${this.settingsOpen === settings}
+            aria-selected=${this.tab === id}
             @click=${() => {
-              if (this.settingsOpen === settings) return;
-              this.#emit("colony-toggle", { key: "settingsOpen" });
+              if (this.tab === id) return;
+              this.#emit("colony-project-tab", { tab: id });
             }}
           >
             ${label}
@@ -217,6 +232,20 @@ export class ProjectPage extends ColonyElement {
           : nothing}
       </span>
     </button>`;
+  }
+
+  /**
+   * The monolith's Running tab surface (app.js): the in-flight rows inside
+   * the .project-running section the e2e specs key on.
+   */
+  #running() {
+    return html`<section class="project-running">
+      <running-tab
+        .entries=${this.projectRunning ?? []}
+        .project=${this.projectPage?.project ?? null}
+        .ticker=${this.ticker}
+      ></running-tab>
+    </section>`;
   }
 
   /** The monolith's renderProjectRail (app.js): brief card + repos. */
@@ -323,9 +352,11 @@ export class ProjectPage extends ColonyElement {
             </p>`
           : nothing}
         ${this.#tabs()}
-        ${this.settingsOpen
-          ? this.#rail()
-          : html`<section class="project-scopes">
+        ${this.tab === "running"
+          ? this.#running()
+          : this.tab === "settings"
+            ? this.#rail()
+            : html`<section class="project-scopes">
                 ${(page.total ?? 0) > 0 && scopes.length === 0
                   ? html`<div class="rack-empty">
                       <p>Past the last page.</p>

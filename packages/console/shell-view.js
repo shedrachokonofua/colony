@@ -31,12 +31,14 @@ export function renderView(app) {
     case "project":
       return html`<project-page
         .projectPage=${app.projectPage}
+        .projectRunning=${app.projectRunning ?? []}
+        .tab=${app.projectTab}
+        .ticker=${app.ticker}
         .contextDoc=${app.projectContext?.doc ??
         (typeof app.projectContext === "string" ? app.projectContext : "")}
         .files=${app.projectFiles ?? []}
         .editing=${app.briefOpen}
         .saveStatus=${app.projectContext?.status ?? null}
-        .settingsOpen=${app.settingsOpen}
         .confirm=${app.confirm}
         .config=${app.config}
         .error=${app.error}

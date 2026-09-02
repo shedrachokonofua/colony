@@ -1,9 +1,14 @@
 // Pure helpers for the project surfaces: card text, dedupe, form payloads, tab routing, row models.
 
+/** @typedef {"scopes" | "settings" | "running"} ProjectTab */
+
+/** @type {readonly ProjectTab[]} */
 export const VALID_PROJECT_TABS = ["scopes", "settings", "running"];
 
 /**
  * Parse the tab from a hash query string or full hash, falling back to "scopes".
+ * @param {string | null | undefined} hashOrQuery
+ * @returns {ProjectTab}
  */
 export function parseProjectTab(hashOrQuery) {
   if (!hashOrQuery) return "scopes";
@@ -20,6 +25,9 @@ export function parseProjectTab(hashOrQuery) {
 /**
  * Build or update a project href (#/project/<name>?...) with the target tab,
  * preserving any other existing query parameters (like ?project=).
+ * @param {string | null | undefined} currentHash
+ * @param {string} projectName
+ * @param {ProjectTab | string} targetTab
  */
 export function serializeProjectTabHref(currentHash, projectName, targetTab) {
   const base = `#/project/${encodeURIComponent(projectName)}`;
@@ -39,8 +47,29 @@ export function serializeProjectTabHref(currentHash, projectName, targetTab) {
 }
 
 /**
+ * A GET /projects/:name/running entry, as the API serves it.
+ *
+ * @typedef {{
+ *   scope_id: string,
+ *   scope_title?: string | null,
+ *   task_id: string,
+ *   task_title?: string | null,
+ *   task_state?: string | null,
+ *   attempt?: number | null,
+ *   run: {
+ *     id: string,
+ *     kind?: string | null,
+ *     status?: string | null,
+ *     model_id?: string | null,
+ *     started_at?: string | null,
+ *     finished_at?: string | null,
+ *   } | null,
+ * }} RunningEntry
+ */
+
+/**
  * Derives presentation fields for a running-task entry.
- * Element shape: { scope_id, scope_title, task_id, task_title, task_state, attempt, run: { id, kind, status, model_id, started_at } | null }
+ * @param {RunningEntry | null | undefined} entry
  */
 export function deriveRunningRow(entry) {
   const scopeId = entry?.scope_id ?? "";
@@ -78,6 +107,8 @@ export function deriveRunningRow(entry) {
 /**
  * Format the empty-state tally line for the Running tab.
  * e.g. "Nothing running right now." plus "N queued · N blocked" when task_state_counts is present.
+ * @param {Record<string, number> | null | undefined} taskStateCounts
+ * @returns {string | null}
  */
 export function formatRunningEmptyTallies(taskStateCounts) {
   if (!taskStateCounts || typeof taskStateCounts !== "object") {
