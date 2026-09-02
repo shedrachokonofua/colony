@@ -67,6 +67,15 @@ const createScopeBody = z
   })
   .strict();
 
+const expectedShaBody = z
+  .object({
+    sha: z
+      .string()
+      .regex(/^[0-9a-f]{7,40}$/)
+      .optional(),
+  })
+  .strict();
+
 const feedbackBody = z
   .object({ feedback: z.string().min(1).max(4000) })
   .strict();
@@ -1251,6 +1260,29 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!mr.head_commit_sha) {
       return c.json(
         { error: { code: "NO_HEAD_SHA", message: "MR has no head commit" } },
+        409,
+      );
+    }
+    // An operator approves A head, not "whatever is current". A body
+    // {sha} names it; the approval refuses when the MR moved past it
+    // (the console and CLI had been sending a sha the route ignored,
+    // 2026-09-02). No sha keeps the old semantics for the console's
+    // one-click approve, which reads the head in the same breath.
+    const expected = expectedShaBody.safeParse((await parseBody(c)) ?? {});
+    if (!expected.success) return badBody(c, expected.error.message);
+    const wanted = expected.data.sha;
+    if (
+      wanted &&
+      !mr.head_commit_sha.startsWith(wanted) &&
+      !wanted.startsWith(mr.head_commit_sha)
+    ) {
+      return c.json(
+        {
+          error: {
+            code: "HEAD_MOVED",
+            message: `MR head is ${mr.head_commit_sha}, not ${wanted}; re-read the diff before approving`,
+          },
+        },
         409,
       );
     }

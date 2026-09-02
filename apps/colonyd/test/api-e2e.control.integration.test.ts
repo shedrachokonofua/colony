@@ -1262,6 +1262,18 @@ describe("api e2e control — 5. manual vs auto merge approvals", () => {
       ),
     ).toBe(false);
 
+    // An approval names a head; a stale one is refused, never silently
+    // re-targeted at whatever the MR points to now.
+    const stale = await http(
+      env.port,
+      "POST",
+      `/tasks/${mrOpen!}/approve-merge`,
+      { body: { sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" } },
+    );
+    expect(stale.status).toBe(409);
+    expect((stale.body as { error: { code: string } }).error.code).toBe(
+      "HEAD_MOVED",
+    );
     const approveMerge = await http(
       env.port,
       "POST",
