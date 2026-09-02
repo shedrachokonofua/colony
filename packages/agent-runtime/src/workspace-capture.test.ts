@@ -336,4 +336,130 @@ describe("captureWorkspace", () => {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it("captures shadow commit even when git user.name and user.email are not configured", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-no-config-test-"));
+    const bareDir = join(tempRoot, "remote.git");
+    const wsDir = join(tempRoot, "workspace");
+
+    try {
+      execSync(`git init --bare --initial-branch=main "${bareDir}"`);
+
+      const initDir = join(tempRoot, "init");
+      execSync(`git init --initial-branch=main "${initDir}"`);
+      execSync(`git -C "${initDir}" config user.name "Test Runner"`);
+      execSync(`git -C "${initDir}" config user.email "test@example.com"`);
+      writeFileSync(join(initDir, "initial.txt"), "hello initial\n");
+      execSync(`git -C "${initDir}" add initial.txt`);
+      execSync(`git -C "${initDir}" commit -m "initial commit"`);
+      const baseSha = execSync(`git -C "${initDir}" rev-parse HEAD`, {
+        encoding: "utf8",
+      }).trim();
+      execSync(`git -C "${initDir}" remote add origin "${bareDir}"`);
+      execSync(`git -C "${initDir}" push origin main`);
+
+      execSync(`git clone "${bareDir}" "${wsDir}"`);
+      writeFileSync(join(wsDir, "touched.txt"), "new file\n");
+
+      // Custom exec handle that forces isolated env with no user identity configured
+      let seq = 0;
+      const handle: SandboxHandle = {
+        async exec(request, onData) {
+          try {
+            const stdout = execSync(request.command, {
+              cwd: wsDir,
+              env: {
+                PATH: process.env.PATH,
+                HOME: tempRoot,
+                GIT_CONFIG_NOSYSTEM: "1",
+                GIT_CONFIG_GLOBAL: "/dev/null",
+                ...request.env,
+              },
+              stdio: ["ignore", "pipe", "pipe"],
+              timeout: request.timeoutMs ?? 60_000,
+            });
+            onData?.({ kind: "stdout", seq: ++seq, data: stdout.toString("utf8") });
+            return { exitCode: 0, durationMs: 10 };
+          } catch (err: unknown) {
+            const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; status?: number };
+            return { exitCode: typeof e.status === "number" ? e.status : 1, durationMs: 10 };
+          }
+        },
+        async readFile() { throw new Error("not implemented"); },
+        async writeFile() { throw new Error("not implemented"); },
+        async destroy() {},
+      };
+
+      const { sink, events } = createRecordingSink();
+      const runId = "run-no-config-123";
+
+      const res = await captureWorkspace({
+        runId,
+        handle,
+        repo: { url: bareDir, branch: "main", base_commit: baseSha },
+        parentSha: baseSha,
+        secrets: [],
+        sink,
+      });
+
+      expect(res).toBeDefined();
+      expect(res!.ref).toBe(`refs/colony/runs/${runId}`);
+      const failEvent = events.find((e) => e.event === "workspace_capture_failed");
+      expect(failEvent).toBeUndefined();
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("handles putArtifact failure by appending workspace_capture_failed without recording workspace_ref", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-put-fail-test-"));
+    const bareDir = join(tempRoot, "remote.git");
+    const wsDir = join(tempRoot, "workspace");
+
+    try {
+      execSync(`git init --bare --initial-branch=main "${bareDir}"`);
+      const initDir = join(tempRoot, "init");
+      execSync(`git init --initial-branch=main "${initDir}"`);
+      execSync(`git -C "${initDir}" config user.name "Test Runner"`);
+      execSync(`git -C "${initDir}" config user.email "test@example.com"`);
+      writeFileSync(join(initDir, "initial.txt"), "hello initial\n");
+      execSync(`git -C "${initDir}" add initial.txt`);
+      execSync(`git -C "${initDir}" commit -m "initial commit"`);
+      const baseSha = execSync(`git -C "${initDir}" rev-parse HEAD`, {
+        encoding: "utf8",
+      }).trim();
+      execSync(`git -C "${initDir}" remote add origin "${bareDir}"`);
+      execSync(`git -C "${initDir}" push origin main`);
+
+      execSync(`git clone "${bareDir}" "${wsDir}"`);
+      writeFileSync(join(wsDir, "touched.txt"), "touched\n");
+
+      const handle = createWorkspaceSandboxHandle(wsDir);
+      const { sink, events, artifactRefs } = createRecordingSink();
+      // Override putArtifact to return undefined (failure)
+      sink.putArtifact = async () => undefined;
+
+      const runId = "run-artifact-fail-123";
+      const res = await captureWorkspace({
+        runId,
+        handle,
+        repo: { url: bareDir, branch: "main", base_commit: baseSha },
+        parentSha: baseSha,
+        secrets: [],
+        sink,
+      });
+
+      expect(res).toBeUndefined();
+      const failEvent = events.find((e) => e.event === "workspace_capture_failed");
+      expect(failEvent).toBeDefined();
+      expect(failEvent?.detail.error).toContain("putArtifact did not store the workspace manifest");
+      // Must not have recorded workspace_ref event or artifact row
+      const wsRefEvent = events.find((e) => e.event === "workspace_ref");
+      expect(wsRefEvent).toBeUndefined();
+      const wsRefRow = artifactRefs.find((r) => r.kind === "workspace_ref");
+      expect(wsRefRow).toBeUndefined();
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });

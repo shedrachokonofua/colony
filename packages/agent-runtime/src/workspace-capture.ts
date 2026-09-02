@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { SandboxHandle } from "@colony/sandbox";
 import type { RunAuditSink } from "./audit-sink.js";
 import type { PacketRepoRef } from "./pi-runner-common.js";
@@ -119,26 +118,25 @@ export async function captureWorkspace(input: {
     }
     const treeSha = writeTreeRes.stdout.trim();
 
+    // Clean up temporary index file
+    await execInSandbox(input.handle, cleanTmpIndexCmd, 5_000).catch(() => {});
+
     // 3. Commit tree
-    // Message: colony audit: run <run_id>
+    // Provide explicit author & committer identity so it works in isolated sandbox envs without gitconfig
     const commitMsg = `colony audit: run ${input.runId}`;
+    const authorEnv =
+      'GIT_AUTHOR_NAME="colony" GIT_AUTHOR_EMAIL="colony@colony.local" GIT_COMMITTER_NAME="colony" GIT_COMMITTER_EMAIL="colony@colony.local"';
     const commitTreeRes = await execInSandbox(
       input.handle,
-      `git commit-tree ${treeSha} -p ${input.parentSha} -m "${commitMsg}"`,
+      `${authorEnv} git commit-tree ${treeSha} -p ${input.parentSha} -m "${commitMsg}"`,
       60_000,
     );
     if (commitTreeRes.exitCode !== 0 || !commitTreeRes.stdout.trim()) {
-      await execInSandbox(input.handle, cleanTmpIndexCmd, 5_000).catch(
-        () => {},
-      );
       return fail(
         `git commit-tree failed (exit ${commitTreeRes.exitCode}): ${commitTreeRes.stderr || commitTreeRes.stdout}`,
       );
     }
     const shadowCommitSha = commitTreeRes.stdout.trim();
-
-    // Clean up temporary index file
-    await execInSandbox(input.handle, cleanTmpIndexCmd, 5_000).catch(() => {});
 
     // 4. Push shadow ref
     const targetRef = `refs/colony/runs/${input.runId}`;
@@ -154,98 +152,121 @@ export async function captureWorkspace(input: {
     }
 
     // 5. Generate manifest covering changed-vs-head set (compared against parentSha)
-    // Using `git diff-tree -r --name-status <parentSha> <shadowCommitSha>` or `git diff-tree -r -z`
-    // Or `git diff --name-status <parentSha> <shadowCommitSha>`
-    const diffRes = await execInSandbox(
-      input.handle,
-      `git diff-tree -r --no-commit-id --name-status ${input.parentSha} ${shadowCommitSha}`,
-      60_000,
-    );
-    if (diffRes.exitCode !== 0) {
+    // Run in a single sandbox script using node to avoid multiple sandbox exec roundtrips
+    const manifestScript = `node -e '
+const { execSync } = require("child_process");
+const { createHash } = require("crypto");
+
+const parentSha = process.argv[1];
+const shadowCommitSha = process.argv[2];
+
+const diffOut = execSync(\`git diff-tree -r -z --no-commit-id --name-status \${parentSha} \${shadowCommitSha}\`, { maxBuffer: 32 * 1024 * 1024 });
+
+// diff-tree -z separates items by NUL: [status, path, (destPath if rename/copy), status, path, ...]
+const tokens = diffOut.toString("binary").split("\\0");
+if (tokens.length && tokens[tokens.length - 1] === "") tokens.pop();
+
+const deleted = [];
+const nonDeleted = [];
+
+let i = 0;
+while (i < tokens.length) {
+  const status = tokens[i++];
+  if (!status) break;
+  const path = tokens[i++];
+  if (!path) break;
+
+  if (status.startsWith("R") || status.startsWith("C")) {
+    const destPath = tokens[i++];
+    if (destPath) {
+      nonDeleted.push(destPath);
+    }
+  } else if (status.startsWith("D")) {
+    deleted.push(path);
+  } else {
+    nonDeleted.push(path);
+  }
+}
+
+// Get metadata (mode, object sha, size) for all files in shadow commit using ls-tree -r -l -z
+const lsTreeOut = execSync(\`git ls-tree -r -l -z \${shadowCommitSha}\`, { maxBuffer: 64 * 1024 * 1024 });
+const lsEntries = lsTreeOut.toString("binary").split("\\0");
+if (lsEntries.length && lsEntries[lsEntries.length - 1] === "") lsEntries.pop();
+
+const treeMap = new Map();
+for (const entry of lsEntries) {
+  // format: <mode> SP <type> SP <object> SP <size> TAB <file>
+  const tabIdx = entry.indexOf("\\t");
+  if (tabIdx === -1) continue;
+  const meta = entry.slice(0, tabIdx);
+  const filePath = entry.slice(tabIdx + 1);
+  const parts = meta.split(/ +/);
+  if (parts.length >= 4) {
+    const mode = parts[0];
+    const objSha = parts[2];
+    const sizeStr = parts[3].trim();
+    const size = sizeStr === "-" ? 0 : parseInt(sizeStr, 10) || 0;
+    treeMap.set(filePath, { mode, objSha, size });
+  }
+}
+
+const files = [];
+for (const filePath of nonDeleted) {
+  const meta = treeMap.get(filePath);
+  if (!meta) continue;
+
+  // Compute sha256 of the blob content
+  const blobBuf = execSync(\`git cat-file blob \${meta.objSha}\`, { maxBuffer: 128 * 1024 * 1024 });
+  const sha256 = createHash("sha256").update(blobBuf).digest("hex");
+
+  files.push({
+    path: filePath,
+    mode: meta.mode,
+    size: meta.size,
+    sha256,
+  });
+}
+
+const manifest = {
+  files,
+  deleted,
+  generated_at: new Date().toISOString(),
+};
+
+process.stdout.write(JSON.stringify(manifest));
+' "${input.parentSha}" "${shadowCommitSha}"`;
+
+    const manifestRes = await execInSandbox(input.handle, manifestScript, 30_000);
+    if (manifestRes.exitCode !== 0 || !manifestRes.stdout.trim()) {
       return fail(
-        `git diff-tree failed (exit ${diffRes.exitCode}): ${diffRes.stderr || diffRes.stdout}`,
+        `manifest generation failed (exit ${manifestRes.exitCode}): ${manifestRes.stderr || manifestRes.stdout}`,
       );
     }
 
-    const files: WorkspaceManifestFile[] = [];
-    const deleted: string[] = [];
-
-    const lines = diffRes.stdout
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    for (const line of lines) {
-      const parts = line.split(/\t+/);
-      const status = parts[0] ?? "";
-      const filePath = parts[1] ?? "";
-
-      if (!filePath) continue;
-
-      if (status.startsWith("D")) {
-        deleted.push(filePath);
-      } else {
-        // Query mode, size, and blob sha / sha256
-        // We can get mode and git object from `git ls-tree <shadowCommitSha> -- <filePath>`
-        // and file content / sha256 / size.
-        // Or inspect via `git ls-tree -r ${shadowCommitSha} -- ${filePath}`
-        // For file size and sha256 of the file content in the shadow commit:
-        // `git cat-file -s <shadowCommitSha>:<filePath>` for size
-        // `git cat-file -p <shadowCommitSha>:<filePath>` or `git cat-file blob <sha>`
-        const lsTreeRes = await execInSandbox(
-          input.handle,
-          `git ls-tree ${shadowCommitSha} -- "${filePath}"`,
-          30_000,
-        );
-        let mode = "100644";
-        if (lsTreeRes.exitCode === 0 && lsTreeRes.stdout.trim()) {
-          const m = lsTreeRes.stdout.trim().split(/\s+/)[0];
-          if (m) mode = m;
-        }
-
-        // We can pipe git cat-file blob to sha256sum in sandbox or compute in node.
-        // Running sha256sum via cat-file: `git cat-file blob <shadowCommitSha>:<filePath> | sha256sum`
-        // and `git cat-file -s <shadowCommitSha>:<filePath>`
-        const catRes = await execInSandbox(
-          input.handle,
-          `git cat-file blob "${shadowCommitSha}:${filePath}" | sha256sum`,
-          30_000,
-        );
-        const sizeRes = await execInSandbox(
-          input.handle,
-          `git cat-file -s "${shadowCommitSha}:${filePath}"`,
-          30_000,
-        );
-
-        let sha256 = "";
-        if (catRes.exitCode === 0 && catRes.stdout.trim()) {
-          sha256 = catRes.stdout.trim().split(/\s+/)[0] ?? "";
-        }
-        let size = 0;
-        if (sizeRes.exitCode === 0 && sizeRes.stdout.trim()) {
-          size = parseInt(sizeRes.stdout.trim(), 10) || 0;
-        }
-
-        files.push({
-          path: filePath,
-          mode,
-          size,
-          sha256,
-        });
-      }
+    let manifestObj: WorkspaceManifest;
+    try {
+      manifestObj = JSON.parse(manifestRes.stdout);
+    } catch (e) {
+      return fail(`invalid manifest JSON produced: ${manifestRes.stdout.slice(0, 200)}`);
     }
 
-    const manifest: WorkspaceManifest = {
-      files,
-      deleted,
-      generated_at: new Date().toISOString(),
-    };
-
-    const manifestJson = JSON.stringify(manifest, null, 2);
+    const manifestJson = JSON.stringify(manifestObj, null, 2);
     const redactedManifest = redactText(manifestJson, input.secrets);
     const manifestBytes = Buffer.from(redactedManifest, "utf8");
 
     // 6. Record artifacts and events
+    // workspace_manifest artifact via putArtifact (must verify result)
+    const storedManifest = await input.sink.putArtifact(
+      input.runId,
+      "workspace_manifest",
+      `runs/${input.runId}/workspace-manifest.json`,
+      manifestBytes,
+      "application/json",
+    );
+    if (!storedManifest) {
+      return fail("putArtifact did not store the workspace manifest");
+    }
+
     // workspace_ref event
     input.sink.appendEvent(input.runId, "workspace_ref", {
       ref: targetRef,
@@ -258,15 +279,6 @@ export async function captureWorkspace(input: {
       "workspace_ref",
       `runs/${input.runId}/workspace_ref`,
       `${targetRef}@${shadowCommitSha}`,
-    );
-
-    // workspace_manifest artifact
-    await input.sink.putArtifact(
-      input.runId,
-      "workspace_manifest",
-      `runs/${input.runId}/workspace-manifest.json`,
-      manifestBytes,
-      "application/json",
     );
 
     return {
