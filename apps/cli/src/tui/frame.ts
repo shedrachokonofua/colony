@@ -173,9 +173,9 @@ export function renderFrame(
     const hints =
       "q:quit  j/k:move  h/l:pane  a:approve  R:replan  A:abandon  r:retry  s:stop  u:unblock  m:merge";
     const last = state.lastAction
-      ? ` [${state.lastAction.ok ? "OK" : "ERR"}: ${state.lastAction.text}]`
+      ? `[${state.lastAction.ok ? "OK" : "ERR"}: ${state.lastAction.text}] `
       : "";
-    statusText = truncate(`${state.statusLine || hints}${last}`, cols);
+    statusText = truncate(`${last}${state.statusLine || hints}`, cols);
   }
   outRows.push(fit(statusText, cols));
 

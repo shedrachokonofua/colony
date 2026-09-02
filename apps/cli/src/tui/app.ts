@@ -128,8 +128,20 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
           child.on("error", reject);
         });
 
-        const content = readFileSync(tmpPath, "utf8").trim();
-        return content.length > 0 ? content : null;
+        const content = readFileSync(tmpPath, "utf8");
+        // Ignore lines starting with # comments and whitespace
+        const nonCommentLines = content
+          .split("\n")
+          .filter((line) => !line.trim().startsWith("#"))
+          .join("\n")
+          .trim();
+        if (
+          nonCommentLines.length === 0 ||
+          content.trim() === initialText.trim()
+        ) {
+          return null;
+        }
+        return nonCommentLines;
       } catch {
         return null;
       } finally {
@@ -162,6 +174,8 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
       const scopesRes = await deps.client.get<ScopesResponse>("/scopes", {
         limit: 100,
       });
+      // Clear transient statusLine on successful poll
+      state.statusLine = "";
       const scopes: ScopeRow[] = (scopesRes.scopes ?? []).map((s) => ({
         id: s.id,
         title: s.title ?? "(untitled)",
@@ -260,6 +274,11 @@ export function createTuiApp(deps: CreateTuiAppOptions): TuiApp {
           if (state.feedLines.length > MAX_FEED_LINES) {
             state.feedLines = state.feedLines.slice(-MAX_FEED_LINES);
           }
+        } else {
+          // No running run on selected scope
+          activeRunId = null;
+          seenEventIds.clear();
+          state.feedLines = [];
         }
       } else {
         state.tasks = [];

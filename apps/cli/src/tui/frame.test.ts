@@ -81,7 +81,7 @@ describe("renderFrame", () => {
       "                            │                                                   \n" +
       "                            │                                                   \n" +
       "                            │                                                   \n" +
-      "q:quit  j/k:move  h/l:pane  a:approve  R:replan  A:abandon  r:retry  s:stop  u:…";
+      "[OK: Approved plan] q:quit  j/k:move  h/l:pane  a:approve  R:replan  A:abandon …";
 
     expect(output).toBe(expected);
   });

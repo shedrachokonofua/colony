@@ -260,4 +260,162 @@ describe("createTuiApp", () => {
       { path: "/tasks/task-10/retry", body: undefined },
     ]);
   });
+
+  it("clears feedLines and cursor state when running run finishes or scope has no running run", async () => {
+    const clock = new FakeClock();
+    let pollCount = 0;
+    const outWrites: string[] = [];
+
+    const fakeClient: ColonyClient = {
+      baseUrl: "http://localhost:4000",
+      async get<T>(path: string): Promise<T> {
+        if (path === "/scopes") {
+          return {
+            scopes: [{ id: "col-1", title: "Scope 1", status: "active" }],
+          } as unknown as T;
+        }
+        if (path === "/scopes/col-1") {
+          pollCount++;
+          return {
+            scope: { id: "col-1", title: "Scope 1", status: "active" },
+            tasks: [],
+            runs:
+              pollCount === 1
+                ? [
+                    {
+                      id: "run-1",
+                      kind: "implement",
+                      task_id: null,
+                      model_id: "sonnet",
+                      status: "running",
+                      started_at: "2026-09-02T00:00:00Z",
+                      finished_at: null,
+                    },
+                  ]
+                : [
+                    {
+                      id: "run-1",
+                      kind: "implement",
+                      task_id: null,
+                      model_id: "sonnet",
+                      status: "success",
+                      started_at: "2026-09-02T00:00:00Z",
+                      finished_at: "2026-09-02T00:01:00Z",
+                    },
+                  ],
+          } as unknown as T;
+        }
+        if (path === "/runs/run-1/events") {
+          return {
+            events: [
+              {
+                id: 1,
+                run_id: "run-1",
+                at: "2026-09-02T00:00:01Z",
+                event: "started",
+                detail_json: "{}",
+              },
+            ],
+            has_more: false,
+            oldest_id: 1,
+            newest_id: 1,
+          } as unknown as T;
+        }
+        throw new Error(`get ${path}`);
+      },
+      async post<T>(): Promise<T> {
+        throw new Error("post");
+      },
+      async put<T>(): Promise<T> {
+        throw new Error("put");
+      },
+      async raw(): Promise<Response> {
+        throw new Error("raw");
+      },
+    };
+
+    let inputs = [null, "q"];
+    const app = createTuiApp({
+      client: fakeClient,
+      clock,
+      out: (s) => outWrites.push(s),
+      in: () => inputs.shift() ?? null,
+      cols: 80,
+      rows: 24,
+    });
+
+    await app.start();
+
+    const frames = outWrites.filter((s) => s.includes("\u001b[2J"));
+    expect(frames.length).toBeGreaterThan(1);
+    expect(frames[0]).toContain("#1 started");
+    // After poll 2, run-1 is no longer running, so feed should be cleared
+    expect(frames[frames.length - 1]).not.toContain("#1 started");
+  });
+
+  it("handles replan cancellation when feedback is unchanged or comment-only", async () => {
+    const clock = new FakeClock();
+    const postCalls: { path: string; body?: unknown }[] = [];
+    let editorPromptGiven = "";
+
+    const fakeClient: ColonyClient = {
+      baseUrl: "http://localhost:4000",
+      async get<T>(path: string): Promise<T> {
+        if (path === "/scopes") {
+          return {
+            scopes: [
+              { id: "col-plan", title: "Planning Scope", status: "planning" },
+            ],
+          } as unknown as T;
+        }
+        if (path === "/scopes/col-plan") {
+          return {
+            scope: {
+              id: "col-plan",
+              title: "Planning Scope",
+              status: "planning",
+            },
+            tasks: [],
+            runs: [],
+          } as unknown as T;
+        }
+        throw new Error(`get ${path}`);
+      },
+      async post<T>(path: string, body?: unknown): Promise<T> {
+        postCalls.push({ path, body });
+        return {} as unknown as T;
+      },
+      async put<T>(): Promise<T> {
+        throw new Error("put");
+      },
+      async raw(): Promise<Response> {
+        throw new Error("raw");
+      },
+    };
+
+    const inputs = ["R", "q"];
+    const outWrites: string[] = [];
+
+    const app = createTuiApp({
+      client: fakeClient,
+      clock,
+      out: (s) => outWrites.push(s),
+      in: () => inputs.shift() ?? null,
+      cols: 80,
+      rows: 24,
+      editor: async (prompt) => {
+        editorPromptGiven = prompt;
+        // User quits editor leaving only comment lines unchanged
+        return null;
+      },
+    });
+
+    await app.start();
+
+    expect(editorPromptGiven).toContain("replan");
+    expect(postCalls.length).toBe(0);
+    const lastFrame =
+      outWrites.filter((s) => s.includes("\u001b[2J")).pop() ?? "";
+    expect(lastFrame).toContain("Replan canceled");
+  });
 });
