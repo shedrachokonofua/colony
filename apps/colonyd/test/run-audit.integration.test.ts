@@ -1,7 +1,13 @@
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -48,7 +54,10 @@ const ENVELOPE = {
 function initGitRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
   execSync("git init -b main", { cwd: dir, stdio: "pipe" });
-  execSync('git config user.email "colony-test@example.com"', { cwd: dir, stdio: "pipe" });
+  execSync('git config user.email "colony-test@example.com"', {
+    cwd: dir,
+    stdio: "pipe",
+  });
   execSync('git config user.name "colony-test"', { cwd: dir, stdio: "pipe" });
   writeFileSync(join(dir, "README.md"), "test repo\n", "utf8");
   execSync("git add README.md", { cwd: dir, stdio: "pipe" });
@@ -87,7 +96,10 @@ async function startModelStub(): Promise<ModelStubHandle> {
             .join("\n")
         : String(lastUser?.content ?? "");
 
-      let chunks: Array<{ delta: Record<string, unknown>; finish: string | null }>;
+      let chunks: Array<{
+        delta: Record<string, unknown>;
+        finish: string | null;
+      }>;
 
       if (content.includes("## Critique")) {
         // Architect critique pass: return approval
@@ -123,7 +135,10 @@ async function startModelStub(): Promise<ModelStubHandle> {
           },
           { delta: {}, finish: "tool_calls" },
         ];
-      } else if (content.includes("## Phase: survey") || content.includes("## Phase: decompose")) {
+      } else if (
+        content.includes("## Phase: survey") ||
+        content.includes("## Phase: decompose")
+      ) {
         // If the model hasn't called bash yet in this phase, emit a bash tool call
         const hasToolResult = (parsed.messages ?? []).some(
           (m) => m.role === "tool",
@@ -299,7 +314,10 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
 
     const toolCallEvents = events.filter((e) => e.event === "tool_call");
     expect(toolCallEvents.length).toBeGreaterThanOrEqual(1);
-    const toolCallDetail = JSON.parse(toolCallEvents[0]!.detail_json) as Record<string, unknown>;
+    const toolCallDetail = JSON.parse(toolCallEvents[0]!.detail_json) as Record<
+      string,
+      unknown
+    >;
     expect(typeof toolCallDetail["args"]).toBe("object");
     expect(toolCallDetail["args"]).not.toBeNull();
     expect(typeof toolCallDetail["duration_ms"]).toBe("number");
@@ -307,7 +325,10 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
     // 2. Assert command run event
     const commandEvents = events.filter((e) => e.event === "command");
     expect(commandEvents.length).toBeGreaterThanOrEqual(1);
-    const commandDetail = JSON.parse(commandEvents[0]!.detail_json) as Record<string, unknown>;
+    const commandDetail = JSON.parse(commandEvents[0]!.detail_json) as Record<
+      string,
+      unknown
+    >;
     expect(typeof commandDetail["command"]).toBe("string");
     expect(typeof commandDetail["exit_code"]).toBe("number");
 
@@ -323,7 +344,9 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
     // Read stored bytes from <dir>/runs/<run_id>/transcript.jsonl.gz (or using its ref under artifactsDir)
     const storedBytesPath = join(artifactsDir, transcriptArtifact!.ref);
     const storedBytes = readFileSync(storedBytesPath);
-    const computedSha256 = createHash("sha256").update(storedBytes).digest("hex");
+    const computedSha256 = createHash("sha256")
+      .update(storedBytes)
+      .digest("hex");
     expect(transcriptArtifact!.sha256).toBe(computedSha256);
 
     // 4. Assert audit row with action run.finished carrying {run_id, status}
@@ -332,7 +355,10 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
       (e) => e.action === "run.finished",
     );
     expect(runFinishedAudit).toBeDefined();
-    const auditDetail = JSON.parse(runFinishedAudit!.detail_json) as Record<string, unknown>;
+    const auditDetail = JSON.parse(runFinishedAudit!.detail_json) as Record<
+      string,
+      unknown
+    >;
     expect(auditDetail["run_id"]).toBe(run.id);
     expect(auditDetail["status"]).toBe("succeeded");
   }, 30_000);
