@@ -142,6 +142,7 @@ async function runScenario(options: {
   failUpload?: boolean;
   throwOnUpload?: boolean;
   packet?: Record<string, unknown>;
+  sessionsDir?: string;
 }): Promise<RunScenario> {
   const server = createServer((request, response) => {
     let body = "";
@@ -239,6 +240,7 @@ async function runScenario(options: {
     {
       model,
       scratchDir,
+      ...(options.sessionsDir ? { sessionsDir: options.sessionsDir } : {}),
       broker: { resolve: () => "test-key" },
       maxTurns: 3,
       runTimeoutMs: 30_000,
@@ -337,6 +339,36 @@ describe("run transcript upload", () => {
     expect(existsSync(kept)).toBe(true);
     expect(readFileSync(kept, "utf8")).toContain('"type":"session"');
     rmSync(kept, { force: true });
+  });
+
+  it("leaves a sessionsDir journal in place when upload fails", async () => {
+    // Production colonyd always sets sessionsDir, pinning the JSONL at
+    // <sessionsDir>/sessions/<runId>/session.jsonl — outside the run dir.
+    // A failed upload must keep that file where it is, not relocate it into
+    // ephemeral /tmp (a pod restart would then lose the only copy).
+    const sessionsDir = mkdtempSync(join(tmpdir(), "colony-sessions-"));
+    scratchDirs.push(sessionsDir);
+    const runId = "upload-fail-sessions-dir";
+    const { result, sink, runDir } = await runScenario({
+      runId,
+      failUpload: true,
+      sessionsDir,
+    });
+
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(VERDICT);
+
+    const failures = sink.events.filter(
+      (entry) => entry.event === "transcript_upload_failed",
+    );
+    expect(failures).toHaveLength(1);
+    expect(sink.artifacts).toHaveLength(0);
+
+    const journal = join(sessionsDir, "sessions", runId, "session.jsonl");
+    expect(existsSync(runDir)).toBe(false);
+    expect(existsSync(journal)).toBe(true);
+    expect(readFileSync(journal, "utf8")).toContain('"type":"session"');
+    expect(existsSync(keptTranscriptPath(runId))).toBe(false);
   });
 
   it("turns a throwing sink into transcript_upload_failed without changing the result or leaking the run dir", async () => {
