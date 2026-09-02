@@ -134,6 +134,15 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
     provider: FakeProviderAdapter,
   ): unknown {
     if (environment.role === "architect") {
+      // Validation-failure replans: the fake cannot repair anything, and says
+      // so - the scope blocks with this reason and the operator's "Run
+      // validation again" (scope unblock) is the way forward.
+      if ((packet as { kind?: unknown }).kind === "architect_scope_extension") {
+        return {
+          kind: "human_required",
+          reason: "fake architect cannot repair a failed validation",
+        };
+      }
       if (script.singleTask) {
         return {
           kind: "architect_decomposition",

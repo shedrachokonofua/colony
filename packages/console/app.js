@@ -2630,10 +2630,15 @@ function renderValidationCard(scope, detail) {
             })()}
           </p>`
         : nothing}
-      ${scope.status === "validating" && failed
+      ${(scope.status === "validating" || scope.status === "blocked") && failed
         ? html`<button
             class="btn btn-solid validation-retry"
-            @click=${() => mutate(`/scopes/${scope.id}/revalidate`)}
+            @click=${() =>
+              mutate(
+                scope.status === "blocked"
+                  ? `/scopes/${scope.id}/unblock`
+                  : `/scopes/${scope.id}/revalidate`,
+              )}
           >
             Run validation again
           </button>`

@@ -926,13 +926,16 @@ test.describe("desktop console", () => {
               return false;
             }
           });
-          return data.scope.status === "validating" && hasFailed
-            ? "validating-failed"
+          // The failed validate dispatches a replanning architect; the fake
+          // answers human_required, so the scope lands in `blocked` with
+          // that reason and the operator's retry is the way forward.
+          return data.scope.status === "blocked" && hasFailed
+            ? "blocked-failed"
             : "";
         },
         { timeout: 60000, intervals: [500, 1000] },
       )
-      .toBe("validating-failed");
+      .toBe("blocked-failed");
 
     await page.goto(`/#/${failScopeId}`);
     await expect(page.locator(".sheet-head").first()).toBeVisible({
@@ -979,6 +982,11 @@ test.describe("desktop console", () => {
     await expect(page.getByText("boom").first()).toBeVisible({
       timeout: 5000,
     });
+    await expect(
+      page.locator(".banner", {
+        hasText: "fake architect cannot repair a failed validation",
+      }),
+    ).toBeVisible({ timeout: 5000 });
     const retryBtn = page.locator(".validation-retry");
     await expect(retryBtn).toBeVisible();
     await expect(retryBtn).toHaveText("Run validation again");
