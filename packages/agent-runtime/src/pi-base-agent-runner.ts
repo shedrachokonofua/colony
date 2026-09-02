@@ -72,6 +72,7 @@ import {
   captureTranscript,
   quarantineTranscript,
 } from "./transcript-capture.js";
+import { captureWorkspace } from "./workspace-capture.js";
 import { buildSandboxTools, verifyPushedHead } from "./sandbox-tools.js";
 import { RunEvidenceCollector } from "./run-evidence.js";
 import {
@@ -1495,6 +1496,35 @@ export class PiBaseAgentRunner implements PiRunner {
         // ephemeral /tmp would lose it on a pod restart.
         if (!uploaded && isInsideDir(cwd, sessionFile)) {
           quarantineTranscript(runId, sessionFile);
+        }
+      }
+      // (1.5) Workspace capture: for developer and reviewer roles only (credential-carrying roles).
+      // Architect and validate roles are skipped, as are scratch-mode runs (no repo / base_commit).
+      const repoRef = packetRepo(request.packet);
+      if (
+        (this.profile.role === "developer" ||
+          this.profile.role === "reviewer") &&
+        repoRef &&
+        handle &&
+        this.options.auditSink
+      ) {
+        try {
+          await captureWorkspace({
+            runId,
+            handle,
+            repo: repoRef,
+            parentSha: repoRef.base_commit,
+            secrets: runToken ? [runToken] : [],
+            sink: this.options.auditSink,
+          });
+        } catch (err) {
+          this.options.auditSink.appendEvent(
+            runId,
+            "workspace_capture_failed",
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
         }
       }
       // (2) Ordered teardown.
