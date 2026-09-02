@@ -93,9 +93,7 @@ describe("demoWorld", () => {
       const detail = world.runningDetails[entry.scope_id];
       expect(detail).toBeDefined();
       expect(detail.scope.id).toBe(entry.scope_id);
-      expect(detail.tasks.some((task) => task.id === entry.task_id)).toBe(
-        true,
-      );
+      expect(detail.tasks.some((task) => task.id === entry.task_id)).toBe(true);
     }
     // The rows' scopes belong to the project whose tab renders them.
     const owned = new Set(

@@ -42,6 +42,29 @@ export interface DemoProject {
   repositories: Array<{ repo_id: string; repo_path: string }>;
 }
 
+/** One GET /projects/:name/running row, as the demo world builds it. */
+export interface DemoRunningEntry {
+  scope_id: string;
+  scope_title: string | null;
+  task_id: string;
+  task_title: string | null;
+  task_state: string;
+  attempt: number;
+  run: {
+    id: string;
+    scope_id: string;
+    task_id: string;
+    kind: string;
+    status: string;
+    model_id: string | null;
+    head_sha: string | null;
+    error: string | null;
+    evidence_json: string | null;
+    started_at: string;
+    finished_at: string | null;
+  } | null;
+}
+
 export interface DemoFile {
   id: string;
   filename: string;
@@ -93,6 +116,26 @@ export function buildDemoDetail(now: number): {
   tasks: Array<Record<string, unknown>>;
   deps: Array<{ task_id: string; depends_on_task_id: string }>;
   runs: Array<Record<string, unknown>>;
+};
+
+/**
+ * The demo project's Running-tab rows, plus the detail payloads of the
+ * scopes that own them so a row click can select its task offline.
+ */
+export function buildDemoRunning(
+  now: number,
+  scopes: readonly DemoScope[],
+): {
+  entries: DemoRunningEntry[];
+  details: Record<
+    string,
+    {
+      scope: DemoScope;
+      tasks: Array<Record<string, unknown>>;
+      deps: Array<{ task_id: string; depends_on_task_id: string }>;
+      runs: Array<Record<string, unknown>>;
+    }
+  >;
 };
 
 export function buildDemoRunEvents(now: number): Array<{

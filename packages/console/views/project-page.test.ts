@@ -312,9 +312,7 @@ describe("project-page tabs", () => {
       row.querySelector('.running-meta .badge[data-state="running"]')
         ?.textContent,
     ).toBe("running");
-    expect(row.querySelector(".running-attempt").textContent).toBe(
-      "attempt 2",
-    );
+    expect(row.querySelector(".running-attempt").textContent).toBe("attempt 2");
     expect(row.querySelector(".running-run-info").textContent).toBe(
       "build · deepseek-v4-flash",
     );

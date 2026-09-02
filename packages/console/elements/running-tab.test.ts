@@ -146,9 +146,9 @@ describe("running-tab rows", () => {
       "mr_open",
     );
     expect(row.querySelector(".running-duration").textContent).toBe("—");
-    expect(row.querySelector(".running-duration").classList.contains("live")).toBe(
-      false,
-    );
+    expect(
+      row.querySelector(".running-duration").classList.contains("live"),
+    ).toBe(false);
   });
 
   it("bubbles colony-open-task from the row body, and only colony-open-scope from its chip", async () => {
@@ -227,7 +227,9 @@ describe("running-tab live durations", () => {
     ticker.tick();
     await el.updateComplete;
     expect(duration.textContent).toBe("1m 00s");
-    expect(duration.getAttribute("aria-label")).toMatch(/^running for 1 minute/);
+    expect(duration.getAttribute("aria-label")).toMatch(
+      /^running for 1 minute/,
+    );
   });
 
   it("renders a finished run's duration statically", async () => {

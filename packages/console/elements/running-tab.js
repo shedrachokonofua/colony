@@ -102,19 +102,23 @@ export class RunningTab extends ColonyElement {
       tabindex="0"
       role="button"
       @click=${openTask}
-      @keydown=${/** @param {KeyboardEvent} event */ (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        openTask();
-      }}
+      @keydown=${
+        /** @param {KeyboardEvent} event */ (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openTask();
+        }
+      }
     >
       <div class="running-main">
         <span
           class="scope-chip mono"
-          @click=${/** @param {MouseEvent} event */ (event) => {
-            event.stopPropagation();
-            this.#emit("colony-open-scope", { id: row.scopeId });
-          }}
+          @click=${
+            /** @param {MouseEvent} event */ (event) => {
+              event.stopPropagation();
+              this.#emit("colony-open-scope", { id: row.scopeId });
+            }
+          }
           >${row.scopeTitle}</span
         >
         <span class="running-task-title">${row.taskTitle}</span>
@@ -151,9 +155,10 @@ export class RunningTab extends ColonyElement {
   }
 
   render() {
-    const entries = /** @type {import("../project-helpers.js").RunningEntry[]} */ (
-      this.entries ?? []
-    );
+    const entries =
+      /** @type {import("../project-helpers.js").RunningEntry[]} */ (
+        this.entries ?? []
+      );
     if (!entries.length) return this.#empty();
     return html`<div class="running-list">
       ${repeat(

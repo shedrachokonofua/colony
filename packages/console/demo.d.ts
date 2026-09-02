@@ -1,3 +1,5 @@
+import type { DemoRunningEntry } from "./demo-data.d.ts";
+
 /** One demo scope row (buildDemoScopes / buildDemoDetail). */
 export interface DemoScope {
   id: string;
@@ -14,29 +16,6 @@ export interface DemoScope {
   approvals?: string;
   mr_iid?: number | null;
   context_doc?: string;
-}
-
-/** One GET /projects/:name/running row, as the demo world serves it. */
-export interface DemoRunningEntry {
-  scope_id: string;
-  scope_title: string | null;
-  task_id: string;
-  task_title: string | null;
-  task_state: string;
-  attempt: number;
-  run: {
-    id: string;
-    scope_id: string;
-    task_id: string;
-    kind: string;
-    status: string;
-    model_id: string | null;
-    head_sha: string | null;
-    error: string | null;
-    evidence_json: string | null;
-    started_at: string;
-    finished_at: string | null;
-  } | null;
 }
 
 /** One demo project row (buildDemoProject / buildFillerProjects). */

@@ -84,9 +84,7 @@ export function setProjectTab(app, tab) {
   app.briefOpen = false;
   const projectName = routeProjectName();
   if (projectName) {
-    app.replaceHref(
-      serializeProjectTabHref(location.hash, projectName, tab),
-    );
+    app.replaceHref(serializeProjectTabHref(location.hash, projectName, tab));
   }
 }
 

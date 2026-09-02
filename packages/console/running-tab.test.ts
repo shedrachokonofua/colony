@@ -14,6 +14,8 @@ import {
   parseProjectTab,
   serializeProjectTabHref,
 } from "./project-helpers.js";
+import type { ProjectTab } from "./project-helpers.d.ts";
+import type { DerivedRunningRow, RunningEntry } from "./project-helpers.d.ts";
 
 // demo.js reads location.search at module top level and bun tests run with
 // no location global, so seed one and pull demo.js in after it. (demo.test.ts
@@ -85,7 +87,8 @@ describe("Running tab - Tab routing round-trip", () => {
   });
 
   it("round-trips every tab through parse(serialize(...))", () => {
-    for (const tab of ["scopes", "running", "settings"]) {
+    const tabs: ProjectTab[] = ["scopes", "running", "settings"];
+    for (const tab of tabs) {
       const href = serializeProjectTabHref("#/project/colony", "colony", tab);
       expect(parseProjectTab(href)).toBe(tab);
     }
@@ -227,18 +230,22 @@ describe("Running tab - Demo mode and live ticker", () => {
       const detail = details[derived.scopeId];
       expect(detail).toBeDefined();
       expect(detail.scope.id).toBe(derived.scopeId);
-      expect(detail.tasks.some((task) => task.id === derived.taskId)).toBe(
-        true,
-      );
+      expect(
+        detail.tasks.some(
+          (task: Record<string, unknown>) => task.id === derived.taskId,
+        ),
+      ).toBe(true);
     }
   });
 
   it("demo rows carry a live run and a past-run row, both typed for the row model", () => {
     const now = Date.parse("2026-08-30T12:00:00.000Z");
     const { entries } = buildDemoRunning(now, buildDemoScopes(now));
-    const derived = entries.map((entry) => deriveRunningRow(entry));
-    const live = derived.filter((row) => row.isRunning);
-    const idle = derived.filter((row) => !row.hasRun);
+    const derived = entries.map((entry: RunningEntry) =>
+      deriveRunningRow(entry),
+    );
+    const live = derived.filter((row: DerivedRunningRow) => row.isRunning);
+    const idle = derived.filter((row: DerivedRunningRow) => !row.hasRun);
     expect(live.length).toBe(1);
     expect(live[0].runModel).toBeTruthy();
     expect(live[0].startedAt).toBeTruthy();

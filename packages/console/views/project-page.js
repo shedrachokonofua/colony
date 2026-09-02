@@ -357,33 +357,33 @@ export class ProjectPage extends ColonyElement {
           : this.tab === "settings"
             ? this.#rail()
             : html`<section class="project-scopes">
-                ${(page.total ?? 0) > 0 && scopes.length === 0
-                  ? html`<div class="rack-empty">
-                      <p>Past the last page.</p>
-                      <a class="btn btn-solid" href=${hrefForPage(base, 1)}
-                        >Back to page 1</a
-                      >
-                      <a class="btn btn-quiet" href="#/">All projects</a>
-                    </div>`
-                  : scopes.length
-                    ? html`<div class="rack">
-                        ${repeat(
-                          scopes,
-                          (scope) => scope.id,
-                          (s) => this.#scopeCard(s),
-                        )}
+                  ${(page.total ?? 0) > 0 && scopes.length === 0
+                    ? html`<div class="rack-empty">
+                        <p>Past the last page.</p>
+                        <a class="btn btn-solid" href=${hrefForPage(base, 1)}
+                          >Back to page 1</a
+                        >
+                        <a class="btn btn-quiet" href="#/">All projects</a>
                       </div>`
-                    : html`<p class="rack-empty">
-                        No scopes in this project yet.
-                      </p>`}
-              </section>
-              ${this.#pager({
-                base,
-                page: page.page ?? 1,
-                total: page.total ?? 0,
-                items: scopes.length,
-                label: "Project scope pages",
-              })}`}
+                    : scopes.length
+                      ? html`<div class="rack">
+                          ${repeat(
+                            scopes,
+                            (scope) => scope.id,
+                            (s) => this.#scopeCard(s),
+                          )}
+                        </div>`
+                      : html`<p class="rack-empty">
+                          No scopes in this project yet.
+                        </p>`}
+                </section>
+                ${this.#pager({
+                  base,
+                  page: page.page ?? 1,
+                  total: page.total ?? 0,
+                  items: scopes.length,
+                  label: "Project scope pages",
+                })}`}
       </div>`;
   }
 }
