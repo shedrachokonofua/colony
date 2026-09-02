@@ -542,6 +542,9 @@ describe("operator controls", () => {
     expect(
       isInfraError('Agent "Main" was replaced during session initialization.'),
     ).toBe(true);
+    expect(
+      isInfraError("GitLab POST /projects/49/access_tokens timed out"),
+    ).toBe(true);
     expect(isInfraError("envelope invalid")).toBe(false);
     expect(isInfraError("timeout_without_envelope")).toBe(false);
     expect(isInfraError(null)).toBe(false);
