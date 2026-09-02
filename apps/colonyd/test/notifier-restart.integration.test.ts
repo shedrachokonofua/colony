@@ -23,7 +23,7 @@ function createRecordingFetch(recorded: RecordedCall[]): typeof fetch {
     const url = typeof input === "string" ? input : input.toString();
     recorded.push({ url, init });
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 }
 
 describe("notifier restart integration", () => {

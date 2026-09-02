@@ -86,6 +86,10 @@ export function createNotifierLoop(deps: {
 
     const nowFn = deps.now ?? (() => Date.now());
 
+    let currentCursorId: number | null = Number.isFinite(afterId)
+      ? afterId
+      : null;
+
     for (const row of rows) {
       const now = nowFn();
       const event = classifyAuditRow(row, classifyCtx);
@@ -95,7 +99,15 @@ export function createNotifierLoop(deps: {
           await deliverEvent(finalEvent);
         }
       }
-      deps.store.setMetaValue(NOTIFIER_CURSOR_KEY, String(row.id));
+      if (currentCursorId === null || row.id > currentCursorId) {
+        currentCursorId = row.id;
+        const freshMeta = deps.store.getMetaValue(NOTIFIER_CURSOR_KEY);
+        const freshId =
+          freshMeta !== null ? Number.parseInt(freshMeta, 10) : null;
+        if (freshId === null || !Number.isFinite(freshId) || row.id > freshId) {
+          deps.store.setMetaValue(NOTIFIER_CURSOR_KEY, String(row.id));
+        }
+      }
     }
 
     const dueDigests = coalescer.dueDigests(nowFn());
@@ -104,8 +116,16 @@ export function createNotifierLoop(deps: {
     }
   };
 
+  let notifierRunning = false;
+  let notifierRequested = false;
+
   return {
     async run(): Promise<void> {
+      if (notifierRunning) {
+        notifierRequested = true;
+        return;
+      }
+      notifierRunning = true;
       try {
         await runPass();
       } catch (err) {
@@ -121,6 +141,12 @@ export function createNotifierLoop(deps: {
         } catch {
           // audit failure must not break the notifier
         }
+      } finally {
+        notifierRunning = false;
+      }
+      if (notifierRequested) {
+        notifierRequested = false;
+        void this.run();
       }
     },
   };

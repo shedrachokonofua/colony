@@ -29,7 +29,7 @@ function createRecordingFetch(
     }
     recorded.push({ url, init });
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 }
 
 describe("notifier loop (unit/headless)", () => {
@@ -244,6 +244,80 @@ describe("notifier loop (unit/headless)", () => {
 
       const cursor = store.getMetaValue("notifier_cursor");
       expect(cursor).toBe(String(lastAuditId.max_id));
+    } finally {
+      await handle.shutdown();
+    }
+  });
+
+  it("single-flight guard coalesces concurrent runs and avoids cursor regression", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-notifier-single-flight-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "test.db");
+    const configPath = join(dir, "colony.yaml");
+
+    writeFileSync(
+      configPath,
+      [
+        "agent_runtime: fake",
+        "allow_literal_keys: true",
+        "hitl:",
+        "  mode: yolo",
+        "notifications:",
+        "  cooldown_s: 300",
+        "  digest_window_s: 300",
+        "  sinks:",
+        "    - kind: ntfy",
+        "      url: https://ntfy.sh/test-topic-slow",
+        "      min_severity: info",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.env["NODE_ENV"] = "test";
+    process.env["AGENT_RUNTIME"] = "fake";
+    process.env["COLONYD_DB_PATH"] = dbPath;
+    process.env["COLONY_CONFIG_PATH"] = configPath;
+    resetEnvCache();
+
+    let fetchCalls = 0;
+    const { promise: fetchGate, resolve: resolveFetchGate } =
+      Promise.withResolvers<void>();
+    const slowFetch: typeof fetch = (async () => {
+      fetchCalls++;
+      await fetchGate;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const handle = await boot({
+      headless: true,
+      notifierFetchImpl: slowFetch,
+    });
+
+    try {
+      const store = handle.ctx.store;
+      const scope = store.createScope({
+        goal: "slow scope",
+        provider_repo_id: "1",
+        provider_repo_path: "fake/repo",
+      });
+
+      store.audit("svc:colonyd", "scope.transition", {
+        scope_id: scope.id,
+        detail: { to: "done" },
+      });
+
+      // Launch multiple concurrent run() calls
+      const p1 = handle.notifier!.run();
+      const p2 = handle.notifier!.run();
+      const p3 = handle.notifier!.run();
+
+      // Release the fetch in flight
+      resolveFetchGate();
+
+      await Promise.all([p1, p2, p3]);
+
+      // Exactly 1 delivery should happen (second runs coalesced / saw cursor updated)
+      expect(fetchCalls).toBe(1);
     } finally {
       await handle.shutdown();
     }
