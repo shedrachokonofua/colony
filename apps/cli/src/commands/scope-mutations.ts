@@ -68,13 +68,14 @@ async function abandon(
 ): Promise<number> {
   const id = cmd.positional[0]!;
   if (cmd.flags.yes !== true) {
-    if (!io.isTty) {
+    if (!canPrompt()) {
       throw new UsageError(
         "abandon is destructive — pass --yes, or run it on a TTY to confirm",
       );
     }
+    // The prompt goes to stderr so --json stdout stays one JSON document.
     if (!confirm(`Abandon scope ${id}? [y/N] `)) {
-      process.stdout.write("aborted\n");
+      process.stderr.write("aborted\n");
       return 0;
     }
   }
@@ -127,9 +128,14 @@ function statusLine(scope: ScopeRow, isTty: boolean): string {
   return `${scope.id}  ${status}${title}\n`;
 }
 
+/** A prompt is answerable only when stdin is the terminal. */
+function canPrompt(): boolean {
+  return process.stdin.isTTY === true;
+}
+
 /** Read the operator's y/N answer from the terminal. */
 function confirm(prompt: string): boolean {
-  process.stdout.write(prompt);
+  process.stderr.write(prompt);
   const buf = Buffer.alloc(256);
   let n = 0;
   try {

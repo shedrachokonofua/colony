@@ -153,6 +153,76 @@ describe("open", () => {
     );
   });
 
+  it("reads the live {projects} key colonyd sends, not just {items}", async () => {
+    const file = goalFile();
+    const { client, calls } = fakeClient({
+      "get /projects": json({
+        projects: [
+          { name: "colony", context_doc: null },
+          { name: "infra", context_doc: null },
+        ],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      }),
+      "post /scopes": json(SCOPE),
+    });
+    const err = captureStderr();
+    try {
+      const code = await run(
+        parseArgs(["open", file, "--project", "colny", "--repo", "/srv/repo"]),
+        client,
+        IO,
+      );
+      expect(code).toBe(2);
+    } finally {
+      err.restore();
+    }
+    expect(calls.some((call) => call.method === "post")).toBe(false);
+    expect(err.text()).toBe(
+      'unknown project "colny" — known projects: colony, infra\n',
+    );
+  });
+
+  it("paginates the live {projects} shape across pages before refusing", async () => {
+    const file = goalFile();
+    let page = 0;
+    const { client, calls } = fakeClient({
+      "get /projects": () => {
+        page += 1;
+        return page === 1
+          ? {
+              projects: Array.from({ length: 100 }, (_, i) => ({
+                name: `p${i}`,
+                context_doc: null,
+              })),
+              total: 101,
+              limit: 100,
+              offset: 0,
+            }
+          : {
+              projects: [{ name: "colony", context_doc: null }],
+              total: 101,
+              limit: 100,
+              offset: 100,
+            };
+      },
+      "post /scopes": json(SCOPE),
+    });
+    const out = captureStdout();
+    try {
+      const code = await run(
+        parseArgs(["open", file, "--project", "colony", "--repo", "/srv/repo"]),
+        client,
+        IO,
+      );
+      expect(code).toBe(0);
+    } finally {
+      out.restore();
+    }
+    expect(calls).toHaveLength(3);
+  });
+
   it("posts anyway with --create-project for an unknown project", async () => {
     const file = goalFile();
     const { client, calls } = fakeClient(openRoute());

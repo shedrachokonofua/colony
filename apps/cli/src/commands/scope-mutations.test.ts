@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,6 +51,35 @@ function captureStderr(): { text: () => string; restore: () => void } {
     text: () => chunks.join(""),
     restore: () => {
       process.stderr.write = original;
+    },
+  };
+}
+
+/**
+ * Stand in a TTY-attached stdin answering with the given line: mocks the
+ * node:fs readSync that confirm() uses, so no real terminal is needed.
+ */
+function stdinAnswer(line: string): { restore: () => void } {
+  const stdin = process.stdin as unknown as { isTTY?: boolean };
+  const originalIsTty = stdin.isTTY;
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  const answer = Buffer.from(line, "utf8");
+  const spy = spyOn(fs, "readSync").mockImplementation(
+    ((_fd: number, buffer: Buffer) => {
+      answer.copy(buffer);
+      return answer.byteLength;
+    }) as unknown as typeof fs.readSync,
+  );
+  return {
+    restore: () => {
+      spy.mockRestore();
+      Object.defineProperty(process.stdin, "isTTY", {
+        value: originalIsTty,
+        configurable: true,
+      });
     },
   };
 }
@@ -198,7 +228,7 @@ describe("abandon", () => {
     expect(out.text()).toBe("col-1  abandoned — Ship the CLI\n");
   });
 
-  it("exits 2 without posting when non-TTY and no --yes", async () => {
+  it("exits 2 without posting when stdin is not a TTY and no --yes", async () => {
     const { client, calls } = fakeClient({
       "post /scopes/col-1/abandon": json(scope({ status: "abandoned" })),
     });
@@ -209,6 +239,52 @@ describe("abandon", () => {
       message: expect.stringContaining("--yes"),
     });
     expect(calls).toHaveLength(0);
+  });
+
+  it("prompts on a TTY even when NO_COLOR disabled io.isTty", async () => {
+    const { client, calls } = fakeClient({
+      "post /scopes/col-1/abandon": json(scope({ status: "abandoned" })),
+    });
+    const out = captureStdout();
+    const err = captureStderr();
+    const answer = stdinAnswer("y\n");
+    try {
+      const code = await run(parseArgs(["abandon", "col-1"]), client, {
+        json: false,
+        isTty: false,
+      });
+      expect(code).toBe(0);
+    } finally {
+      out.restore();
+      err.restore();
+      answer.restore();
+    }
+    expect(calls[0]!.path).toBe("/scopes/col-1/abandon");
+    expect(out.text()).toBe("col-1  abandoned — Ship the CLI\n");
+    expect(err.text()).toBe("Abandon scope col-1? [y/N] ");
+  });
+
+  it("aborts without posting when the operator answers N", async () => {
+    const { client, calls } = fakeClient({
+      "post /scopes/col-1/abandon": json(scope({ status: "abandoned" })),
+    });
+    const out = captureStdout();
+    const err = captureStderr();
+    const answer = stdinAnswer("N\n");
+    try {
+      const code = await run(parseArgs(["abandon", "col-1"]), client, {
+        json: true,
+        isTty: true,
+      });
+      expect(code).toBe(0);
+    } finally {
+      out.restore();
+      err.restore();
+      answer.restore();
+    }
+    expect(calls).toHaveLength(0);
+    expect(out.text()).toBe("");
+    expect(err.text()).toBe("Abandon scope col-1? [y/N] aborted\n");
   });
 });
 
