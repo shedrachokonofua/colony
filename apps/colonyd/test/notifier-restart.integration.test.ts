@@ -79,7 +79,8 @@ describe("notifier restart integration", () => {
 
     await handle.notifier!.run();
     expect(recorded1).toHaveLength(1);
-    const firstBody = typeof recorded1[0].init?.body === "string" ? recorded1[0].init.body : "";
+    const firstBody =
+      typeof recorded1[0].init?.body === "string" ? recorded1[0].init.body : "";
     expect(firstBody).toContain(`Scope ${scope1.id} transitioned to done.`);
 
     // Shut down first instance
@@ -112,7 +113,10 @@ describe("notifier restart integration", () => {
 
       await handle.notifier!.run();
       expect(recorded2).toHaveLength(1);
-      const secondBody = typeof recorded2[0].init?.body === "string" ? recorded2[0].init.body : "";
+      const secondBody =
+        typeof recorded2[0].init?.body === "string"
+          ? recorded2[0].init.body
+          : "";
       expect(secondBody).toContain(`Scope ${scope2.id} transitioned to done.`);
       expect(secondBody).not.toContain(scope1.id);
     } finally {

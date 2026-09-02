@@ -18,7 +18,10 @@ interface RecordedCall {
   init?: RequestInit;
 }
 
-function createRecordingFetch(recorded: RecordedCall[], shouldFail = false): typeof fetch {
+function createRecordingFetch(
+  recorded: RecordedCall[],
+  shouldFail = false,
+): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (shouldFail) {
@@ -90,11 +93,22 @@ describe("notifier loop (unit/headless)", () => {
       );
 
       // Transition queued -> running -> blocked
-      store.transitionTask(task.id, task.state_version, "running", "svc:colonyd");
+      store.transitionTask(
+        task.id,
+        task.state_version,
+        "running",
+        "svc:colonyd",
+      );
       const runningTask = store.getTask(task.id)!;
-      store.transitionTask(task.id, runningTask.state_version, "blocked", "svc:colonyd", {
-        blocked_reason: "Dependencies unavailable",
-      });
+      store.transitionTask(
+        task.id,
+        runningTask.state_version,
+        "blocked",
+        "svc:colonyd",
+        {
+          blocked_reason: "Dependencies unavailable",
+        },
+      );
 
       // Seed audit row for task.transition to blocked
       store.audit("svc:colonyd", "task.transition", {
@@ -115,7 +129,8 @@ describe("notifier loop (unit/headless)", () => {
       expect(recorded.length).toBeGreaterThanOrEqual(1);
       const lastPayload = recorded[recorded.length - 1];
       expect(lastPayload.url).toBe("https://ntfy.sh/test-topic-123");
-      const bodyText = typeof lastPayload.init?.body === "string" ? lastPayload.init.body : "";
+      const bodyText =
+        typeof lastPayload.init?.body === "string" ? lastPayload.init.body : "";
       expect(bodyText).toContain("Dependencies unavailable");
 
       // Verify cursor is persisted

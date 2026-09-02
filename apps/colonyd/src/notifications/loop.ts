@@ -1,4 +1,7 @@
-import { NOTIFICATION_SEVERITY_ORDER, type ResolvedNotificationsConfig } from "@colony/config";
+import {
+  NOTIFICATION_SEVERITY_ORDER,
+  type ResolvedNotificationsConfig,
+} from "@colony/config";
 import type { AuditRow, Store } from "@colony/core";
 import type { Logger } from "../logging.js";
 import { SERVICE_ACTOR } from "../context.js";
@@ -107,7 +110,10 @@ export function createNotifierLoop(deps: {
         await runPass();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        deps.logger.error({ phase: "notifier", error: message }, "tick.phase_error");
+        deps.logger.error(
+          { phase: "notifier", error: message },
+          "tick.phase_error",
+        );
         try {
           deps.store.audit(SERVICE_ACTOR, "tick.phase_error", {
             detail: { phase: "notifier", error: message },
