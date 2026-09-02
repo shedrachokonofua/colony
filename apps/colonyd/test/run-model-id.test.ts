@@ -83,6 +83,7 @@ it("records the configured primary model_id on architect runs and exposes it via
 
   const scope = handle.ctx.store.createScope({
     goal: "model id harness",
+    title: "model id harness",
     provider_repo_id: repoId,
     provider_repo_path: repo.path,
   });

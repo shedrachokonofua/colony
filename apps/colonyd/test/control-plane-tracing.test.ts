@@ -285,6 +285,7 @@ describe("control-plane tracing", () => {
       // implement run and must record exactly one tick span.
       const scope = store.createScope({
         goal: "traced dispatch",
+        title: "traced dispatch",
         provider_repo_id: "fake-repo",
         provider_repo_path: "so/fake-e2e",
       });

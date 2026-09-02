@@ -93,6 +93,7 @@ describe("project context packets", () => {
     const { store, app } = appWithStore();
     const scope = await createScope(app, {
       goal: "ship the demo endpoint",
+      title: "ship the demo endpoint",
       project: "demo",
       repo: { path: "so/demo" },
     });
@@ -134,6 +135,7 @@ describe("project context packets", () => {
     const { store, app } = appWithStore();
     const scope = await createScope(app, {
       goal: "ungrouped work",
+      title: "ungrouped work",
       repo: { path: "so/demo" },
     });
     const packet = buildArchitectPacket(
@@ -201,6 +203,7 @@ describe("project reference files in packets", () => {
 
     const scope = await createScope(app, {
       goal: "ship",
+      title: "ship",
       project: "demo",
       repo: { path: "so/demo" },
     });
@@ -256,6 +259,7 @@ describe("project reference files in packets", () => {
     ).toBe(201);
     const scope = await createScope(app, {
       goal: "files only",
+      title: "files only",
       project: "fileonly",
       repo: { path: "so/demo" },
     });
@@ -283,6 +287,7 @@ describe("project reference files in packets", () => {
     expect((await createProject(app, "bare", null)).status).toBe(201);
     const scope = await createScope(app, {
       goal: "bare",
+      title: "bare",
       project: "bare",
       repo: { path: "so/demo" },
     });
@@ -308,6 +313,7 @@ describe("project reference files in packets", () => {
     ).toBe(201);
     const scope = await createScope(app, {
       goal: "test all builders",
+      title: "test all builders",
       project: "all-test",
       repo: { path: "so/demo" },
     });
@@ -374,6 +380,7 @@ describe("project reference files in packets", () => {
     const { store, app } = appWithStore();
     const scope = await createScope(app, {
       goal: "landing test",
+      title: "landing test",
       repo: { path: "so/demo" },
     });
     store.setScopeStatus(scope.id, "planning", "human:op-1");
@@ -431,6 +438,7 @@ describe("project reference files in packets", () => {
     ).toBe(201);
     const scope = await createScope(app, {
       goal: "deliver",
+      title: "deliver",
       project: "deliver",
       repo: { path: "so/demo" },
     });
@@ -596,6 +604,7 @@ describe("project context HTTP contract", () => {
     // GET /scopes/:id resolves the project alongside tasks/deps/runs.
     const scope = await createScope(app, {
       goal: "with project",
+      title: "with project",
       project: "p1",
       repo: { path: "so/demo" },
     });

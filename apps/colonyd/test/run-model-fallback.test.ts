@@ -127,6 +127,7 @@ describe("run event sink persists pi_model_fallback", () => {
     const store = new Store(join(dbDir, "test.db"));
     const scope = store.createScope({
       goal: "fallback sink",
+      title: "fallback sink",
       provider_repo_id: "1",
       provider_repo_path: "so/fake",
     });
@@ -173,7 +174,7 @@ describe("run event sink persists pi_model_fallback", () => {
 
     const result = await runner.run({
       runId: run.id,
-      packet: { goal: "Review", head_sha: headSha },
+      packet: { goal: "Review", title: "Review", head_sha: headSha },
       environment: { role: "reviewer" },
     });
     expect(result.envelope).toEqual(envelope);

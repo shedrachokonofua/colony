@@ -118,7 +118,14 @@ describe("open", () => {
     const out = captureStdout();
     try {
       const code = await run(
-        parseArgs(["open", "-", "--repo", "/srv/repo"]),
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          "-",
+          "--repo",
+          "/srv/repo",
+        ]),
         client,
         IO,
       );
@@ -129,6 +136,7 @@ describe("open", () => {
     }
     expect(calls[0]!.body).toEqual({
       goal: "piped goal\n",
+      title: "Ship the CLI",
       repo: { path: "/srv/repo" },
     });
   });
@@ -139,7 +147,16 @@ describe("open", () => {
     const err = captureStderr();
     try {
       const code = await run(
-        parseArgs(["open", file, "--project", "colny", "--repo", "/srv/repo"]),
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--project",
+          "colny",
+          "--repo",
+          "/srv/repo",
+        ]),
         client,
         IO,
       );
@@ -170,7 +187,16 @@ describe("open", () => {
     const err = captureStderr();
     try {
       const code = await run(
-        parseArgs(["open", file, "--project", "colny", "--repo", "/srv/repo"]),
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--project",
+          "colny",
+          "--repo",
+          "/srv/repo",
+        ]),
         client,
         IO,
       );
@@ -212,7 +238,16 @@ describe("open", () => {
     const out = captureStdout();
     try {
       const code = await run(
-        parseArgs(["open", file, "--project", "colony", "--repo", "/srv/repo"]),
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--project",
+          "colony",
+          "--repo",
+          "/srv/repo",
+        ]),
         client,
         IO,
       );
@@ -230,6 +265,8 @@ describe("open", () => {
       const code = await run(
         parseArgs([
           "open",
+          "--title",
+          "Ship the CLI",
           file,
           "--project",
           "colny",
@@ -249,6 +286,7 @@ describe("open", () => {
       path: "/scopes",
       body: {
         goal: "land the mutation slice\n",
+        title: "Ship the CLI",
         project: "colny",
         repo: { path: "/srv/repo" },
       },
@@ -260,7 +298,18 @@ describe("open", () => {
     const { client, calls } = fakeClient(openRoute());
     const out = captureStdout();
     try {
-      await run(parseArgs(["open", file, "--repo", "/srv/repo"]), client, IO);
+      await run(
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--repo",
+          "/srv/repo",
+        ]),
+        client,
+        IO,
+      );
     } finally {
       out.restore();
     }
@@ -294,7 +343,16 @@ describe("open", () => {
     const out = captureStdout();
     try {
       const code = await run(
-        parseArgs(["open", file, "--project", "colony", "--repo", "/srv/repo"]),
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--project",
+          "colony",
+          "--repo",
+          "/srv/repo",
+        ]),
         client,
         IO,
       );
@@ -309,7 +367,7 @@ describe("open", () => {
     const file = goalFile();
     const { client, calls } = fakeClient(openRoute());
     await expect(
-      run(parseArgs(["open", file]), client, IO),
+      run(parseArgs(["open", "--title", "Ship the CLI", file]), client, IO),
     ).rejects.toMatchObject({
       name: "UsageError",
       message: expect.stringContaining("--repo"),
@@ -321,7 +379,18 @@ describe("open", () => {
     const file = goalFile("");
     const { client, calls } = fakeClient(openRoute());
     await expect(
-      run(parseArgs(["open", file, "--repo", "/srv/repo"]), client, IO),
+      run(
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--repo",
+          "/srv/repo",
+        ]),
+        client,
+        IO,
+      ),
     ).rejects.toBeInstanceOf(UsageError);
     expect(calls).toHaveLength(0);
   });
@@ -332,7 +401,15 @@ describe("open", () => {
     const out = captureStdout();
     try {
       const code = await run(
-        parseArgs(["open", file, "--repo", "/srv/repo", "--json"]),
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--repo",
+          "/srv/repo",
+          "--json",
+        ]),
         client,
         { json: true, isTty: false },
       );
@@ -352,7 +429,18 @@ describe("open", () => {
       },
     });
     await expect(
-      run(parseArgs(["open", file, "--repo", "/srv/repo"]), client, IO),
+      run(
+        parseArgs([
+          "open",
+          "--title",
+          "Ship the CLI",
+          file,
+          "--repo",
+          "/srv/repo",
+        ]),
+        client,
+        IO,
+      ),
     ).rejects.toMatchObject({ status: 404, code: "REPO_NOT_FOUND" });
   });
 });

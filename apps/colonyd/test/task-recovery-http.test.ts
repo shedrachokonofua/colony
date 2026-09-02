@@ -63,6 +63,7 @@ function recoveryApp() {
   };
   const scope = store.createScope({
     goal: "exercise task recovery",
+    title: "exercise task recovery",
     provider_repo_id: "49",
     provider_repo_path: "so/colony",
   });

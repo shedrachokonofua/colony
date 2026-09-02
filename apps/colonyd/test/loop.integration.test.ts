@@ -365,6 +365,7 @@ beforeEach(async () => {
 async function createScope(goal: string): Promise<string> {
   const scope = handle.ctx.store.createScope({
     goal,
+    title: goal,
     provider_repo_id: repoId,
     provider_repo_path: "so/fake-e2e",
   });

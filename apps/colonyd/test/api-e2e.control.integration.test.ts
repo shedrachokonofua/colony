@@ -43,6 +43,7 @@ describe("api e2e control — 1. replan + replacement plan", () => {
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "replan control goal",
+        title: "replan control goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -227,6 +228,7 @@ describe("api e2e control — 2. task transitions", () => {
     const stopScope = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "task transitions stop goal",
+        title: "task transitions stop goal",
         repo: { path: "so/console-e2e" },
         approvals: "auto",
       },
@@ -333,6 +335,7 @@ describe("api e2e control — 2. task transitions", () => {
     const noRunScopeRes = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "no active run deterministic goal",
+        title: "no active run deterministic goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -430,6 +433,7 @@ describe("api e2e control — 2. task transitions", () => {
     const base = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "task transitions cancel restore goal",
+        title: "task transitions cancel restore goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -491,6 +495,7 @@ describe("api e2e control — 2. task transitions", () => {
     const unblockScope = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "unblock goal",
+        title: "unblock goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -551,6 +556,7 @@ describe("api e2e control — 2. task transitions", () => {
     const retryScope = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "retry goal",
+        title: "retry goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -668,6 +674,7 @@ describe("api e2e control — 2. task transitions", () => {
     const amScope = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "amend and request changes goal",
+        title: "amend and request changes goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -750,6 +757,7 @@ describe("api e2e control — 2. task transitions", () => {
     const noOpenScope = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "no open mr goal",
+        title: "no open mr goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -859,6 +867,7 @@ describe("api e2e control — 2. task transitions", () => {
     const cancelScope = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "cancel amend goal",
+        title: "cancel amend goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -943,7 +952,11 @@ describe("api e2e control — 3. review loop", () => {
       ).singleTask = true;
 
       const created = await http(reviewEnv.port, "POST", "/scopes", {
-        body: { goal: "review loop goal", repo: { path: "so/console-e2e" } },
+        body: {
+          goal: "review loop goal",
+          title: "review loop goal",
+          repo: { path: "so/console-e2e" },
+        },
       });
       expect(created.status).toBe(201);
       const scopeId = (created.body as { id: string }).id;
@@ -1053,7 +1066,11 @@ describe("api e2e control — 4. merge gate fail-then-pass", () => {
 
   it("gate fails once then passes without duplicate MR", async () => {
     const created = await http(env.port, "POST", "/scopes", {
-      body: { goal: "gate fail goal", repo: { path: "so/console-e2e" } },
+      body: {
+        goal: "gate fail goal",
+        title: "gate fail goal",
+        repo: { path: "so/console-e2e" },
+      },
     });
     expect(created.status).toBe(201);
     const scopeId = (created.body as { id: string }).id;
@@ -1200,6 +1217,7 @@ describe("api e2e control — 5. manual vs auto merge approvals", () => {
     const manualCreated = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "manual approvals goal",
+        title: "manual approvals goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -1295,6 +1313,7 @@ describe("api e2e control — 5. manual vs auto merge approvals", () => {
     const autoCreated = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "auto approvals goal",
+        title: "auto approvals goal",
         repo: { path: "so/console-e2e" },
       },
     });
@@ -1345,6 +1364,7 @@ describe("api e2e control — 5. manual vs auto merge approvals", () => {
     const fresh = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "fresh manual goal",
+        title: "fresh manual goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -1406,6 +1426,7 @@ describe("api e2e control — 6. abandon", () => {
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "abandon goal",
+        title: "abandon goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },

@@ -174,6 +174,7 @@ describe("runMergeGate success evidence", () => {
 
     const scope = store.createScope({
       goal: "gate evidence",
+      title: "gate evidence",
       provider_repo_id: repoInfo.id,
       provider_repo_path: repoInfo.path,
       default_branch: "main",

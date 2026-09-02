@@ -295,6 +295,7 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
 
     const scope = handle.ctx.store.createScope({
       goal: "audit e2e test",
+      title: "audit e2e test",
       provider_repo_id: repo.id,
       provider_repo_path: repo.path,
     });

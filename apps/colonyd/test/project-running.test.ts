@@ -93,6 +93,7 @@ function scopeWithTasks(
 ): { scope_id: string; task_ids: string[] } {
   const scope_id = store.createScope({
     goal: `${project} goal`,
+    title: `${project} goal`,
     provider_repo_id: "1",
     provider_repo_path: "so/x",
     project,

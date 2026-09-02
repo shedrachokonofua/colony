@@ -88,6 +88,7 @@ function setup(artifacts?: ColonydContext["artifacts"]): {
 function createRun(store: Store, goal: string): string {
   const scope = store.createScope({
     goal,
+    title: goal,
     provider_repo_id: "1",
     provider_repo_path: "so/colony",
   });

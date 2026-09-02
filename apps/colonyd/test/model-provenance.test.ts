@@ -207,6 +207,7 @@ describe("collectRunModelIds", () => {
   it("reads early fallback events beyond the feed page window from a real store", () => {
     const scope = store.createScope({
       goal: "prov busy run",
+      title: "prov busy run",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });

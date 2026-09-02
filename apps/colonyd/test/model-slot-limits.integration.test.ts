@@ -239,6 +239,7 @@ async function harness(configPath: string): Promise<{
   const createScope = (goal: string): string => {
     const scope = store.createScope({
       goal,
+      title: goal,
       provider_repo_id: repoId,
       provider_repo_path: "so/fake-slots",
     });

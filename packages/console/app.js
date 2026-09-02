@@ -2578,9 +2578,10 @@ function renderCreate() {
                   />
                 </label>`}
             <label class="field">
-              <span>Title <em>optional</em></span>
+              <span>Title</span>
               <input
                 name="title"
+                required
                 maxlength="120"
                 placeholder="Short label for the board"
                 autocomplete="off"

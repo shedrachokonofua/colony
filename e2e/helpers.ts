@@ -16,7 +16,7 @@ export async function createScopeViaApi(
     headers: HEADERS,
     data: {
       goal: opts.goal,
-      ...(opts.title ? { title: opts.title } : {}),
+      title: opts.title ?? opts.goal.slice(0, 120),
       approvals: opts.approvals ?? "manual",
       repo: { path: "so/console-e2e" },
       ...(opts.project ? { project: opts.project } : {}),

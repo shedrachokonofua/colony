@@ -51,7 +51,7 @@ type Env = { Variables: { actor: string } };
 const createScopeBody = z
   .object({
     goal: z.string().min(1),
-    title: z.string().min(1).max(120).optional(),
+    title: z.string().min(1).max(120),
     /** Name of the (created-on-demand) Colony project this scope belongs to. */
     project: z.string().min(1).max(120).optional(),
     approvals: z.enum(["auto", "manual"]).optional(),

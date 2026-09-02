@@ -143,6 +143,7 @@ describe("project archiving HTTP contract", () => {
     await createProject(app, "p-scopes");
     const scope = store.createScope({
       goal: "draft scope",
+      title: "draft scope",
       provider_repo_id: "1",
       provider_repo_path: "so/demo",
       project: "p-scopes",
@@ -247,6 +248,7 @@ describe("project archiving HTTP contract", () => {
       headers: JSON_HEADERS,
       body: JSON.stringify({
         goal: "try on archived",
+        title: "try on archived",
         project: "arch-proj",
         repo: { path: "so/demo" },
       }),
@@ -264,6 +266,7 @@ describe("project archiving HTTP contract", () => {
       headers: JSON_HEADERS,
       body: JSON.stringify({
         goal: "try on brand new",
+        title: "try on brand new",
         project: "fresh-new-proj",
         repo: { path: "so/demo" },
       }),

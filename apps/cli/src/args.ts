@@ -51,7 +51,7 @@ const SPECS: Record<string, CommandSpec> = {
   scope: { usage: "scope <id>", minPositional: 1 },
   open: {
     usage:
-      "open <file|-> [--title T] [--project P] [--repo PATH] [--manual] [--create-project]",
+      "open <file|-> --title T [--project P] [--repo PATH] [--manual] [--create-project]",
     minPositional: 1,
     valueFlags: { title: "title", project: "project", repo: "repo" },
     boolFlags: ["manual", "create-project"],

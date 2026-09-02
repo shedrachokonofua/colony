@@ -233,7 +233,11 @@ describe("api e2e auth failures", () => {
     const env = await bootFake();
     try {
       const missing = await http(env.port, "POST", "/scopes", {
-        body: { goal: "hello", repo: { path: "so/console-e2e" } },
+        body: {
+          goal: "hello",
+          title: "hello",
+          repo: { path: "so/console-e2e" },
+        },
         actor: null,
       });
       expect(missing.status).toBe(400);
@@ -245,7 +249,11 @@ describe("api e2e auth failures", () => {
         env.port,
         "POST",
         "/scopes",
-        JSON.stringify({ goal: "hello", repo: { path: "so/console-e2e" } }),
+        JSON.stringify({
+          goal: "hello",
+          title: "hello",
+          repo: { path: "so/console-e2e" },
+        }),
         { "content-type": "application/json", "X-Actor-Id": "   " },
       );
       expect(blank.status).toBe(400);
@@ -366,7 +374,11 @@ describe("api e2e OIDC bearer enforcement", () => {
     const created = await http(env.port, "POST", "/scopes", {
       actor: null,
       token: validToken,
-      body: { goal: "oidc valid goal", repo: { path: "so/console-e2e" } },
+      body: {
+        goal: "oidc valid goal",
+        title: "oidc valid goal",
+        repo: { path: "so/console-e2e" },
+      },
     });
     expect(created.status).toBe(201);
     const scopeId = (created.body as { id: string }).id;
@@ -395,7 +407,11 @@ describe("api e2e OIDC bearer enforcement", () => {
     const svcCreated = await http(env.port, "POST", "/scopes", {
       actor: null,
       token: svcToken,
-      body: { goal: "oidc svc goal", repo: { path: "so/console-e2e" } },
+      body: {
+        goal: "oidc svc goal",
+        title: "oidc svc goal",
+        repo: { path: "so/console-e2e" },
+      },
     });
     expect(svcCreated.status).toBe(201);
     const svcScopeId = (svcCreated.body as { id: string }).id;
@@ -551,6 +567,7 @@ describe("api e2e restart recovery (subprocess SIGKILL)", () => {
     const created = await http(port, "POST", "/scopes", {
       body: {
         goal: "restart recovery goal",
+        title: "restart recovery goal",
         repo: { path: "so/console-e2e" },
       },
     });

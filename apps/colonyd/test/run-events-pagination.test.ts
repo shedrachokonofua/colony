@@ -73,6 +73,7 @@ interface Envelope {
 async function createRun(store: Store, goal: string) {
   const scope = store.createScope({
     goal,
+    title: goal,
     provider_repo_id: "1",
     provider_repo_path: "so/colony",
   });

@@ -408,6 +408,7 @@ describe("project files HTTP contract", () => {
     await createFile(app, "p", "b.md", "world", "text/markdown");
     store.createScope({
       goal: "g",
+      title: "g",
       provider_repo_id: "1",
       provider_repo_path: "so/p",
       project: "p",

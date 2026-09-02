@@ -30,7 +30,11 @@ describe("api e2e lifecycle", () => {
       env.port,
       "POST",
       "/scopes",
-      JSON.stringify({ goal: "hello", repo: { path: "so/console-e2e" } }),
+      JSON.stringify({
+        goal: "hello",
+        title: "hello",
+        repo: { path: "so/console-e2e" },
+      }),
       { "content-type": "application/json" },
     );
     expect(missingActor.status).toBe(400);
@@ -40,7 +44,7 @@ describe("api e2e lifecycle", () => {
 
     // unknown repo
     const unknown = await http(env.port, "POST", "/scopes", {
-      body: { goal: "hello", repo: { path: "so/unknown" } },
+      body: { goal: "hello", title: "hello", repo: { path: "so/unknown" } },
     });
     expect(unknown.status).toBe(404);
     expect((unknown.body as { error?: { code?: string } })?.error?.code).toBe(
@@ -51,6 +55,7 @@ describe("api e2e lifecycle", () => {
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "e2e lifecycle goal",
+        title: "e2e lifecycle goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },
@@ -132,6 +137,7 @@ describe("api e2e lifecycle", () => {
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "happy path auto approvals",
+        title: "happy path auto approvals",
         repo: { path: "so/console-e2e" },
       },
     });
@@ -198,6 +204,7 @@ describe("api e2e lifecycle", () => {
     const created = await http(env.port, "POST", "/scopes", {
       body: {
         goal: "validation retry goal",
+        title: "validation retry goal",
         repo: { path: "so/console-e2e" },
         approvals: "manual",
       },

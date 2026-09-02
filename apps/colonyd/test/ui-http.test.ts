@@ -165,6 +165,7 @@ describe("operator console", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "add /version",
+      title: "add /version",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });
@@ -186,24 +187,30 @@ describe("operator console", () => {
     expect(body.runs[0]?.kind).toBe("architect");
   });
 
-  it("persists an optional scope title", () => {
+  it("persists the scope title; the API refuses a scope without one", async () => {
     const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
     dirs.push(dir);
     const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
     const titled = store.createScope({
-      goal: "add /version",
+      goal: "Add a /version endpoint",
       title: "Version endpoint",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });
     expect(titled.title).toBe("Version endpoint");
-    const untitled = store.createScope({
-      goal: "retire hostname",
-      provider_repo_id: "1",
-      provider_repo_path: "so/colony",
+    const res = await app.request("/scopes", {
+      method: "POST",
+      headers: {
+        "X-Actor-Id": "human:op-1",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        goal: "retire hostname",
+        repo: { path: "so/colony" },
+      }),
     });
-    // Never null: derived from the goal so every surface renders a title.
-    expect(untitled.title).toBe("retire hostname");
+    expect(res.status).toBe(400);
   });
 
   it("serves the agent event feed for a run", async () => {
@@ -213,6 +220,7 @@ describe("operator console", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "add /version",
+      title: "add /version",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });
@@ -250,6 +258,7 @@ describe("operator console", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "add /version",
+      title: "add /version",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });
@@ -291,6 +300,7 @@ describe("operator console", () => {
 
     const auto = store.createScope({
       goal: "auto scope",
+      title: "auto scope",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });
@@ -298,6 +308,7 @@ describe("operator console", () => {
 
     const manual = store.createScope({
       goal: "manual scope",
+      title: "manual scope",
       approvals: "manual",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
@@ -348,6 +359,7 @@ describe("operator console", () => {
 
     const scope = store.createScope({
       goal: "goal",
+      title: "goal",
       approvals: "manual",
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
@@ -435,6 +447,7 @@ describe("operator controls", () => {
   function planningScope(store: Store, approvals: "auto" | "manual" = "auto") {
     const scope = store.createScope({
       goal: "goal",
+      title: "goal",
       approvals,
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
@@ -560,6 +573,7 @@ describe("acceptance amendment", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "acceptance surgery",
+      title: "acceptance surgery",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
     });
@@ -618,6 +632,7 @@ describe("scope pagination and grouping", () => {
     for (let i = 0; i < 7; i += 1) {
       store.createScope({
         goal: `scope ${i}`,
+        title: `scope ${i}`,
         provider_repo_id: "1",
         provider_repo_path: "so/x",
         project: i < 3 ? "Wave one" : undefined,
@@ -674,6 +689,7 @@ describe("scope pagination and grouping", () => {
     const app = buildApp(fakeCtx(store));
     const scope = store.createScope({
       goal: "grouped",
+      title: "grouped",
       project: "Operator console",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
@@ -716,6 +732,7 @@ describe("projects pagination with scope tallies", () => {
     for (const status of statuses) {
       const id = store.createScope({
         goal: `scope ${status}`,
+        title: `scope ${status}`,
         provider_repo_id: "1",
         provider_repo_path: "so/x",
         project: "Wave one",

@@ -1,5 +1,5 @@
 /**
- * A scope always has a title. Untitled scopes (API, CLI, operator scripts)
+ * Backfill-only (migration 10). A scope always has a title. Untitled scopes (API, CLI, operator scripts)
  * used to render their goal's first line verbatim on every surface -
  * markdown heading marks included, truncated mid-word. The first non-empty
  * line of the goal, stripped of heading marks, capped at 120 chars.

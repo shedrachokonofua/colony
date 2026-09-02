@@ -62,6 +62,7 @@ describe("run tracing disabled", () => {
     });
     const scope = handle.ctx.store.createScope({
       goal: "tracing disabled harness",
+      title: "tracing disabled harness",
       provider_repo_id: repo.id,
       provider_repo_path: repo.path,
     });

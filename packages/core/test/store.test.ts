@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { DomainStateError, taskId } from "@colony/domain";
 import { LATEST_SCHEMA_VERSION } from "../src/migrations.js";
-import { titleFromGoal } from "../src/scope-title.js";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
   SCOPE_STATUSES,
@@ -156,6 +155,7 @@ function plan(
 function seededScope(): string {
   const scope = store.createScope({
     goal: "test goal",
+    title: "test goal",
     provider_repo_id: "42",
     provider_repo_path: "so/test",
   });
@@ -762,6 +762,7 @@ describe("Store", () => {
     ] as const) {
       const id = store.createScope({
         goal: `scope ${status}`,
+        title: `scope ${status}`,
         provider_repo_id: "1",
         provider_repo_path: "so/x",
         project: "Wave one",
@@ -870,12 +871,14 @@ describe("Store", () => {
       .run("2026-01-02T00:00:00.000Z", "active-proj");
     const older = store.createScope({
       goal: "older",
+      title: "older",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
       project: "active-proj",
     }).id;
     const newer = store.createScope({
       goal: "newer",
+      title: "newer",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
       project: "active-proj",
@@ -903,6 +906,7 @@ describe("Store", () => {
       .run("2026-01-01T12:00:00.000Z", "busy-scopes");
     const busyScope = store.createScope({
       goal: "new scope",
+      title: "new scope",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
       project: "busy-scopes",
@@ -924,18 +928,21 @@ describe("Store", () => {
     store.ensureProject("P2");
     store.createScope({
       goal: "g1",
+      title: "g1",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
       project: "P1",
     });
     store.createScope({
       goal: "g2",
+      title: "g2",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
       project: "P1",
     });
     store.createScope({
       goal: "g3",
+      title: "g3",
       provider_repo_id: "1",
       provider_repo_path: "so/x",
       project: "P2",
@@ -960,18 +967,21 @@ describe("Store", () => {
     const ids = {
       p1a: store.createScope({
         goal: "p1-a",
+        title: "p1-a",
         provider_repo_id: "1",
         provider_repo_path: "so/x",
         project: "projA",
       }).id,
       p1b: store.createScope({
         goal: "p1-b",
+        title: "p1-b",
         provider_repo_id: "1",
         provider_repo_path: "so/x",
         project: "projA",
       }).id,
       p2: store.createScope({
         goal: "p2",
+        title: "p2",
         provider_repo_id: "1",
         provider_repo_path: "so/x",
         project: "projB",
@@ -1386,6 +1396,7 @@ describe("run adoption and sandbox id", () => {
   function createRun(goal: string): string {
     const scope = store.createScope({
       goal,
+      title: goal,
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });
@@ -1619,12 +1630,14 @@ describe("project files", () => {
     store.createProject({ name: "p", context_doc: null });
     store.createScope({
       goal: "g1",
+      title: "g1",
       provider_repo_id: "1",
       provider_repo_path: "so/z",
       project: "p",
     });
     store.createScope({
       goal: "g2",
+      title: "g2",
       provider_repo_id: "2",
       provider_repo_path: "so/a",
       project: "p",
@@ -1632,6 +1645,7 @@ describe("project files", () => {
     // Identical (id, path) pair from a second scope collapses to one row.
     store.createScope({
       goal: "g3",
+      title: "g3",
       provider_repo_id: "2",
       provider_repo_path: "so/a",
       project: "p",
@@ -1677,6 +1691,7 @@ describe("project files", () => {
     store.createProject({ name: "p-scopes", context_doc: null });
     const scope = store.createScope({
       goal: "scope in draft",
+      title: "scope in draft",
       provider_repo_id: "1",
       provider_repo_path: "so/p",
       project: "p-scopes",
@@ -1739,27 +1754,6 @@ describe("project files", () => {
     expect(archItem?.archived_at).toBeString();
   });
 
-  it("derives a title from the goal when none is given", () => {
-    const store = new Store(":memory:");
-    const scope = store.createScope({
-      goal: "# Notification engine core: audit-outbox loop\n\nMore text.",
-      provider_repo_id: "1",
-      provider_repo_path: "so/colony",
-    });
-    expect(scope.title).toBe("Notification engine core: audit-outbox loop");
-    const explicit = store.createScope({
-      goal: "# heading",
-      title: "Given title",
-      provider_repo_id: "1",
-      provider_repo_path: "so/colony",
-    });
-    expect(explicit.title).toBe("Given title");
-    expect(titleFromGoal("\n\n   ### Deep heading   \nbody")).toBe(
-      "Deep heading",
-    );
-    expect(titleFromGoal("x".repeat(200))).toHaveLength(120);
-  });
-
   it("refuses createScope against an archived project but permits new project names", () => {
     store.createProject({ name: "archived-target", context_doc: null });
     store.archiveProject("archived-target");
@@ -1767,6 +1761,7 @@ describe("project files", () => {
     expect(() =>
       store.createScope({
         goal: "try on archived",
+        title: "try on archived",
         provider_repo_id: "1",
         provider_repo_path: "so/p",
         project: "archived-target",
@@ -1776,6 +1771,7 @@ describe("project files", () => {
     // Genuinely new project name creates on demand
     const newScope = store.createScope({
       goal: "try on new",
+      title: "try on new",
       provider_repo_id: "1",
       provider_repo_path: "so/p",
       project: "brand-new-project",
@@ -1800,6 +1796,7 @@ describe("project files", () => {
     });
     store.createScope({
       goal: "g",
+      title: "g",
       provider_repo_id: "1",
       provider_repo_path: "so/p",
       project: "p",
@@ -1834,6 +1831,7 @@ describe("project running", () => {
   ): { scope_id: string; task_ids: string[] } {
     const scope_id = store.createScope({
       goal,
+      title: goal,
       provider_repo_id: "1",
       provider_repo_path: "so/x",
       project,
@@ -2117,6 +2115,7 @@ describe("run artifacts", () => {
   function createRun(goal: string): string {
     const scope = store.createScope({
       goal,
+      title: goal,
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });

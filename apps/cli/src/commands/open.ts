@@ -40,6 +40,9 @@ export async function run(
     );
   }
   const title = stringFlag(cmd.flags, "title");
+  if (title === undefined) {
+    throw new UsageError("open requires --title <text>");
+  }
   const project = stringFlag(cmd.flags, "project");
   if (project !== undefined && cmd.flags["create-project"] !== true) {
     const known = await knownProjects(client);
@@ -53,7 +56,7 @@ export async function run(
 
   const scope = await client.post<CreatedScope>("/scopes", {
     goal,
-    ...(title !== undefined ? { title } : {}),
+    title,
     ...(project !== undefined ? { project } : {}),
     ...(cmd.flags.manual === true ? { approvals: "manual" } : {}),
     repo: { path: repoPath },

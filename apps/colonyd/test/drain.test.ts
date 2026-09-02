@@ -81,6 +81,7 @@ function seededStore(): { store: Store; taskId: string } {
   const store = new Store(join(dir, "test.db"));
   const scope = store.createScope({
     goal: "drain gate",
+    title: "drain gate",
     provider_repo_id: "1",
     provider_repo_path: "fake/repo",
   });

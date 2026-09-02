@@ -21,6 +21,7 @@ function wiredSink() {
   const artifacts = createLocalArtifactStore(join(root, "artifacts"));
   const scope = store.createScope({
     goal: "audit sink wiring",
+    title: "audit sink wiring",
     provider_repo_id: "1",
     provider_repo_path: "so/fake",
   });

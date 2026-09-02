@@ -239,6 +239,7 @@ describe("run tracing with the pi runtime and an in-memory exporter", () => {
     });
     const scope = handle.ctx.store.createScope({
       goal: "span tree harness",
+      title: "span tree harness",
       provider_repo_id: repo.id,
       provider_repo_path: repo.path,
     });
@@ -287,6 +288,7 @@ describe("run tracing with the pi runtime and an in-memory exporter", () => {
     });
     const scope = handle.ctx.store.createScope({
       goal: "trace persistence harness",
+      title: "trace persistence harness",
       provider_repo_id: repo.id,
       provider_repo_path: repo.path,
     });

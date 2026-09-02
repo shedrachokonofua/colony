@@ -1,4 +1,3 @@
-import { titleFromGoal } from "./scope-title.js";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -268,7 +267,8 @@ export type ScopeApprovals = "auto" | "manual";
 
 export interface CreateScopeInput {
   readonly goal: string;
-  readonly title?: string;
+  /** Required: every surface renders it; the goal is the body, not the name. */
+  readonly title: string;
   /** Name of the (created-on-demand) project this scope belongs to. */
   readonly project?: string;
   readonly approvals?: ScopeApprovals;
@@ -394,7 +394,7 @@ export class Store {
           named({
             id,
             goal: input.goal,
-            title: input.title ?? titleFromGoal(input.goal),
+            title: input.title,
             project_name: input.project ?? null,
             approvals: input.approvals ?? "auto",
             provider_repo_id: input.provider_repo_id,

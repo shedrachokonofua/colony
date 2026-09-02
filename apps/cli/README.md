@@ -73,7 +73,7 @@ Every subcommand and its accepted flags:
   List scopes across the system or filtered by project, paginated 25 per page.
 - `colony scope <id>`
   Show detailed status, task list, and run summaries for a scope.
-- `colony open <file|-> [--title T] [--project P] [--repo PATH] [--manual] [--create-project]`
+- `colony open <file|-> --title T [--project P] [--repo PATH] [--manual] [--create-project]`
   Open a new scope with a goal file or stdin (`-`). Requires `--repo PATH`. If `--project` is provided, unknown projects are refused unless `--create-project` is set. Use `--manual` to enforce manual approval gating.
 - `colony approve <id>`
   Approve the planned task DAG for a scope in `planning` status.
