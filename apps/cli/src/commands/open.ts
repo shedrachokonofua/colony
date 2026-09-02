@@ -4,7 +4,8 @@ import { readText } from "../io.js";
 import type { ProjectRow } from "./projects.js";
 
 interface ProjectsResponse {
-  projects: ProjectRow[];
+  projects?: ProjectRow[];
+  items?: ProjectRow[];
   total: number;
   limit: number;
   offset: number;
@@ -77,8 +78,9 @@ async function knownProjects(client: ColonyClient): Promise<string[]> {
       limit: PROJECT_PAGE,
       offset,
     });
-    names.push(...res.projects.map((p) => p.name));
-    offset += res.projects.length;
-    if (res.projects.length === 0 || offset >= res.total) return names;
+    const items = res.items ?? res.projects ?? [];
+    names.push(...items.map((p) => p.name));
+    offset += items.length;
+    if (items.length === 0 || offset >= res.total) return names;
   }
 }

@@ -11,7 +11,7 @@ const IO = { json: false, isTty: false };
 
 function projectsPage(names: string[], offset = 0) {
   return {
-    projects: names.map((name) => ({
+    items: names.map((name) => ({
       name,
       context_doc: null,
       created_at: "2026-08-30T09:00:00.000Z",
@@ -205,15 +205,15 @@ describe("open", () => {
         page += 1;
         return page === 1
           ? {
-              projects: projectsPage(
+              items: projectsPage(
                 Array.from({ length: 100 }, (_, i) => `p${i}`),
-              ).projects,
+              ).items,
               total: 101,
               limit: 100,
               offset: 0,
             }
           : {
-              projects: projectsPage(["colony"], 100).projects,
+              items: projectsPage(["colony"], 100).items,
               total: 101,
               limit: 100,
               offset: 100,
