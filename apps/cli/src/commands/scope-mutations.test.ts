@@ -67,12 +67,13 @@ function stdinAnswer(line: string): { restore: () => void } {
     configurable: true,
   });
   const answer = Buffer.from(line, "utf8");
-  const spy = spyOn(fs, "readSync").mockImplementation(
-    ((_fd: number, buffer: Buffer) => {
-      answer.copy(buffer);
-      return answer.byteLength;
-    }) as unknown as typeof fs.readSync,
-  );
+  const spy = spyOn(fs, "readSync").mockImplementation(((
+    _fd: number,
+    buffer: Buffer,
+  ) => {
+    answer.copy(buffer);
+    return answer.byteLength;
+  }) as unknown as typeof fs.readSync);
   return {
     restore: () => {
       spy.mockRestore();
