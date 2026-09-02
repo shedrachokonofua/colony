@@ -202,7 +202,8 @@ describe("operator console", () => {
       provider_repo_id: "1",
       provider_repo_path: "so/colony",
     });
-    expect(untitled.title).toBeNull();
+    // Never null: derived from the goal so every surface renders a title.
+    expect(untitled.title).toBe("retire hostname");
   });
 
   it("serves the agent event feed for a run", async () => {

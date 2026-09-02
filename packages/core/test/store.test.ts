@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { DomainStateError, taskId } from "@colony/domain";
 import { LATEST_SCHEMA_VERSION } from "../src/migrations.js";
+import { titleFromGoal } from "../src/scope-title.js";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
   SCOPE_STATUSES,
@@ -1159,7 +1160,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(9);
+        expect(LATEST_SCHEMA_VERSION).toBe(10);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -1736,6 +1737,27 @@ describe("project files", () => {
       (p) => p.name === "arch-proj",
     );
     expect(archItem?.archived_at).toBeString();
+  });
+
+  it("derives a title from the goal when none is given", () => {
+    const store = new Store(":memory:");
+    const scope = store.createScope({
+      goal: "# Notification engine core: audit-outbox loop\n\nMore text.",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    expect(scope.title).toBe("Notification engine core: audit-outbox loop");
+    const explicit = store.createScope({
+      goal: "# heading",
+      title: "Given title",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    expect(explicit.title).toBe("Given title");
+    expect(titleFromGoal("\n\n   ### Deep heading   \nbody")).toBe(
+      "Deep heading",
+    );
+    expect(titleFromGoal("x".repeat(200))).toHaveLength(120);
   });
 
   it("refuses createScope against an archived project but permits new project names", () => {

@@ -263,12 +263,20 @@ function retryOrFailScope(
  * three architects per scope with workspace_lost and blocked every scope).
  */
 function architectAttempts(ctx: ColonydContext, scopeId: string): number {
+  // An operator unblock resets the budget: attempts are counted since the
+  // latest `scope.unblocked`. Counting all of history re-blocked a scope on
+  // the very next tick without running anything (col-1e4f99fd, 2026-09-02:
+  // unblocked twice, never planned again).
+  const since = ctx.store
+    .listAudit({ scope_id: scopeId, limit: 500 })
+    .events.find((row) => row.action === "scope.unblocked")?.at;
   return ctx.store
     .runsForScope(scopeId)
     .filter(
       (r) =>
         r.kind === "architect" &&
         r.status !== "running" &&
+        (!since || r.started_at > since) &&
         !isQuotaDeferred(r.error) &&
         !isInfraError(r.error),
     ).length;

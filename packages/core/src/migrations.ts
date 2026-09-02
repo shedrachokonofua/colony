@@ -1,3 +1,4 @@
+import { titleFromGoal } from "./scope-title.js";
 import { readFileSync } from "node:fs";
 import { Database } from "./sqlite-compat.js";
 
@@ -305,6 +306,21 @@ export const MIGRATIONS: readonly Migration[] = [
     apply: (db) => addColumn(db, "projects", "archived_at", "TEXT"),
   },
   { version: 9, name: "runs-sandbox-id", apply: migrateRunsSandboxId },
+  {
+    version: 10,
+    name: "scopes-title-backfill",
+    // Untitled scopes rendered their goal's first markdown line on every
+    // surface. Same derivation createScope uses from now on.
+    apply: (db) => {
+      const rows = db
+        .prepare(
+          `SELECT id, goal FROM scopes WHERE title IS NULL OR title = ''`,
+        )
+        .all() as { id: string; goal: string }[];
+      const update = db.prepare(`UPDATE scopes SET title = ? WHERE id = ?`);
+      for (const row of rows) update.run(titleFromGoal(row.goal), row.id);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

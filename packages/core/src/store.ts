@@ -1,3 +1,4 @@
+import { titleFromGoal } from "./scope-title.js";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -393,7 +394,7 @@ export class Store {
           named({
             id,
             goal: input.goal,
-            title: input.title ?? null,
+            title: input.title ?? titleFromGoal(input.goal),
             project_name: input.project ?? null,
             approvals: input.approvals ?? "auto",
             provider_repo_id: input.provider_repo_id,

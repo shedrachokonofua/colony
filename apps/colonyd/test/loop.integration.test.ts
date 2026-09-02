@@ -1034,8 +1034,23 @@ describe("colonyd fake end-to-end loop", () => {
   it("POST /scopes/:id/unblock returns an architect-exhausted scope to planning", async () => {
     const scopeId = await createScope("unblock scope");
     handle.ctx.store.setScopeStatus(scopeId, "planning", ACTOR);
+    // Three agent-fault architect failures on the ledger: the real shape of
+    // an exhausted scope. Counting them forever re-blocked col-1e4f99fd on
+    // the tick after every unblock without running anything (2026-09-02);
+    // the budget must restart at the operator's unblock.
+    for (let i = 0; i < 3; i += 1) {
+      const run = handle.ctx.store.startRun({
+        scope_id: scopeId,
+        task_id: null,
+        kind: "architect",
+        lease_ttl_ms: 60_000,
+      });
+      handle.ctx.store.finishRun(run.id, "failed", {
+        error: "finalize_no_submission",
+      });
+    }
     handle.ctx.store.setScopeStatus(scopeId, "blocked", ACTOR, {
-      reason: "architect retries exhausted: workspace_lost",
+      reason: "architect retries exhausted: finalize_no_submission",
     });
 
     const app = buildApp(handle.ctx);
