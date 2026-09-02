@@ -194,7 +194,13 @@ export function provisionScratchDir(
   packet: AgentRuntimePacket,
   override?: string,
 ): string {
-  const dir = override ?? join(tmpdir(), "colony-pi-runs", runId);
+  // An override is a caller-owned ROOT, not the run dir itself: the run dir
+  // is its `<runId>` subdirectory. Teardown removes only the run dir, so a
+  // caller that shares one override across runs (the daemon's validate
+  // workspace, tracing harnesses) keeps its root.
+  const dir = override
+    ? join(override, runId)
+    : join(tmpdir(), "colony-pi-runs", runId);
   mkdirSync(dir, { recursive: true });
   try {
     writeFileSync(
@@ -230,9 +236,17 @@ function seedPlaybooks(dir: string): void {
       const existing = existsSync(excludePath)
         ? readFileSync(excludePath, "utf8")
         : "";
-      const wanted = ["PACKET.json", ".colony/", ".colony/project/"].filter(
-        (line) => !existing.split("\n").includes(line),
-      );
+      // PACKET.json carries the provider token and the transcript captures
+      // tool results that can contain it (PACKET.json reads, `git remote -v`),
+      // so both are excluded: they live in the worktree for the whole run,
+      // which is exactly when the agent commits. Anchored patterns only —
+      // unanchored ones would shadow same-named directories the repo tracks.
+      const wanted = [
+        "PACKET.json",
+        ".colony/",
+        ".colony/project/",
+        "/sessions/",
+      ].filter((line) => !existing.split("\n").includes(line));
       if (wanted.length > 0) {
         writeFileSync(
           excludePath,

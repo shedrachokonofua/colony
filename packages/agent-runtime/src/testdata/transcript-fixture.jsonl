@@ -1,0 +1,5 @@
+{"type":"session","version":1,"id":"sess-fixture","timestamp":"2026-08-30T00:00:00.000Z","cwd":"/tmp/colony-pi-runs/run-fixture"}
+{"type":"title","title":"Transcript capture fixture","updatedAt":"2026-08-30T00:00:01.000Z"}
+{"type":"message","id":"m1","parentId":null,"timestamp":"2026-08-30T00:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"Clone https://gitlab.com/acme/widget.git with glpat-fix-AbCdEf123456 please"}]}}
+{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-30T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"On it. The stub credential stub-run-token-SECRET stays out of the artifact."}],"stopReason":"toolUse"}}
+{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-08-30T00:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Both markers must be gone: glpat-inline-tok999 and stub-run-token-SECRET."}],"stopReason":"stop"}}

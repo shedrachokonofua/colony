@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { provisionScratchDir } from "./pi-runner-common.js";
 import type { AgentRuntimePacket } from "./adapter.js";
@@ -24,8 +24,13 @@ afterEach(() => {
 });
 
 function scratchDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "project-files-"));
-  dirs.push(dir);
+  const root = mkdtempSync(join(tmpdir(), "project-files-"));
+  dirs.push(root);
+  // An override is a caller-owned root; provisioning nests the run dir inside
+  // it. These tests inspect the provisioned workspace, so hand back the run
+  // dir itself — pre-created because some tests seed it before provisioning.
+  const dir = join(root, "test-run");
+  mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -71,7 +76,7 @@ describe("project reference file materialization", () => {
       { filename: "guide.md", content: "# Guide", media_type: "text/markdown" },
       { filename: "readme.txt", content: "hello world" },
     ]);
-    const dir = provisionScratchDir("test-run", packet, base);
+    const dir = provisionScratchDir("test-run", packet, dirname(base));
     expect(dir).toBe(base);
 
     const guidePath = join(base, ".colony", "project", "guide.md");
@@ -89,14 +94,14 @@ describe("project reference file materialization", () => {
   it("re-provisioning a dirty dir drops stale files", () => {
     const base = scratchDir();
     const prior = packetWithFiles([{ filename: "stale.txt", content: "old" }]);
-    const dir = provisionScratchDir("test-run", prior, base);
+    const dir = provisionScratchDir("test-run", prior, dirname(base));
 
     const stalePath = join(base, ".colony", "project", "stale.txt");
     expect(existsSync(stalePath)).toBeTrue();
 
     // Second provision with different files.
     const packet = packetWithFiles([{ filename: "fresh.md", content: "new" }]);
-    provisionScratchDir("test-run", packet, base);
+    provisionScratchDir("test-run", packet, dirname(base));
 
     expect(existsSync(stalePath)).toBeFalse();
     expect(
@@ -127,7 +132,7 @@ describe("project reference file materialization", () => {
       { filename: "a/../../etc/passwd", content: "should-skip" },
       { filename: "safe.txt", content: "safe file" },
     ]);
-    provisionScratchDir("test-run", packet, base);
+    provisionScratchDir("test-run", packet, dirname(base));
 
     const projectDir = join(base, ".colony", "project");
     // Dangerous filenames were skipped — only safe.txt was written.
@@ -156,7 +161,7 @@ describe("project reference file materialization", () => {
     execFileSync("git", ["config", "user.name", "test"], { cwd: base });
 
     const packet = packetWithFiles([{ filename: "a.txt", content: "a" }]);
-    provisionScratchDir("test-run", packet, base);
+    provisionScratchDir("test-run", packet, dirname(base));
 
     const excludePath = join(base, ".git", "info", "exclude");
     expect(existsSync(excludePath)).toBeTrue();
@@ -169,7 +174,7 @@ describe("project reference file materialization", () => {
     const packet = packetWithFiles([
       { filename: "stable.txt", content: "original content" },
     ]);
-    const dir = provisionScratchDir("test-run", packet, base);
+    const dir = provisionScratchDir("test-run", packet, dirname(base));
 
     const filePath = join(base, ".colony", "project", "stable.txt");
     expect(readFileSync(filePath, "utf8")).toBe("original content");

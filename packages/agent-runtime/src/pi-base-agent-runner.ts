@@ -1,3 +1,5 @@
+import { rmSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import {
   ModelRegistry,
   SessionManager,
@@ -66,6 +68,10 @@ import {
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import { createSubagentTool } from "./subagent-tool.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
+import {
+  captureTranscript,
+  quarantineTranscript,
+} from "./transcript-capture.js";
 import { buildSandboxTools, verifyPushedHead } from "./sandbox-tools.js";
 import { RunEvidenceCollector } from "./run-evidence.js";
 import {
@@ -264,6 +270,9 @@ export class PiBaseAgentRunner implements PiRunner {
     let cancellationTriggered = false;
 
     let cwd: string;
+    // Provisioning keeps its own catch: it returns a reasoned PiRunResult
+    // instead of throwing. The teardown try below starts after this so a
+    // failed provision never runs rmSync on an unassigned cwd.
     try {
       cwd = provisionProfileWorkspace(
         runId,
@@ -278,6 +287,7 @@ export class PiBaseAgentRunner implements PiRunner {
         reason: err instanceof Error ? err.message : String(err),
       };
     }
+    let clearTimeoutGuard: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
@@ -311,6 +321,7 @@ export class PiBaseAgentRunner implements PiRunner {
       }
       await session?.abort();
     };
+
     const submitTool = this.profile.submitTool(
       (value) => {
         if (
@@ -346,110 +357,115 @@ export class PiBaseAgentRunner implements PiRunner {
         ? draftEnvelopePromise
         : capturedEnvelopePromise;
 
-    // The credential broker owns key resolution; the registry only needs a
-    // provider record per model so `createAgentSession` can resolve selectors.
-    const providerApiKeys = new Map<string, string>();
-    for (const candidate of models) {
-      if (providerApiKeys.has(candidate.provider)) continue;
-      const apiKey = await broker.resolve({
-        provider: candidate.provider,
-        capability: `agent.llm.${candidate.provider}.invoke`,
-        bindingName: PI_RUNTIME_BINDING_NAME,
-        environment: request.environment,
-      });
-      if (!apiKey) continue;
-      providerApiKeys.set(candidate.provider, apiKey);
-    }
-    const authStorage = await discoverAuthStorage();
-    const modelRegistry = new ModelRegistry(authStorage);
-    for (const [provider, apiKey] of providerApiKeys) {
-      const providerModels = models.filter(
-        (candidate) => candidate.provider === provider,
-      );
-      const first = providerModels[0]!;
-      modelRegistry.registerProvider(provider, {
-        apiKey,
-        api: first.api,
-        baseUrl: first.baseUrl,
-        models: providerModels.map((candidate) => ({
-          id: candidate.id,
-          name: candidate.name,
-          api: candidate.api,
-          baseUrl: candidate.baseUrl,
-          reasoning: candidate.reasoning,
-          input: [...candidate.input],
-          cost: { ...candidate.cost },
-          // Colony's config leaves these nullable; the registry wants numbers.
-          contextWindow: candidate.contextWindow ?? 128_000,
-          maxTokens: candidate.maxTokens ?? 16_384,
-          headers: candidate.headers,
-        })),
-      });
-    }
-
-    // Specs are registered above; the registry owns compat resolution, so ask it
-    // for the real models the session and its fallbacks will use.
-    let resolvedModels = models.flatMap((candidate) => {
-      const resolved = modelRegistry.find(candidate.provider, candidate.id);
-      return resolved ? [resolved] : [];
-    });
-    // A saturated primary overflows to the dispatch-selected fallback model.
-    const startIndex = resolvedModels.findIndex(
-      (candidate) => candidate.id === request.environment.startModelId,
-    );
-    if (startIndex > 0) {
-      const [startModel] = resolvedModels.splice(startIndex, 1);
-      resolvedModels.unshift(startModel!);
-    }
-    const primaryModel = resolvedModels[0];
-    if (!primaryModel) {
-      throw new Error(
-        `no credentialed provider for ${models[0]?.provider}/${models[0]?.id}; check the ${request.environment.role} agent's provider auth`,
-      );
-    }
-
-    const { customTools, toolNames } = (() => {
-      // use the session-local capture so the submit envelope is wired
-      const base = [submitTool];
-      if (!this.options.webTools)
-        return {
-          customTools: base,
-          toolNames: [...workTools, submitTool.name],
-        };
-      // web_search is the SDK builtin (SearXNG provider). Its provider reads
-      // the GLOBAL settings singleton, not the session's isolated settings,
-      // so the endpoint travels via SEARXNG_ENDPOINT - process-wide, which is
-      // correct: one gateway per daemon. Colony supplies only web_fetch; the
-      // SDK folds URL fetching into its builtin read, which Colony replaces
-      // with the sandbox-routed one.
-      process.env["SEARXNG_ENDPOINT"] = this.options.webTools.searxngUrl;
-      const webTools = createWebTools(this.options.webTools);
-      return {
-        customTools: [...base, ...webTools],
-        toolNames: [...workTools, submitTool.name, "web_search", "web_fetch"],
-      };
-    })();
-    const steering = new RunSteering({
-      runTimeoutMs: this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS,
-      branch: packetRepo(request.packet)?.branch,
-    });
-    const clearTimeoutGuard = withRunTimeout(
-      runId,
-      this.options.runTimeoutMs,
-      () => void abortRun(),
-      () => {
-        failureReason ??= "timeout_without_envelope";
-        timeoutTriggered = true;
-      },
-    );
-    this.activeRuns.set(runId, {
-      abort: async () => {
-        cancellationTriggered = true;
-        await abortRun();
-      },
-    });
-
+    // The try starts here rather than at the run body so its finally also
+    // covers the setup window: a throw in between (discoverAuthStorage on an
+    // unreachable auth store, broker resolution, no credentialed provider)
+    // would otherwise strand /tmp/colony-pi-runs/<runId> with its
+    // credential-bearing PACKET.json — the leak this teardown exists to prevent.
     try {
+      // The credential broker owns key resolution; the registry only needs a
+      // provider record per model so `createAgentSession` can resolve selectors.
+      const providerApiKeys = new Map<string, string>();
+      for (const candidate of models) {
+        if (providerApiKeys.has(candidate.provider)) continue;
+        const apiKey = await broker.resolve({
+          provider: candidate.provider,
+          capability: `agent.llm.${candidate.provider}.invoke`,
+          bindingName: PI_RUNTIME_BINDING_NAME,
+          environment: request.environment,
+        });
+        if (!apiKey) continue;
+        providerApiKeys.set(candidate.provider, apiKey);
+      }
+      const authStorage = await discoverAuthStorage();
+      const modelRegistry = new ModelRegistry(authStorage);
+      for (const [provider, apiKey] of providerApiKeys) {
+        const providerModels = models.filter(
+          (candidate) => candidate.provider === provider,
+        );
+        const first = providerModels[0]!;
+        modelRegistry.registerProvider(provider, {
+          apiKey,
+          api: first.api,
+          baseUrl: first.baseUrl,
+          models: providerModels.map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            api: candidate.api,
+            baseUrl: candidate.baseUrl,
+            reasoning: candidate.reasoning,
+            input: [...candidate.input],
+            cost: { ...candidate.cost },
+            // Colony's config leaves these nullable; the registry wants numbers.
+            contextWindow: candidate.contextWindow ?? 128_000,
+            maxTokens: candidate.maxTokens ?? 16_384,
+            headers: candidate.headers,
+          })),
+        });
+      }
+
+      // Specs are registered above; the registry owns compat resolution, so ask it
+      // for the real models the session and its fallbacks will use.
+      let resolvedModels = models.flatMap((candidate) => {
+        const resolved = modelRegistry.find(candidate.provider, candidate.id);
+        return resolved ? [resolved] : [];
+      });
+      // A saturated primary overflows to the dispatch-selected fallback model.
+      const startIndex = resolvedModels.findIndex(
+        (candidate) => candidate.id === request.environment.startModelId,
+      );
+      if (startIndex > 0) {
+        const [startModel] = resolvedModels.splice(startIndex, 1);
+        resolvedModels.unshift(startModel!);
+      }
+      const primaryModel = resolvedModels[0];
+      if (!primaryModel) {
+        throw new Error(
+          `no credentialed provider for ${models[0]?.provider}/${models[0]?.id}; check the ${request.environment.role} agent's provider auth`,
+        );
+      }
+
+      const { customTools, toolNames } = (() => {
+        // use the session-local capture so the submit envelope is wired
+        const base = [submitTool];
+        if (!this.options.webTools)
+          return {
+            customTools: base,
+            toolNames: [...workTools, submitTool.name],
+          };
+        // web_search is the SDK builtin (SearXNG provider). Its provider reads
+        // the GLOBAL settings singleton, not the session's isolated settings,
+        // so the endpoint travels via SEARXNG_ENDPOINT - process-wide, which is
+        // correct: one gateway per daemon. Colony supplies only web_fetch; the
+        // SDK folds URL fetching into its builtin read, which Colony replaces
+        // with the sandbox-routed one.
+        process.env["SEARXNG_ENDPOINT"] = this.options.webTools.searxngUrl;
+        const webTools = createWebTools(this.options.webTools);
+        return {
+          customTools: [...base, ...webTools],
+          toolNames: [...workTools, submitTool.name, "web_search", "web_fetch"],
+        };
+      })();
+      const steering = new RunSteering({
+        runTimeoutMs: this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS,
+        branch: packetRepo(request.packet)?.branch,
+      });
+      clearTimeoutGuard = withRunTimeout(
+        runId,
+        this.options.runTimeoutMs,
+        () => void abortRun(),
+        () => {
+          failureReason ??= "timeout_without_envelope";
+          timeoutTriggered = true;
+        },
+      );
+      this.activeRuns.set(runId, {
+        abort: async () => {
+          cancellationTriggered = true;
+          await abortRun();
+        },
+      });
+
       let sandboxTools: readonly ToolDefinition[] = [];
       if (this.options.engine) {
         handle = await this.options.engine.provision(
@@ -521,6 +537,15 @@ export class PiBaseAgentRunner implements PiRunner {
         customTools: ToolDefinition[];
         toolNames: string[];
         prewalk: boolean;
+        /**
+         * Which journal this session persists to. Only the run's own session
+         * is evidence, so it alone gets the file-backed manager whose path
+         * teardown uploads as the transcript artifact. Subagent and critic
+         * sessions are in-memory: they exist to answer one question, and a
+         * shared SessionManager path would have every sibling appending to
+         * (and rewriting) the run's transcript.
+         */
+        journal: "run" | "transient";
       }) => ({
         cwd,
         model: primaryModel,
@@ -537,11 +562,20 @@ export class PiBaseAgentRunner implements PiRunner {
         scopedModels: resolvedModels.map((candidate) => ({ model: candidate })),
         settings: buildSettings(),
         systemPrompt: perSession.systemPrompt,
-        // Durable per-run transcript when a sessions root is configured;
-        // in-memory only otherwise, byte-identical to the pre-sessions behavior.
-        sessionManager: this.options.sessionsDir
-          ? await createFileSessionManager(this.options.sessionsDir, runId, cwd)
-          : SessionManager.inMemory(cwd),
+        // Only the run session is file-backed: the SDK writes its JSONL under
+        // the durable sessions root (<sessionsDir>/sessions/<runId>/session.jsonl)
+        // so teardown can persist it as a transcript artifact, and the agent's
+        // git worktree never sees the file. Without a configured root the run
+        // dir is the sessions root, which is why teardown deletes the scratch
+        // copy (or relocates it when the upload failed) before removing it.
+        sessionManager:
+          perSession.journal === "run"
+            ? await createFileSessionManager(
+                this.options.sessionsDir ?? cwd,
+                runId,
+                cwd,
+              )
+            : SessionManager.inMemory(cwd),
         // Colony owns every tool a run may call: the sandbox-routed file/shell
         // tools when an engine is configured, plus the role's submit tool and
         // any web tools. Nothing may reach the daemon's own filesystem.
@@ -589,6 +623,7 @@ export class PiBaseAgentRunner implements PiRunner {
             customTools: childCustomTools,
             toolNames: childToolNames,
             prewalk: false,
+            journal: "transient",
           }),
         );
         let report = "";
@@ -672,6 +707,7 @@ export class PiBaseAgentRunner implements PiRunner {
             subagentTool.name,
           ],
           prewalk: true,
+          journal: "run",
         }),
       );
       session = result.session;
@@ -1303,6 +1339,7 @@ export class PiBaseAgentRunner implements PiRunner {
               customTools: [],
               toolNames: [],
               prewalk: false,
+              journal: "transient",
             }),
           );
           let reportText = "";
@@ -1416,10 +1453,59 @@ export class PiBaseAgentRunner implements PiRunner {
         failureReason ??= "finalize_no_submission";
       }
     } finally {
-      clearTimeoutGuard();
+      // Audit capture is strictly post-decision: the PiRunResult below (and
+      // the envelope/failureReason it reads) was decided before this block,
+      // and nothing here may change it. Every step is guarded so a failure
+      // in one never skips the others. Transcript capture adds well under
+      // the 5s teardown budget: one readFileSync, a redact pass, and a
+      // gzipSync of the run's JSONL.
+      clearTimeoutGuard?.();
       workspaceProbe?.();
+      // (1) Transcript capture. Must precede dispose (dispose drops the
+      //     session manager that owns the file path) and the run-dir removal
+      //     in (3). A session that never reached disk leaves no transcript,
+      //     which capture treats as a silent skip, not an outage.
+      const sessionFile = session?.sessionManager.getSessionFile() ?? undefined;
+      let uploaded = false;
+      if (sessionFile && this.options.auditSink) {
+        try {
+          uploaded =
+            (await captureTranscript({
+              runId,
+              sessionFile,
+              secrets: runToken ? [runToken] : [],
+              sink: this.options.auditSink,
+            })) !== undefined;
+        } catch (err) {
+          // captureTranscript is contractually non-throwing; a foreign sink
+          // that throws must still never unwind the teardown.
+          this.options.auditSink.appendEvent(
+            runId,
+            "transcript_upload_failed",
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        }
+        // A failed upload keeps its transcript. captureTranscript already
+        // leaves the source in place; only relocate it when the journal
+        // lives under cwd, because the sweep in (3) would otherwise delete
+        // the only remaining copy. Production pins the journal under
+        // sessionsDir — outside the run dir — and moving that copy into
+        // ephemeral /tmp would lose it on a pod restart.
+        if (!uploaded && isInsideDir(cwd, sessionFile)) {
+          quarantineTranscript(runId, sessionFile);
+        }
+      }
+      // (2) Ordered teardown.
       session?.dispose();
       this.activeRuns.delete(runId);
+      // (3) Leak fix: /tmp/colony-pi-runs/<runId> (or <scratchDir>/<runId>)
+      //     must not survive the run. Removing only cwd never touches a shared
+      //     override root, and a failed upload has already parked its copy
+      //     outside this tree.
+      rmSync(cwd, { recursive: true, force: true });
+      // (4) The sandbox pod goes last: destroy after the workspace is gone.
       await handle?.destroy();
     }
 
@@ -1451,6 +1537,12 @@ function provisionProfileWorkspace(
     ...options,
     requireCredentials: true,
   });
+}
+
+/** True when `file` is inside `dir`, so `rmSync(dir)` would delete it. */
+function isInsideDir(dir: string, file: string): boolean {
+  const rel = relative(resolve(dir), resolve(file));
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 /**
