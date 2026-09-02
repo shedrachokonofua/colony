@@ -79,6 +79,15 @@ test.describe("console project running tab", () => {
       )
       .toBe("running");
 
+    // The merged task's id must not surface in the project's running list.
+    const runningApi = await request.get(
+      `/projects/${encodeURIComponent(name)}/running`,
+      { headers: HEADERS },
+    );
+    expect(runningApi.ok(), `GET running ${runningApi.status()}`).toBeTruthy();
+    const runningRows = (await runningApi.json()) as { task_id: string }[];
+    expect(runningRows.map((r) => r.task_id)).not.toContain(mergedTaskId);
+
     try {
       // 1. The project page renders the tab bar with both tabs and Running is
       //    not selected by default.
