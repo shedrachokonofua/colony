@@ -22,15 +22,21 @@ import type {
 } from "./project-helpers.d.ts";
 
 // demo.js reads location.search at module top level and bun tests run with
-// no location global, so seed one and pull demo.js in after it. (demo.test.ts
-// does the same; seeding here keeps this file order-independent.)
-if (!("location" in globalThis)) {
-  Object.defineProperty(globalThis, "location", {
-    value: { hash: "", search: "" },
-    configurable: true,
-    writable: true,
-  });
-}
+// no location global, so seed one and pull demo.js in after it.
+//
+// The seed must match the console's other suites (?demo=1): DEMO is a
+// module-level constant, so whichever suite imports demo.js first freezes
+// demo mode for the whole bun process. Seeding an empty search here would
+// turn demo mode off for every suite that loads after this one, and the
+// shell's demo reads would find no live run.
+// Unconditional, not just when absent: a happy-dom location aliased in by
+// an earlier suite carries search:"", which would freeze demo mode off for
+// the whole process the same way.
+Object.defineProperty(globalThis, "location", {
+  value: { hash: "#/", search: "?demo=1" },
+  configurable: true,
+  writable: true,
+});
 const { DEMO_READS } = await import("./demo.js");
 
 const here = dirname(fileURLToPath(import.meta.url));

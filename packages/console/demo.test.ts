@@ -3,9 +3,15 @@ import { afterEach, describe, expect, it } from "bun:test";
 
 // demo.js reads location.search at module top level; bun tests run without
 // any location global, so seed one and pull demo.js in after it.
+//
+// The seed must match the console's other suites (?demo=1): DEMO is a
+// module-level constant, so whichever suite imports demo.js first freezes
+// demo mode for the whole bun process. Seeding an empty search here would
+// switch demo mode off for every suite that loads after this one, and the
+// shell's demo reads would find no live run.
 const realLocation = globalThis.location ?? {
-  hash: "",
-  search: "",
+  hash: "#/",
+  search: "?demo=1",
 };
 Object.defineProperty(globalThis, "location", {
   value: realLocation,
