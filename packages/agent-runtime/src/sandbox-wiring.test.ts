@@ -122,8 +122,12 @@ describe("sandbox tool wiring", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Wired sandbox tools completed the review.",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: headSha,
     };
     const handle = new RecordingHandle();

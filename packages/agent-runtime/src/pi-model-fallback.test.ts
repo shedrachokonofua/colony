@@ -156,8 +156,12 @@ describe("Pi model fallback", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Fallback model completed the review.",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: headSha,
     };
     const server = createServer((request, response) => {
@@ -411,8 +415,12 @@ describe("Pi model fallback", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Survived the dead primary leg.",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -475,8 +483,12 @@ describe("Pi model fallback", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Landed on the uncapped lane.",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -588,8 +600,12 @@ describe("Pi model fallback", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Third leg carried the review.",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(

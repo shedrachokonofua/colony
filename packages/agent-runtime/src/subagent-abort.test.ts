@@ -163,8 +163,12 @@ describe("subagent abort propagation", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Child exhausted; parent inspected and submitted.",
+      summary:
+        "Child exhausted; parent inspected the diff itself against the spec and submitted the verdict once the turn guard returned.",
       findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: "f".repeat(40),
     };
     let parentTurns = 0;

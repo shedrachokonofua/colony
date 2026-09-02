@@ -139,8 +139,12 @@ describe("e2e: model invokes web_fetch against injected transport", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Fetch confirmed the library API.",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [] as unknown[],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: headSha,
     };
 

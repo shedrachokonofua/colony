@@ -118,8 +118,10 @@ const HEAD_SHA = "d".repeat(40);
 const VERDICT = {
   kind: "reviewer_verdict",
   verdict: "approve",
-  summary: "Transcript capture reviewed the change.",
+  summary:
+    "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
   findings: [],
+  inspected: [{ file: "src/main.ts", note: "checked against the task spec" }],
   head_sha: HEAD_SHA,
 };
 

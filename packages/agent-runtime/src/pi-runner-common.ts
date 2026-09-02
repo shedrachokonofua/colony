@@ -1272,7 +1272,7 @@ export function buildReviewerSystemPrompt(): string {
     playbookPrompt(["code-review.md"]),
     "",
     "# Completion contract",
-    "Finish by calling submit_reviewer_verdict exactly once with verdict, findings (severity + note, file where applicable), and the exact head_sha you inspected (`git rev-parse HEAD`). Your run does not exist until that call — never finish with plain text. Never include secrets in the envelope.",
+    "Finish by calling submit_reviewer_verdict exactly once with verdict, findings (severity + note, file where applicable), `inspected` (every file you read for the verdict, each with the spec requirement you checked it against), and the exact head_sha you inspected (`git rev-parse HEAD`). An approve with an empty `inspected` list or a one-line summary is rejected: a verdict is a claim about the diff and must name what it rests on. Your run does not exist until that call — never finish with plain text. Never include secrets in the envelope.",
   ].join("\n");
 }
 
@@ -1341,6 +1341,21 @@ export const reviewerVerdictEnvelopeTypeBox = Type.Object(
         ),
       ),
     ),
+    inspected: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            file: Type.String({ minLength: 1 }),
+            note: Type.String({ minLength: 1 }),
+          },
+          { additionalProperties: false },
+        ),
+        {
+          description:
+            "Files you read for this verdict, each with what you checked it against. Required (non-empty) on approve.",
+        },
+      ),
+    ),
     head_sha: Type.String({ pattern: "^[0-9a-f]{40}$" }),
   },
   { additionalProperties: false },
@@ -1353,7 +1368,7 @@ export function createReviewerSubmitTool(
     name: "submit_reviewer_verdict",
     label: "Submit reviewer verdict",
     description:
-      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. request_changes requires at least one finding.",
+      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. request_changes requires at least one finding; approve requires `inspected` (the files you read, each with what you checked) and a summary of at least 80 chars.",
     parameters: reviewerVerdictEnvelopeTypeBox,
     execute: async (_toolCallId, rawParams) => {
       const params = parseEnvelopeArguments(reviewerVerdictV2Schema, rawParams);

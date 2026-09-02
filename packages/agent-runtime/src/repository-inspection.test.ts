@@ -69,8 +69,12 @@ describe("repository inspection gate", () => {
     const envelope = {
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Inspected via glob before submitting.",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       head_sha: headSha,
     };
     let requests = 0;

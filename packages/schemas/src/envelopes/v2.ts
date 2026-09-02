@@ -59,12 +59,32 @@ export const ReviewerVerdictV2 = z
         }),
       )
       .default([]),
+    // What the reviewer actually read against the spec. An approve is a
+    // claim about the diff; it must name the files behind it. 123 of 123
+    // approvals in one 48h window carried zero findings and a summary under
+    // 80 chars (2026-09-02) - the schema permitted "LGTM".
+    inspected: z
+      .array(
+        z.object({
+          file: z.string().min(1),
+          note: z.string().min(1),
+        }),
+      )
+      .default([]),
     // the SHA the reviewer actually inspected; colonyd rejects a mismatch
     head_sha: z.string().regex(/^[0-9a-f]{40}$/),
   })
   .strict()
   .refine((v) => v.verdict !== "request_changes" || v.findings.length > 0, {
     message: "request_changes requires at least one finding",
+  })
+  .refine((v) => v.verdict !== "approve" || v.inspected.length > 0, {
+    message:
+      "approve requires at least one inspected file with a note on what was checked",
+  })
+  .refine((v) => v.verdict !== "approve" || v.summary.trim().length >= 80, {
+    message:
+      "approve requires a substantive summary (>= 80 chars): what the change does and why it satisfies the spec",
   });
 
 export type ReviewerVerdictV2 = z.infer<typeof ReviewerVerdictV2>;

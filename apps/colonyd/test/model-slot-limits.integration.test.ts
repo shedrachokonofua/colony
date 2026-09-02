@@ -76,8 +76,12 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         return {
           kind: "reviewer_verdict",
           verdict: "approve",
-          summary: "Looks good.",
+          summary:
+            "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
           findings: [],
+          inspected: [
+            { file: "src/main.ts", note: "checked against the task spec" },
+          ],
           head_sha: SHA_A,
         };
       }
