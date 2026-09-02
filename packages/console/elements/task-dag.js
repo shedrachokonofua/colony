@@ -15,11 +15,7 @@ import {
   svg,
 } from "../base.js";
 import { graphModel, layoutDag } from "../dag.js";
-import {
-  createRunTicker,
-  formatDuration,
-  runDurationMs,
-} from "../duration.js";
+import { createRunTicker, formatDuration, runDurationMs } from "../duration.js";
 import { KIND_LABEL } from "../kind-label.js";
 
 /**
