@@ -494,6 +494,17 @@ describe("colonyd fake end-to-end loop", () => {
     a = handle.ctx.store.getTask(taskAId)!;
     expect(a.state).toBe("blocked");
     expect(a.blocked_reason).toMatch(/retries exhausted/);
+
+    // B depends on A and is still `queued`: nothing in the scope can run, so
+    // the scope must say so instead of reading `active` forever
+    // (col-c8f58a57, 2026-09-02: blocked .3, queued .4 behind it, scope
+    // `active` for nine hours).
+    const b = handle.ctx.store.getTask(`${scopeId}.2`)!;
+    expect(b.state).toBe("queued");
+    await tickAndSettle();
+    const scope = handle.ctx.store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
+    expect(scope.blocked_reason).toBe(`no runnable tasks; blocked: ${taskAId}`);
   }, 30_000);
 
   it("gate fail: requeued with evidence, then merged on the second pass", async () => {
