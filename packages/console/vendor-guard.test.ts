@@ -12,7 +12,9 @@ import { describe, expect, it } from "bun:test";
  */
 const consoleDir = resolve(dirname(fileURLToPath(import.meta.url)));
 
-const DECORATORS = ["@customElement(", "@property(", "@state("];
+const DECORATORS = ["@customElement", "@property", "@state"].map(
+  (d) => `${d}(`,
+);
 
 function walkJsFiles(dir: string): string[] {
   const out: string[] = [];

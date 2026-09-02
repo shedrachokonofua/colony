@@ -15,6 +15,11 @@ export function renderView(app) {
   if (app.viewModule?.loading) {
     return html`<p class="note">Loading…</p>`;
   }
+  if (app.viewModule?.error) {
+    return html`<div class="banner banner-error" role="alert">
+      Failed to load view: ${app.viewModule.error}
+    </div>`;
+  }
   if (!app.viewModule) return nothing;
   switch (app.viewModule.route) {
     case "list":

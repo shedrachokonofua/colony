@@ -28,9 +28,9 @@ function archivedQuery(app) {
 
 /**
  * The lazy-loaded view's registration state on the shell: which route's
- * module is loaded and whether its import has settled.
+ * module is loaded and whether its import has settled or failed.
  *
- * @typedef {{ route: keyof typeof VIEW_ROUTES, loading: boolean }} ViewModuleState
+ * @typedef {{ route: keyof typeof VIEW_ROUTES, loading: boolean, error?: string }} ViewModuleState
  */
 
 /**
@@ -373,8 +373,9 @@ export function loadViewModule(app) {
     })
     .catch((err) => {
       if (app.currentRoute.name !== route) return;
-      app.viewModule = null;
-      app.error = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? err.message : String(err);
+      app.viewModule = { route, loading: false, error: msg };
+      app.error = msg;
     });
 }
 
