@@ -260,6 +260,56 @@ describe("architect submission", () => {
     expect(captured).toMatchObject({ kind: "extend" });
   });
 
+  it("infers the envelope kind from shape when the model omits it", async () => {
+    // Every extension submission on 2026-09-01 arrived without `kind`
+    // (a top-level union parameter schema flattened in transit) and was
+    // rejected 14-15 times per run. Shape is unambiguous; infer it.
+    let captured: unknown;
+    const tool = createArchitectExtensionSubmitTool(
+      (value) => {
+        captured = value;
+      },
+      [{ id: "col-abcd.1", depends_on: [] }],
+    );
+    await tool.execute(
+      "no-kind-extend",
+      { tasks: [{ title: "Fix flaky test", spec: "Pin the clock." }] },
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    expect(captured).toMatchObject({ kind: "extend" });
+
+    await tool.execute(
+      "no-kind-human",
+      { reason: "Needs a credential only an operator holds." },
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    expect(captured).toMatchObject({ kind: "human_required" });
+
+    await tool.execute(
+      "no-kind-acceptance",
+      { acceptance: [{ description: "unit", command: "bun run test:unit" }] },
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    expect(captured).toMatchObject({ kind: "acceptance_fix" });
+
+    // Nothing recognisable: still a schema error, still teaches the kinds.
+    await expect(
+      tool.execute(
+        "no-kind-empty",
+        {},
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow(/kind/);
+  });
+
   it("rejects an extension cycle and unknown existing dependency", async () => {
     const tool = createArchitectExtensionSubmitTool(() => {}, [
       { id: "col-abcd.1", depends_on: [] },

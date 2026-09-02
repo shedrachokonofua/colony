@@ -76,27 +76,58 @@ const extensionTaskTypeBox = Type.Object(
   { additionalProperties: false },
 );
 
-export const architectExtensionEnvelopeTypeBox = Type.Union([
-  Type.Object(
-    { kind: Type.Literal("acceptance_fix"), acceptance: acceptanceTypeBox },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      kind: Type.Literal("extend"),
-      tasks: Type.Array(extensionTaskTypeBox, { minItems: 1, maxItems: 20 }),
-      acceptance: Type.Optional(acceptanceTypeBox),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      kind: Type.Literal("human_required"),
-      reason: Type.String({ minLength: 1 }),
-    },
-    { additionalProperties: false },
-  ),
-]);
+/**
+ * ONE flat object, not a union. The envelope is a discriminated union, but a
+ * top-level `anyOf` is not a function-calling parameter schema: between the
+ * model and the gateway it flattened and `kind` - the only field the three
+ * variants do not share - was dropped on every submission. glm and kimi
+ * each submitted 14-15 times in one run and were rejected every time with
+ * "kind ... (was undefined)"; no validation replan succeeded all day
+ * (2026-09-01). The kind is inferred from shape when absent.
+ */
+export const architectExtensionEnvelopeTypeBox = Type.Object(
+  {
+    kind: Type.Optional(
+      Type.Union(
+        [
+          Type.Literal("acceptance_fix"),
+          Type.Literal("extend"),
+          Type.Literal("human_required"),
+        ],
+        {
+          description:
+            "extend: add tasks (and optionally replace acceptance). acceptance_fix: replace acceptance only. human_required: nothing an agent can do; give reason. Inferred from the fields you send if omitted.",
+        },
+      ),
+    ),
+    tasks: Type.Optional(
+      Type.Array(extensionTaskTypeBox, {
+        minItems: 1,
+        maxItems: 20,
+        description: "extend only: new tasks to append to the scope.",
+      }),
+    ),
+    acceptance: Type.Optional(acceptanceTypeBox),
+    reason: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description: "human_required only: what a human must do.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/** Infer the envelope kind from the fields present when the model omits it. */
+export function inferExtensionKind(
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof raw.kind === "string") return raw;
+  if (Array.isArray(raw.tasks)) return { ...raw, kind: "extend" };
+  if (typeof raw.reason === "string") return { ...raw, kind: "human_required" };
+  if (Array.isArray(raw.acceptance)) return { ...raw, kind: "acceptance_fix" };
+  return raw;
+}
 
 export function createArchitectExtensionSubmitTool(
   capture: (value: ArchitectExtensionEnvelope) => void,
@@ -109,7 +140,9 @@ export function createArchitectExtensionSubmitTool(
       "Final action. Submit acceptance_fix, extend, or human_required. Extension task dependencies use numeric indexes for new tasks and existing task ids for already-materialized tasks; the graph must remain acyclic.",
     parameters: architectExtensionEnvelopeTypeBox,
     execute: async (_toolCallId, rawParams) => {
-      const parsed = ArchitectExtensionEnvelope.safeParse(rawParams);
+      const parsed = ArchitectExtensionEnvelope.safeParse(
+        inferExtensionKind((rawParams ?? {}) as Record<string, unknown>),
+      );
       if (!parsed.success) {
         throw new Error(
           "Extension envelope failed schema validation:\n" +
