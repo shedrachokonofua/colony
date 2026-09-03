@@ -2,7 +2,13 @@
 // its DOM throws away the operator's text selection. <markdown-reader> now
 // renders only when the markdown string actually changes, so a poll that
 // re-sends the same text leaves the DOM — and the selection — alone.
-import { controlReset, selectFirstText, selectionLength } from "./helpers.js";
+import {
+  controlReset,
+  firstTextSurvived,
+  markFirstText,
+  selectFirstText,
+  selectionLength,
+} from "./helpers.js";
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
@@ -32,6 +38,10 @@ test.describe("markdown reader keeps the operator's selection", () => {
     expect(selected, "the brief must render selectable text").toBeGreaterThan(
       0,
     );
+    // Remember the selected node as well as the selection: a poll that
+    // rebuilt the subtree from the same markdown could restore an identical
+    // selection length while still dropping the operator's scroll position.
+    expect(await page.evaluate(markFirstText, READER)).toBe(true);
 
     await page.waitForTimeout(HOLD_MS);
 
@@ -40,6 +50,7 @@ test.describe("markdown reader keeps the operator's selection", () => {
     await expect
       .poll(() => page.evaluate(selectionLength), { timeout: 5000 })
       .toBe(selected);
+    await expect(page.evaluate(firstTextSurvived, READER)).resolves.toBe(true);
 
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
@@ -69,8 +80,15 @@ test.describe("markdown reader keeps the operator's selection", () => {
       20,
     ] satisfies [string, number]);
     expect(selected, "the spec must render selectable text").toBeGreaterThan(0);
+    expect(await page.evaluate(markFirstText, "aside.drawer pre.spec")).toBe(
+      true,
+    );
 
     await page.waitForTimeout(HOLD_MS);
+
+    await expect(
+      page.evaluate(firstTextSurvived, "aside.drawer pre.spec"),
+    ).resolves.toBe(true);
 
     await expect
       .poll(() => page.evaluate(selectionLength), { timeout: 5000 })

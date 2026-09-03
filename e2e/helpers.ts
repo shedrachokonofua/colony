@@ -260,6 +260,54 @@ export function selectFirstText([selector, chars]: [string, number]): number {
   return selection.toString().length;
 }
 
+/**
+ * Remember the node {@link selectFirstText} selects inside: `selector`'s first
+ * text node, stashed on globalThis because page.evaluate serialises this
+ * function alone. Whether that exact node is still there is the strictest
+ * statement of "the surface was not re-rendered" — it catches a rebuild that
+ * restored an equivalent selection, which a length check cannot.
+ */
+export function markFirstText(selector: string): boolean {
+  const view = globalThis as unknown as {
+    document: {
+      querySelector(selector: string): unknown;
+      createTreeWalker(root: unknown, filter: number): { nextNode(): unknown };
+    };
+    NodeFilter: { SHOW_TEXT: number };
+    __colonyProbe?: Map<string, unknown>;
+  };
+  const host = view.document.querySelector(selector);
+  if (!host) return false;
+  const node = view.document
+    .createTreeWalker(host, view.NodeFilter.SHOW_TEXT)
+    .nextNode();
+  if (!node) return false;
+  if (!view.__colonyProbe) view.__colonyProbe = new Map();
+  view.__colonyProbe.set(selector, node);
+  return true;
+}
+
+/**
+ * Whether `selector`'s first text node is still the one {@link markFirstText}
+ * stashed, i.e. the subtree was reused rather than rebuilt.
+ */
+export function firstTextSurvived(selector: string): boolean {
+  const view = globalThis as unknown as {
+    document: {
+      querySelector(selector: string): unknown;
+      createTreeWalker(root: unknown, filter: number): { nextNode(): unknown };
+    };
+    NodeFilter: { SHOW_TEXT: number };
+    __colonyProbe?: Map<string, unknown>;
+  };
+  const host = view.document.querySelector(selector);
+  if (!host) return false;
+  const node = view.document
+    .createTreeWalker(host, view.NodeFilter.SHOW_TEXT)
+    .nextNode();
+  return Boolean(node) && node === view.__colonyProbe?.get(selector);
+}
+
 /** The length of the page's current text selection, or -1. */
 export function selectionLength(): number {
   const selection = (
