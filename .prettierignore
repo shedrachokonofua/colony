@@ -6,6 +6,7 @@ flake.lock
 # SOPS-encrypted YAML — reformatting would invalidate the MAC.
 secrets/
 data/
+packages/console/vendor/
 PACKET.json
 .bun-cache/
 
