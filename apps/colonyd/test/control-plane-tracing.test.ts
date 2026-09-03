@@ -99,6 +99,7 @@ function appWith(traceUiBaseUrl = "") {
       oidcClientId: "colony",
       oidcRequiredRole: "",
       traceUiBaseUrl,
+      consoleBaseUrl: "",
     },
     draining: { isDraining: () => false },
     requestTick() {},

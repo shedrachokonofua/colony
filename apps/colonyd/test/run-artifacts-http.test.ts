@@ -65,6 +65,7 @@ function fakeCtx(
       oidcClientId: "colony",
       oidcRequiredRole: "",
       traceUiBaseUrl: "",
+      consoleBaseUrl: "",
     },
     draining: { isDraining: () => false },
     requestTick() {},

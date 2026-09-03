@@ -42,6 +42,7 @@ function fakeCtx(store: Store): ColonydContext {
       oidcClientId: "colony",
       oidcRequiredRole: "",
       traceUiBaseUrl: "",
+      consoleBaseUrl: "",
     },
     draining: { isDraining: () => false },
     requestTick() {},
