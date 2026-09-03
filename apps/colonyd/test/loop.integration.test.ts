@@ -51,6 +51,8 @@ const script = {
   distinctShas: false,
   singleTask: false,
   validateFail: false,
+  /** The first validation never runs (sandbox provision failure). */
+  validateInfraFailOnce: false,
   reviewerAdvancesHead: false,
 };
 
@@ -197,6 +199,14 @@ function syncMrHead(adapter: FakeProviderAdapter): void {
 
 function fakeValidateExecutor(): ValidateExecutor {
   return async () => {
+    if (script.validateInfraFailOnce) {
+      script.validateInfraFailOnce = false;
+      return {
+        passed: false,
+        results: [],
+        error: "workspace_provision_failed: etcdserver: request timed out",
+      };
+    }
     if (script.validateFail) {
       return {
         passed: false,
@@ -358,6 +368,7 @@ beforeEach(async () => {
   script.distinctShas = false;
   script.singleTask = false;
   script.validateFail = false;
+  script.validateInfraFailOnce = false;
   script.reviewerAdvancesHead = false;
   provider = new FakeProviderAdapter();
   const repo = await provider.repos.create({
@@ -1114,6 +1125,36 @@ describe("colonyd fake end-to-end loop", () => {
 
     // The freed scope plans and completes.
     await driveToDone(scopeId);
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("done");
+  }, 30_000);
+
+  it("a validation that never ran is re-run, not handed to an architect", async () => {
+    // col-7064acc1 (2026-09-03): an etcd stall failed the sandbox create;
+    // the scope spent an extension round asking an architect to diagnose a
+    // verdict that did not exist.
+    const scopeId = await createScope("infra validate");
+    script.validateInfraFailOnce = true;
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      const validates = handle.ctx.store
+        .runsForScope(scopeId)
+        .filter((r) => r.kind === "validate");
+      if (validates.length > 0 && validates[0]!.status !== "running") break;
+    }
+    const first = handle.ctx.store
+      .runsForScope(scopeId)
+      .filter((r) => r.kind === "validate");
+    expect(first).toHaveLength(1);
+    expect(first[0]!.status).toBe("failed");
+    expect(first[0]!.error).toMatch(/workspace_provision_failed/);
+    await tickAndSettle(); // validate 2: runs for real and passes
+    const runs = handle.ctx.store.runsForScope(scopeId);
+    expect(
+      runs.filter(
+        (r) => r.kind === "architect" && r.started_at > first[0]!.started_at,
+      ),
+    ).toHaveLength(0);
+    expect(runs.filter((r) => r.kind === "validate")).toHaveLength(2);
     expect(handle.ctx.store.getScope(scopeId)!.status).toBe("done");
   }, 30_000);
 

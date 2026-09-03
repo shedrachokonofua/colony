@@ -390,6 +390,10 @@ async function executeValidate(
   ctx.store.finishRun(runId, "failed", {
     head_sha: baseSha,
     evidence_json: evidenceJson,
+    // The executor's own error (a provision failure, a provider timeout)
+    // lives on the run so the tick can tell "never ran" from "ran and
+    // failed" - only the latter is a verdict worth an architect's time.
+    error: result.error ?? undefined,
   });
   runSpan?.end("failed", result.error ?? "validation failed");
   const failing = result.results.find((r) => r.exit_code !== 0);

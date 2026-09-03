@@ -845,6 +845,16 @@ async function validateScopes(
       continue;
     }
     if (lastValidate.status === "succeeded") continue;
+    // A validation that never ran (sandbox provision failed, provider
+    // unreachable) has no verdict for an architect to diagnose; re-run it.
+    // col-7064acc1 (2026-09-03): an etcd stall failed the sandbox create and
+    // the scope spent an extension round asking an architect to explain it.
+    if (isInfraError(lastValidate.error)) {
+      const slot = pickDispatchSlot(ctx, "developer");
+      if (!slot.allowed) continue;
+      dispatch(runValidation(ctx, fresh));
+      continue;
+    }
     const architectsSince = runs.filter(
       (run) =>
         run.kind === "architect" && run.started_at > lastValidate.started_at,

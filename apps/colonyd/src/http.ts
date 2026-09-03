@@ -1302,6 +1302,50 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(run);
   });
 
+  /**
+   * Abort one running run in place. Task runs requeue through the task's own
+   * failure path; scope-level runs (architect, validate) finish `canceled`
+   * and the tick decides what happens next. The primitive `task stop` is
+   * built on, exposed for scope-level runs an operator could not reach
+   * (an extension architect diagnosing an infra-failed validation,
+   * col-7064acc1, 2026-09-03).
+   */
+  app.post("/runs/:id/abort", async (c) => {
+    const run = ctx.store.getRun(c.req.param("id"));
+    if (!run) return notFound(c, "run");
+    if (run.status !== "running") {
+      return c.json(
+        {
+          error: {
+            code: "NOT_RUNNING",
+            message: "only a running run can be aborted",
+          },
+        },
+        409,
+      );
+    }
+    const [stopped] = await abortRunsAndWait([run.id]);
+    if (!stopped) {
+      return c.json(
+        {
+          error: {
+            code: "RUN_NOT_LOCAL",
+            message: "run is not owned by this colonyd process",
+          },
+        },
+        409,
+      );
+    }
+    ctx.store.audit(c.get("actor"), "run.aborted", {
+      scope_id: run.scope_id,
+      task_id: run.task_id ?? undefined,
+      run_id: run.id,
+      detail: { kind: run.kind },
+    });
+    ctx.requestTick();
+    return c.json(ctx.store.getRun(run.id));
+  });
+
   app.get("/runs/:id/events", (c) => {
     const run = ctx.store.getRun(c.req.param("id"));
     if (!run) return notFound(c, "run");
