@@ -301,7 +301,10 @@ describe("staged architect", () => {
             }
             return [
               sseChunk(
-                { role: "assistant", content: "I am still inspecting the repository." },
+                {
+                  role: "assistant",
+                  content: "I am still inspecting the repository.",
+                },
                 null,
               ),
               sseChunk({}, "stop"),
@@ -332,7 +335,9 @@ describe("staged architect", () => {
         }),
       ]),
     );
-    expect(requests.filter((request) => stageOf(request) === "survey")).toHaveLength(2);
+    expect(
+      requests.filter((request) => stageOf(request) === "survey"),
+    ).toHaveLength(2);
   }, 60_000);
 
   it("a stage that keeps reading past its turn cap is left with only its submit tool", async () => {

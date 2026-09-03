@@ -129,6 +129,10 @@ export async function createAgentWiring(
   const developerConfig = config.forAgent("developer");
   const reviewerConfig =
     config.reviewMode === "required" ? config.forAgent("reviewer") : undefined;
+  const planReviewerConfig =
+    config.reviewMode === "required"
+      ? config.forAgent("plan_reviewer")
+      : undefined;
   const agentsToCheck = reviewerConfig
     ? [architectConfig, developerConfig, reviewerConfig]
     : [architectConfig, developerConfig];
@@ -182,11 +186,11 @@ export async function createAgentWiring(
     planReviewer = new PiAgentRuntimeAdapter(
       new PiPlanReviewerRunner({
         broker,
-        model: modelFromConfig(reviewerConfig),
-        fallbackModels: fallbackModelsFromConfig(reviewerConfig),
-        maxTurns: reviewerConfig.ceilings.maxTurns,
-        runTimeoutMs: reviewerConfig.ceilings.timeoutMs,
-        thinkingLevel: reviewerConfig.thinkingLevel,
+        model: modelFromConfig(planReviewerConfig!),
+        fallbackModels: fallbackModelsFromConfig(planReviewerConfig!),
+        maxTurns: planReviewerConfig!.ceilings.maxTurns,
+        runTimeoutMs: planReviewerConfig!.ceilings.timeoutMs,
+        thinkingLevel: planReviewerConfig!.thinkingLevel,
         logger: planReviewerLogger,
         ...(auditSink ? { auditSink } : {}),
         engine,
@@ -194,8 +198,8 @@ export async function createAgentWiring(
         ...(webTools ? { webTools } : {}),
       }),
       {
-        provider: reviewerConfig.providerKey,
-        model: reviewerConfig.model.id,
+        provider: planReviewerConfig!.providerKey,
+        model: planReviewerConfig!.model.id,
       },
     );
     reviewer = new PiAgentRuntimeAdapter(

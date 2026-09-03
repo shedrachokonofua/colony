@@ -192,14 +192,29 @@ agents:
     thinking_level: high
     timeout_ms: 10800000
     max_turns: 400
-  # 2026-09-03: spark leads. grok-4.6 moved to the tail: it landed 2/2 code
-  # reviews in the lab but in production its plan reviews narrate a verdict
-  # and never call submit (finalize_no_submission x2, 10 min each), the same
-  # signature that removed it from the architect chain. qwen3.8-max second
-  # on evidence: lab reviewer 4/4 submitted (4-9 min), opens the diff, runs
-  # the typecheck, findings verified real - the ledger's 17% was the broken
-  # tool registry. Then AA Index: kimi-k3 60, glm-5.3 60, deepseek 53.
+  # 2026-09-03: grok leads code review - 6/8 landed in production tonight
+  # (the two misses were a daemon restart and an in-flight run), lab 2/2
+  # with dense correct findings. qwen3.8-max second on evidence: lab 4/4
+  # submitted (4-9 min), opens the diff, runs the typecheck, findings real.
+  # Then spark (AA 61), kimi-k3 60, glm-5.3 60, deepseek-v4-pro 53.
   reviewer:
+    provider: openai_compatible
+    model: grok-4.6
+    fallback_models:
+      - qwen3.8-max
+      - muse-spark-1.3
+      - kimi-k3
+      - glm-5.3
+      - deepseek-v4-pro
+    thinking_level: xhigh
+    timeout_ms: 2700000
+    max_turns: 200
+  # A plan is prose, a diff is code. grok-4.6 lands code reviews but its
+  # plan reviews narrate a verdict and never call submit (0/10 in
+  # production, finalize_no_submission after 10 min each; the architect
+  # chain dropped it for the same signature). spark leads: staged architect
+  # lab 4/4, AA Index 61. qwen3.8-max second on lab reviewer evidence.
+  plan_reviewer:
     provider: openai_compatible
     model: muse-spark-1.3
     fallback_models:
@@ -207,7 +222,6 @@ agents:
       - kimi-k3
       - glm-5.3
       - deepseek-v4-pro
-      - grok-4.6
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
@@ -221,13 +235,7 @@ agents:
     provider: openai_compatible
     model: muse-spark
     fallback_models:
-      [
-        glm-5.3,
-        kimi-k3,
-        gemini-3.8-flash,
-        qwen3.8-max,
-        deepseek-v4-pro,
-      ]
+      [glm-5.3, kimi-k3, gemini-3.8-flash, qwen3.8-max, deepseek-v4-pro]
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200

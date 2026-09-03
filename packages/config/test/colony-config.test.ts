@@ -72,6 +72,33 @@ agents:
 }
 
 describe("loadColonyConfig", () => {
+  it("plan_reviewer falls back to the reviewer chain when absent, and stands alone when set", () => {
+    // Plans are prose, diffs are code: a model that lands code reviews can
+    // fail to submit plan reviews, so the seat may run its own chain.
+    const shared = loadColonyConfig({
+      path: tempConfig(VALID_YAML),
+      env: { ANTHROPIC_API_KEY: "k" },
+    });
+    expect(shared.forAgent("plan_reviewer").model.id).toBe(
+      shared.forAgent("reviewer").model.id,
+    );
+    expect(shared.forAgent("plan_reviewer").role).toBe("plan_reviewer");
+
+    const split = loadColonyConfig({
+      path: tempConfig(
+        `${VALID_YAML}  plan_reviewer:
+    provider: openai_codex
+    model: gpt-5-codex
+`,
+      ),
+      env: { ANTHROPIC_API_KEY: "k" },
+    });
+    expect(split.forAgent("plan_reviewer").model.id).toBe("gpt-5-codex");
+    expect(split.forAgent("reviewer").model.id).toBe(
+      "claude-sonnet-4-20250514",
+    );
+  });
+
   it("resolves an api_key auth via env var", () => {
     const path = tempConfig(VALID_YAML);
     const cfg = loadColonyConfig({

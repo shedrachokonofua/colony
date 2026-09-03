@@ -131,6 +131,7 @@ const agentSchema = z
 export const AGENT_ROLES = [
   "developer",
   "reviewer",
+  "plan_reviewer",
   "architect",
   "memory_consolidator",
   "integrator",
@@ -294,6 +295,8 @@ export const colonyConfigFileSchema = z
       .object({
         developer: agentSchema.optional(),
         reviewer: agentSchema.optional(),
+        /** Reviews proposed plans; defaults to the reviewer chain. */
+        plan_reviewer: agentSchema.optional(),
         architect: agentSchema.optional(),
         memory_consolidator: agentSchema.optional(),
         integrator: agentSchema.optional(),
@@ -446,6 +449,7 @@ export const DEFAULT_CEILINGS = {
     maxTurns: 10,
   },
   integrator: { timeoutMs: 300_000, maxTurns: 10 },
+  plan_reviewer: { timeoutMs: 600_000, maxTurns: 20 },
 } as const satisfies Record<AgentRole, ResolvedAgentConfig["ceilings"]>;
 
 export function loadColonyConfig(
@@ -531,7 +535,13 @@ export function loadColonyConfig(
     notifications,
     oauthProviderKeys,
     forAgent(role) {
-      const agentEntry = file.agents[role];
+      // A plan is prose, a diff is code: models that land code reviews can
+      // fail to submit plan reviews (grok-4.6: 6/8 vs 0/10, 2026-09-03), so
+      // the plan-review seat may run its own chain. Absent, it shares the
+      // reviewer's.
+      const agentEntry =
+        file.agents[role] ??
+        (role === "plan_reviewer" ? file.agents.reviewer : undefined);
       if (!agentEntry) {
         throw new ColonyConfigError(
           "UNRESOLVED_AGENT_PROVIDER",

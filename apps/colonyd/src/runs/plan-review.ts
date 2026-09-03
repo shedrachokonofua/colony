@@ -48,7 +48,7 @@ export async function runPlanReview(
     id: scope.provider_repo_id,
     path: scope.provider_repo_path,
   };
-  const reviewer = ctx.config.forAgent("reviewer");
+  const reviewer = ctx.config.forAgent("plan_reviewer");
   const modelId = options.startModelId ?? reviewer.model.id;
   const leaseTtlMs =
     options.leaseTtlMs ?? reviewer.ceilings.timeoutMs + 5 * 60_000;
