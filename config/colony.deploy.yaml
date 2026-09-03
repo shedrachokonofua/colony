@@ -189,17 +189,17 @@ agents:
     thinking_level: high
     timeout_ms: 10800000
     max_turns: 400
-  # 2026-09-03: spark leads (AA Index 61, $0.55/task, 186 tok/s; review is
-  # the bounded read-then-verdict shape it handles). grok second: lab 2/2 real
-  # findings; its ledger no-submit loop was the bridge's tool channel, fixed
-  # tonight, not re-proven in-loop yet. deepseek third as the proven-in-loop
-  # safety net (AA 53, inspects the diff, lands verdicts). qwen3.8-max keeps
-  # the tail seat: it writes verdicts without opening the diff (17%).
+  # 2026-09-03: grok leads - review is the shape it has proven (lab 2/2, dense
+  # correct findings; its ledger no-submit loop was the bridge's tool channel,
+  # fixed tonight). spark second: AA Index 61 at $0.55/task and 186 tok/s but
+  # no reviewer run yet. deepseek third as the proven-in-loop safety net
+  # (AA 53, inspects the diff, lands verdicts). qwen3.8-max keeps the tail
+  # seat: it writes verdicts without opening the diff (17%).
   reviewer:
     provider: openai_compatible
-    model: muse-spark-1.3
+    model: grok-4.6
     fallback_models:
-      - grok-4.6
+      - muse-spark-1.3
       - deepseek-v4-pro
       - glm-5.3
       - kimi-k3
