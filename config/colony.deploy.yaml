@@ -194,15 +194,16 @@ agents:
     max_turns: 400
   # 2026-09-03: grok leads - review is the shape it has proven (lab 2/2, dense
   # correct findings; its ledger no-submit loop was the bridge's tool channel,
-  # fixed tonight). Behind it, AA Index order: spark 61 ($0.55/task, 186
-  # tok/s), kimi-k3 60, glm-5.3 60, qwen3.8-max 58, deepseek-v4-pro 53.
+  # fixed tonight). Behind it, AA Index order: spark Contributor 61 ($0.10/M
+  # input, $0.20/M output), kimi-k3 60, glm-5.3 60, qwen3.8-max 58,
+  # deepseek-v4-pro 53.
   # Quota state is not a ranking input: exhaustion is transient and the
   # fallback walk handles a 402 by moving on.
   reviewer:
     provider: openai_compatible
     model: grok-4.6
     fallback_models:
-      - muse-spark-1.3
+      - muse-spark
       - kimi-k3
       - glm-5.3
       - qwen3.8-max
@@ -210,15 +211,16 @@ agents:
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
-  # 2026-09-03: spark leads. Staged architect lab 3/3 submissions in 5-8 min
-  # (survey/plan/verify); AA Index 61 at xhigh for $0.55/task and 186 tok/s.
-  # Behind it, AA Index order: glm-5.3 60, kimi-k3 60, gemini-3.8-flash 59,
+  # 2026-09-03: spark leads through the Contributor route. Staged architect
+  # lab 3/3 submissions in 5-8 min (survey/plan/verify); AA Index 61 at xhigh.
+  # Contributor is $0.10/M input and $0.20/M output. Behind it, AA Index order:
+  # glm-5.3 60, kimi-k3 60, gemini-3.8-flash 59,
   # qwen3.8-max 58, deepseek-v4-pro 53. grok (61) stays at the tail until the
   # corrected lab run lands a staged submission: its failures were the tool
   # channel, not planning. xhigh is the effort AA measured.
   architect:
     provider: openai_compatible
-    model: muse-spark-1.3
+    model: muse-spark
     fallback_models:
       [
         glm-5.3,
