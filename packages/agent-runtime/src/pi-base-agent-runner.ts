@@ -1169,6 +1169,26 @@ export class PiBaseAgentRunner implements PiRunner {
             // it actually spends.
             let assistantTurns = 0;
             let capped = false;
+            const forceStageSubmit = (turn: number): void => {
+              try {
+                stageSession.setForcedToolChoice(stageSubmit.name);
+                this.options.logger?.info?.(
+                  { runId, sandboxId, stage: stage.name, turn },
+                  "architect_stage_submit_forced",
+                );
+              } catch (err: unknown) {
+                this.options.logger?.warn?.(
+                  {
+                    runId,
+                    sandboxId,
+                    stage: stage.name,
+                    turn,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                  "architect_stage_submit_force_failed",
+                );
+              }
+            };
             const unsubscribeTurns = stageSession.agent.subscribe((event) => {
               if (
                 event.type !== "message_end" ||
@@ -1182,6 +1202,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 { runId, sandboxId, stage: stage.name, turns: assistantTurns },
                 "architect_stage_turn_cap",
               );
+              forceStageSubmit(assistantTurns);
               stageSession
                 .setActiveToolsByName([stageSubmit.name])
                 .catch((err: unknown) => {
@@ -1246,6 +1267,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 await stageSession
                   .setActiveToolsByName([stageSubmit.name])
                   .catch(() => undefined);
+                forceStageSubmit(assistantTurns);
                 const candidate = resolvedModels[index] ?? resolvedModels[0]!;
                 await driveSession(
                   stageSession,

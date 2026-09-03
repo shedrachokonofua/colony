@@ -35,6 +35,10 @@ interface LogEntry {
 interface ChatRequest {
   messages: { role: string; content: unknown }[];
   tools?: { function: { name: string } }[];
+  tool_choice?: {
+    type: string;
+    function?: { name: string };
+  };
 }
 
 function sseChunk(delta: unknown, finish: string | null): string {
@@ -280,6 +284,55 @@ describe("staged architect", () => {
     expect((done[0]!.fields.artifact as { kind: string }).kind).toBe(
       "architect_survey_notes",
     );
+  }, 60_000);
+
+  it("forces the submit tool when a stage needs a steer", async () => {
+    let forcedSurveyRequest: ChatRequest | undefined;
+    const { result, requests, logs } = await runScenario({
+      reply: (request) => {
+        switch (stageOf(request)) {
+          case "survey":
+            if (
+              request.tool_choice?.type === "function" &&
+              request.tool_choice.function?.name === "submit_survey_notes"
+            ) {
+              forcedSurveyRequest = request;
+              return toolCallChunks("submit_survey_notes", NOTES);
+            }
+            return [
+              sseChunk(
+                { role: "assistant", content: "I am still inspecting the repository." },
+                null,
+              ),
+              sseChunk({}, "stop"),
+            ];
+          case "plan":
+            return toolCallChunks("submit_plan_draft", plan("draft"));
+          case "verify":
+            return toolCallChunks(
+              "submit_architect_decomposition",
+              plan("verified"),
+            );
+        }
+      },
+    });
+
+    expect(result.reason).toBeUndefined();
+    expect(forcedSurveyRequest).toBeDefined();
+    expect(forcedSurveyRequest?.tool_choice).toEqual({
+      type: "function",
+      function: { name: "submit_survey_notes" },
+    });
+    expect(
+      logs.filter((l) => l.message === "architect_stage_submit_forced"),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fields: expect.objectContaining({ stage: "survey", turn: 1 }),
+        }),
+      ]),
+    );
+    expect(requests.filter((request) => stageOf(request) === "survey")).toHaveLength(2);
   }, 60_000);
 
   it("a stage that keeps reading past its turn cap is left with only its submit tool", async () => {
