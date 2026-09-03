@@ -12,7 +12,11 @@ import {
   TASK_STATES,
   assertScopeTransition,
   assertTaskTransition,
+  classifyBackfillFromError,
+  isModelFault,
+  parseFault,
   retryBackoffMs,
+  type Fault,
   type ScopeStatus,
   type Task,
   type TaskState,
@@ -1207,7 +1211,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(12);
+        expect(LATEST_SCHEMA_VERSION).toBe(13);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -2328,5 +2332,382 @@ describe("audit outbox cursor", () => {
     // Upsert overwrites instead of throwing on the existing key.
     store.setMetaValue("notifier_cursor", "43");
     expect(store.getMetaValue("notifier_cursor")).toBe("43");
+  });
+});
+
+describe("fault contract", () => {
+  const tableColumns = (db: Store["db"], table: string) =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[])
+      .map((c) => c.name)
+      .sort();
+  const userVersion = (db: Store["db"]) =>
+    (db.prepare("PRAGMA user_version").get() as { user_version: number })
+      .user_version;
+
+  /** A scope with one task, plus that task's id, for run fixtures. */
+  function createRunWithTask(goal: string): { runId: string; taskId: string } {
+    const scope = store.createScope({
+      goal,
+      title: goal,
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    store.setScopeStatus(scope.id, "planning", "svc:colonyd");
+    const taskId = store.materializePlan(
+      scope.id,
+      plan({
+        requirements: [{ id: "R1", text: goal, tasks: [0] }],
+        tasks: [
+          {
+            title: "T",
+            spec: `do ${goal}`,
+            depends_on: [],
+            files: ["src/t.ts"],
+            evidence: ["true"],
+          },
+        ],
+      }),
+      "svc:colonyd",
+    )[0]!.id;
+    const runId = store.startRun({
+      scope_id: scope.id,
+      task_id: taskId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    }).id;
+    return { runId, taskId };
+  }
+
+  function createRun(goal: string): string {
+    const scope = store.createScope({
+      goal,
+      title: goal,
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    return store.startRun({
+      scope_id: scope.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    }).id;
+  }
+
+  it("finishRun round-trips fault_json through getRun and runsForTask", () => {
+    const { runId, taskId } = createRunWithTask("fault round-trip");
+    const fault: Fault = {
+      layer: "sandbox",
+      code: "workspace_lost",
+      detail: "workspace vanished mid-run",
+    };
+    store.finishRun(runId, "failed", {
+      error: "workspace_lost",
+      fault,
+    });
+
+    const stored = store.getRun(runId)!;
+    expect(stored.fault_json).toBe(JSON.stringify(fault));
+    expect(parseFault(stored.fault_json)).toEqual(fault);
+    expect(isModelFault(parseFault(stored.fault_json))).toBe(false);
+
+    const fromTask = store.runsForTask(taskId);
+    expect(fromTask).toHaveLength(1);
+    expect(fromTask[0]!.fault_json).toBe(JSON.stringify(fault));
+
+    // Omitting fault leaves the column untouched: absent, not JSON 'null'.
+    const plainId = createRun("fault omitted");
+    store.finishRun(plainId, "succeeded", { head_sha: "abc" });
+    expect(store.getRun(plainId)!.fault_json).toBeNull();
+  });
+
+  it("finishRun echoes fault into the run.finished audit detail only when provided", () => {
+    const runId = createRun("fault audit detail");
+    store.finishRun(runId, "failed", {
+      error: "429 model cooldown",
+      fault: { layer: "provider", code: "rate_limit" },
+    });
+    const finished = store
+      .listAudit({ limit: 50 })
+      .events.filter((row) => row.action === "run.finished")
+      .at(-1)!;
+    const detail = JSON.parse(finished.detail_json) as {
+      run_id: string;
+      status: string;
+      error?: string;
+      fault?: Fault;
+    };
+    expect(detail).toEqual({
+      run_id: runId,
+      status: "failed",
+      error: "429 model cooldown",
+      fault: { layer: "provider", code: "rate_limit" },
+    });
+
+    // No fault given: the key is absent, not null, so classify can tell
+    // "classified" from "never carried a fault".
+    const plainId = createRun("fault audit absent");
+    store.finishRun(plainId, "failed", { error: "envelope invalid" });
+    const plainDetail = JSON.parse(
+      store
+        .listAudit({ limit: 50 })
+        .events.filter((row) => row.action === "run.finished")
+        .at(-1)!.detail_json,
+    ) as Record<string, unknown>;
+    expect(plainDetail).toEqual({
+      run_id: plainId,
+      status: "failed",
+      error: "envelope invalid",
+    });
+    expect("fault" in plainDetail).toBe(false);
+  });
+
+  it("parseFault rejects invalid payloads and accepts well-formed ones", () => {
+    expect(parseFault(null)).toBeNull();
+    expect(parseFault(undefined)).toBeNull();
+    expect(parseFault("")).toBeNull();
+    expect(parseFault("not json")).toBeNull();
+    expect(parseFault('"bare string"')).toBeNull();
+    expect(parseFault(JSON.stringify([]))).toBeNull();
+    expect(
+      parseFault(JSON.stringify({ layer: "kernel", code: "x" })),
+    ).toBeNull();
+    expect(parseFault(JSON.stringify({ layer: "model" }))).toBeNull();
+    expect(parseFault(JSON.stringify({ code: "x" }))).toBeNull();
+    expect(
+      parseFault(JSON.stringify({ layer: "model", code: "x", detail: 7 })),
+    ).toBeNull();
+
+    expect(
+      parseFault(JSON.stringify({ layer: "model", code: "context_overflow" })),
+    ).toEqual({ layer: "model", code: "context_overflow" });
+    expect(
+      parseFault(
+        JSON.stringify({
+          layer: "harness",
+          code: "session_init_replaced",
+          detail: "Agent Main replaced",
+          backfilled: true,
+        }),
+      ),
+    ).toEqual({
+      layer: "harness",
+      code: "session_init_replaced",
+      detail: "Agent Main replaced",
+      backfilled: true,
+    });
+    expect(isModelFault(null)).toBe(false);
+    expect(isModelFault(undefined)).toBe(false);
+    expect(isModelFault({ layer: "model", code: "x" })).toBe(true);
+  });
+
+  it("classifyBackfillFromError maps each legacy error family to its layer", () => {
+    expect(classifyBackfillFromError(null)).toBeNull();
+    expect(classifyBackfillFromError("")).toBeNull();
+    expect(classifyBackfillFromError("envelope invalid")).toBeNull();
+
+    expect(classifyBackfillFromError("process_restart")).toEqual({
+      layer: "colonyd",
+      code: "process_restart",
+    });
+    expect(
+      classifyBackfillFromError("reaping 3 startup-orphaned runs"),
+    ).toEqual({ layer: "colonyd", code: "startup_orphaned" });
+    expect(classifyBackfillFromError("liveness_watchdog_no_progress")).toEqual({
+      layer: "colonyd",
+      code: "watchdog",
+    });
+    expect(classifyBackfillFromError("zero_output_stall")).toEqual({
+      layer: "colonyd",
+      code: "zero_output_stall",
+    });
+
+    expect(classifyBackfillFromError("429 model cooldown")).toEqual({
+      layer: "provider",
+      code: "rate_limit",
+    });
+    expect(classifyBackfillFromError("502 status code (no body)")).toEqual({
+      layer: "provider",
+      code: "upstream_5xx",
+    });
+    expect(
+      classifyBackfillFromError(
+        "GitLab POST /projects/9/access_tokens timed out",
+      ),
+    ).toEqual({ layer: "provider", code: "gitlab_timeout" });
+    expect(classifyBackfillFromError("fetch failed")).toEqual({
+      layer: "provider",
+      code: "fetch_failed",
+    });
+    expect(classifyBackfillFromError("ECONNRESET")).toEqual({
+      layer: "provider",
+      code: "connection",
+    });
+    expect(classifyBackfillFromError("ETIMEDOUT")).toEqual({
+      layer: "provider",
+      code: "timeout",
+    });
+
+    expect(classifyBackfillFromError("workspace_lost")).toEqual({
+      layer: "sandbox",
+      code: "workspace_lost",
+    });
+    expect(
+      classifyBackfillFromError("workspace_provision_failed: no pod"),
+    ).toEqual({ layer: "sandbox", code: "workspace_transfer_failed" });
+    expect(classifyBackfillFromError("EACCES: permission denied")).toEqual({
+      layer: "sandbox",
+      code: "filesystem",
+    });
+    expect(
+      classifyBackfillFromError('sandboxes.agents.x-k8s.io "sbx-1" not found'),
+    ).toEqual({ layer: "sandbox", code: "sandbox_cr" });
+
+    expect(
+      classifyBackfillFromError(
+        'Agent "Main" was replaced during session initialization.',
+      ),
+    ).toEqual({ layer: "harness", code: "session_init_replaced" });
+  });
+
+  it("migration 13 backfills failed runs with classified faults and backfilled:true", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig13-"));
+    try {
+      // A version-12 database: created fresh at 13, then stamped back to
+      // 12 so migration 13 re-runs on a DB that already has the column.
+      // A failed run per error family, plus a run that already carries a
+      // fault (the IS NULL guard must not overwrite it) and a succeeded
+      // run (never backfilled).
+      const v12Path = join(dir, "v12.db");
+      const v12 = new Store(v12Path);
+      const scope = v12.createScope({
+        goal: "backfill",
+        title: "backfill",
+        provider_repo_id: "1",
+        provider_repo_path: "so/colony",
+      });
+      const mk = (error: string | null, status: "failed" | "succeeded") => {
+        const id = v12.startRun({
+          scope_id: scope.id,
+          kind: "implement",
+          lease_ttl_ms: 60_000,
+        }).id;
+        v12.finishRun(id, status, error === null ? {} : { error });
+        return id;
+      };
+      const infra = mk("process_restart", "failed");
+      const provider = mk("429 model cooldown", "failed");
+      const sandbox = mk("workspace_lost", "failed");
+      const harness = mk(
+        'Agent "Main" was replaced during session initialization.',
+        "failed",
+      );
+      const unmapped = mk("envelope invalid", "failed");
+      const succeeded = mk(null, "succeeded");
+      const preset = mk("process_restart", "failed");
+      v12.db.prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`).run(
+        JSON.stringify({
+          layer: "sandbox",
+          code: "preset",
+          backfilled: true,
+        }),
+        preset,
+      );
+      v12.close();
+      const downgrade = new Database(v12Path);
+      downgrade.exec(`PRAGMA user_version = 12;`);
+      downgrade.close();
+
+      const migrated = new Store(v12Path);
+      try {
+        expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
+        expect(tableColumns(migrated.db, "runs")).toContain("fault_json");
+        const faultOf = (id: string) =>
+          JSON.parse(migrated.getRun(id)!.fault_json!) as Fault;
+
+        expect(faultOf(infra)).toEqual({
+          layer: "colonyd",
+          code: "process_restart",
+          detail: "process_restart",
+          backfilled: true,
+        });
+        expect(faultOf(provider)).toEqual({
+          layer: "provider",
+          code: "rate_limit",
+          detail: "429 model cooldown",
+          backfilled: true,
+        });
+        expect(faultOf(sandbox)).toEqual({
+          layer: "sandbox",
+          code: "workspace_lost",
+          detail: "workspace_lost",
+          backfilled: true,
+        });
+        expect(faultOf(harness)).toEqual({
+          layer: "harness",
+          code: "session_init_replaced",
+          detail: 'Agent "Main" was replaced during session initialization.',
+          backfilled: true,
+        });
+        expect(faultOf(unmapped)).toEqual({
+          layer: "unknown",
+          code: "unknown",
+          detail: "envelope invalid",
+          backfilled: true,
+        });
+        expect(migrated.getRun(succeeded)!.fault_json).toBeNull();
+        // An existing fault_json is never overwritten by the backfill.
+        expect(faultOf(preset)).toEqual({
+          layer: "sandbox",
+          code: "preset",
+          backfilled: true,
+        });
+
+        const fresh = new Store(join(dir, "fresh.db"));
+        expect(tableColumns(fresh.db, "runs")).toEqual(
+          tableColumns(migrated.db, "runs"),
+        );
+        fresh.close();
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("expireDeadLeases and expireOrphanedRuns write colonyd faults to the audit", () => {
+    const a = createRun("lease expiry fault");
+    const b = createRun("orphan fault");
+    const expiredAt = new Date(Date.now() - 1_000).toISOString();
+    store.db
+      .prepare(`UPDATE runs SET lease_expires_at = ? WHERE id = ?`)
+      .run(expiredAt, a);
+
+    store.expireDeadLeases(new Date());
+    store.expireOrphanedRuns();
+
+    expect(parseFault(store.getRun(a)!.fault_json)).toEqual({
+      layer: "colonyd",
+      code: "lease_expired",
+    });
+    expect(parseFault(store.getRun(b)!.fault_json)).toEqual({
+      layer: "colonyd",
+      code: "process_restart",
+    });
+    const finished = store
+      .listAudit({ limit: 100 })
+      .events.filter((row) => row.action === "run.finished");
+    const details = finished.map((row) => JSON.parse(row.detail_json));
+    expect(details).toContainEqual({
+      run_id: a,
+      status: "failed",
+      error: "lease_expired",
+      fault: { layer: "colonyd", code: "lease_expired" },
+    });
+    expect(details).toContainEqual({
+      run_id: b,
+      status: "failed",
+      error: "process_restart",
+      fault: { layer: "colonyd", code: "process_restart" },
+    });
   });
 });

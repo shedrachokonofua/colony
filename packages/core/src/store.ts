@@ -29,6 +29,7 @@ import {
   buildTaskCostModel,
   predictTaskCost,
 } from "./task-cost.js";
+import type { Fault } from "./fault.js";
 
 export interface Project {
   readonly name: string;
@@ -186,6 +187,8 @@ export interface Run {
   /** Run root span's trace id; links spans recorded elsewhere to this run. */
   readonly trace_id: string | null;
   readonly error: string | null;
+  /** Structured fault JSON; set at finish time or by the v13 backfill. */
+  readonly fault_json: string | null;
   readonly started_at: string;
   readonly finished_at: string | null;
 }
@@ -1615,13 +1618,17 @@ export class Store {
       envelope_json?: string;
       evidence_json?: string;
       error?: string;
+      /** Persisted to runs.fault_json and echoed in the audit detail. */
+      fault?: Fault | null;
     } = {},
   ): Run {
+    const faultJson =
+      patch.fault === undefined ? undefined : JSON.stringify(patch.fault);
     const finished = this.db
       .prepare(
         `UPDATE runs SET status = @status, head_sha = @head_sha,
          envelope_json = @envelope_json, evidence_json = @evidence_json,
-         error = @error, finished_at = @now
+         error = @error, fault_json = @fault_json, finished_at = @now
          WHERE id = @id AND status = 'running'`,
       )
       .run(
@@ -1632,6 +1639,7 @@ export class Store {
           envelope_json: patch.envelope_json ?? null,
           evidence_json: patch.evidence_json ?? null,
           error: patch.error ?? null,
+          fault_json: faultJson ?? null,
           now: nowIso(),
         }),
       );
@@ -1649,6 +1657,9 @@ export class Store {
           run_id: run.id,
           status,
           ...(patch.error === undefined ? {} : { error: patch.error }),
+          // Present iff fault was provided: notifications/classify reads
+          // detail.fault.layer from this audit object.
+          ...(patch.fault === undefined ? {} : { fault: patch.fault }),
         },
       });
     }
@@ -1663,7 +1674,10 @@ export class Store {
       )
       .all(now.toISOString()) as Run[];
     for (const run of expired) {
-      this.finishRun(run.id, "failed", { error: "lease_expired" });
+      this.finishRun(run.id, "failed", {
+        error: "lease_expired",
+        fault: { layer: "colonyd", code: "lease_expired" },
+      });
     }
     return expired;
   }
@@ -1677,7 +1691,10 @@ export class Store {
       .prepare(`SELECT * FROM runs WHERE status = 'running'`)
       .all() as Run[];
     for (const run of orphans) {
-      this.finishRun(run.id, "failed", { error: "process_restart" });
+      this.finishRun(run.id, "failed", {
+        error: "process_restart",
+        fault: { layer: "colonyd", code: "process_restart" },
+      });
     }
     return orphans;
   }

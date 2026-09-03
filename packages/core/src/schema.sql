@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS runs (
   model_id TEXT,                             -- LLM model the run started with (nullable)
   trace_id TEXT,                             -- run root span's trace id; links spans to the run
   error TEXT,
+  fault_json TEXT,                           -- structured Fault at finish; backfilled for legacy failed runs
   adopted INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT

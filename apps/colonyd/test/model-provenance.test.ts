@@ -151,6 +151,7 @@ describe("collectRunModelIds", () => {
       model_id: modelId,
       trace_id: null,
       error: null,
+      fault_json: null,
       started_at: "",
       finished_at: null,
     };
