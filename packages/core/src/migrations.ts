@@ -310,10 +310,7 @@ function migrateRunsFaultJsonBackfill(db: Db): void {
       layer: "unknown",
       code: "unknown",
     };
-    update.run(
-      JSON.stringify({ ...fault, detail, backfilled: true }),
-      row.id,
-    );
+    update.run(JSON.stringify({ ...fault, detail, backfilled: true }), row.id);
   }
 }
 

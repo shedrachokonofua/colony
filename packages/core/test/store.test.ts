@@ -2353,23 +2353,22 @@ describe("fault contract", () => {
       provider_repo_path: "so/colony",
     });
     store.setScopeStatus(scope.id, "planning", "svc:colonyd");
-    const taskId = store
-      .materializePlan(
-        scope.id,
-        plan({
-          requirements: [{ id: "R1", text: goal, tasks: [0] }],
-          tasks: [
-            {
-              title: "T",
-              spec: `do ${goal}`,
-              depends_on: [],
-              files: ["src/t.ts"],
-              evidence: ["true"],
-            },
-          ],
-        }),
-        "svc:colonyd",
-      )[0]!.id;
+    const taskId = store.materializePlan(
+      scope.id,
+      plan({
+        requirements: [{ id: "R1", text: goal, tasks: [0] }],
+        tasks: [
+          {
+            title: "T",
+            spec: `do ${goal}`,
+            depends_on: [],
+            files: ["src/t.ts"],
+            evidence: ["true"],
+          },
+        ],
+      }),
+      "svc:colonyd",
+    )[0]!.id;
     const runId = store.startRun({
       scope_id: scope.id,
       task_id: taskId,
@@ -2468,15 +2467,18 @@ describe("fault contract", () => {
     expect(parseFault("not json")).toBeNull();
     expect(parseFault('"bare string"')).toBeNull();
     expect(parseFault(JSON.stringify([]))).toBeNull();
-    expect(parseFault(JSON.stringify({ layer: "kernel", code: "x" }))).toBeNull();
+    expect(
+      parseFault(JSON.stringify({ layer: "kernel", code: "x" })),
+    ).toBeNull();
     expect(parseFault(JSON.stringify({ layer: "model" }))).toBeNull();
     expect(parseFault(JSON.stringify({ code: "x" }))).toBeNull();
     expect(
       parseFault(JSON.stringify({ layer: "model", code: "x", detail: 7 })),
     ).toBeNull();
 
-    expect(parseFault(JSON.stringify({ layer: "model", code: "context_overflow" })))
-      .toEqual({ layer: "model", code: "context_overflow" });
+    expect(
+      parseFault(JSON.stringify({ layer: "model", code: "context_overflow" })),
+    ).toEqual({ layer: "model", code: "context_overflow" });
     expect(
       parseFault(
         JSON.stringify({
@@ -2502,25 +2504,39 @@ describe("fault contract", () => {
     expect(classifyBackfillFromError("")).toBeNull();
     expect(classifyBackfillFromError("envelope invalid")).toBeNull();
 
-    expect(classifyBackfillFromError("process_restart"))
-      .toEqual({ layer: "colonyd", code: "process_restart" });
+    expect(classifyBackfillFromError("process_restart")).toEqual({
+      layer: "colonyd",
+      code: "process_restart",
+    });
     expect(
       classifyBackfillFromError("reaping 3 startup-orphaned runs"),
     ).toEqual({ layer: "colonyd", code: "startup_orphaned" });
-    expect(classifyBackfillFromError("liveness_watchdog_no_progress"))
-      .toEqual({ layer: "colonyd", code: "watchdog" });
-    expect(classifyBackfillFromError("zero_output_stall"))
-      .toEqual({ layer: "colonyd", code: "zero_output_stall" });
+    expect(classifyBackfillFromError("liveness_watchdog_no_progress")).toEqual({
+      layer: "colonyd",
+      code: "watchdog",
+    });
+    expect(classifyBackfillFromError("zero_output_stall")).toEqual({
+      layer: "colonyd",
+      code: "zero_output_stall",
+    });
 
-    expect(classifyBackfillFromError("429 model cooldown"))
-      .toEqual({ layer: "provider", code: "rate_limit" });
-    expect(classifyBackfillFromError("502 status code (no body)"))
-      .toEqual({ layer: "provider", code: "upstream_5xx" });
+    expect(classifyBackfillFromError("429 model cooldown")).toEqual({
+      layer: "provider",
+      code: "rate_limit",
+    });
+    expect(classifyBackfillFromError("502 status code (no body)")).toEqual({
+      layer: "provider",
+      code: "upstream_5xx",
+    });
     expect(
-      classifyBackfillFromError("GitLab POST /projects/9/access_tokens timed out"),
+      classifyBackfillFromError(
+        "GitLab POST /projects/9/access_tokens timed out",
+      ),
     ).toEqual({ layer: "provider", code: "gitlab_timeout" });
-    expect(classifyBackfillFromError("fetch failed"))
-      .toEqual({ layer: "provider", code: "fetch_failed" });
+    expect(classifyBackfillFromError("fetch failed")).toEqual({
+      layer: "provider",
+      code: "fetch_failed",
+    });
     expect(classifyBackfillFromError("ECONNRESET")).toEqual({
       layer: "provider",
       code: "connection",
@@ -2530,16 +2546,19 @@ describe("fault contract", () => {
       code: "timeout",
     });
 
-    expect(classifyBackfillFromError("workspace_lost"))
-      .toEqual({ layer: "sandbox", code: "workspace_lost" });
-    expect(classifyBackfillFromError("workspace_provision_failed: no pod"))
-      .toEqual({ layer: "sandbox", code: "workspace_transfer_failed" });
-    expect(classifyBackfillFromError("EACCES: permission denied"))
-      .toEqual({ layer: "sandbox", code: "filesystem" });
+    expect(classifyBackfillFromError("workspace_lost")).toEqual({
+      layer: "sandbox",
+      code: "workspace_lost",
+    });
     expect(
-      classifyBackfillFromError(
-        'sandboxes.agents.x-k8s.io "sbx-1" not found',
-      ),
+      classifyBackfillFromError("workspace_provision_failed: no pod"),
+    ).toEqual({ layer: "sandbox", code: "workspace_transfer_failed" });
+    expect(classifyBackfillFromError("EACCES: permission denied")).toEqual({
+      layer: "sandbox",
+      code: "filesystem",
+    });
+    expect(
+      classifyBackfillFromError('sandboxes.agents.x-k8s.io "sbx-1" not found'),
     ).toEqual({ layer: "sandbox", code: "sandbox_cr" });
 
     expect(
@@ -2566,9 +2585,11 @@ describe("fault contract", () => {
         provider_repo_path: "so/colony",
       });
       const mk = (error: string | null, status: "failed" | "succeeded") => {
-        const id = v12
-          .startRun({ scope_id: scope.id, kind: "implement", lease_ttl_ms: 60_000 })
-          .id;
+        const id = v12.startRun({
+          scope_id: scope.id,
+          kind: "implement",
+          lease_ttl_ms: 60_000,
+        }).id;
         v12.finishRun(id, status, error === null ? {} : { error });
         return id;
       };
@@ -2582,12 +2603,14 @@ describe("fault contract", () => {
       const unmapped = mk("envelope invalid", "failed");
       const succeeded = mk(null, "succeeded");
       const preset = mk("process_restart", "failed");
-      v12.db
-        .prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`)
-        .run(
-          JSON.stringify({ layer: "sandbox", code: "preset", backfilled: true }),
-          preset,
-        );
+      v12.db.prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`).run(
+        JSON.stringify({
+          layer: "sandbox",
+          code: "preset",
+          backfilled: true,
+        }),
+        preset,
+      );
       v12.close();
       const downgrade = new Database(v12Path);
       downgrade.exec(`PRAGMA user_version = 12;`);
