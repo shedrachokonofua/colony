@@ -17,6 +17,7 @@ export const SCOPE_STATUSES = [
   "active",
   "validating",
   "blocked",
+  "paused",
   "done",
   "abandoned",
 ] as const;
@@ -73,15 +74,26 @@ const TASK_TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
  *   validating -> abandoned (operator)
  *   blocked  -> planning|active (operator retry/unblock)
  *   done     -> active     operator restores a canceled task
+ *   planning|active|validating|blocked -> paused   operator pause: live runs
+ *                          aborted, the tick ignores the scope entirely
+ *   paused   -> <paused_from>  operator resume
  *   any nonterminal -> abandoned (operator)
  */
 const SCOPE_TRANSITIONS: Readonly<Record<ScopeStatus, readonly ScopeStatus[]>> =
   {
     draft: ["planning", "abandoned"],
-    planning: ["active", "blocked", "abandoned"],
-    active: ["done", "blocked", "abandoned", "validating"],
-    validating: ["done", "active", "planning", "blocked", "abandoned"],
-    blocked: ["planning", "active", "validating", "abandoned"],
+    planning: ["active", "blocked", "paused", "abandoned"],
+    active: ["done", "blocked", "abandoned", "validating", "paused"],
+    validating: [
+      "done",
+      "active",
+      "planning",
+      "blocked",
+      "paused",
+      "abandoned",
+    ],
+    blocked: ["planning", "active", "validating", "paused", "abandoned"],
+    paused: ["planning", "active", "validating", "blocked", "abandoned"],
     done: ["active"],
     abandoned: [],
   };

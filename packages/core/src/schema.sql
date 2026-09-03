@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS scopes (
   project_name TEXT,                         -- owning project (see projects table)
   approvals TEXT NOT NULL DEFAULT 'auto',    -- 'auto' | 'manual'
   status TEXT NOT NULL DEFAULT 'draft'
-    CHECK (status IN ('draft','planning','active','validating','blocked','done','abandoned')),
+    CHECK (status IN ('draft','planning','active','validating','blocked','paused','done','abandoned')),
   provider_repo_id TEXT NOT NULL,            -- GitLab numeric repo id as string
   provider_repo_path TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS scopes (
   acceptance_json TEXT,                      -- operator acceptance criteria for scope validation
   extension_rounds INTEGER NOT NULL DEFAULT 0, -- architect validation-repair rounds used (cap 2)
   blocked_reason TEXT,
+  -- the status a paused scope returns to on resume
+  paused_from TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

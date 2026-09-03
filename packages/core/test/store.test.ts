@@ -118,6 +118,10 @@ describe("state machine", () => {
       ["abandoned", "active"],
       ["done", "abandoned"],
       ["done", "done"],
+      ["draft", "paused"],
+      ["done", "paused"],
+      ["paused", "done"],
+      ["paused", "paused"],
     ];
     for (const [from, to] of illegal) {
       expect(() => assertScopeTransition(from as never, to as never)).toThrow(
@@ -1169,7 +1173,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(10);
+        expect(LATEST_SCHEMA_VERSION).toBe(11);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),

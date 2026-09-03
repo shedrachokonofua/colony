@@ -321,6 +321,14 @@ export const MIGRATIONS: readonly Migration[] = [
       for (const row of rows) update.run(titleFromGoal(row.goal), row.id);
     },
   },
+  {
+    version: 11,
+    name: "scopes-paused",
+    apply: (db) => {
+      addColumn(db, "scopes", "paused_from", "TEXT");
+      rebuildForCheck(db, "scopes", "paused");
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

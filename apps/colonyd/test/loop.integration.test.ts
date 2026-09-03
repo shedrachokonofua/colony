@@ -931,6 +931,108 @@ describe("colonyd fake end-to-end loop", () => {
     expect(store.getTask(taskId)!.state).toBe("queued");
   }, 30_000);
 
+  it("pause aborts live runs, parks the scope for the tick, and resume picks up where it left off", async () => {
+    script.singleTask = true;
+    const scopeId = await createScope("pause me");
+    const taskId = `${scopeId}.1`;
+    await tickAndSettle(); // draft -> planning
+    // Put A in `running` with a run we control, as if an implementer were live.
+    const store = handle.ctx.store;
+    await tickAndSettle(); // planning -> active; implement -> mr_open (fake)
+    // Rewind A to a live implement so pause has something to stop.
+    const taskA = store.getTask(taskId)!;
+    expect(taskA.state).toBe("mr_open");
+    store.transitionTask(taskA.id, taskA.state_version, "queued", ACTOR, {
+      attempt: 0,
+      next_retry_at: null,
+    });
+    const requeued = store.getTask(taskId)!;
+    store.transitionTask(requeued.id, requeued.state_version, "running", ACTOR);
+    const live = store.startRun({
+      scope_id: scopeId,
+      task_id: taskId,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    let aborted = false;
+    let settle!: () => void;
+    const execution = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    trackRun(live.id, execution, () => {
+      aborted = true;
+      store.finishRun(live.id, "canceled", { error: "aborted" });
+      settle();
+    });
+
+    const app = buildApp(handle.ctx);
+    const paused = await app.request(`/scopes/${scopeId}/pause`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(paused.status).toBe(200);
+    expect(aborted).toBe(true);
+    expect(store.getRun(live.id)!.status).toBe("canceled");
+    expect(store.getTask(taskId)!.state).toBe("queued");
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("paused");
+    expect(scope.paused_from).toBe("active");
+
+    // The tick leaves a paused scope alone: no dispatch, no closure.
+    const implementsBefore = store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement").length;
+    await tickAndSettle();
+    await tickAndSettle();
+    expect(store.getScope(scopeId)!.status).toBe("paused");
+    expect(
+      store.runsForTask(taskId).filter((r) => r.kind === "implement"),
+    ).toHaveLength(implementsBefore);
+
+    // Pausing again conflicts; resume returns to active and work continues.
+    const again = await app.request(`/scopes/${scopeId}/pause`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(again.status).toBe(409);
+    const resumed = await app.request(`/scopes/${scopeId}/resume`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(resumed.status).toBe(200);
+    expect(store.getScope(scopeId)!.status).toBe("active");
+    expect(store.getScope(scopeId)!.paused_from).toBeNull();
+    await driveToDone(scopeId);
+    expect(store.getScope(scopeId)!.status).toBe("done");
+  }, 30_000);
+
+  it("pausing a blocked scope keeps its reason and resumes to blocked", async () => {
+    const scopeId = await createScope("blocked pause");
+    const store = handle.ctx.store;
+    store.setScopeStatus(scopeId, "planning", ACTOR);
+    store.setScopeStatus(scopeId, "blocked", ACTOR, {
+      blocked_reason: "architect retries exhausted: x",
+    });
+    const app = buildApp(handle.ctx);
+    const paused = await app.request(`/scopes/${scopeId}/pause`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(paused.status).toBe(200);
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("paused");
+    expect(scope.paused_from).toBe("blocked");
+    expect(scope.blocked_reason).toBe("architect retries exhausted: x");
+    const resumed = await app.request(`/scopes/${scopeId}/resume`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(resumed.status).toBe(200);
+    const back = store.getScope(scopeId)!;
+    expect(back.status).toBe("blocked");
+    expect(back.blocked_reason).toBe("architect retries exhausted: x");
+  }, 30_000);
+
   it("an implement run whose head equals the base is a no-op: task merged, no MR", async () => {
     // col-7064acc1.5 (2026-09-03): the operator had already landed the fix on
     // main, the implementer verified and changed nothing, colonyd opened a

@@ -82,6 +82,8 @@ Every subcommand and its accepted flags:
 - `colony abandon <id> [--yes]`
   Abandon a scope and terminate active runs. Prompts for confirmation unless `--yes` is supplied.
 - `colony revalidate <id>`
+- `colony pause <id>`: abort the scope's live runs, requeue their tasks, and hold the scope until `resume`
+- `colony resume <id>`: return a paused scope to the status it left
   Trigger a fresh post-merge validation run for a scope.
 - `colony task <id> [retry|stop|cancel|restore|unblock | amend --spec <file|-> | request-changes --feedback <file|-> | approve-merge --sha <sha>]`
   Inspect a task or execute task-level lifecycle mutations:

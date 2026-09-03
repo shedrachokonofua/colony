@@ -131,6 +131,8 @@ export interface Scope {
   readonly default_branch: string;
   readonly plan_json: string | null;
   readonly blocked_reason: string | null;
+  /** Status a paused scope resumes to; null unless paused. */
+  readonly paused_from: ScopeStatus | null;
   readonly acceptance_json: string | null;
   readonly extension_rounds: number;
   readonly created_at: string;
@@ -1010,13 +1012,25 @@ export class Store {
         status === "blocked"
           ? ((detail?.blocked_reason as string | undefined) ??
             scope.blocked_reason)
-          : null;
+          : status === "paused"
+            ? scope.blocked_reason
+            : null;
+      // Pausing remembers where the scope was; resuming forgets it.
+      const paused_from = status === "paused" ? scope.status : null;
       this.db
         .prepare(
           `UPDATE scopes SET status = @status, blocked_reason = @blocked_reason,
-           updated_at = @now WHERE id = @id`,
+           paused_from = @paused_from, updated_at = @now WHERE id = @id`,
         )
-        .run(named({ id: scope.id, status, blocked_reason, now: nowIso() }));
+        .run(
+          named({
+            id: scope.id,
+            status,
+            blocked_reason,
+            paused_from,
+            now: nowIso(),
+          }),
+        );
       this.audit(actor, "scope.transition", {
         scope_id: scope.id,
         detail: { from: scope.status, to: status, ...detail },

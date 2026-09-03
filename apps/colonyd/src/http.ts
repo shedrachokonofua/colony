@@ -803,6 +803,110 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(ctx.store.getScope(scope.id));
   });
 
+  /**
+   * Pause: abort every live run on the scope, requeue the tasks they were
+   * serving, and park the scope where the tick will not touch it. Resume
+   * returns it to the status it left. Built for "hold until the roll":
+   * a scope churning on stale daemon code had no operator verb but abandon
+   * (col-7064acc1, 2026-09-03).
+   */
+  app.post("/scopes/:id/pause", async (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    if (
+      !["planning", "active", "validating", "blocked"].includes(scope.status)
+    ) {
+      return c.json(
+        {
+          error: {
+            code: "NOT_PAUSABLE",
+            message: `a ${scope.status} scope cannot be paused`,
+          },
+        },
+        409,
+      );
+    }
+    const runIds: string[] = [];
+    const runningTasks = ctx.store
+      .listTasks(scope.id)
+      .filter((task) => task.state === "running");
+    for (const task of runningTasks) {
+      for (const run of ctx.store.runsForTask(task.id)) {
+        if (run.status === "running") runIds.push(run.id);
+      }
+    }
+    for (const run of ctx.store.runsForScope(scope.id)) {
+      if (run.status === "running" && !runIds.includes(run.id)) {
+        runIds.push(run.id);
+      }
+    }
+    const stopped = await abortRunsAndWait(runIds);
+    if (!stopped.every(Boolean)) {
+      return c.json(
+        {
+          error: {
+            code: "RUN_NOT_LOCAL",
+            message: "a live run is not owned by this colonyd process",
+          },
+        },
+        409,
+      );
+    }
+    try {
+      for (const task of runningTasks) {
+        const current = ctx.store.getTask(task.id);
+        if (!current || current.state !== "running") continue;
+        ctx.store.transitionTask(
+          current.id,
+          current.state_version,
+          "queued",
+          c.get("actor"),
+          {
+            attempt: current.attempt,
+            next_retry_at: null,
+            blocked_reason: null,
+          },
+        );
+      }
+      const updated = ctx.store.setScopeStatus(
+        scope.id,
+        "paused",
+        c.get("actor"),
+        { run_ids: runIds },
+      );
+      return c.json(updated);
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
+  app.post("/scopes/:id/resume", (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    if (scope.status !== "paused" || !scope.paused_from) {
+      return c.json(
+        {
+          error: {
+            code: "NOT_PAUSED",
+            message: "only a paused scope can be resumed",
+          },
+        },
+        409,
+      );
+    }
+    try {
+      const updated = ctx.store.setScopeStatus(
+        scope.id,
+        scope.paused_from,
+        c.get("actor"),
+      );
+      ctx.requestTick();
+      return c.json(updated);
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
   // Operator acceptance amendment: the criteria were authored at scope
   // creation and the factory may migrate the world underneath them (runtime
   // swaps, substrate changes). Editing them must be an audited API action,

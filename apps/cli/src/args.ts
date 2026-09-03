@@ -69,6 +69,8 @@ const SPECS: Record<string, CommandSpec> = {
     boolFlags: ["yes"],
   },
   revalidate: { usage: "revalidate <id>", minPositional: 1 },
+  pause: { usage: "pause <id>", minPositional: 1 },
+  resume: { usage: "resume <id>", minPositional: 1 },
   task: {
     usage:
       "task <id> [retry|stop|cancel|restore|unblock] | task <id> amend --spec <file|-> | task <id> request-changes --feedback <file|-> | task <id> approve-merge --sha <sha>",

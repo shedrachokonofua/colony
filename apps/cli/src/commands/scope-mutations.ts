@@ -19,6 +19,10 @@ export async function run(
       return abandon(cmd, client, io);
     case "revalidate":
       return revalidate(cmd, client, io);
+    case "pause":
+      return scopeVerb(cmd, client, io, "pause");
+    case "resume":
+      return scopeVerb(cmd, client, io, "resume");
     default:
       throw new UsageError(`unknown command '${cmd.command}'`);
   }
@@ -98,6 +102,24 @@ async function revalidate(
 ): Promise<number> {
   const scope = await client.post<ScopeRow>(
     `/scopes/${encodeURIComponent(cmd.positional[0]!)}/revalidate`,
+  );
+  if (io.json) {
+    process.stdout.write(`${JSON.stringify(scope, null, 2)}\n`);
+    return 0;
+  }
+  process.stdout.write(statusLine(scope, io.isTty));
+  return 0;
+}
+
+/** `pause <scope-id>` / `resume <scope-id>`: hold a scope, then let it go. */
+async function scopeVerb(
+  cmd: ParsedCommand,
+  client: ColonyClient,
+  io: { json: boolean; isTty: boolean },
+  verb: "pause" | "resume",
+): Promise<number> {
+  const scope = await client.post<ScopeRow>(
+    `/scopes/${encodeURIComponent(cmd.positional[0]!)}/${verb}`,
   );
   if (io.json) {
     process.stdout.write(`${JSON.stringify(scope, null, 2)}\n`);

@@ -55,6 +55,8 @@ export const COMMANDS: Record<string, CommandModule> = {
   replan: scopeMutations.run,
   abandon: scopeMutations.run,
   revalidate: scopeMutations.run,
+  pause: scopeMutations.run,
+  resume: scopeMutations.run,
   task: task.run,
   runs: runs.run,
   run: runDetail.run,
