@@ -162,7 +162,6 @@ async function runScenario(scenario: Scenario): Promise<{
       ...ARCHITECT_ROLE_PROFILE,
       workspaceMode: "scratch",
       requireRepositoryInspection: false,
-      defaultTools: [],
     },
     {
       model: {
@@ -255,13 +254,20 @@ describe("staged architect", () => {
       (r.tools ?? []).map((t) => t.function.name);
     expect(names(requests[0]!)).toContain("submit_survey_notes");
     expect(names(requests[0]!)).toContain("task");
+    // The work tools are SDK builtins here (no engine); a survey that cannot
+    // read is a survey by delegation only.
+    expect(names(requests[0]!)).toEqual(
+      expect.arrayContaining(["read", "grep", "glob", "bash"]),
+    );
     expect(names(requests[1]!)).toEqual(
-      expect.arrayContaining(["submit_plan_draft"]),
+      expect.arrayContaining(["submit_plan_draft", "read"]),
     );
     expect(names(requests[1]!)).not.toContain("task");
     expect(names(requests[1]!)).not.toContain("grep");
+    expect(names(requests[1]!)).not.toContain("bash");
     expect(names(requests[2]!)).toContain("submit_architect_decomposition");
     expect(names(requests[2]!)).toContain("task");
+    expect(names(requests[2]!)).toContain("grep");
 
     // Every stage logged its close with the artifact it produced.
     const done = logs.filter((l) => l.message === "architect_stage_done");

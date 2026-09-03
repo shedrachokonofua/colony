@@ -1128,12 +1128,24 @@ export class PiBaseAgentRunner implements PiRunner {
               ),
               ...(stage.subagents ? [subagentTool] : []),
             ];
+            // Without a sandbox engine the work tools are SDK builtins that
+            // exist only by name; listing custom tools alone left the survey
+            // with submit + task and no way to read (lab, 2026-09-03).
+            const stageBuiltinNames = toolNames.filter(
+              (name) =>
+                name !== submitTool.name &&
+                name !== goalTool.name &&
+                (stage.tools === "inspect" || name === "read"),
+            );
             const stageSession = (
               await createAgentSession(
                 await buildSessionOptions({
                   systemPrompt: `${stage.systemPrompt}\n\n${steering.budgetBlock()}`,
                   customTools: stageCustomTools,
-                  toolNames: stageCustomTools.map((tool) => tool.name),
+                  toolNames: [
+                    ...stageCustomTools.map((tool) => tool.name),
+                    ...stageBuiltinNames,
+                  ],
                   prewalk: false,
                   // The survey is the bulk of the run's reading and the
                   // transcript operators need; later stages are small and
