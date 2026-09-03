@@ -211,17 +211,21 @@ agents:
     max_turns: 200
   # A plan is prose, a diff is code. grok-4.6 lands code reviews but its
   # plan reviews narrate a verdict and never call submit (0/10 in
-  # production, finalize_no_submission after 10 min each; the architect
-  # chain dropped it for the same signature). spark leads: staged architect
-  # lab 4/4, AA Index 61. qwen3.8-max second on lab reviewer evidence.
+  # production; the architect chain dropped it for the same signature).
+  # The plan reviewer must not be the plan's author: spark leads the
+  # architect chain, so a spark-first review is the model grading its own
+  # draft - the rubber stamp the review loop exists to replace. qwen3.8-max
+  # leads (lab reviewer 4/4, real findings; not an architect head), then
+  # kimi-k3 60, glm-5.3 60, deepseek 53; spark last, for when nothing
+  # else answers.
   plan_reviewer:
     provider: openai_compatible
-    model: muse-spark-1.3
+    model: qwen3.8-max
     fallback_models:
-      - qwen3.8-max
       - kimi-k3
       - glm-5.3
       - deepseek-v4-pro
+      - muse-spark-1.3
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
