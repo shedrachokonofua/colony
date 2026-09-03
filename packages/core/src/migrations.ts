@@ -1,6 +1,7 @@
 import { titleFromGoal } from "./scope-title.js";
 import { readFileSync } from "node:fs";
 import { Database } from "./sqlite-compat.js";
+import { classifyBackfillFromError } from "./fault.js";
 
 /**
  * Schema lifecycle.
@@ -279,6 +280,50 @@ function migrateRunsSandboxId(db: Db): void {
   addColumn(db, "runs", "adopted", "INTEGER NOT NULL DEFAULT 0");
 }
 
+/**
+ * Migration 13: structured fault on every failed run. Fresh rows get
+ * `fault_json` at finishRun time; historical failed runs are backfilled
+ * from their error string via classifyBackfillFromError (infra failures
+ * map to their layer, everything else to the unknown layer).
+ */
+function migrateRunsFaultJsonBackfill(db: Db): void {
+  addColumn(db, "runs", "fault_json", "TEXT");
+  // addColumn is a no-op when the table itself is missing (a mid-flight
+  // legacy DB may not have one yet; a later migration creates it) - the
+  // backfill below must then skip too.
+  const hasRuns = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'`)
+    .get();
+  if (!hasRuns) return;
+  // Detail carries the triggering error, truncated: it is already in
+  // runs.error; this is provenance for the classification, not a copy.
+  const rows = db
+    .prepare(
+      `SELECT id, error FROM runs
+       WHERE status = 'failed' AND fault_json IS NULL`,
+    )
+    .all() as { id: string; error: string | null }[];
+  const update = db.prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`);
+  for (const row of rows) {
+    const detail = truncate(row.error, FAULT_DETAIL_MAX_CHARS);
+    const fault = classifyBackfillFromError(row.error) ?? {
+      layer: "unknown",
+      code: "unknown",
+    };
+    update.run(
+      JSON.stringify({ ...fault, detail, backfilled: true }),
+      row.id,
+    );
+  }
+}
+
+const FAULT_DETAIL_MAX_CHARS = 300;
+
+function truncate(text: string | null | undefined, max: number): string {
+  if (!text) return "";
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -333,6 +378,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 12,
     name: "runs-plan-review",
     apply: (db) => rebuildForCheck(db, "runs", "plan_review"),
+  },
+  {
+    version: 13,
+    name: "runs-fault-json-backfill",
+    apply: migrateRunsFaultJsonBackfill,
   },
 ];
 

@@ -31,6 +31,7 @@ function runFixture(
     model_id: null,
     trace_id: null,
     error: null,
+    fault_json: null,
     started_at: "2026-01-01T00:00:00.000Z",
     finished_at: null,
     ...overrides,
