@@ -287,6 +287,101 @@ describe("Pi architect critique", () => {
     expect(critiqueEvents[0]?.fields.findings).toBe(0);
   });
 
+  it("declares native tools to every registered model, including ids the SDK catalog marks tool-less", async () => {
+    // The registry falls back to the SDK's reference catalog for
+    // `supportsTools`; LiteLLM advertises the qwen routes without a `tools`
+    // feature, so the agent loop inlined the tool catalog as prompt text and
+    // sent no `tools` array (qwen3.8-max as reviewer: 0/4, zero tool calls,
+    // 2026-09-03). Colony registers every model with supportsTools: true.
+    const requestBodies: { tools?: unknown[] }[] = [];
+    const envelopeValue = envelope("Tools were declared.");
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requestBodies.push(JSON.parse(body) as { tools?: unknown[] });
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          connection: "keep-alive",
+          "cache-control": "no-cache",
+        });
+        response.write(
+          sseChunk(
+            "qwen-cloud/qwen3.8-max",
+            {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-tools",
+                  type: "function",
+                  function: {
+                    name: "submit_architect_decomposition",
+                    arguments: JSON.stringify(envelopeValue),
+                  },
+                },
+              ],
+            },
+            null,
+          ),
+        );
+        response.write(sseChunk("qwen-cloud/qwen3.8-max", {}, "tool_calls"));
+        response.end("data: [DONE]\n\n");
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing port");
+    const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-tools-test-"));
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...ARCHITECT_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+        phases: undefined,
+      },
+      {
+        model: {
+          id: "qwen-cloud/qwen3.8-max",
+          name: "qwen3.8-max",
+          api: "openai-completions",
+          provider: "openai_compatible",
+          baseUrl,
+          reasoning: true,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 8_192,
+        } satisfies PiModelSpec,
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        runTimeoutMs: 60_000,
+        logger: {},
+      },
+    );
+    const result = await runner.run({
+      runId: "tools-declared",
+      packet: { goal: "Plan the scope", head_sha: "d".repeat(40) },
+      environment: { role: "architect" },
+    });
+    expect(result.envelope).toEqual(envelopeValue);
+    expect(requestBodies.length).toBeGreaterThan(0);
+    const names = (requestBodies[0]!.tools ?? []).map(
+      (tool) => (tool as { function: { name: string } }).function.name,
+    );
+    expect(names).toContain("submit_architect_decomposition");
+  }, 60_000);
+
   it("ignores the critique option on profiles without phases", async () => {
     const infoLogs: LogEntry[] = [];
     const finalUserMessages: string[] = [];

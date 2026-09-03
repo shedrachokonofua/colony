@@ -399,6 +399,14 @@ export class PiBaseAgentRunner implements PiRunner {
             reasoning: candidate.reasoning,
             input: [...candidate.input],
             cost: { ...candidate.cost },
+            // Every Colony route is an OpenAI-compatible gateway that speaks
+            // native tool calls. Left unset, the registry falls back to the
+            // SDK's reference catalog, which marks the qwen family
+            // supportsTools=false; the agent loop then inlines the tool
+            // catalog as prompt text and sends no `tools` array, and the model
+            // answers with literal `<tool_call>` text that nothing parses
+            // (qwen3.8-max as reviewer, 0/4 with zero tool calls, 2026-09-03).
+            supportsTools: true,
             // Colony's config leaves these nullable; the registry wants numbers.
             contextWindow: candidate.contextWindow ?? 128_000,
             maxTokens: candidate.maxTokens ?? 16_384,
