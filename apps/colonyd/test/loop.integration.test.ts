@@ -920,7 +920,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(store.getTask(taskId)!.state).toBe("queued");
   }, 30_000);
 
-  it("review rejection cap: three consecutive request_changes blocks the task and scope", async () => {
+  it("review rejection cap: ten consecutive request_changes block the task and scope", async () => {
     await handle.shutdown();
     handle = await bootHeadless(join(dir, `review-cap-${Date.now()}.db`), {
       reviewRequired: true,
@@ -935,23 +935,25 @@ describe("colonyd fake end-to-end loop", () => {
     const taskA = handle.ctx.store.listTasks(scopeId)[0]!;
     expect(taskA.state).toBe("mr_open");
 
-    await tickAndSettle(); // review 1 -> queued attempt 1
-    expect(handle.ctx.store.getTask(taskA.id)!.state).toBe("queued");
-    handle.ctx.store.clearRetryDelay(taskA.id);
-    await tickAndSettle(); // implement 2 -> mr_open
-    await tickAndSettle(); // review 2 -> queued attempt 2
-    expect(handle.ctx.store.getTask(taskA.id)!.attempt).toBe(2);
-    handle.ctx.store.clearRetryDelay(taskA.id);
-    await tickAndSettle(); // implement 3 -> mr_open
-    await tickAndSettle(); // review 3 -> blocked
+    // Rounds 1..9: every rejection requeues with attempt+1 and no block.
+    for (let round = 1; round <= 9; round += 1) {
+      await tickAndSettle(); // review N -> queued attempt N
+      const t = handle.ctx.store.getTask(taskA.id)!;
+      expect(t.state).toBe("queued");
+      expect(t.attempt).toBe(round);
+      handle.ctx.store.clearRetryDelay(taskA.id);
+      await tickAndSettle(); // implement N+1 -> mr_open
+      expect(handle.ctx.store.getTask(taskA.id)!.state).toBe("mr_open");
+    }
+    await tickAndSettle(); // review 10 -> blocked
     await tickAndSettle(); // closeScopes
 
     const a = handle.ctx.store.getTask(taskA.id)!;
     expect(a.state).toBe("blocked");
-    expect(a.blocked_reason).toBe("review rejected 3 consecutive times");
+    expect(a.blocked_reason).toBe("review rejected 10 consecutive times");
     const scope = handle.ctx.store.getScope(scopeId)!;
     expect(scope.status).toBe("blocked");
-  }, 30_000);
+  }, 60_000);
 
   it("infra-failed architect runs never spend the scope's attempt budget", async () => {
     const scopeId = await createScope("infra architect");

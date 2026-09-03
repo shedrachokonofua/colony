@@ -12,7 +12,11 @@ import { buildReviewPacket } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
-const MAX_CONSECUTIVE_REVIEW_REJECTIONS = 3;
+// 2026-09-02: three rounds was too few - reviewer findings are the loop's
+// main correction signal and rounds 4-6 were landing real fixes before the
+// cap parked the task on a human. Backoff caps at 5 min, so ten rounds is
+// bounded (~40 min of waits worst case).
+const MAX_CONSECUTIVE_REVIEW_REJECTIONS = 10;
 const MAX_CONSECUTIVE_REVIEW_FAILURES = 3;
 
 /**
@@ -405,7 +409,7 @@ export function reconcileRejectedReview(ctx: ColonydContext, task: Task): void {
       "blocked",
       SERVICE_ACTOR,
       {
-        blocked_reason: "review rejected 3 consecutive times",
+        blocked_reason: `review rejected ${MAX_CONSECUTIVE_REVIEW_REJECTIONS} consecutive times`,
       },
     );
     return;
