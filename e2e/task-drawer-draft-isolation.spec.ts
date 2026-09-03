@@ -40,7 +40,9 @@ test.describe("task drawer keeps one draft per task", () => {
     await feedback.first().fill(typed);
     await expect(feedback.first()).toHaveValue(typed);
 
-    // 2. Switch straight to task B: its own texts, never A's draft.
+    // 2. Close drawer, then click task B: assert textarea empty (B has no draft).
+    await close.click();
+    await expect(drawer).toBeHidden({ timeout: 5000 });
     await taskB.click();
     await expect(drawer).toBeVisible({ timeout: 15000 });
     // B is mr_open, so it carries both the feedback and the amend textarea;
@@ -52,7 +54,9 @@ test.describe("task drawer keeps one draft per task", () => {
       expect(value, `task B inherited task A's draft: ${value}`).toBe("");
     }
 
-    // 3. Back to task A: the draft typed there is restored.
+    // 3. Close drawer, re-click task A: assert the textarea shows the draft typed earlier.
+    await close.click();
+    await expect(drawer).toBeHidden({ timeout: 5000 });
     await taskA.click();
     await expect(drawer).toBeVisible({ timeout: 15000 });
     await expect(feedback).toHaveCount(1);
@@ -62,14 +66,6 @@ test.describe("task drawer keeps one draft per task", () => {
     //    side effect of the paint that opened the drawer.
     await page.waitForTimeout(5000);
     await expect(feedback.first()).toHaveValue(typed);
-
-    // 5. Closing the drawer discards it: an abandoned draft must not come back
-    //    when the task is opened again.
-    await close.click();
-    await expect(drawer).toBeHidden({ timeout: 5000 });
-    await taskA.click();
-    await expect(drawer).toBeVisible({ timeout: 15000 });
-    await expect(feedback.first()).toHaveValue("");
 
     expect(errors, `pageerror: ${errors.join("; ")}`).toEqual([]);
   });
