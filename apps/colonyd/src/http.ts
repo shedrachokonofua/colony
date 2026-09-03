@@ -110,6 +110,11 @@ const runEventsQuery = z.object({
   limit: z.coerce.number().int().positive().max(1000).optional(),
 });
 
+const runArtifactsQuery = z.object({
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+
 const failuresQuery = z.object({
   limit: z.coerce.number().int().positive().max(1000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
@@ -500,11 +505,11 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!project) return notFound(c, "project");
 
     const parsed = failuresQuery.safeParse(c.req.query());
-    if (!parsed.success) return badQuery(c, parsed.error.message);
+    if (!parsed.success) return badBody(c, parsed.error.message);
     const limit = parsed.data.limit ?? 25;
     const offset = parsed.data.offset ?? 0;
 
-    const scopes = ctx.store.listScopes(project.name);
+    const scopes = ctx.store.pageScopes(1000, 0, project.name).scopes;
     const allRuns: Run[] = [];
     for (const s of scopes) {
       allRuns.push(...ctx.store.runsForScope(s.id));

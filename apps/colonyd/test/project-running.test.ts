@@ -75,6 +75,7 @@ interface RunningRow {
     status: string;
     model_id: string | null;
     started_at: string;
+    fault: unknown;
   } | null;
 }
 

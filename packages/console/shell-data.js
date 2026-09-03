@@ -65,6 +65,7 @@ function archivedQuery(app) {
  * @property {import("./project-helpers.js").RunningEntry[] | null} projectRunning
  * @property {import("./project-helpers.js").ProjectTab} projectTab
  * @property {any[] | null} projectFiles
+ * @property {{ items: any[], total: number, limit: number, offset: number, counts: Record<string, number> } | null} projectFailures
  * @property {string | null} confirm
  * @property {string | null} confirmFile
  * @property {string | null} replaceFileId
@@ -134,6 +135,7 @@ export async function refresh(app) {
       };
       app.projectPage = null;
       app.projectRunning = null;
+      app.projectFailures = null;
       app.error = "";
       return;
     }
@@ -141,7 +143,7 @@ export async function refresh(app) {
     if (projectName) {
       // The project route owns this refresh: it must not touch board or
       // sheet state, and it must preserve an in-flight editor "Saved.".
-      const [project, scopesPage, runningRows] = await Promise.all([
+      const [project, scopesPage, runningRows, failuresData] = await Promise.all([
         app.api(`/projects/${encodeURIComponent(projectName)}`, {
           notFound: "null",
         }),
@@ -149,6 +151,9 @@ export async function refresh(app) {
           `/scopes?limit=${PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
         ),
         app.api(`/projects/${encodeURIComponent(projectName)}/running`, {
+          notFound: "null",
+        }),
+        app.api(`/projects/${encodeURIComponent(projectName)}/failures`, {
           notFound: "null",
         }),
       ]);
@@ -161,6 +166,7 @@ export async function refresh(app) {
         page: pageNo,
       };
       app.projectRunning = Array.isArray(runningRows) ? runningRows : [];
+      app.projectFailures = failuresData ?? null;
       // Seed the editor from the same read Save round-trips through so the
       // prefill cannot drift from what Save persists.
       if (app.projectContext === null && project) {
@@ -180,6 +186,7 @@ export async function refresh(app) {
     }
     app.projectPage = null;
     app.projectRunning = null;
+    app.projectFailures = null;
     const projectsPage = await app.api(
       `/projects?limit=${PAGE_SIZE}&offset=${offset}${archivedQuery(app)}`,
     );

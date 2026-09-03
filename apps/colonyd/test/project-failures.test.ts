@@ -25,8 +25,8 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(taskRes.status).toBe(200);
-    const taskBody = await taskRes.json();
-    expect(taskBody.runs[0].fault).toEqual({
+    const taskBody = (await taskRes.json()) as { runs: Array<{ fault: unknown }> };
+    expect(taskBody.runs[0]!.fault).toEqual({
       layer: "provider",
       code: "rate_limit",
       detail: "429 too many requests",
@@ -37,8 +37,8 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(scopeRes.status).toBe(200);
-    const scopeBody = await scopeRes.json();
-    expect(scopeBody.runs[0].fault).toEqual({
+    const scopeBody = (await scopeRes.json()) as { runs: Array<{ fault: unknown }> };
+    expect(scopeBody.runs[0]!.fault).toEqual({
       layer: "provider",
       code: "rate_limit",
       detail: "429 too many requests",
@@ -49,7 +49,7 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(runRes.status).toBe(200);
-    const runBody = await runRes.json();
+    const runBody = (await runRes.json()) as { fault: unknown };
     expect(runBody.fault).toEqual({
       layer: "provider",
       code: "rate_limit",
@@ -68,8 +68,8 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(runningRes.status).toBe(200);
-    const runningBody = await runningRes.json();
-    expect(runningBody[0].run.fault).toBeNull();
+    const runningBody = (await runningRes.json()) as Array<{ run: { fault: unknown } }>;
+    expect(runningBody[0]!.run.fault).toBeNull();
   });
 
   it("GET /projects/:name/failures returns paginated failures and census counts", async () => {
@@ -102,7 +102,13 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as {
+      total: number;
+      limit: number;
+      offset: number;
+      items: Array<Record<string, unknown>>;
+      counts: Record<string, number>;
+    };
     expect(body.total).toBe(3);
     expect(body.limit).toBe(2);
     expect(body.offset).toBe(0);
