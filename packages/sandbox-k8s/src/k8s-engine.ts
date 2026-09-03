@@ -520,7 +520,12 @@ async function removeStartupOrphans(
       client.listSandboxes(namespace, labelSelector),
       client.listPods(namespace, labelSelector),
     ]);
-    if (remainingSandboxes.length === 0 && remainingPods.length === 0) return;
+    // A pod already Terminating is the kubelet's to finish; on an
+    // unreachable node that never happens (5 h on talos-trinity,
+    // 2026-09-03) and waiting on it failed every provision for the process.
+    // The CR is gone, so it holds no controller quota; move on.
+    const draining = remainingPods.filter((pod) => !pod.terminating);
+    if (remainingSandboxes.length === 0 && draining.length === 0) return;
     if (Date.now() >= deadline) {
       throw new Error(
         `timed out after ${timeoutMs}ms reaping ${names.length} startup-orphaned Sandbox CRs in namespace ${namespace}`,

@@ -541,6 +541,44 @@ describe("createKubernetesEngine", () => {
     }
   });
 
+  it("startup reap does not wait on a pod that is already Terminating", async () => {
+    // The CR is gone and the kubelet owns the pod's teardown; on an
+    // unreachable node that never completes (5 h on talos-trinity,
+    // 2026-09-03), and waiting on it failed every provision for the process.
+    const parentDir = await mkdtemp(join(tmpdir(), "k8s-reap-terminating-"));
+    const workspace = join(parentDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    try {
+      const state = { ready: false };
+      const client = createFakeClient(state, {});
+      const realListPods = client.listPods.bind(client);
+      client.listPods = async (namespace, selector) =>
+        state.ready
+          ? realListPods(namespace, selector)
+          : [
+              {
+                name: "orphan-on-dead-node",
+                phase: "Running",
+                containerReady: false,
+                terminating: true,
+              },
+            ];
+      const engine = createKubernetesEngine({
+        client,
+        provisionTimeoutMs: 200,
+        pollIntervalMs: 5,
+      });
+      const handle = await engine.provision(
+        buildSandboxLaunchProfile("developer"),
+        workspace,
+      );
+      expect(client.createdAt).toHaveLength(1);
+      await handle.destroy();
+    } finally {
+      await rm(parentDir, { recursive: true, force: true });
+    }
+  });
+
   it("a failed startup reap is retried on the next provision, not cached for the process", async () => {
     // One pod stuck Terminating on a sick node made the reap time out, and
     // the rejected promise then failed every provision for the life of the

@@ -169,7 +169,13 @@ export interface KubernetesSandboxClient {
     namespace: string,
     labelSelector: string,
   ): Promise<
-    readonly { name: string; phase: string; containerReady: boolean }[]
+    readonly {
+      name: string;
+      phase: string;
+      containerReady: boolean;
+      /** Set once the pod is being deleted; the kubelet owns what remains. */
+      terminating?: boolean;
+    }[]
   >;
   /**
    * Runs a command inside the sandbox container over the pods/exec WebSocket.

@@ -610,6 +610,14 @@ describe("operator controls", () => {
     expect(
       isInfraError("GitLab POST /projects/49/access_tokens timed out"),
     ).toBe(true);
+    // A startup reap that times out on a pod the kubelet cannot finish is
+    // the cluster, not the model (three of them exhausted two scopes'
+    // architect budgets, 2026-09-03).
+    expect(
+      isInfraError(
+        "timed out after 300000ms reaping 0 startup-orphaned Sandbox CRs in namespace colony-sandboxes",
+      ),
+    ).toBe(true);
     expect(isInfraError("envelope invalid")).toBe(false);
     expect(isInfraError("timeout_without_envelope")).toBe(false);
     expect(isInfraError(null)).toBe(false);
