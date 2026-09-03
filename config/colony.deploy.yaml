@@ -215,9 +215,8 @@ agents:
   # lab 3/3 submissions in 5-8 min (survey/plan/verify); AA Index 61 at xhigh.
   # Contributor is $0.10/M input and $0.20/M output. Behind it, AA Index order:
   # glm-5.3 60, kimi-k3 60, gemini-3.8-flash 59,
-  # qwen3.8-max 58, deepseek-v4-pro 53. grok (61) stays at the tail until the
-  # corrected lab run lands a staged submission: its failures were the tool
-  # channel, not planning. xhigh is the effort AA measured.
+  # Forced submit_survey_notes still produced no tool call after two steers
+  # (grok-toolchoice, 2026-09-03); grok-4.6 is removed from this chain.
   architect:
     provider: openai_compatible
     model: muse-spark
@@ -228,7 +227,6 @@ agents:
         gemini-3.8-flash,
         qwen3.8-max,
         deepseek-v4-pro,
-        grok-4.6,
       ]
     thinking_level: xhigh
     timeout_ms: 2700000
