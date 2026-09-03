@@ -34,10 +34,18 @@ export interface PlanTask {
   title: string;
   spec?: string;
   depends_on?: number[];
+  /** Files the task changes; the architect verified each exists or names its creation. */
+  files?: string[];
+  /** Commands that prove the task landed. */
+  evidence?: string[];
 }
 
 export interface Plan {
   summary?: string;
+  /** What the goal demands, each traced to the task indexes that deliver it. */
+  requirements?: Array<{ id?: string; text?: string; tasks?: number[] }>;
+  /** The working state after each task lands, in order. */
+  journey?: Array<{ after_task?: number; working_state?: string }>;
   acceptance?: Array<{ description?: string; command?: string }>;
   tasks: PlanTask[];
 }

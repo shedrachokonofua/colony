@@ -29,6 +29,23 @@ function parseAuditDetail(raw) {
 export function planMarkdown(scope, plan) {
   const title = scope.title || scope.goal;
   const parts = [`# Plan — ${title}`, "", plan.summary || ""];
+  if (Array.isArray(plan.requirements) && plan.requirements.length) {
+    parts.push("", "## Requirements");
+    for (const r of plan.requirements) {
+      const via = (r.tasks ?? []).length
+        ? ` — tasks ${(r.tasks ?? []).join(", ")}`
+        : "";
+      parts.push(`- **${r.id ?? ""}** ${r.text ?? ""}${via}`);
+    }
+  }
+  if (Array.isArray(plan.journey) && plan.journey.length) {
+    parts.push("", "## Journey");
+    for (const step of plan.journey) {
+      parts.push(
+        `- after task ${step.after_task ?? "?"}: ${step.working_state ?? ""}`,
+      );
+    }
+  }
   if (Array.isArray(plan.acceptance) && plan.acceptance.length) {
     parts.push("", "## Acceptance criteria");
     for (const a of plan.acceptance) {
@@ -49,6 +66,12 @@ export function planMarkdown(scope, plan) {
         "",
         task.spec || "",
       );
+      if (Array.isArray(task.files) && task.files.length) {
+        parts.push("", "**Files**", "", ...task.files.map((f) => `- \`${f}\``));
+      }
+      if (Array.isArray(task.evidence) && task.evidence.length) {
+        parts.push("", "**Evidence**", "", "```", ...task.evidence, "```");
+      }
     },
   );
   return parts.join("\n");
@@ -90,7 +113,11 @@ export class PlanCard extends ColonyElement {
     if (!scope) return nothing;
     const plan = parsePlan(scope.plan_json);
     const detailRuns = /** @type {any[]} */ (detail?.runs || []);
-    const architectRuns = detailRuns.filter((run) => run.kind === "architect");
+    // Plan reviews sit beside the architect runs: the verdict and its
+    // findings are why a plan is waiting for you or went back for a replan.
+    const architectRuns = detailRuns.filter(
+      (run) => run.kind === "architect" || run.kind === "plan_review",
+    );
     const replanRequests = (this.audit ?? []).flatMap((row) => {
       if (row.action !== "plan.replan_requested") return [];
       const feedback = parseAuditDetail(row.detail_json).feedback;

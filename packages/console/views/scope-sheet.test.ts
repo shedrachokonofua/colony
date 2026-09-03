@@ -236,6 +236,81 @@ describe("scope-sheet layout", () => {
   });
 });
 
+describe("plan reader", () => {
+  it("renders requirements, journey, per-task files and evidence, and the plan-review verdict", async () => {
+    // The staged architect grounds every task; the reader is where the
+    // operator judges the plan, so what the architect verified must reach it.
+    const { planMarkdown } = await import("../elements/plan-card.js");
+    const plan = {
+      summary: "Two grounded steps",
+      requirements: [{ id: "R1", text: "goal holds", tasks: [0, 1] }],
+      journey: [{ after_task: 0, working_state: "A holds" }],
+      acceptance: [{ description: "goal holds", command: "true" }],
+      tasks: [
+        {
+          title: "Task A",
+          spec: "Do A.",
+          depends_on: [],
+          files: ["src/a.ts"],
+          evidence: ["bun test src/a.test.ts"],
+        },
+        { title: "Task B", spec: "Do B.", depends_on: [0] },
+      ],
+    };
+    const md = planMarkdown({ title: "Scope" }, plan);
+    expect(md).toContain("## Requirements");
+    expect(md).toContain("**R1** goal holds — tasks 0, 1");
+    expect(md).toContain("## Journey");
+    expect(md).toContain("after task 0: A holds");
+    expect(md).toContain("- `src/a.ts`");
+    expect(md).toContain("bun test src/a.test.ts");
+
+    const world = detail();
+    world.scope = {
+      ...SCOPE_CLOSED,
+      status: "planning",
+      plan_json: JSON.stringify(plan),
+    };
+    world.runs = [
+      {
+        id: "r-arch",
+        scope_id: "col-x",
+        task_id: null,
+        kind: "architect",
+        status: "succeeded",
+        model_id: "m",
+        started_at: new Date(Date.now() - 120_000).toISOString(),
+        finished_at: new Date(Date.now() - 60_000).toISOString(),
+      },
+      {
+        id: "r-plan-review",
+        scope_id: "col-x",
+        task_id: null,
+        kind: "plan_review",
+        status: "succeeded",
+        model_id: "m",
+        started_at: new Date(Date.now() - 50_000).toISOString(),
+        finished_at: new Date().toISOString(),
+        evidence_json: JSON.stringify({
+          verdict: "request_changes",
+          findings: [{ severity: "major", note: "task 1 has no evidence" }],
+        }),
+      },
+    ];
+    const el = makeSheet(world, { planOpen: true });
+    await el.updateComplete;
+    const card = /** @type {any} */ el.querySelector("plan-card");
+    await card.updateComplete;
+    for (const line of card.querySelectorAll("run-line")) {
+      await /** @type {any} */ line.updateComplete;
+    }
+    expect(card?.textContent).toContain(
+      "plan review succeeded · request_changes",
+    );
+    expect(card?.textContent).toContain("task 1 has no evidence");
+  });
+});
+
 describe("scope-sheet drawer", () => {
   it("renders the drawer only when both drawerOpen and a real task select", async () => {
     const el = makeSheet(detail(), {
