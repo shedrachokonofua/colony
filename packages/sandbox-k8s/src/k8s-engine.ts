@@ -586,7 +586,15 @@ export function createKubernetesEngine(
           namespace,
           pollIntervalMs,
           provisionTimeoutMs,
-        );
+        ).catch((err: unknown) => {
+          // A failed reap must not poison every later provision: one pod
+          // stuck Terminating on a sick node made the daemon refuse all
+          // work for the life of the process (2026-09-03). Drop the cached
+          // promise so the next provision reaps again; the deletes are
+          // idempotent.
+          startupCleanups.delete(namespace);
+          throw err;
+        });
         startupCleanups.set(namespace, startupCleanup);
       }
       await startupCleanup;

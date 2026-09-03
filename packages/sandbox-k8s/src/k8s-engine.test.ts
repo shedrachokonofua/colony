@@ -541,6 +541,50 @@ describe("createKubernetesEngine", () => {
     }
   });
 
+  it("a failed startup reap is retried on the next provision, not cached for the process", async () => {
+    // One pod stuck Terminating on a sick node made the reap time out, and
+    // the rejected promise then failed every provision for the life of the
+    // daemon in 3 s each (2026-09-03).
+    const parentDir = await mkdtemp(join(tmpdir(), "k8s-reap-retry-"));
+    const workspace = join(parentDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    try {
+      const state = { ready: false };
+      const client = createFakeClient(state, {
+        startupSandboxes: ["orphan-stuck"],
+      });
+      // The orphan's pod lingers Terminating until the operator clears it.
+      let stuck = true;
+      const realListPods = client.listPods.bind(client);
+      client.listPods = async (namespace, selector) =>
+        stuck && !state.ready
+          ? [
+              {
+                name: "orphan-stuck-pod",
+                phase: "Running",
+                containerReady: false,
+              },
+            ]
+          : realListPods(namespace, selector);
+      const engine = createKubernetesEngine({
+        client,
+        provisionTimeoutMs: 50,
+        pollIntervalMs: 5,
+      });
+      const profile = buildSandboxLaunchProfile("developer");
+
+      await expect(engine.provision(profile, workspace)).rejects.toThrow(
+        /reaping 1 startup-orphaned/,
+      );
+      stuck = false; // operator force-deleted the pod
+      const handle = await engine.provision(profile, workspace);
+      expect(client.createdAt).toHaveLength(1);
+      await handle.destroy();
+    } finally {
+      await rm(parentDir, { recursive: true, force: true });
+    }
+  });
+
   it("a second engine instance in the same process never reaps the first one's live sandboxes", async () => {
     // colonyd runs two engine instances (agent runners + validation). The
     // validator's first provision after a boot used to reap every live agent
