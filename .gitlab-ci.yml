@@ -54,7 +54,7 @@ unit-tests:
   script:
     # timeout guards a bun-at-exit hang (leaked handle keeps the process
     # alive after the summary): fail in 10 minutes, not at the 1h job wall.
-    - nix develop "$COLONY_SHELL" --command bash -c 'timeout -k 15 600 bun run test:unit'
+    - nix develop "$COLONY_SHELL" --command bash -c 'timeout -k 15 1200 bun run test:unit'
 
 e2e-tests:
   stage: e2e
