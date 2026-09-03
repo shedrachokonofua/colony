@@ -189,18 +189,20 @@ agents:
     thinking_level: high
     timeout_ms: 10800000
     max_turns: 400
-  # 2026-09-02: deepseek leads - it inspects the diff and lands verdicts;
-  # grok's no-submit loop (34 of 36 failures) parks it at the tail until the
-  # lab has a fix. qwen3.8-max keeps the tail seat: it writes verdicts without
-  # opening the diff (17% as reviewer) - a lab subject alongside grok.
+  # 2026-09-03: spark leads (AA Index 61, $0.55/task, 186 tok/s; review is
+  # the bounded read-then-verdict shape it handles). grok second: lab 2/2 real
+  # findings; its ledger no-submit loop was the bridge's tool channel, fixed
+  # tonight, not re-proven in-loop yet. deepseek third as the proven-in-loop
+  # safety net (AA 53, inspects the diff, lands verdicts). qwen3.8-max keeps
+  # the tail seat: it writes verdicts without opening the diff (17%).
   reviewer:
     provider: openai_compatible
-    model: deepseek-v4-pro
+    model: muse-spark-1.3
     fallback_models:
-      - muse-spark-1.3
-      - kimi-k3
-      - glm-5.3
       - grok-4.6
+      - deepseek-v4-pro
+      - glm-5.3
+      - kimi-k3
       - qwen3.8-max
     thinking_level: xhigh
     timeout_ms: 2700000
