@@ -68,6 +68,7 @@ describe("notifier restart integration", () => {
     const store = handle.ctx.store;
     const scope1 = store.createScope({
       goal: "scope before restart",
+      title: "scope before restart",
       provider_repo_id: "1",
       provider_repo_path: "fake/repo",
     });
@@ -102,6 +103,7 @@ describe("notifier restart integration", () => {
       const store2 = handle.ctx.store;
       const scope2 = store2.createScope({
         goal: "scope after restart",
+        title: "scope after restart",
         provider_repo_id: "1",
         provider_repo_path: "fake/repo",
       });

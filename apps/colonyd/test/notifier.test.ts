@@ -76,6 +76,7 @@ describe("notifier loop (unit/headless)", () => {
       const store = handle.ctx.store;
       const scope = store.createScope({
         goal: "test scope",
+        title: "test scope",
         provider_repo_id: "1",
         provider_repo_path: "fake/repo",
       });
@@ -224,6 +225,7 @@ describe("notifier loop (unit/headless)", () => {
 
       const scope = store.createScope({
         goal: "fail scope",
+        title: "fail scope",
         provider_repo_id: "1",
         provider_repo_path: "fake/repo",
       });
@@ -297,6 +299,7 @@ describe("notifier loop (unit/headless)", () => {
       const store = handle.ctx.store;
       const scope = store.createScope({
         goal: "slow scope",
+        title: "slow scope",
         provider_repo_id: "1",
         provider_repo_path: "fake/repo",
       });
