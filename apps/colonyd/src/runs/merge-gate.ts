@@ -297,6 +297,17 @@ async function executeMergeGate(
         run_id: runId,
         detail: evidence,
       });
+      if (isTransientMergeRefusal(mergeResult.reason)) {
+        // GitLab answers 405/409 while the head's pipeline is still
+        // registering or running, or while its mergeability is being
+        // rechecked: the code is approved and unchanged, so there is nothing
+        // for an implementer to redo. Hold mr_open and let the next tick
+        // re-gate the same head; the consecutive-refusal cap still blocks a
+        // head that never becomes mergeable. Requeueing here spent two extra
+        // implement runs on an approved MR (col-e3021988.11, 2026-09-03).
+        holdForRegate(ctx, task, headSha, evidence);
+        return;
+      }
       requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, evidence);
       return;
     }
@@ -350,6 +361,44 @@ async function executeMergeGate(
  * attempt++, or block after MAX consecutive failures at the same head SHA
  * (gate failures) / merge refusals.
  */
+/** GitLab's "not mergeable right now" answers: pipeline pending, mergeability being rechecked. */
+function isTransientMergeRefusal(reason: string | undefined): boolean {
+  return reason === "merge_http_405" || reason === "merge_http_409";
+}
+
+/**
+ * Keep the task mr_open after a transient refusal. Only the refusal cap
+ * applies: a head refused MAX_CONSECUTIVE_MERGE_REFUSALS times in a row is
+ * stuck for a reason the operator must see.
+ */
+function holdForRegate(
+  ctx: ColonydContext,
+  task: Task,
+  headSha: string,
+  evidence: Record<string, unknown>,
+): void {
+  const current = ctx.store.getTask(task.id);
+  if (!current || current.state !== "mr_open") return;
+  const mergeRefusals = countConsecutive(ctx, task, headSha, "merge_refusal");
+  if (mergeRefusals >= MAX_CONSECUTIVE_MERGE_REFUSALS) {
+    ctx.store.transitionTask(
+      current.id,
+      current.state_version,
+      "blocked",
+      SERVICE_ACTOR,
+      {
+        blocked_reason: `merge refused ${mergeRefusals} consecutive times at ${headSha}`,
+      },
+    );
+    return;
+  }
+  ctx.store.audit(SERVICE_ACTOR, "gate.regate_pending", {
+    scope_id: task.scope_id,
+    task_id: task.id,
+    detail: { ...evidence, refusals: mergeRefusals },
+  });
+}
+
 function requeueOrBlockAfterGateFailure(
   ctx: ColonydContext,
   scope: Scope,

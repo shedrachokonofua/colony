@@ -749,6 +749,81 @@ describe("colonyd fake end-to-end loop", () => {
     });
   }, 30_000);
 
+  it("holds mr_open on a transient merge refusal and merges on the re-gate", async () => {
+    // GitLab answers 405 while a head's pipeline is still registering or its
+    // mergeability is being rechecked. The code is approved and unchanged,
+    // so requeueing an implement is waste: col-e3021988.11 spent two extra
+    // implement runs on an approved MR that way (2026-09-03).
+    const scopeId = await createScope("transient merge refusal");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch A -> mr_open
+
+    const originalMerge = provider.mergeRequests.merge.bind(
+      provider.mergeRequests,
+    );
+    let refusals = 0;
+    provider.mergeRequests.merge = async (repo, id, input) => {
+      if (refusals === 0) {
+        refusals += 1;
+        return {
+          ...(await provider.mergeRequests.get(repo, id)),
+          merged: false,
+          reason: "merge_http_405",
+        };
+      }
+      return originalMerge(repo, id, input);
+    };
+
+    await tickAndSettle(); // gate runs, refused -> task HELD mr_open
+    const taskA = handle.ctx.store
+      .listTasks(scopeId)
+      .find((task) => task.id.endsWith(".1"))!;
+    let a = handle.ctx.store.getTask(taskA.id)!;
+    expect(a.state).toBe("mr_open");
+    expect(a.attempt).toBe(0);
+    const refused = handle.ctx.store
+      .runsForTask(taskA.id)
+      .filter((run) => run.kind === "merge_gate");
+    expect(refused).toHaveLength(1);
+    expect(JSON.parse(refused[0]!.evidence_json!)).toMatchObject({
+      reason: "merge_refused:merge_http_405",
+      head_sha: SHA_A,
+    });
+    expect(
+      handle.ctx.store
+        .listAudit({ task_id: taskA.id, limit: 1000 })
+        .events.filter((row) => row.action === "gate.regate_pending"),
+    ).toHaveLength(1);
+
+    // Inside the re-gate backoff nothing is dispatched.
+    await tickAndSettle();
+    expect(
+      handle.ctx.store
+        .runsForTask(taskA.id)
+        .filter((run) => run.kind === "merge_gate"),
+    ).toHaveLength(1);
+    expect(
+      handle.ctx.store
+        .runsForTask(taskA.id)
+        .filter((run) => run.kind === "implement"),
+    ).toHaveLength(1);
+
+    // Backoff elapsed: the same head is re-gated and merges; no new implement.
+    handle.ctx.store.db
+      .prepare(`UPDATE runs SET finished_at = ? WHERE id = ?`)
+      .run(new Date(Date.now() - 120_000).toISOString(), refused[0]!.id);
+    await tickAndSettle(); // re-gate merges
+    await tickAndSettle(); // provider fact advances mr_open -> merged
+    a = handle.ctx.store.getTask(taskA.id)!;
+    expect(a.state).toBe("merged");
+    expect(a.attempt).toBe(0);
+    expect(
+      handle.ctx.store
+        .runsForTask(taskA.id)
+        .filter((run) => run.kind === "implement"),
+    ).toHaveLength(1);
+  }, 30_000);
+
   it("reconciles a queued task whose merge completed before a legacy timeout failure", async () => {
     const scopeId = await createScope("legacy ambiguous merge response");
     await tickAndSettle(); // draft -> planning

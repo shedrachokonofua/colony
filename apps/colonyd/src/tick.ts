@@ -27,6 +27,8 @@ import { abortRunsAndWait } from "./runs/registry.js";
 
 /** How long after a push the provider's MR head may still report the previous commit. */
 const PROVIDER_HEAD_LAG_MS = 3 * 60_000;
+/** Wait between a failed gate and re-gating the same head. */
+const REGATE_BACKOFF_MS = 60_000;
 
 /** Agent-caused replan failures after one failed validation before the scope blocks. */
 const MAX_VALIDATION_REPLAN_FAILURES = 3;
@@ -566,6 +568,18 @@ async function advanceMrOpenTasks(
     ) {
       continue;
     }
+    // A transient refusal (405/409: pipeline registering or mergeability
+    // being rechecked) holds mr_open for a re-gate at the same head; give
+    // GitLab a beat rather than retrying on every tick.
+    if (
+      lastGate?.status === "failed" &&
+      lastGate.finished_at &&
+      parseEvidence(lastGate.evidence_json)?.head_sha === headSha &&
+      isTransientMergeRefusal(parseEvidence(lastGate.evidence_json)?.reason) &&
+      Date.now() - Date.parse(lastGate.finished_at) < REGATE_BACKOFF_MS
+    ) {
+      continue;
+    }
     if (
       ctx.store.activeRuns("merge_gate").some((r) => r.scope_id === scope.id)
     ) {
@@ -589,6 +603,14 @@ function parseEvidence(evidenceJson: string | null): RunEvidence | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** GitLab's "not mergeable right now" answers; mirrors merge-gate.ts. */
+function isTransientMergeRefusal(reason: string | undefined): boolean {
+  return (
+    reason === "merge_refused:merge_http_405" ||
+    reason === "merge_refused:merge_http_409"
+  );
 }
 
 function isMergeRequestTimeout(error: string | undefined): boolean {
@@ -627,8 +649,22 @@ async function pipelineGate(
     }
     return false;
   } catch {
-    // No pipeline for this SHA / unknown status: proceed (seed + acceptance
-    // repos have no .gitlab-ci.yml; the gate's local commands are the CI).
+    // No pipeline for this SHA / unknown status. Repos without CI (seed and
+    // acceptance repos) have none and proceed: the gate's local commands are
+    // their CI. But a head pushed moments ago has no pipeline yet either -
+    // GitLab registers it a few seconds after the push - and gating in that
+    // window merges into a 405 (col-e3021988.11, 2026-09-03). Treat a young
+    // head as pending, not exempt.
+    const pushed = ctx.store
+      .runsForTask(task.id)
+      .filter((r) => r.kind === "implement" && r.head_sha === headSha)
+      .at(-1);
+    if (
+      pushed?.finished_at &&
+      Date.now() - Date.parse(pushed.finished_at) < PROVIDER_HEAD_LAG_MS
+    ) {
+      return false;
+    }
     return true;
   }
 }
