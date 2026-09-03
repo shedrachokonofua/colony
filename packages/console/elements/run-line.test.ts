@@ -122,6 +122,29 @@ describe("run-line", () => {
     expect(el.querySelector(".meta")?.textContent).toContain("boom");
   });
 
+  it("renders a layer/code span on failed runs with fault", async () => {
+    const el = makeLine({
+      status: "failed",
+      fault: { layer: "provider", code: "rate_limit" },
+      error: "429 Too Many Requests",
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".meta")?.textContent).toContain("provider/rate_limit");
+  });
+
+  it("renders an unknown badge with class fault-unknown when fault layer is unknown", async () => {
+    const el = makeLine({
+      status: "failed",
+      fault: { layer: "unknown", code: "unclassified" },
+      error: "weird error",
+    });
+    await el.updateComplete;
+    const badge = el.querySelector(".fault-unknown");
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toBe("unknown");
+    expect(el.querySelector(".meta")?.textContent).toContain("unclassified");
+  });
+
   it("renders nothing without a run", async () => {
     const el = document.createElement("run-line");
     document.body.append(el);

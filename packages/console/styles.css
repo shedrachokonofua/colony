@@ -2107,7 +2107,8 @@ pre.runlog {
 }
 
 .badge[data-state="blocked"],
-.badge[data-state="failed"] {
+.badge[data-state="failed"],
+.badge.fault-unknown {
   background: var(--danger-soft);
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
