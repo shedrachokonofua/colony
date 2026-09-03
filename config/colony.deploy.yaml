@@ -191,39 +191,39 @@ agents:
     max_turns: 400
   # 2026-09-03: grok leads - review is the shape it has proven (lab 2/2, dense
   # correct findings; its ledger no-submit loop was the bridge's tool channel,
-  # fixed tonight). spark second: AA Index 61 at $0.55/task and 186 tok/s but
-  # no reviewer run yet. deepseek third as the proven-in-loop safety net
-  # (AA 53, inspects the diff, lands verdicts). qwen3.8-max keeps the tail
-  # seat: it writes verdicts without opening the diff (17%).
+  # fixed tonight). Behind it, AA Index order: spark 61 ($0.55/task, 186
+  # tok/s), kimi-k3 60, glm-5.3 60, qwen3.8-max 58, deepseek-v4-pro 53.
+  # Quota state is not a ranking input: exhaustion is transient and the
+  # fallback walk handles a 402 by moving on.
   reviewer:
     provider: openai_compatible
     model: grok-4.6
     fallback_models:
       - muse-spark-1.3
-      - deepseek-v4-pro
-      - glm-5.3
       - kimi-k3
+      - glm-5.3
       - qwen3.8-max
+      - deepseek-v4-pro
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
   # 2026-09-03: spark leads. Staged architect lab 3/3 submissions in 5-8 min
-  # (survey/plan/verify); AA Index 61 at xhigh for $0.55/task and 186 tok/s -
-  # Grok's score at 58% of the cost and 3.4x the throughput. glm-5.3 second
-  # (planned validation scopes cleanly), deepseek third. grok stays at the
-  # tail: its architect failures were tool-channel, not planning; re-rank on
-  # the corrected lab run. xhigh is the effort AA measured.
+  # (survey/plan/verify); AA Index 61 at xhigh for $0.55/task and 186 tok/s.
+  # Behind it, AA Index order: glm-5.3 60, kimi-k3 60, gemini-3.8-flash 59,
+  # qwen3.8-max 58, deepseek-v4-pro 53. grok (61) stays at the tail until the
+  # corrected lab run lands a staged submission: its failures were the tool
+  # channel, not planning. xhigh is the effort AA measured.
   architect:
     provider: openai_compatible
     model: muse-spark-1.3
     fallback_models:
       [
         glm-5.3,
-        deepseek-v4-pro,
-        gemini-3.8-flash,
         kimi-k3,
-        grok-4.6,
+        gemini-3.8-flash,
         qwen3.8-max,
+        deepseek-v4-pro,
+        grok-4.6,
       ]
     thinking_level: xhigh
     timeout_ms: 2700000
