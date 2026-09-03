@@ -1,3 +1,4 @@
+import type { Fault } from "@colony/core";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -100,7 +101,7 @@ export type PiModelResolver = (
   request: PiRunRequest,
 ) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
-  readonly onFailure?: (reason: string) => void;
+  readonly onFailure?: (reason: string, fault?: Fault) => void;
   /**
    * How the guard stops the run. MUST be a deliberate abort - the session's
    * `abort()`, which sets the SDK's abort-in-progress latch. A bare
@@ -112,6 +113,8 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly abort: () => void;
   /** Evidence collector fed by the guard subscription; noop when unset. */
   readonly evidence?: RunEvidenceCollector;
+  /** Callback on submit tool rejection. */
+  readonly onRejection?: (text: string) => void;
   /**
    * Submit tool whose failed calls emit `completion_rejected`. Undefined on
    * guard install sites without an evidence collector (subagents, critics).
@@ -644,6 +647,7 @@ export async function workspaceProbeStep(
   handle: WorkspaceProbeHandle,
   state: WorkspaceProbeState,
   options: WorkspaceProbeOptions,
+  onLostWithFault?: (fault: Fault) => void,
 ): Promise<boolean> {
   if (state.fired) return false;
   try {
@@ -677,6 +681,12 @@ export async function workspaceProbeStep(
       { runId: options.runId, sandboxId: options.sandboxId },
       WORKSPACE_LOST_REASON,
     );
+    const fault: Fault = {
+      layer: "sandbox",
+      code: "probe_failed",
+      detail: (err instanceof Error ? err.message : String(err)).slice(0, 240),
+    };
+    onLostWithFault?.(fault);
     options.onLost();
     return true;
   }
@@ -686,6 +696,12 @@ export async function workspaceProbeStep(
     { runId: options.runId, sandboxId: options.sandboxId },
     WORKSPACE_LOST_REASON,
   );
+  const fault: Fault = {
+    layer: "sandbox",
+    code: "workspace_lost",
+    detail: "workspace marker check failed",
+  };
+  onLostWithFault?.(fault);
   options.onLost();
   return true;
 }
@@ -699,12 +715,15 @@ export async function workspaceProbeStep(
 export function installWorkspaceProbe(
   handle: WorkspaceProbeHandle,
   options: WorkspaceProbeOptions,
+  onLostWithFault?: (fault: Fault) => void,
 ): () => void {
   const state: WorkspaceProbeState = { misses: 0, fired: false };
   const timer = setInterval(() => {
-    void workspaceProbeStep(handle, state, options).then((lost) => {
-      if (lost) clearInterval(timer);
-    });
+    void workspaceProbeStep(handle, state, options, onLostWithFault).then(
+      (lost) => {
+        if (lost) clearInterval(timer);
+      },
+    );
   }, options.intervalMs ?? 120_000);
   return () => clearInterval(timer);
 }
@@ -771,7 +790,11 @@ export function installRunGuards(
             },
             "pi_liveness_watchdog",
           );
-          options.onFailure?.(TOOL_WEDGE_FAILURE_REASON);
+          options.onFailure?.(TOOL_WEDGE_FAILURE_REASON, {
+            layer: "harness",
+            code: "watchdog_wedge",
+            detail: "liveness_watchdog_tool_wedge",
+          });
           options.abort();
           return;
         }
@@ -786,7 +809,11 @@ export function installRunGuards(
         },
         "pi_liveness_watchdog",
       );
-      options.onFailure?.(LIVENESS_FAILURE_REASON);
+      options.onFailure?.(LIVENESS_FAILURE_REASON, {
+        layer: "harness",
+        code: "watchdog_wedge",
+        detail: "liveness_watchdog_no_progress",
+      });
       options.abort();
     }, delay);
   };
@@ -831,6 +858,7 @@ export function installRunGuards(
         (isErrorText || event.isError === true)
       ) {
         options.evidence?.completionRejected(text, event.toolName);
+        options.onRejection?.(text);
       }
     }
     armWatchdog();
@@ -908,7 +936,11 @@ export function installRunGuards(
         },
         "pi_run_limit_exceeded",
       );
-      options.onFailure?.(reason);
+      options.onFailure?.(reason, {
+        layer: "model",
+        code: "max_turns",
+        detail: `turns >= ${maxTurns}`,
+      });
       options.abort();
     }
   });
@@ -927,10 +959,14 @@ export function withRunTimeout(
   runId: string,
   timeoutMs: number | undefined,
   abort: () => Promise<void> | void,
-  onTimeout?: () => void,
+  onTimeout?: (fault: Fault) => void,
 ): () => void {
   const timer = setTimeout(() => {
-    onTimeout?.();
+    onTimeout?.({
+      layer: "model",
+      code: "wall_timeout",
+      detail: `run timeout exceeded (${timeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS}ms)`,
+    });
     void abort();
   }, timeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);
   return () => clearTimeout(timer);

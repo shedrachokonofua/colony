@@ -1,3 +1,4 @@
+import type { Fault } from "@colony/core";
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
@@ -250,6 +251,7 @@ export class PiBaseAgentRunner implements PiRunner {
     const models = [model, ...(this.options.fallbackModels ?? [])];
     const workTools = this.options.tools ?? this.profile.defaultTools;
     let failureReason: string | undefined;
+    let failureFault: Fault | undefined;
     let timeoutTriggered = false;
     /**
      * Tools whose successful use proves the agent actually looked at the
@@ -281,10 +283,26 @@ export class PiBaseAgentRunner implements PiRunner {
         this.options,
       );
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = msg.includes("EACCES")
+        ? "workspace_eacces"
+        : msg.includes("EROFS")
+          ? "workspace_erofs"
+          : msg.includes("Sandbox CR") ||
+              msg.includes("sandboxes.agents.x-k8s.io")
+            ? "sandbox_cr_missing"
+            : msg.includes("exec transport") || msg.includes("exec-transport")
+              ? "exec_transport"
+              : "workspace_lost";
       return {
         sandboxId,
         envelope: { __unfinished: true },
-        reason: err instanceof Error ? err.message : String(err),
+        reason: msg,
+        fault: {
+          layer: "sandbox",
+          code,
+          detail: msg.slice(0, 240),
+        },
       };
     }
     let clearTimeoutGuard: (() => void) | undefined;
@@ -315,6 +333,7 @@ export class PiBaseAgentRunner implements PiRunner {
       await session?.abort();
     };
 
+    let lastRejectedMessage: string | undefined;
     const stages = this.profile.stages?.(request.packet) ?? [];
     const sizeGate = this.options.architectSizeGate?.();
     const submitTool = this.profile.submitTool(
@@ -433,8 +452,9 @@ export class PiBaseAgentRunner implements PiRunner {
         runId,
         this.options.runTimeoutMs,
         () => void abortRun(),
-        () => {
+        (fault) => {
           failureReason ??= "timeout_without_envelope";
+          failureFault ??= fault;
           timeoutTriggered = true;
         },
       );
@@ -464,16 +484,27 @@ export class PiBaseAgentRunner implements PiRunner {
           logger: this.options.logger,
         });
 
-        workspaceProbe = installWorkspaceProbe(handle, {
-          intervalMs: this.options.workspaceProbeIntervalMs,
-          logger: this.options.logger,
-          runId,
-          sandboxId,
-          onLost: () => {
-            failureReason ??= WORKSPACE_LOST_REASON;
-            void abortRun();
+        workspaceProbe = installWorkspaceProbe(
+          handle,
+          {
+            intervalMs: this.options.workspaceProbeIntervalMs,
+            logger: this.options.logger,
+            runId,
+            sandboxId,
+            onLost: () => {
+              failureReason ??= WORKSPACE_LOST_REASON;
+              failureFault ??= {
+                layer: "sandbox",
+                code: "workspace_lost",
+                detail: "workspace probe reported lost",
+              };
+              void abortRun();
+            },
           },
-        });
+          (fault) => {
+            failureFault ??= fault;
+          },
+        );
       }
       const deadline =
         Date.now() + (this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);
@@ -670,28 +701,61 @@ export class PiBaseAgentRunner implements PiRunner {
         "- The task tool runs subagents in this same workspace with your work tools (but no submit authority). Delegate independent, self-contained subtasks - research, scoped edits, running checks - and parallelize by issuing several task calls in one turn.",
       ].join("\n");
 
-      const result = await createAgentSession(
-        await buildSessionOptions({
-          systemPrompt: `${this.profile.systemPrompt(request.packet)}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
-          customTools: [
-            ...customTools,
-            ...sandboxTools,
-            goalTool,
-            subagentTool,
-          ],
-          toolNames: [
-            ...toolNames,
-            ...sandboxTools.map((tool) => tool.name),
-            goalTool.name,
-            subagentTool.name,
-          ],
-          prewalk: true,
-          // Staged roles bring their own file-backed session (the survey);
-          // this one is never prompted and must not own the transcript path.
-          journal: stages.length > 0 ? "transient" : "run",
-        }),
-      );
-      session = result.session;
+      let sessionInitReplaced = false;
+      let sessionResult: { session: AgentSession };
+      try {
+        sessionResult = await createAgentSession(
+          await buildSessionOptions({
+            systemPrompt: `${this.profile.systemPrompt(request.packet)}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
+            customTools: [
+              ...customTools,
+              ...sandboxTools,
+              goalTool,
+              subagentTool,
+            ],
+            toolNames: [
+              ...toolNames,
+              ...sandboxTools.map((tool) => tool.name),
+              goalTool.name,
+              subagentTool.name,
+            ],
+            prewalk: true,
+            // Staged roles bring their own file-backed session (the survey);
+            // this one is never prompted and must not own the transcript path.
+            journal: stages.length > 0 ? "transient" : "run",
+          }),
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          /session initialization/i.test(msg) ||
+          /replaced during session/i.test(msg)
+        ) {
+          sessionInitReplaced = true;
+          failureReason = "session_init_replaced";
+          failureFault = {
+            layer: "harness",
+            code: "session_init_replaced",
+            detail: msg.slice(0, 240),
+          };
+        } else if (/lifecycle/i.test(msg)) {
+          failureReason = "sdk_lifecycle";
+          failureFault = {
+            layer: "harness",
+            code: "sdk_lifecycle",
+            detail: msg.slice(0, 240),
+          };
+        } else {
+          failureReason = "plumbing_error";
+          failureFault = {
+            layer: "harness",
+            code: "plumbing_error",
+            detail: msg.slice(0, 240),
+          };
+        }
+        throw err;
+      }
+      session = sessionResult.session;
       if (stages.length === 0) {
         runSessionFile = session.sessionManager.getSessionFile() ?? undefined;
       }
@@ -833,8 +897,19 @@ export class PiBaseAgentRunner implements PiRunner {
           logger: this.options.logger,
           evidence,
           rejectionToolName: submitName,
-          onFailure: (reason) => {
+          onRejection: (text) => {
+            lastRejectedMessage = text;
+          },
+          onFailure: (reason, fault) => {
             failureReason ??= reason;
+            failureFault ??= fault;
+            if (reason.includes("max_turns") || fault?.code === "max_turns") {
+              failureFault ??= {
+                layer: "model",
+                code: "max_turns",
+                detail: reason,
+              };
+            }
           },
           abort: () => void abortRun(),
           onZeroOutputStall: () => {
@@ -1047,6 +1122,11 @@ export class PiBaseAgentRunner implements PiRunner {
                 failureReason = `provider_connection_failure: ${(
                   lastConnectionError ?? errText
                 ).slice(0, 160)}`;
+                failureFault = {
+                  layer: "provider",
+                  code: "connection_exhausted",
+                  detail: (lastConnectionError ?? errText).slice(0, 240),
+                };
                 return false;
               }
               this.options.logger?.warn?.(
@@ -1063,6 +1143,26 @@ export class PiBaseAgentRunner implements PiRunner {
               return advance();
             }
             if (!next || failureReason !== undefined) {
+              if (failureFault === undefined) {
+                const code = /\b429\b/.test(errText)
+                  ? "http_429"
+                  : /\b50[0234]\b|\b529\b/.test(errText)
+                    ? "http_5xx"
+                    : /quota/i.test(errText)
+                      ? "quota_exhausted"
+                      : /dead leg/i.test(errText)
+                        ? "dead_leg_exhausted"
+                        : /bad gateway|gateway timeout/i.test(errText)
+                          ? "gateway_error"
+                          : /GitLab .* timed out/i.test(errText)
+                            ? "provider_timeout"
+                            : "connection_exhausted";
+                failureFault = {
+                  layer: "provider",
+                  code,
+                  detail: errText.slice(0, 240),
+                };
+              }
               throw err;
             }
             this.options.logger?.warn?.(
@@ -1382,6 +1482,13 @@ export class PiBaseAgentRunner implements PiRunner {
               failureReason = `provider_connection_failure: ${(
                 lastConnectionError ?? "repeated connection errors"
               ).slice(0, 160)}`;
+              failureFault = {
+                layer: "provider",
+                code: "connection_exhausted",
+                detail: (
+                  lastConnectionError ?? "repeated connection errors"
+                ).slice(0, 240),
+              };
               break;
             }
             index = nextIndex;
@@ -1442,6 +1549,11 @@ export class PiBaseAgentRunner implements PiRunner {
               );
             } else {
               failureReason = "zero_output_stall";
+              failureFault = {
+                layer: "provider",
+                code: quotaError ? "quota_exhausted" : "connection_exhausted",
+                detail: quotaError?.slice(0, 240) ?? "zero_output_stall",
+              };
               break;
             }
             prompt =
@@ -1508,12 +1620,39 @@ export class PiBaseAgentRunner implements PiRunner {
         !repositoryInspected
       ) {
         failureReason ??= "repository_inspection_required";
+        failureFault ??= {
+          layer: "model",
+          code: "fabricated_facts",
+          detail: "repository inspection required before submission",
+        };
       } else if (capturedEnvelope === undefined) {
         // No separate finalizer pass: a rejected submission surfaces as a tool
         // error and keeps the session open, the SDK retries transport failures,
         // and the continuation steer re-prompts a model that stopped early. If
         // the run still produced no envelope, colonyd retries the attempt.
         failureReason ??= "finalize_no_submission";
+        if (failureFault === undefined) {
+          if (timeoutTriggered) {
+            const toolCalls = evidence.summary().tool_calls;
+            failureFault = {
+              layer: "model",
+              code: toolCalls > 0 ? "timeout_no_envelope" : "wall_timeout",
+              detail: "run timed out before submitting envelope",
+            };
+          } else if (lastRejectedMessage !== undefined) {
+            failureFault = {
+              layer: "model",
+              code: "envelope_rejected",
+              detail: lastRejectedMessage.slice(0, 240),
+            };
+          } else {
+            failureFault = {
+              layer: "model",
+              code: "finalize_no_submission",
+              detail: "agent finished without calling terminal submission tool",
+            };
+          }
+        }
       }
     } finally {
       // Audit capture is strictly post-decision: the PiRunResult below (and
@@ -1611,6 +1750,7 @@ export class PiBaseAgentRunner implements PiRunner {
         capturedEnvelope === undefined
           ? (failureReason ?? "finalize_no_submission")
           : undefined,
+      fault: capturedEnvelope === undefined ? failureFault : undefined,
     };
   }
 

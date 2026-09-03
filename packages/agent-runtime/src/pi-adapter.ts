@@ -1,3 +1,4 @@
+import type { Fault } from "@colony/core";
 import {
   beginAgentRun,
   type AgentMetricAttributes,
@@ -32,6 +33,7 @@ export interface PiRunResult {
   readonly sandboxId: string;
   readonly envelope: unknown;
   readonly reason?: string;
+  readonly fault?: Fault;
 }
 
 export interface PiRunner {
@@ -132,12 +134,31 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
           : parsed.ok
             ? undefined
             : truncate(describeRejection(result.envelope, parsed.reason), 800),
+        fault: result.fault,
       };
-      this.runs.set(runId, { ...metadata, output });
-      finishMetrics(metadata.status, metadata.rejectionReason);
-      return metadata;
+      let finalMetadata: AgentRunMetadata = metadata;
+      if (metadata.status === "envelope_rejected") {
+        if (!metadata.fault) {
+          finalMetadata = {
+            ...metadata,
+            fault: {
+              layer: "model",
+              code: "envelope_rejected",
+              detail: truncate(
+                metadata.rejectionReason ?? "envelope rejected",
+                240,
+              ),
+            },
+          };
+        }
+      }
+      this.runs.set(runId, { ...finalMetadata, output });
+      finishMetrics(finalMetadata.status, finalMetadata.rejectionReason);
+      return finalMetadata;
     } catch (err) {
       const current = this.runs.get(runId);
+      const excerpt = err instanceof Error ? err.message : String(err);
+      console.error("[fault] unknown classification", excerpt);
       const metadata: AgentRunMetadata = {
         ...running,
         sandboxId: current?.sandboxId ?? running.sandboxId,
@@ -145,10 +166,15 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         rejectionReason:
           current?.status === "canceled"
             ? undefined
-            : redactPacketSecret(
-                err instanceof Error ? err.message : String(err),
-                packet,
-              ),
+            : redactPacketSecret(excerpt, packet),
+        fault:
+          current?.status === "canceled"
+            ? undefined
+            : {
+                layer: "unknown",
+                code: "unknown",
+                detail: truncate(excerpt, 240),
+              },
       };
       this.runs.set(runId, metadata);
       finishMetrics(metadata.status, metadata.rejectionReason);
@@ -221,6 +247,7 @@ function withoutOutput(
     packetHash: run.packetHash,
     outputEnvelopeHash: run.outputEnvelopeHash,
     rejectionReason: run.rejectionReason,
+    fault: run.fault,
   };
 }
 
