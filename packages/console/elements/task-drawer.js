@@ -14,6 +14,7 @@ import {
   parseCostPrediction,
 } from "../cost-prediction.js";
 import { parsePlan } from "../dag.js";
+import { renderTaskActions } from "./task-drawer-actions.js";
 import "./run-feed.js";
 import "./run-line.js";
 
@@ -320,99 +321,12 @@ export class TaskDrawer extends ColonyElement {
 
   /** @param {Record<string, any>} task */
   #actionButtons(task) {
-    const buttons = [];
-    if (task.state === "blocked") {
-      buttons.push(
-        html`<button
-          class="btn btn-solid"
-          @click=${() => this.#action("unblock")}
-        >
-          Unblock
-        </button>`,
-      );
-    }
-    if (
-      task.state === "mr_open" &&
-      this.detail?.scope?.approvals === "manual"
-    ) {
-      buttons.push(
-        task.merge_approved_sha
-          ? html`<button class="btn" disabled>
-              Merge approved — gate pending
-            </button>`
-          : this.confirm === "merge"
-            ? html`<button
-                class="btn btn-solid"
-                @click=${() => this.#action("approve-merge")}
-              >
-                Confirm merge approval
-              </button>`
-            : html`<button
-                class="btn btn-solid"
-                @click=${() => this.#emit("colony-confirm", { kind: "merge" })}
-              >
-                Approve merge
-              </button>`,
-      );
-    }
-    if (task.state === "running") {
-      buttons.push(
-        this.confirm === "stop"
-          ? html`<button
-              class="btn btn-solid"
-              @click=${() => this.#action("stop")}
-            >
-              Confirm stop and retry
-            </button>`
-          : html`<button
-              class="btn"
-              @click=${() => this.#emit("colony-confirm", { kind: "stop" })}
-            >
-              Stop run and retry
-            </button>`,
-      );
-    }
-    if (task.state === "canceled") {
-      buttons.push(
-        html`<button
-          class="btn btn-solid"
-          @click=${() => this.#action("restore")}
-        >
-          Restore task
-        </button>`,
-      );
-    }
-    const waiting =
-      task.state === "queued" &&
-      task.next_retry_at &&
-      Date.parse(task.next_retry_at) > Date.now();
-    if (waiting) {
-      buttons.push(
-        html`<button class="btn" @click=${() => this.#action("retry")}>
-          Run now — skip backoff
-        </button>`,
-      );
-    }
-    if (!["merged", "canceled"].includes(task.state)) {
-      buttons.push(
-        this.confirm === "cancel"
-          ? html`<button
-              class="btn btn-rev"
-              @click=${() => this.#action("cancel")}
-            >
-              Confirm permanent cancel
-            </button>`
-          : html`<button
-              class="btn btn-quiet"
-              @click=${() => this.#emit("colony-confirm", { kind: "cancel" })}
-            >
-              Cancel task permanently
-            </button>`,
-      );
-    }
-    return buttons.length
-      ? html`<div class="task-actions">${buttons}</div>`
-      : nothing;
+    return renderTaskActions(task, {
+      approvals: this.detail?.scope?.approvals,
+      confirm: this.confirm,
+      onAction: (action) => this.#action(action),
+      onConfirm: (kind) => this.#emit("colony-confirm", { kind }),
+    });
   }
 }
 
