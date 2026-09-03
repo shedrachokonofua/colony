@@ -2,6 +2,7 @@ import {
   type ArchitectDecompositionV2,
   type ImplementerCompletionV2,
   type ReviewerVerdictV2,
+  PlanReviewVerdictV1,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
@@ -27,9 +28,14 @@ export type AgentRuntimeEnvelope =
   | ArchitectDecompositionV2
   | ArchitectExtensionEnvelopeType
   | ImplementerCompletionV2
-  | ReviewerVerdictV2;
+  | ReviewerVerdictV2
+  | PlanReviewVerdictV1;
 
-export type AgentRuntimeRole = "architect" | "developer" | "reviewer";
+export type AgentRuntimeRole =
+  | "architect"
+  | "developer"
+  | "reviewer"
+  | "plan_reviewer";
 
 export type AgentRunRuntimeStatus =
   | "queued"
@@ -201,7 +207,9 @@ export function parseEnvelope(
         : architectDecompositionV2Schema
       : role === "reviewer"
         ? reviewerVerdictV2Schema
-        : implementerCompletionV2Schema;
+        : role === "plan_reviewer"
+          ? PlanReviewVerdictV1
+          : implementerCompletionV2Schema;
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     return { ok: false, reason: parsed.error.message };
@@ -225,14 +233,31 @@ function defaultEnvelope(
     return architectDecompositionV2Schema.parse({
       kind: "architect_decomposition",
       summary: "Fake architect run proposed a single-task decomposition.",
+      requirements: [
+        { id: "R1", text: "The fake scope goal is met.", tasks: [0] },
+      ],
+      journey: [{ after_task: 0, working_state: "The fake scope goal holds." }],
       acceptance: [{ description: "Fake scope goal is met.", command: "true" }],
       tasks: [
         {
           title: "Initial scope task",
           spec: "Placeholder task produced by fake architect run.",
           depends_on: [],
+          files: ["src/main.ts"],
+          evidence: ["true"],
         },
       ],
+    });
+  }
+
+  if (role === "plan_reviewer") {
+    return PlanReviewVerdictV1.parse({
+      kind: "plan_review_verdict",
+      verdict: "approve",
+      summary:
+        "Approved: every task lands alone, the evidence commands prove each one, and the journey reaches the goal.",
+      findings: [],
+      inspected: [{ file: "src/main.ts", note: "checked against the plan" }],
     });
   }
 

@@ -35,7 +35,11 @@ export interface PiRunResult {
 }
 
 export interface PiRunner {
-  readonly kind: "pi-coding-agent" | "pi-architect" | "pi-reviewer";
+  readonly kind:
+    | "pi-coding-agent"
+    | "pi-architect"
+    | "pi-reviewer"
+    | "pi-plan-reviewer";
   run(request: PiRunRequest): Promise<PiRunResult>;
   cancel?(runId: string): Promise<void>;
 }

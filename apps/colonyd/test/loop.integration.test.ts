@@ -48,6 +48,8 @@ const script = {
   reviewerError: undefined as string | undefined,
   reviewerRejectFirst: false,
   reviewerAlwaysReject: false,
+  planReviewRejectFirst: false,
+  planReviewCalls: 0,
   distinctShas: false,
   singleTask: false,
   validateFail: false,
@@ -67,18 +69,72 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
           return {
             kind: "architect_decomposition",
             summary: "Single-task decomposition.",
+            requirements: [{ id: "R1", text: "fake goal holds", tasks: [0] }],
+            journey: [{ after_task: 0, working_state: "fake goal holds" }],
             acceptance: [{ description: "fake goal holds", command: "true" }],
-            tasks: [{ title: "Task A", spec: "Do A.", depends_on: [] }],
+            tasks: [
+              {
+                title: "Task A",
+                spec: "Do A.",
+                depends_on: [],
+                files: ["src/a.ts"],
+                evidence: ["true"],
+              },
+            ],
+          };
+        }
+        const revised =
+          typeof (packet as { plan_feedback?: unknown }).plan_feedback ===
+          "string";
+        return {
+          kind: "architect_decomposition",
+          summary: revised
+            ? "Revised two-task decomposition: A then B."
+            : "Two-task decomposition: A then B.",
+          requirements: [{ id: "R1", text: "fake goal holds", tasks: [0, 1] }],
+          journey: [
+            { after_task: 0, working_state: "A holds" },
+            { after_task: 1, working_state: "fake goal holds" },
+          ],
+          acceptance: [{ description: "fake goal holds", command: "true" }],
+          tasks: [
+            {
+              title: "Task A",
+              spec: "Do A.",
+              depends_on: [],
+              files: ["src/a.ts"],
+              evidence: ["true"],
+            },
+            {
+              title: "Task B",
+              spec: "Do B.",
+              depends_on: [0],
+              files: ["src/b.ts"],
+              evidence: ["true"],
+            },
+          ],
+        };
+      }
+      if (environment.role === "plan_reviewer") {
+        script.planReviewCalls += 1;
+        if (script.planReviewRejectFirst && script.planReviewCalls === 1) {
+          return {
+            kind: "plan_review_verdict",
+            verdict: "request_changes",
+            summary: "Task B's evidence does not prove B.",
+            findings: [
+              { severity: "major", task: 1, note: "evidence must exercise B" },
+            ],
+            inspected: [],
           };
         }
         return {
-          kind: "architect_decomposition",
-          summary: "Two-task decomposition: A then B.",
-          acceptance: [{ description: "fake goal holds", command: "true" }],
-          tasks: [
-            { title: "Task A", spec: "Do A.", depends_on: [] },
-            { title: "Task B", spec: "Do B.", depends_on: [0] },
-          ],
+          kind: "plan_review_verdict",
+          verdict: "approve",
+          summary:
+            "Approved: every task lands alone, the evidence commands prove each one, and the journey reaches the goal.",
+          findings: [],
+          inspected: [{ file: "src/a.ts", note: "checked against the plan" }],
         };
       }
       if (environment.role === "reviewer") {
@@ -240,7 +296,7 @@ function fakeValidateExecutor(): ValidateExecutor {
 
 async function bootHeadless(
   dbPath: string,
-  options: { reviewRequired?: boolean } = {},
+  options: { reviewRequired?: boolean; planReview?: boolean } = {},
 ): Promise<ColonydHandle> {
   process.env["NODE_ENV"] = "test";
   process.env["AGENT_RUNTIME"] = "fake";
@@ -261,6 +317,9 @@ async function bootHeadless(
       architect: fakeAgents(),
       developer: fakeAgents(),
       ...(options.reviewRequired ? { reviewer: fakeAgents() } : {}),
+      // Production wires the plan reviewer whenever a reviewer exists;
+      // tests opt in so tick-counting scenarios keep their shape.
+      ...(options.planReview ? { planReviewer: fakeAgents() } : {}),
     },
     gateExecutor: gateExecutor(),
     validateExecutor: fakeValidateExecutor(),
@@ -365,6 +424,8 @@ beforeEach(async () => {
   script.reviewerError = undefined;
   script.reviewerRejectFirst = false;
   script.reviewerAlwaysReject = false;
+  script.planReviewRejectFirst = false;
+  script.planReviewCalls = 0;
   script.distinctShas = false;
   script.singleTask = false;
   script.validateFail = false;
@@ -408,6 +469,91 @@ async function driveToDone(scopeId: string, maxTicks = 20): Promise<void> {
 }
 
 describe("colonyd fake end-to-end loop", () => {
+  it("plan review: request_changes replans with the findings, approve materializes", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `plan-review-${Date.now()}.db`), {
+      reviewRequired: true,
+      planReview: true,
+    });
+    script.planReviewRejectFirst = true;
+    const scopeId = await createScope("plan review loop");
+    const store = handle.ctx.store;
+    await tickAndSettle(); // draft -> planning; architect proposes
+    expect(store.getScope(scopeId)!.plan_json).not.toBeNull();
+    await tickAndSettle(); // plan review 1 -> request_changes -> replan
+    let scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("planning");
+    expect(scope.plan_json).toBeNull();
+    expect(scope.plan_feedback).toContain(
+      "Plan review round 1: request_changes",
+    );
+    expect(scope.plan_feedback).toContain(
+      "[major] task 1: evidence must exercise B",
+    );
+    expect(store.listTasks(scopeId)).toHaveLength(0);
+    await tickAndSettle(); // architect re-runs with the findings
+    scope = store.getScope(scopeId)!;
+    expect(scope.plan_json).not.toBeNull();
+    expect(scope.plan_feedback).toBeNull();
+    // plan review 2 -> approve -> materialize (review dispatch and the
+    // materialization are separate ticks; converge, bounded).
+    for (let i = 0; i < 6; i += 1) {
+      await tickAndSettle();
+      if (store.getScope(scopeId)!.status === "active") break;
+    }
+    scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("active");
+    expect(store.listTasks(scopeId).length).toBeGreaterThan(0);
+    const reviews = store
+      .runsForScope(scopeId)
+      .filter((r) => r.kind === "plan_review");
+    expect(reviews).toHaveLength(2);
+    expect(reviews.every((r) => r.status === "succeeded")).toBe(true);
+    const actions = store
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .events.map((row) => row.action);
+    expect(actions.filter((a) => a === "scope.plan_reviewed")).toHaveLength(2);
+    expect(actions).toContain("scope.plan_rejected");
+    // The materialized spec carries the plan's grounding.
+    const task = store.listTasks(scopeId)[0]!;
+    expect(task.spec).toContain("## Files");
+    expect(task.spec).toContain("## Evidence");
+  }, 30_000);
+
+  it("plan review: five rejections block the scope", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `plan-review-cap-${Date.now()}.db`), {
+      reviewRequired: true,
+      planReview: true,
+    });
+    // Every review rejects: the knob rejects the first call only, so keep
+    // resetting the counter before each review.
+    const scopeId = await createScope("plan review cap");
+    const store = handle.ctx.store;
+    // Every review rejects (the knob rejects call 1; the counter resets
+    // once the plan is cleared). Each round: propose, review, reject.
+    script.planReviewRejectFirst = true;
+    let rejections = 0;
+    for (let tick = 0; tick < 40 && rejections < 5; tick += 1) {
+      script.planReviewCalls = 0;
+      await tickAndSettle();
+      rejections = store
+        .listAudit({ scope_id: scopeId, limit: 1000 })
+        .events.filter((row) => row.action === "scope.plan_rejected").length;
+    }
+    expect(rejections).toBe(5);
+    // The sixth proposal meets the cap: blocked, not reviewed.
+    for (let tick = 0; tick < 6; tick += 1) {
+      await tickAndSettle();
+      if (store.getScope(scopeId)!.status === "blocked") break;
+    }
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
+    expect(scope.blocked_reason).toBe(
+      "plan review rejected 5 consecutive times",
+    );
+  }, 60_000);
+
   it("happy path: scope draft->planning->active->done; A merges before B dispatches", async () => {
     const scopeId = await createScope("fake happy path");
 

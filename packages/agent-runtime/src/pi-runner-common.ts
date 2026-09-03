@@ -1002,15 +1002,12 @@ export function buildImplementerSystemPrompt(): string {
   ].join("\n");
 }
 
-export function buildArchitectSystemPrompt(): string {
+/**
+ * The decomposition rules every planning stage and the plan reviewer share.
+ * Each line carries measured history; edit with a run id.
+ */
+export function buildArchitectDecompositionRules(): string {
   return [
-    "# Role",
-    "You are the Colony Architect: you turn one scope goal into a task DAG that autonomous implementers can execute independently. Each implementer sees ONLY its task spec — your specs must be unambiguous and complete, because nobody will answer questions later.",
-    "",
-    "# Environment",
-    "Your working directory is a read-only clone of the target repository at its default branch. Repository exploration is mandatory: inspect the root, CI configuration, relevant implementation, tests, and conventions with read/grep before decomposing. Derive tasks from observed code, never from the goal alone — do not invent files, symbols, dependencies, or infrastructure you have not seen.",
-    "Project reference files listed in the packet are available read-only at `.colony/project/<filename>` — read the ones relevant to the task before acting; never modify, move, or delete anything under `.colony/project/`.",
-    "",
     "# Decomposition rules",
     "- At most 20 tasks, but the best plan is the SMALLEST one: every extra task buys real concurrency or it costs review cycles, merge risk, and drift for nothing. Three coarse vertical slices (end-to-end observable outcomes) beat seven file-sliced tasks whose independence is fictional. One task is a legitimate plan.",
     "- Every task must land green ALONE on top of the default branch: its own MR must pass install, typecheck, lint, and tests with no sibling task present. A task that adds a workspace package regenerates the lockfile in that same task.",
@@ -1030,6 +1027,20 @@ export function buildArchitectSystemPrompt(): string {
     "- A task with empty depends_on whose spec phrases a precondition as produced/created/defined by another task, or tells the implementer to verify it exists or stop and report if missing, is rejected — declare the edge instead.",
     "- Two tasks with no dependency path between them (in either direction) must not reference the same repository file path — add an edge or confine the path to one spec.",
     "- A task whose predicted session cost — file paths referenced in its spec times the observed ms-per-file from landed history — exceeds the implementer budget is rejected (`task_over_budget`): re-plan it into smaller outcome-oriented tasks; the machine never splits it for you.",
+    "",
+  ].join("\n");
+}
+
+export function buildArchitectSystemPrompt(): string {
+  return [
+    "# Role",
+    "You are the Colony Architect: you turn one scope goal into a task DAG that autonomous implementers can execute independently. Each implementer sees ONLY its task spec — your specs must be unambiguous and complete, because nobody will answer questions later.",
+    "",
+    "# Environment",
+    "Your working directory is a read-only clone of the target repository at its default branch. Repository exploration is mandatory: inspect the root, CI configuration, relevant implementation, tests, and conventions with read/grep before decomposing. Derive tasks from observed code, never from the goal alone — do not invent files, symbols, dependencies, or infrastructure you have not seen.",
+    "Project reference files listed in the packet are available read-only at `.colony/project/<filename>` — read the ones relevant to the task before acting; never modify, move, or delete anything under `.colony/project/`.",
+    "",
+    buildArchitectDecompositionRules(),
     "",
     "# Task spec format",
     "Each spec is outcome-oriented markdown containing: the goal, the user-observable behavior, the invariants that must hold, and the required evidence — the exact commands/tests whose success proves completion. Reference real paths and symbols you saw during exploration. Required evidence must be falsifiable: a command that would fail today and passes when the task is done — never 'verify it works'.",
@@ -1149,42 +1160,16 @@ export const implementerCompletionEnvelopeTypeBox = Type.Object(
   { additionalProperties: false },
 );
 
-export const architectDecompositionEnvelopeTypeBox = Type.Object(
-  {
-    kind: Type.Literal("architect_decomposition"),
-    summary: Type.String({ minLength: 1 }),
-    acceptance: Type.Array(
-      Type.Object(
-        {
-          description: Type.String({ minLength: 1 }),
-          command: Type.String({ minLength: 1 }),
-        },
-        { additionalProperties: false },
-      ),
-      { minItems: 1 },
-    ),
-    tasks: Type.Array(
-      Type.Object(
-        {
-          title: Type.String({ minLength: 1 }),
-          spec: Type.String({ minLength: 1 }),
-          depends_on: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
-        },
-        { additionalProperties: false },
-      ),
-      { minItems: 1, maxItems: 20 },
-    ),
-  },
-  { additionalProperties: false },
-);
-
 /**
  * Validate a submitted envelope inside the tool call. The SDK has no
  * argument-preparation seam, so a rejection is thrown here: the tool result
  * carries the error, the session stays open, and the model can correct and
  * submit again.
  */
-function parseEnvelopeArguments<T>(schema: z.ZodType<T>, args: unknown): T {
+export function parseEnvelopeArguments<T>(
+  schema: z.ZodType<T>,
+  args: unknown,
+): T {
   const parsed = schema.safeParse(args);
   if (parsed.success) return parsed.data;
   // pi-agent-core's downstream TypeBox validator emits "must be equal to
@@ -1391,38 +1376,6 @@ export function createReviewerSubmitTool(
 export interface ArchitectSizeGate {
   readonly model: TaskCostModelV1;
   readonly budget_ms: number;
-}
-
-export function createArchitectSubmitTool(
-  capture: (value: unknown) => void,
-  sizeGate?: ArchitectSizeGate,
-): ToolDefinition {
-  return {
-    name: "submit_architect_decomposition",
-    label: "Submit architect decomposition",
-    description:
-      "Final action. Submit exactly one schema-valid architect_decomposition envelope with outcome-oriented tasks and an acyclic depends_on graph. Rejected: phantom-dependency phrasing with empty depends_on, file paths shared between unrelated tasks, and out-of-range or cyclic depends_on indexes — a rejected submission keeps the session open so you can correct and resubmit.",
-    parameters: architectDecompositionEnvelopeTypeBox,
-    execute: async (_toolCallId, rawParams) => {
-      const params = parseEnvelopeArguments(
-        architectDecompositionV2Schema,
-        rawParams,
-      );
-      const errors = validateDecompositionEnvelope(params, sizeGate);
-      if (errors.length > 0) {
-        throw new Error(
-          "Submission rejected: decomposition failed mechanical validation:\n" +
-            errors.map((e) => `  - [${e.rule}] ${e.message}`).join("\n"),
-        );
-      }
-      capture(params);
-      return Promise.resolve({
-        content: [{ type: "text", text: "architect envelope captured" }],
-        details: {},
-        terminate: true,
-      });
-    },
-  };
 }
 
 function git(args: readonly string[], cwd: string): string {

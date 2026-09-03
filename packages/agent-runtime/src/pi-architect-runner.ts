@@ -8,11 +8,8 @@ import {
 export type PiArchitectRunnerOptions = PiBaseAgentRunnerOptions;
 
 export { DEFAULT_ARCHITECT_TOOLS };
-export { ARCHITECT_CRITIQUE } from "./architect-phases.js";
-export type {
-  ArchitectCritiqueSpec,
-  CritiqueReport,
-} from "./architect-phases.js";
+export { ARCHITECT_STAGES, buildArchitectStages } from "./architect-stages.js";
+export type { ArchitectStage, ArchitectStageName } from "./architect-stages.js";
 
 export class PiArchitectRunner extends PiBaseAgentRunner {
   constructor(options: PiArchitectRunnerOptions = {}) {

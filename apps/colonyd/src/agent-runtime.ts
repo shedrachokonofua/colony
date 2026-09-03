@@ -34,6 +34,8 @@ export interface AgentWiring {
   readonly architect: AgentRuntimeAdapter;
   readonly developer: AgentRuntimeAdapter;
   readonly reviewer?: AgentRuntimeAdapter;
+  /** The reviewer chain pointed at plans; present whenever `reviewer` is. */
+  readonly planReviewer?: AgentRuntimeAdapter;
 }
 
 export type RunEventSink = (
@@ -119,6 +121,7 @@ export async function createAgentWiring(
       architect: fake,
       developer: fake,
       reviewer: fake,
+      planReviewer: fake,
     };
   }
 
@@ -140,7 +143,7 @@ export async function createAgentWiring(
   const broker = createConfigCredentialBroker(agentsToCheck);
   const engine = await createEngine(config.sandbox.engine, config);
   const webTools = resolveWebToolsConfig(env().COLONY_SEARXNG_URL);
-  const { PiArchitectRunner, ARCHITECT_CRITIQUE } =
+  const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");
   const { PiCodingAgentRunner } =
     await import("@colony/agent-runtime/pi-coding-agent-runner");
@@ -168,10 +171,33 @@ export async function createAgentWiring(
   const developerLogger = roleLogger("developer", onRunEvent);
 
   let reviewer: AgentRuntimeAdapter | undefined;
+  let planReviewer: AgentRuntimeAdapter | undefined;
   if (reviewerConfig) {
     const { PiReviewerRunner } =
       await import("@colony/agent-runtime/pi-reviewer-runner");
+    const { PiPlanReviewerRunner } =
+      await import("@colony/agent-runtime/pi-plan-reviewer-runner");
     const reviewerLogger = roleLogger("reviewer", onRunEvent);
+    const planReviewerLogger = roleLogger("plan_reviewer", onRunEvent);
+    planReviewer = new PiAgentRuntimeAdapter(
+      new PiPlanReviewerRunner({
+        broker,
+        model: modelFromConfig(reviewerConfig),
+        fallbackModels: fallbackModelsFromConfig(reviewerConfig),
+        maxTurns: reviewerConfig.ceilings.maxTurns,
+        runTimeoutMs: reviewerConfig.ceilings.timeoutMs,
+        thinkingLevel: reviewerConfig.thinkingLevel,
+        logger: planReviewerLogger,
+        ...(auditSink ? { auditSink } : {}),
+        engine,
+        ...persistOptions,
+        ...(webTools ? { webTools } : {}),
+      }),
+      {
+        provider: reviewerConfig.providerKey,
+        model: reviewerConfig.model.id,
+      },
+    );
     reviewer = new PiAgentRuntimeAdapter(
       new PiReviewerRunner({
         broker,
@@ -206,7 +232,6 @@ export async function createAgentWiring(
         logger: architectLogger,
         ...(auditSink ? { auditSink } : {}),
         engine,
-        critique: ARCHITECT_CRITIQUE,
         ...(taskCost ? { architectSizeGate: taskCost.provider } : {}),
         ...persistOptions,
         ...(webTools ? { webTools } : {}),
@@ -236,6 +261,7 @@ export async function createAgentWiring(
       },
     ),
     reviewer,
+    planReviewer,
   };
 }
 

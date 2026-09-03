@@ -32,7 +32,6 @@ import {
   type PiRunnerBaseOptions,
   type ArchitectSizeGate,
   DEFAULT_PI_RUN_TIMEOUT_MS,
-  architectDecompositionEnvelopeTypeBox,
   buildArchitectFinalizerPrompt,
   buildArchitectSystemPrompt,
   buildImplementerFinalizerPrompt,
@@ -41,7 +40,6 @@ import {
   buildReviewerFinalizerPrompt,
   buildReviewerSystemPrompt,
   buildSubagentSystemPrompt,
-  createArchitectSubmitTool,
   createImplementerSubmitTool,
   createReviewerSubmitTool,
   createSandboxId,
@@ -59,12 +57,15 @@ import {
   withRunTimeout,
 } from "./pi-runner-common.js";
 import {
-  buildArchitectPhases,
-  buildRevisionPrompt,
-  type ArchitectCritiqueSpec,
-  type ArchitectPhase,
-  type CritiqueReport,
-} from "./architect-phases.js";
+  architectDecompositionEnvelopeTypeBox,
+  buildArchitectStages,
+  createArchitectSubmitTool,
+  createPlanReviewSubmitTool,
+  PLAN_REVIEW_SYSTEM_PROMPT,
+  planReviewVerdictTypeBox,
+  type ArchitectStage,
+  type StageArtifacts,
+} from "./architect-stages.js";
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import { createSubagentTool } from "./subagent-tool.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
@@ -93,6 +94,7 @@ import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
+  PlanReviewVerdictV1,
 } from "@colony/schemas";
 
 export type PiWorkspaceMode = "repo-required" | "scratch";
@@ -145,7 +147,8 @@ export interface PiRoleProfile {
   readonly schemaName:
     | "implementer_completion"
     | "architect_decomposition"
-    | "reviewer_verdict";
+    | "reviewer_verdict"
+    | "plan_review_verdict";
   readonly typeboxSchema: unknown;
   readonly submitTool: (
     capture: (value: unknown) => void,
@@ -174,21 +177,17 @@ export interface PiRoleProfile {
    */
   readonly verifyPushedHead?: boolean;
   /**
-   * When set, run() drives this deterministic phase pipeline instead of one
-   * initial packet prompt. Roles without it keep single-prompt behavior.
+   * When set and non-empty for a packet, run() drives the staged pipeline:
+   * one fresh session per stage with typed hand-offs (architect-stages.ts).
+   * Roles without it, and packets it returns [] for, keep the single-prompt
+   * shape.
    */
-  readonly phases?: (packet: AgentRuntimePacket) => readonly ArchitectPhase[];
+  readonly stages?: (packet: AgentRuntimePacket) => readonly ArchitectStage[];
 }
 
 export interface PiBaseAgentRunnerOptions extends PiRunnerBaseOptions {
   readonly tools?: readonly string[];
   readonly logToolArgs?: boolean;
-  /**
-   * Opt-in bounded critique pass for phased roles: after the phase sequence
-   * produces a draft envelope, a fresh session reviews it adversarially and
-   * gets at most one revision cycle. Ignored on profiles without `phases`.
-   */
-  readonly critique?: ArchitectCritiqueSpec;
   /**
    * Lazy architect size gate: called per session, not per runner, so each
    * session reads fresh runs history. `undefined` means no gate — the
@@ -294,16 +293,9 @@ export class PiBaseAgentRunner implements PiRunner {
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
       resolveCapturedEnvelope = resolve;
     });
-    // Critique mode: submissions before the revision cycle are DRAFTS. They
-    // must not satisfy the run's envelope waits, so they resolve a separate
-    // promise; only an accepted (post-critique or revised) envelope counts.
-    let draftEnvelope: unknown;
-    let resolveDraftEnvelope: (() => void) | undefined;
-    const draftEnvelopePromise = new Promise<void>((resolve) => {
-      resolveDraftEnvelope = resolve;
-    });
-    let critiqueCompleted = false;
     let session: AgentSession | undefined;
+    /** Path of the session JSONL that becomes the transcript artifact. */
+    let runSessionFile: string | undefined;
     let handle: SandboxHandle | undefined;
     let workspaceProbe: (() => void) | undefined;
     // Live subagent sessions. A parent abort that leaves children running
@@ -323,42 +315,18 @@ export class PiBaseAgentRunner implements PiRunner {
       await session?.abort();
     };
 
-    // Critique engages only for a PHASED run of this packet. The capture used
-    // to test `this.profile.phases` for existence - always true for the
-    // architect - while the critique loop tested `phases(packet).length`,
-    // which is 0 for extension packets. An extension submission was parked
-    // as a draft nothing promoted, and every validation replan on every
-    // model ended 'finalize_no_submission' after an ACCEPTED submit
-    // (2026-09-02, nine runs in an hour). One predicate, both sides.
-    const phased = (this.profile.phases?.(request.packet)?.length ?? 0) > 0;
+    const stages = this.profile.stages?.(request.packet) ?? [];
+    const sizeGate = this.options.architectSizeGate?.();
     const submitTool = this.profile.submitTool(
       (value) => {
-        if (this.options.critique && phased && !critiqueCompleted) {
-          draftEnvelope = value;
-          resolveDraftEnvelope?.();
-          // A draft closes this candidate's phase pipeline. The SDK ignores the
-          // submit tool's terminate hint, so abort the stale generation.
-          void abortRun();
-          return;
-        }
         capturedEnvelope = value;
         resolveCapturedEnvelope?.();
       },
-      this.options.architectSizeGate?.(),
+      sizeGate,
       request.packet,
     );
-    /** True while submissions route to the draft slot pending critique. */
-    const critiqueEngaged = Boolean(this.options.critique && phased);
-    /** Whether a submission has landed: accepted, or a draft awaiting critique. */
-    const submissionCaptured = (): boolean =>
-      critiqueEngaged && !critiqueCompleted
-        ? draftEnvelope !== undefined
-        : capturedEnvelope !== undefined;
-    /** The wait promise that resolves once a submission lands. */
-    const submissionPromise = (): Promise<void> =>
-      critiqueEngaged && !critiqueCompleted
-        ? draftEnvelopePromise
-        : capturedEnvelopePromise;
+    const submissionCaptured = (): boolean => capturedEnvelope !== undefined;
+    const submissionPromise = (): Promise<void> => capturedEnvelopePromise;
 
     // The try starts here rather than at the run body so its finally also
     // covers the setup window: a throw in between (discoverAuthStorage on an
@@ -718,10 +686,15 @@ export class PiBaseAgentRunner implements PiRunner {
             subagentTool.name,
           ],
           prewalk: true,
-          journal: "run",
+          // Staged roles bring their own file-backed session (the survey);
+          // this one is never prompted and must not own the transcript path.
+          journal: stages.length > 0 ? "transient" : "run",
         }),
       );
       session = result.session;
+      if (stages.length === 0) {
+        runSessionFile = session.sessionManager.getSessionFile() ?? undefined;
+      }
       // The packet objective becomes the session's persistent goal: omp's
       // goal runtime re-injects it across turns, accounts token/time usage,
       // and enforces evidence-based completion discipline.
@@ -819,117 +792,6 @@ export class PiBaseAgentRunner implements PiRunner {
         this.options.auditSink,
         runToken ? [runToken] : [],
       );
-      const unsubscribeGuards = installRunGuards(session.agent, runId, {
-        maxTurns: this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
-        logger: this.options.logger,
-        evidence,
-        rejectionToolName: submitTool.name,
-        onFailure: (reason) => {
-          failureReason ??= reason;
-        },
-        abort: () => void abortRun(),
-        onZeroOutputStall: () => {
-          zeroOutputStalled = true;
-        },
-        // The only place connectionErrors moves. A successful turn - even a
-        // text-only one the runner would otherwise never see - proves the
-        // leg is alive and clears the budget.
-        onAssistantMessage: (message) => {
-          if (message.stopReason !== "error") {
-            connectionErrors = 0;
-            lastConnectionError = undefined;
-            return;
-          }
-          if (
-            message.errorMessage !== undefined &&
-            CONNECTION_ERROR_RE.test(message.errorMessage)
-          ) {
-            connectionErrors += 1;
-            lastConnectionError = message.errorMessage;
-          }
-        },
-      });
-      const previousBeforeToolCall = session.agent.beforeToolCall;
-      session.agent.beforeToolCall = async (context, signal) => {
-        const base = await previousBeforeToolCall?.(context, signal);
-        if (base?.block) return base;
-        if (
-          context.toolCall.name === submitTool.name &&
-          this.profile.requireRepositoryInspection &&
-          !repositoryInspected
-        ) {
-          return {
-            block: true,
-            reason:
-              "Inspect the repository first: read or search real source/test files (read, grep, glob, bash, or a task subagent) before submitting.",
-          };
-        }
-        if (
-          context.toolCall.name === submitTool.name &&
-          this.profile.verifyPushedHead &&
-          handle
-        ) {
-          const args = context.args as { head_sha?: unknown; branch?: unknown };
-          if (
-            typeof args.head_sha === "string" &&
-            typeof args.branch === "string"
-          ) {
-            const pushed = await verifyPushedHead(
-              handle,
-              args.branch,
-              args.head_sha,
-            );
-            if (pushed && !pushed.ok) {
-              return {
-                block: true,
-                reason: pushed.remoteHead
-                  ? `origin/${args.branch} is at ${pushed.remoteHead}, not the envelope's head_sha ${args.head_sha}. Push your final commit (git push origin ${args.branch}), confirm with git ls-remote --heads origin ${args.branch}, then submit the SHA that is actually on the remote.`
-                  : `origin/${args.branch} does not exist on the remote. Push the work branch (git push origin ${args.branch}) before submitting.`,
-              };
-            }
-          }
-        }
-        const authorized = await broker.authorizeTool?.({
-          toolName: context.toolCall.name,
-          args: context.args,
-          packet: request.packet,
-          environment: request.environment,
-        });
-        if (authorized?.allow === false) {
-          return { block: true, reason: authorized.reason };
-        }
-        return undefined;
-      };
-
-      // Per-phase wall-clock enforcement for phased roles. The runner cannot
-      // interrupt a live prompt without poisoning the session, so an
-      // over-budget phase is closed the way drift is handled: a reminder
-      // folded into every tool result (rate-limited) until the model stops
-      // exploring and emits the phase deliverable. Run 1 of the phased
-      // architect spent 44 of 45 minutes in survey; budgets exist so every
-      // phase gets its turn.
-      let activePhase: {
-        name: string;
-        budgetMs: number;
-        startedAt: number;
-      } | null = null;
-      let lastPhaseNudgeAt = 0;
-      const takePhaseBudgetNudge = (): string | null => {
-        if (!activePhase) return null;
-        const now = performance.now();
-        if (now - activePhase.startedAt <= activePhase.budgetMs) return null;
-        if (now - lastPhaseNudgeAt < 45_000) return null;
-        lastPhaseNudgeAt = now;
-        const overMin = Math.round(
-          (now - activePhase.startedAt - activePhase.budgetMs) / 60_000,
-        );
-        return [
-          "<system-reminder>",
-          `Phase "${activePhase.name}" is over its wall-clock budget${overMin > 0 ? ` by ~${overMin} min` : ""}. Stop exploring NOW. Produce this phase's deliverable in your next message from what you already have - no further tool calls in this phase. Remaining depth belongs to the later phases.`,
-          "</system-reminder>",
-        ].join("\n");
-      };
-
       // Submit-deadline enforcement: re-steering only fires when a model
       // STOPS without submitting, so a model that investigates forever never
       // hears it (grok-4.6 spent 44 of 45 minutes probing a diff with zero
@@ -947,237 +809,510 @@ export class PiBaseAgentRunner implements PiRunner {
         const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
         return [
           "<system-reminder>",
-          `~${remainingMin} minute(s) of wall clock remain and nothing has been submitted. Stop investigating NOW and call ${submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
+          `~${remainingMin} minute(s) of wall clock remain and nothing has been submitted. Stop investigating NOW and call ${activeStage?.submitName ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
           "</system-reminder>",
         ].join("\n");
       };
-      const previousAfterToolCall = session.agent.afterToolCall;
-      session.agent.afterToolCall = async (context, signal) => {
-        const base = await previousAfterToolCall?.(context, signal);
-        if (
-          !context.isError &&
-          REPOSITORY_INSPECTION_TOOLS[context.toolCall.name] === true
-        ) {
-          repositoryInspected = true;
-        }
-        jigglesUsed = 0;
-        connectionErrors = 0;
-        steering.observeToolCall(
-          context.toolCall.name,
-          context.args,
-          context.isError,
-        );
-        // Rejection evidence lives in the guard subscription's end-event
-        // seam (see pi-runner-common): it is the only path that sees TypeBox
-        // argument-validation refusals, which never reach afterToolCall.
-        this.options.logger?.info?.(
-          {
-            runId,
-            sandboxId,
-            tool: context.toolCall.name,
-            args: this.options.logToolArgs ? context.args : undefined,
-            isError: context.isError,
+      /**
+       * Arm one session with the run's guards and hooks: turn/usd limits,
+       * stall and connection accounting, repository-inspection gating on the
+       * submit tool, broker authorization, tool observation, and the
+       * deadline/drift nudges. The run session and every stage session get
+       * the same protection; only the submit tool name varies.
+       */
+      let activeStage: { name: string; submitName: string } | null = null;
+      const armSession = (
+        target: AgentSession,
+        submitName: string,
+      ): (() => void) => {
+        const unsubscribeGuards = installRunGuards(target.agent, runId, {
+          maxTurns:
+            this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
+          logger: this.options.logger,
+          evidence,
+          rejectionToolName: submitName,
+          onFailure: (reason) => {
+            failureReason ??= reason;
           },
-          "pi_tool_observation",
-        );
-        const deadlineNudge = takeSubmitDeadlineNudge();
-        const phaseNudge = deadlineNudge ? null : takePhaseBudgetNudge();
-        const repeatNudge =
-          deadlineNudge || phaseNudge
+          abort: () => void abortRun(),
+          onZeroOutputStall: () => {
+            zeroOutputStalled = true;
+          },
+          // The only place connectionErrors moves. A successful turn - even a
+          // text-only one the runner would otherwise never see - proves the
+          // leg is alive and clears the budget.
+          onAssistantMessage: (message) => {
+            if (message.stopReason !== "error") {
+              connectionErrors = 0;
+              lastConnectionError = undefined;
+              return;
+            }
+            if (
+              message.errorMessage !== undefined &&
+              CONNECTION_ERROR_RE.test(message.errorMessage)
+            ) {
+              connectionErrors += 1;
+              lastConnectionError = message.errorMessage;
+            }
+          },
+        });
+        const previousBeforeToolCall = target.agent.beforeToolCall;
+        target.agent.beforeToolCall = async (context, signal) => {
+          const base = await previousBeforeToolCall?.(context, signal);
+          if (base?.block) return base;
+          if (
+            context.toolCall.name === submitName &&
+            this.profile.requireRepositoryInspection &&
+            !repositoryInspected
+          ) {
+            return {
+              block: true,
+              reason:
+                "Inspect the repository first: read or search real source/test files (read, grep, glob, bash, or a task subagent) before submitting.",
+            };
+          }
+          if (
+            context.toolCall.name === submitName &&
+            this.profile.verifyPushedHead &&
+            handle
+          ) {
+            const args = context.args as {
+              head_sha?: unknown;
+              branch?: unknown;
+            };
+            if (
+              typeof args.head_sha === "string" &&
+              typeof args.branch === "string"
+            ) {
+              const pushed = await verifyPushedHead(
+                handle,
+                args.branch,
+                args.head_sha,
+              );
+              if (pushed && !pushed.ok) {
+                return {
+                  block: true,
+                  reason: pushed.remoteHead
+                    ? `origin/${args.branch} is at ${pushed.remoteHead}, not the envelope's head_sha ${args.head_sha}. Push your final commit (git push origin ${args.branch}), confirm with git ls-remote --heads origin ${args.branch}, then submit the SHA that is actually on the remote.`
+                    : `origin/${args.branch} does not exist on the remote. Push the work branch (git push origin ${args.branch}) before submitting.`,
+                };
+              }
+            }
+          }
+          const authorized = await broker.authorizeTool?.({
+            toolName: context.toolCall.name,
+            args: context.args,
+            packet: request.packet,
+            environment: request.environment,
+          });
+          if (authorized?.allow === false) {
+            return { block: true, reason: authorized.reason };
+          }
+          return undefined;
+        };
+
+        const previousAfterToolCall = target.agent.afterToolCall;
+        target.agent.afterToolCall = async (context, signal) => {
+          const base = await previousAfterToolCall?.(context, signal);
+          if (
+            !context.isError &&
+            REPOSITORY_INSPECTION_TOOLS[context.toolCall.name] === true
+          ) {
+            repositoryInspected = true;
+          }
+          jigglesUsed = 0;
+          connectionErrors = 0;
+          steering.observeToolCall(
+            context.toolCall.name,
+            context.args,
+            context.isError,
+          );
+          // Rejection evidence lives in the guard subscription's end-event
+          // seam (see pi-runner-common): it is the only path that sees TypeBox
+          // argument-validation refusals, which never reach afterToolCall.
+          this.options.logger?.info?.(
+            {
+              runId,
+              sandboxId,
+              tool: context.toolCall.name,
+              args: this.options.logToolArgs ? context.args : undefined,
+              isError: context.isError,
+            },
+            "pi_tool_observation",
+          );
+          const deadlineNudge = takeSubmitDeadlineNudge();
+          const repeatNudge = deadlineNudge
             ? null
             : steering.takeRepeatFailureNudge();
-        const nudge =
-          deadlineNudge ??
-          phaseNudge ??
-          repeatNudge ??
-          steering.takeDriftNudge();
-        if (!nudge) return base;
-        // Fold the reminder in ahead of the tool's own output, the way the omp
-        // harness delivers non-interrupting rule reminders.
-        this.options.logger?.warn?.(
-          { runId, sandboxId, phase: activePhase?.name },
-          deadlineNudge
-            ? "pi_submit_deadline_nudge"
-            : phaseNudge
-              ? "pi_phase_budget_nudge"
+          const nudge =
+            deadlineNudge ?? repeatNudge ?? steering.takeDriftNudge();
+          if (!nudge) return base;
+          // Fold the reminder in ahead of the tool's own output, the way the omp
+          // harness delivers non-interrupting rule reminders.
+          this.options.logger?.warn?.(
+            { runId, sandboxId, stage: activeStage?.name },
+            deadlineNudge
+              ? "pi_submit_deadline_nudge"
               : repeatNudge
                 ? "pi_repeat_failure_nudge"
                 : "pi_drift_nudge",
-        );
-        return {
-          ...base,
-          content: [
-            { type: "text" as const, text: nudge },
-            ...(base?.content ?? context.result.content),
-          ],
+          );
+          return {
+            ...base,
+            content: [
+              { type: "text" as const, text: nudge },
+              ...(base?.content ?? context.result.content),
+            ],
+          };
         };
+        return unsubscribeGuards;
       };
+      const unsubscribeGuards = armSession(session, submitTool.name);
 
       // Active model index survives past the prompt loop so the continuation
       // loop can keep falling over to remaining candidates on stalls.
       let index = 0;
       try {
-        const phases = this.profile.phases?.(request.packet) ?? [];
-        const isPhased = phases.length > 0;
         const MODEL_FAILED_PROMPT =
           "The previous model failed. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
-        /** One prompt turn of a candidate's plan, tagged with its phase when phased. */
-        interface PlanStep {
-          readonly prompt: string;
-          readonly phase?: (typeof phases)[number];
-        }
-        /** A candidate's full prompt plan: fallback roles restart from survey. */
-        const planSteps = (): readonly PlanStep[] => {
-          // Non-phased roles keep today's single-prompt shape exactly: the
-          // packet prompt once, or just the failure prompt on a later
-          // candidate - the packet is already in the continued conversation.
-          if (!isPhased) {
-            return [
-              index > 0
-                ? { prompt: MODEL_FAILED_PROMPT }
-                : { prompt: buildPacketPrompt(request.packet) },
-            ];
-          }
-          const lead: PlanStep[] =
-            index > 0 ? [{ prompt: MODEL_FAILED_PROMPT }] : [];
-          return [
-            ...lead,
-            ...phases.map((phase) => ({ prompt: phase.prompt, phase })),
-          ];
-        };
-        const activeSession = session;
-        if (!activeSession) throw new Error("run session missing");
         /**
-         * Drive one model candidate through its whole prompt plan: either the
-         * role's phase pipeline or the single packet prompt. Resolves true
-         * when the plan ran to completion (the model loop stops); resolves
-         * false after a mid-sequence provider error so the caller can fall
-         * over to the next candidate; throws fatal errors (last candidate,
-         * classified failure, operator cancellation).
+         * Send one prompt to a session and classify how it ended. Resolves
+         * true when the caller should stop advancing candidates (a submission
+         * landed, the model loop stopped cleanly, or the wall closed);
+         * false when the caller should fall over to the next candidate
+         * (`index` already steered so the caller's `+= 1` lands on it);
+         * throws fatal errors (last candidate, classified failure, operator
+         * cancellation).
          */
-        const runPromptPlan = async (candidate: {
-          provider: string;
-          id: string;
-        }): Promise<boolean> => {
-          for (const step of planSteps()) {
-            if (submissionCaptured()) return true;
-            if (step.phase) {
-              activePhase = {
-                name: step.phase.name,
-                budgetMs: step.phase.budgetMs,
-                startedAt: performance.now(),
-              };
-              lastPhaseNudgeAt = 0;
-              this.options.logger?.info?.(
-                { runId, sandboxId, phase: step.phase.name },
-                "architect_phase",
-              );
-            } else {
-              activePhase = null;
+        const driveSession = async (
+          target: AgentSession,
+          prompt: string,
+          candidate: { provider: string; id: string },
+          landed: () => boolean,
+          landedPromise: Promise<void>,
+        ): Promise<boolean> => {
+          try {
+            const promptPromise = inTraceContext(request.environment, () =>
+              target.prompt(prompt, { expandPromptTemplates: false }),
+            ).catch((err) => {
+              if (landed()) return;
+              throw err;
+            });
+            await Promise.race([promptPromise, landedPromise]);
+            if (!landed()) {
+              await waitForIdleOrCapturedEnvelope(target.agent, landedPromise);
             }
-            try {
-              const waitPromise = submissionPromise();
-              const promptPromise = inTraceContext(request.environment, () =>
-                activeSession.prompt(step.prompt, {
-                  expandPromptTemplates: false,
-                }),
-              ).catch((err) => {
-                if (submissionCaptured()) return;
-                throw err;
-              });
-              await Promise.race([promptPromise, waitPromise]);
-              if (!submissionCaptured()) {
-                await waitForIdleOrCapturedEnvelope(
-                  activeSession.agent,
-                  waitPromise,
-                );
-              }
-              const lastMessage = activeSession.agent.state.messages.at(-1);
-              if (
-                !submissionCaptured() &&
-                lastMessage?.role === "assistant" &&
-                lastMessage.stopReason === "error"
-              ) {
-                throw new Error(
-                  lastMessage.errorMessage ??
-                    `model ${candidate.provider}/${candidate.id} failed`,
-                );
-              }
-            } catch (err) {
-              // The run-timeout guard aborts the session, which rejects the
-              // in-flight prompt with the SDK's opaque "This operation was
-              // aborted". Rethrowing loses the classified reason and skips
-              // envelope finalization, so a run that did the work but ran out
-              // of budget reports nothing. Stop the model loop instead and let
-              // finalization salvage a submission. Operator cancellation still
-              // ends the run immediately.
-              if (cancellationTriggered) throw err;
-              if (timeoutTriggered) return true;
-              // The candidate loop below advances by one; steer it onto
-              // the next candidate WITH capacity (see nextCandidateIndex).
-              const nextIndex = nextCandidateIndex(index);
-              const next =
-                nextIndex === null ? undefined : resolvedModels[nextIndex];
-              const advance = () => {
-                if (nextIndex !== null) index = nextIndex - 1;
+            const lastMessage = target.agent.state.messages.at(-1);
+            if (
+              !landed() &&
+              lastMessage?.role === "assistant" &&
+              lastMessage.stopReason === "error"
+            ) {
+              throw new Error(
+                lastMessage.errorMessage ??
+                  `model ${candidate.provider}/${candidate.id} failed`,
+              );
+            }
+            return true;
+          } catch (err) {
+            // The run-timeout guard aborts the session, which rejects the
+            // in-flight prompt with the SDK's opaque "This operation was
+            // aborted". Rethrowing loses the classified reason and skips
+            // envelope finalization, so a run that did the work but ran out
+            // of budget reports nothing. Stop the model loop instead and let
+            // finalization salvage a submission. Operator cancellation still
+            // ends the run immediately.
+            if (cancellationTriggered) throw err;
+            if (timeoutTriggered) return true;
+            // The candidate loop advances by one; steer it onto the next
+            // candidate WITH capacity (see nextCandidateIndex).
+            const nextIndex = nextCandidateIndex(index);
+            const next =
+              nextIndex === null ? undefined : resolvedModels[nextIndex];
+            const advance = () => {
+              if (nextIndex !== null) index = nextIndex - 1;
+              return false;
+            };
+            const errText = err instanceof Error ? err.message : String(err);
+            if (CONNECTION_ERROR_RE.test(errText)) {
+              // Under budget this was a blip: the model stays and the
+              // continuation loop re-prompts it. Over budget the leg is
+              // dead, and with no candidate left the failure is
+              // classified as infrastructure so the run keeps its
+              // attempt budget instead of throwing past finalization.
+              if (connectionErrors < MODEL_CONNECTION_ERROR_LIMIT) return true;
+              if (!next) {
+                failureReason = `provider_connection_failure: ${(
+                  lastConnectionError ?? errText
+                ).slice(0, 160)}`;
                 return false;
-              };
-              const errText = err instanceof Error ? err.message : String(err);
-              if (CONNECTION_ERROR_RE.test(errText)) {
-                // Under budget this was a blip: the model stays and the
-                // continuation loop re-prompts it. Over budget the leg is
-                // dead, and with no candidate left the failure is
-                // classified as infrastructure so the run keeps its
-                // attempt budget instead of throwing past finalization.
-                if (connectionErrors < MODEL_CONNECTION_ERROR_LIMIT)
-                  return true;
-                if (!next) {
-                  failureReason = `provider_connection_failure: ${(
-                    lastConnectionError ?? errText
-                  ).slice(0, 160)}`;
-                  return false;
-                }
-                this.options.logger?.warn?.(
-                  {
-                    runId,
-                    from: candidate.id,
-                    to: next.id,
-                    error: `provider_connection_exhausted: ${(
-                      lastConnectionError ?? errText
-                    ).slice(0, 160)}`,
-                  },
-                  "pi_model_fallback",
-                );
-                return advance();
-              }
-              if (!next || failureReason !== undefined) {
-                throw err;
               }
               this.options.logger?.warn?.(
                 {
                   runId,
                   from: candidate.id,
                   to: next.id,
-                  error: errText,
+                  error: `provider_connection_exhausted: ${(
+                    lastConnectionError ?? errText
+                  ).slice(0, 160)}`,
                 },
                 "pi_model_fallback",
               );
               return advance();
             }
+            if (!next || failureReason !== undefined) {
+              throw err;
+            }
+            this.options.logger?.warn?.(
+              { runId, from: candidate.id, to: next.id, error: errText },
+              "pi_model_fallback",
+            );
+            return advance();
           }
-          activePhase = null;
-          return true;
         };
-        if (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) {
+
+        /**
+         * The staged pipeline (architect-stages.ts): one fresh session per
+         * stage, armed like the run session, its tools narrowed to what the
+         * stage may do plus its own submit tool. A stage ends only by that
+         * tool; past its turn cap the tools collapse to the submit tool
+         * alone. Each stage's artifact feeds the next; the final stage's
+         * submission is the run's envelope. Provider failure inside a stage
+         * fails over to the next candidate and re-prompts the SAME stage -
+         * earlier artifacts survive.
+         */
+        const runStagedPlan = async (): Promise<void> => {
+          const artifacts: {
+            notes?: StageArtifacts["notes"];
+            draft?: StageArtifacts["draft"];
+          } = {};
+          // The run session was built for the single-prompt shape; stages
+          // bring their own. Drop it so its guards never fire on a stage.
+          unsubscribeGuards();
+          session?.dispose();
+          session = undefined;
+          const lastStage = stages.at(-1)!;
+          for (const stage of stages) {
+            if (
+              timeoutTriggered ||
+              cancellationTriggered ||
+              failureReason !== undefined
+            )
+              return;
+            const isFinal = stage === lastStage;
+            let stageCaptured: unknown;
+            let resolveStage: (() => void) | undefined;
+            const stagePromise = isFinal
+              ? capturedEnvelopePromise
+              : new Promise<void>((resolve) => {
+                  resolveStage = resolve;
+                });
+            const stageSubmit = isFinal
+              ? submitTool
+              : stage.submitTool((value) => {
+                  stageCaptured = value;
+                  resolveStage?.();
+                });
+            const landed = (): boolean =>
+              isFinal ? submissionCaptured() : stageCaptured !== undefined;
+            const stageSandboxTools =
+              stage.tools === "inspect"
+                ? sandboxTools
+                : sandboxTools.filter((tool) => tool.name === "read");
+            const stageCustomTools = [
+              stageSubmit,
+              ...stageSandboxTools,
+              ...customTools.filter(
+                (tool) =>
+                  tool.name !== submitTool.name && tool.name !== goalTool.name,
+              ),
+              ...(stage.subagents ? [subagentTool] : []),
+            ];
+            const stageSession = (
+              await createAgentSession(
+                await buildSessionOptions({
+                  systemPrompt: `${stage.systemPrompt}\n\n${steering.budgetBlock()}`,
+                  customTools: stageCustomTools,
+                  toolNames: stageCustomTools.map((tool) => tool.name),
+                  prewalk: false,
+                  // The survey is the bulk of the run's reading and the
+                  // transcript operators need; later stages are small and
+                  // their artifacts are logged whole below.
+                  journal: stage.name === "survey" ? "run" : "transient",
+                }),
+              )
+            ).session;
+            session = stageSession;
+            if (stage.name === "survey") {
+              runSessionFile =
+                stageSession.sessionManager.getSessionFile() ?? undefined;
+            }
+            activeStage = { name: stage.name, submitName: stageSubmit.name };
+            const unarm = armSession(stageSession, stageSubmit.name);
+            // Turn cap: past it, only the submit tool remains. Measured on
+            // grok-4.6: a phase-budget trigger never fired because it does
+            // not overstay phases, it overstays the run; turns are the unit
+            // it actually spends.
+            let assistantTurns = 0;
+            let capped = false;
+            const unsubscribeTurns = stageSession.agent.subscribe((event) => {
+              if (
+                event.type !== "message_end" ||
+                event.message.role !== "assistant"
+              )
+                return;
+              assistantTurns += 1;
+              if (capped || landed() || assistantTurns < stage.turnCap) return;
+              capped = true;
+              this.options.logger?.warn?.(
+                { runId, sandboxId, stage: stage.name, turns: assistantTurns },
+                "architect_stage_turn_cap",
+              );
+              stageSession
+                .setActiveToolsByName([stageSubmit.name])
+                .catch((err: unknown) => {
+                  this.options.logger?.warn?.(
+                    {
+                      runId,
+                      stage: stage.name,
+                      error: err instanceof Error ? err.message : String(err),
+                    },
+                    "architect_stage_turn_cap_failed",
+                  );
+                });
+            });
+            this.options.logger?.info?.(
+              {
+                runId,
+                sandboxId,
+                stage: stage.name,
+                model: resolvedModels[index]?.id,
+              },
+              "architect_stage",
+            );
+            const startedAt = performance.now();
+            try {
+              // Candidate loop for this stage: the first prompt carries the
+              // stage's turn; a fallback candidate continues the same session.
+              let prompt = stage.prompt({
+                packet: request.packet,
+                ...artifacts,
+              });
+              for (; index < resolvedModels.length; index += 1) {
+                const candidate = resolvedModels[index]!;
+                if (stageSession.model?.id !== candidate.id) {
+                  await stageSession.setModel(candidate);
+                  jigglesUsed = 0;
+                  connectionErrors = 0;
+                  quotaScanFloor = stageSession.agent.state.messages.length;
+                  prompt = MODEL_FAILED_PROMPT;
+                }
+                if (
+                  await driveSession(
+                    stageSession,
+                    prompt,
+                    candidate,
+                    landed,
+                    stagePromise,
+                  )
+                )
+                  break;
+              }
+              // A model that stopped without submitting gets two direct
+              // steers with nothing but the submit tool in reach.
+              for (
+                let steer = 0;
+                steer < 2 &&
+                !landed() &&
+                !timeoutTriggered &&
+                !cancellationTriggered &&
+                failureReason === undefined;
+                steer += 1
+              ) {
+                await stageSession
+                  .setActiveToolsByName([stageSubmit.name])
+                  .catch(() => undefined);
+                const candidate = resolvedModels[index] ?? resolvedModels[0]!;
+                await driveSession(
+                  stageSession,
+                  `This stage ends only when you call ${stageSubmit.name}. Call it now with what you have; nothing else you write counts.`,
+                  candidate,
+                  landed,
+                  stagePromise,
+                );
+              }
+            } finally {
+              unsubscribeTurns();
+              unarm();
+              activeStage = null;
+              this.options.logger?.info?.(
+                {
+                  runId,
+                  sandboxId,
+                  stage: stage.name,
+                  turns: assistantTurns,
+                  minutes:
+                    Math.round((performance.now() - startedAt) / 6000) / 10,
+                  landed: landed(),
+                  artifact: isFinal ? undefined : stageCaptured,
+                },
+                "architect_stage_done",
+              );
+            }
+            if (!landed()) {
+              if (
+                failureReason === undefined &&
+                !timeoutTriggered &&
+                !cancellationTriggered
+              ) {
+                failureReason = `architect_stage_${stage.name}_no_submission`;
+              }
+              return;
+            }
+            if (!isFinal) {
+              if (stage.name === "survey") {
+                artifacts.notes = stageCaptured as StageArtifacts["notes"];
+              } else if (stage.name === "plan") {
+                artifacts.draft = stageCaptured as StageArtifacts["draft"];
+              }
+              stageSession.dispose();
+              if (session === stageSession) session = undefined;
+            }
+          }
+        };
+
+        if (stages.length > 0) {
+          await runStagedPlan();
+        } else if (
+          workTools.length > 0 ||
+          !this.profile.skipPromptWithoutWorkTools
+        ) {
+          const activeSession = session;
+          if (!activeSession) throw new Error("run session missing");
           for (; index < resolvedModels.length; index += 1) {
             const candidate = resolvedModels[index]!;
             if (index > 0) {
-              await session.setModel(candidate);
+              await activeSession.setModel(candidate);
               jigglesUsed = 0;
               connectionErrors = 0;
-              quotaScanFloor = session.agent.state.messages.length;
+              quotaScanFloor = activeSession.agent.state.messages.length;
             }
-            if (await runPromptPlan(candidate)) break;
+            // The packet prompt once, or just the failure prompt on a later
+            // candidate - the packet is already in the continued conversation.
+            const prompt =
+              index > 0
+                ? MODEL_FAILED_PROMPT
+                : buildPacketPrompt(request.packet);
+            if (
+              await driveSession(
+                activeSession,
+                prompt,
+                candidate,
+                submissionCaptured,
+                submissionPromise(),
+              )
+            )
+              break;
           }
         }
         // A model that stops without submitting gets re-steered instead of
@@ -1190,6 +1325,7 @@ export class PiBaseAgentRunner implements PiRunner {
         // the drift-steer budget, then failover to the next candidate on the
         // same session.
         while (
+          stages.length === 0 &&
           (workTools.length > 0 || !this.profile.skipPromptWithoutWorkTools) &&
           !submissionCaptured() &&
           !timeoutTriggered &&
@@ -1293,10 +1429,10 @@ export class PiBaseAgentRunner implements PiRunner {
           try {
             const waitPromise = submissionPromise();
             const steerPromise = inTraceContext(request.environment, () =>
-              activeSession.prompt(prompt, {
+              session!.prompt(prompt, {
                 expandPromptTemplates: false,
               }),
-            ).catch((err) => {
+            ).catch((err: unknown) => {
               if (submissionCaptured()) return;
               throw err;
             });
@@ -1330,126 +1466,6 @@ export class PiBaseAgentRunner implements PiRunner {
         unsubscribeGuards();
       }
 
-      // The bounded adversarial critique pass. Runs only when the option is
-      // set AND the role is phased; one critique session and at most one
-      // revision prompt per run, all under the run deadline already armed.
-      if (
-        this.options.critique &&
-        phased &&
-        draftEnvelope !== undefined &&
-        !critiqueCompleted &&
-        !timeoutTriggered &&
-        !cancellationTriggered &&
-        failureReason === undefined
-      ) {
-        try {
-          const critique = this.options.critique;
-          const critic = await createAgentSession(
-            await buildSessionOptions({
-              systemPrompt: critique.systemPrompt,
-              customTools: [],
-              toolNames: [],
-              prewalk: false,
-              journal: "transient",
-            }),
-          );
-          let reportText = "";
-          const unsubscribeReport = critic.session.agent.subscribe((event) => {
-            if (
-              event.type === "message_end" &&
-              event.message.role === "assistant"
-            ) {
-              const text = event.message.content
-                .filter(
-                  (block): block is { type: "text"; text: string } =>
-                    block.type === "text" && typeof block.text === "string",
-                )
-                .map((block) => block.text)
-                .join("\n");
-              if (text.trim()) reportText = text;
-            }
-          });
-          let report: CritiqueReport;
-          try {
-            await inTraceContext(request.environment, () =>
-              critic.session.prompt(
-                critique.buildPrompt({
-                  goal: packetObjective(request.packet),
-                  projectContext:
-                    typeof (
-                      request.packet as { project?: { context_doc?: unknown } }
-                    ).project?.context_doc === "string"
-                      ? (request.packet as { project: { context_doc: string } })
-                          .project.context_doc
-                      : null,
-                  envelope: draftEnvelope,
-                }),
-                { expandPromptTemplates: false },
-              ),
-            );
-            await critic.session.agent.waitForIdle();
-          } finally {
-            unsubscribeReport();
-            critic.session.dispose();
-          }
-          report = critique.parseReport(reportText);
-          this.options.logger?.info?.(
-            {
-              runId,
-              sandboxId,
-              verdict: report.verdict,
-              findings: report.findings.length,
-            },
-            "architect_critique",
-          );
-          if (report.verdict === "approve" || report.findings.length === 0) {
-            capturedEnvelope = draftEnvelope;
-            resolveCapturedEnvelope?.();
-          } else {
-            critiqueCompleted = true;
-            const revisionPromise = inTraceContext(request.environment, () =>
-              session!.prompt(buildRevisionPrompt(report.findings), {
-                expandPromptTemplates: false,
-              }),
-            ).catch((err) => {
-              if (capturedEnvelope !== undefined) return;
-              throw err;
-            });
-            await Promise.race([revisionPromise, capturedEnvelopePromise]);
-            if (!submissionCaptured()) {
-              await waitForIdleOrCapturedEnvelope(
-                session!.agent,
-                capturedEnvelopePromise,
-              );
-            }
-            if (capturedEnvelope === undefined) {
-              const lastMessage = session!.agent.state.messages.at(-1);
-              if (
-                lastMessage?.role === "assistant" &&
-                lastMessage.stopReason === "error"
-              ) {
-                failureReason ??=
-                  lastMessage.errorMessage ?? "critique_revision_failed";
-              }
-            }
-          }
-        } catch (err) {
-          if (cancellationTriggered || timeoutTriggered) {
-            // Cancellation/timeouts are handled by their own guards; keep
-            // their classified reasons instead of masking them.
-          } else {
-            failureReason ??= "critique_failed";
-            this.options.logger?.warn?.(
-              {
-                runId,
-                error: err instanceof Error ? err.message : String(err),
-              },
-              "architect_critique_failed",
-            );
-          }
-        }
-      }
-
       if (
         capturedEnvelope === undefined &&
         this.profile.requireRepositoryInspection &&
@@ -1476,7 +1492,10 @@ export class PiBaseAgentRunner implements PiRunner {
       //     session manager that owns the file path) and the run-dir removal
       //     in (3). A session that never reached disk leaves no transcript,
       //     which capture treats as a silent skip, not an outage.
-      const sessionFile = session?.sessionManager.getSessionFile() ?? undefined;
+      // The file-backed session is the run session, or the survey stage of a
+      // staged run - never whichever session happens to be live at teardown.
+      const sessionFile =
+        runSessionFile ?? session?.sessionManager.getSessionFile() ?? undefined;
       let uploaded = false;
       if (sessionFile && this.options.auditSink) {
         try {
@@ -1644,8 +1663,8 @@ export const DEVELOPER_ROLE_PROFILE: PiRoleProfile = {
 };
 
 export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
-  phases: (packet) =>
-    isArchitectExtensionPacket(packet) ? [] : buildArchitectPhases(packet),
+  stages: (packet) =>
+    isArchitectExtensionPacket(packet) ? [] : buildArchitectStages(),
   role: "architect",
   kind: "pi-architect",
   sandboxPrefix: "pi-architect",
@@ -1684,6 +1703,29 @@ export const REVIEWER_ROLE_PROFILE: PiRoleProfile = {
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",
   defaultLimits: { maxTurns: 20 },
+  workspaceMode: "repo-required",
+  requireRepositoryInspection: true,
+};
+
+/**
+ * The plan reviewer: the code reviewer's loop applied to an architect's plan
+ * before any implementer starts. Runs on the reviewer model chain with the
+ * repository checked out, so the plan is judged against the code it names.
+ */
+export const PLAN_REVIEWER_ROLE_PROFILE: PiRoleProfile = {
+  role: "plan_reviewer",
+  kind: "pi-plan-reviewer",
+  sandboxPrefix: "pi-plan-reviewer",
+  systemPrompt: () => PLAN_REVIEW_SYSTEM_PROMPT,
+  finalizerPrompt: () =>
+    "Review is complete. Submit exactly one plan_review_verdict by calling submit_plan_review_verdict: request_changes needs findings that name the task and the correction; approve needs `inspected` and a summary of at least 80 chars.",
+  schemaName: "plan_review_verdict",
+  typeboxSchema: planReviewVerdictTypeBox,
+  submitTool: (capture) => createPlanReviewSubmitTool(capture),
+  validate: zodValidator(PlanReviewVerdictV1),
+  defaultTools: DEFAULT_ARCHITECT_TOOLS,
+  defaultThinkingLevel: "medium",
+  defaultLimits: { maxTurns: 40 },
   workspaceMode: "repo-required",
   requireRepositoryInspection: true,
 };

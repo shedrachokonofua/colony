@@ -20,8 +20,26 @@ function envelopeWithTasks(
   return {
     kind: "architect_decomposition",
     summary: "Scope summary.",
+    requirements: [
+      {
+        id: "R1",
+        text: "the scope goal holds",
+        tasks: tasks.map((_, index) => index),
+      },
+    ],
+    journey: [
+      {
+        after_task: Math.max(tasks.length - 1, 0),
+        working_state: "the scope goal holds",
+      },
+    ],
     acceptance: [{ description: "Suite passes.", command: "npm test" }],
-    tasks: tasks.map((task) => ({ depends_on: [], ...task })),
+    tasks: tasks.map((task, index) => ({
+      depends_on: [],
+      files: [`src/task-${index}.ts`],
+      evidence: ["true"],
+      ...task,
+    })),
   };
 }
 
@@ -133,7 +151,19 @@ describe("validateDecompositionEnvelope size gate", () => {
 
   it("flags a task whose predicted cost exceeds the budget", () => {
     const errors = validateDecompositionEnvelope(
-      envelopeWithTasks([{ title: "Too big", spec: fivePathSpec }]),
+      envelopeWithTasks([
+        {
+          title: "Too big",
+          spec: fivePathSpec,
+          files: [
+            "packages/core/src/store.ts",
+            "packages/core/src/cache.ts",
+            "apps/colonyd/src/tick.ts",
+            "apps/colonyd/src/http.ts",
+            "packages/console/app.js",
+          ],
+        },
+      ]),
       {
         model: { version: "v1", sample_size: 4, ms_per_file: 100_000 },
         budget_ms: 250_000,
@@ -145,7 +175,7 @@ describe("validateDecompositionEnvelope size gate", () => {
     expect(error.taskIndex).toBe(0);
     expect(error.message).toContain('task 0 ("Too big")');
     expect(error.message).toContain("predicted 500000 ms");
-    expect(error.message).toContain("5 spec file paths");
+    expect(error.message).toContain("5 declared files");
     expect(error.message).toContain("(model v1, 4 samples)");
     expect(error.message).toContain("exceeds the 250000 ms implementer budget");
     expect(error.message).toContain(
@@ -156,7 +186,17 @@ describe("validateDecompositionEnvelope size gate", () => {
   it("flags only the offending tasks when several exceed the budget", () => {
     const errors = validateDecompositionEnvelope(
       envelopeWithTasks([
-        { title: "Big", spec: fivePathSpec },
+        {
+          title: "Big",
+          spec: fivePathSpec,
+          files: [
+            "packages/core/src/store.ts",
+            "packages/core/src/cache.ts",
+            "apps/colonyd/src/tick.ts",
+            "apps/colonyd/src/http.ts",
+            "packages/console/app.js",
+          ],
+        },
         { title: "Small", spec: quietSpec },
       ]),
       {

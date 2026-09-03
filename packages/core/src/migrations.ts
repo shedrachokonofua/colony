@@ -329,6 +329,11 @@ export const MIGRATIONS: readonly Migration[] = [
       rebuildForCheck(db, "scopes", "paused");
     },
   },
+  {
+    version: 12,
+    name: "runs-plan-review",
+    apply: (db) => rebuildForCheck(db, "runs", "plan_review"),
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

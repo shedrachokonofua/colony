@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY,                       -- uuid
   scope_id TEXT NOT NULL REFERENCES scopes(id),
   task_id TEXT REFERENCES tasks(id),         -- NULL for architect / scope-level runs
-  kind TEXT NOT NULL CHECK (kind IN ('architect','implement','merge_gate','review','validate')),
+  kind TEXT NOT NULL CHECK (kind IN ('architect','plan_review','implement','merge_gate','review','validate')),
   status TEXT NOT NULL DEFAULT 'running'
     CHECK (status IN ('running','succeeded','failed','canceled')),
   lease_expires_at TEXT NOT NULL,

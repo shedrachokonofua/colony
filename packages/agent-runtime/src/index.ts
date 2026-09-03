@@ -22,10 +22,8 @@ export {
   buildImplementerSystemPrompt,
   buildReviewerSystemPrompt,
   buildReviewerFinalizerPrompt,
-  createArchitectSubmitTool,
   createImplementerSubmitTool,
   createReviewerSubmitTool,
-  architectDecompositionEnvelopeTypeBox,
   implementerCompletionEnvelopeTypeBox,
   reviewerVerdictEnvelopeTypeBox,
   provisionRepoWorkspace,
@@ -45,3 +43,19 @@ export type {
 } from "./architect-extension.js";
 export { validateExtensionEnvelope } from "./envelope-validation.js";
 export type { DecompositionValidationError } from "./envelope-validation.js";
+export {
+  ARCHITECT_STAGES,
+  architectDecompositionEnvelopeTypeBox,
+  architectSurveyNotesTypeBox,
+  buildArchitectStages,
+  createArchitectSubmitTool,
+  createPlanReviewSubmitTool,
+  formatPlanReviewFeedback,
+  PLAN_REVIEW_SYSTEM_PROMPT,
+  planReviewVerdictTypeBox,
+} from "./architect-stages.js";
+export type {
+  ArchitectStage,
+  ArchitectStageName,
+  StageArtifacts,
+} from "./architect-stages.js";

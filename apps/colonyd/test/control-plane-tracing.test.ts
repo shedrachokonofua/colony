@@ -296,8 +296,18 @@ describe("control-plane tracing", () => {
         {
           kind: "architect_decomposition",
           summary: "one task",
+          requirements: [{ id: "R1", text: "holds", tasks: [0] }],
+          journey: [{ after_task: 0, working_state: "holds" }],
           acceptance: [{ description: "holds", command: "true" }],
-          tasks: [{ title: "t", spec: "s", depends_on: [] }],
+          tasks: [
+            {
+              title: "t",
+              spec: "s",
+              depends_on: [],
+              files: ["src/t.ts"],
+              evidence: ["true"],
+            },
+          ],
         },
         SERVICE_ACTOR,
       )[0];

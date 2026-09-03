@@ -146,10 +146,24 @@ function plan(
   return {
     kind: "architect_decomposition",
     summary: "test plan",
+    requirements: [{ id: "R1", text: "goal holds", tasks: [0, 1] }],
+    journey: [{ after_task: 1, working_state: "the goal holds" }],
     acceptance: [{ description: "core plan goal", command: "true" }],
     tasks: [
-      { title: "A", spec: "do A", depends_on: [] },
-      { title: "B", spec: "do B", depends_on: [0] },
+      {
+        title: "A",
+        spec: "do A",
+        depends_on: [],
+        files: ["src/a.ts"],
+        evidence: ["true"],
+      },
+      {
+        title: "B",
+        spec: "do B",
+        depends_on: [0],
+        files: ["src/b.ts"],
+        evidence: ["true"],
+      },
     ],
     ...overrides,
   };
@@ -245,14 +259,22 @@ describe("Store", () => {
           title: "A",
           spec: "touch packages/core/src/store.ts and apps/x/y.ts",
           depends_on: [],
+          files: ["packages/core/src/store.ts", "apps/x/y.ts"],
+          evidence: ["true"],
         },
-        { title: "B", spec: "no paths here", depends_on: [0] },
+        {
+          title: "B",
+          spec: "no paths here",
+          depends_on: [0],
+          files: ["src/no-path.ts"],
+          evidence: ["true"],
+        },
       ],
     });
     const tasks = store.materializePlan(scopeId, p, "svc:colonyd");
     expect(tasks).toHaveLength(2);
     // Zero-history database: nothing is predicted or flagged, but the
-    // spec-derived file list still rides along.
+    // declared file list still rides along.
     expect(JSON.parse(tasks[0]!.cost_prediction_json!)).toMatchObject({
       predicted_ms: 0,
       budget_ms: 900_000,
@@ -264,9 +286,9 @@ describe("Store", () => {
     });
     expect(JSON.parse(tasks[1]!.cost_prediction_json!)).toMatchObject({
       predicted_ms: 0,
-      files_touched: 0,
+      files_touched: 1,
       flagged: false,
-      inputs: { files: [] },
+      inputs: { files: ["src/no-path.ts"] },
     });
     // GET /tasks/:id reads through SELECT *: the blob round-trips.
     const reloaded = store.listTasks(scopeId);
@@ -280,8 +302,20 @@ describe("Store", () => {
     store.setScopeStatus(scopeId, "planning", "svc:colonyd");
     const cyclic = plan({
       tasks: [
-        { title: "A", spec: "a", depends_on: [1] },
-        { title: "B", spec: "b", depends_on: [0] },
+        {
+          title: "A",
+          spec: "a",
+          depends_on: [1],
+          files: ["src/a.ts"],
+          evidence: ["true"],
+        },
+        {
+          title: "B",
+          spec: "b",
+          depends_on: [0],
+          files: ["src/b.ts"],
+          evidence: ["true"],
+        },
       ],
     });
     expect(() => store.materializePlan(scopeId, cyclic, "svc:colonyd")).toThrow(
@@ -1173,7 +1207,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(11);
+        expect(LATEST_SCHEMA_VERSION).toBe(12);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -1844,10 +1878,25 @@ describe("project running", () => {
       .materializePlan(
         scope_id,
         plan({
-          tasks: titles.map((title) => ({
+          requirements: [
+            {
+              id: "R1",
+              text: "goal holds",
+              tasks: titles.map((_, index) => index),
+            },
+          ],
+          journey: [
+            {
+              after_task: titles.length - 1,
+              working_state: "the goal holds",
+            },
+          ],
+          tasks: titles.map((title, index) => ({
             title,
             spec: `do ${title}`,
             depends_on: [],
+            files: [`src/task-${index}.ts`],
+            evidence: ["true"],
           })),
         }),
         "svc:colonyd",

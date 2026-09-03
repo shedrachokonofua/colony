@@ -26,11 +26,8 @@ interface ModelStubHandle {
 }
 
 /**
- * Stub the OpenAI-compatible completions endpoint the way
- * pi-architect-phases.test.ts does: intermediate architect phases get a
- * plain content reply, the consolidate phase submits the decomposition
- * envelope via the submit tool (which is what produces the execute_tool
- * span).
+ * Stub the OpenAI-compatible completions endpoint, routing each staged
+ * architect session by the submit tool named in its SYSTEM message.
  */
 async function startModelStub(envelope: unknown): Promise<ModelStubHandle> {
   const server = createServer((request, response) => {
@@ -45,44 +42,97 @@ async function startModelStub(envelope: unknown): Promise<ModelStubHandle> {
         messages?: { role: string; content: unknown }[];
       };
       const model = parsed.model;
-      const lastUser = [...(parsed.messages ?? [])]
-        .reverse()
-        .find((message) => message.role === "user");
-      const content = Array.isArray(lastUser?.content)
-        ? lastUser.content
-            .map((block) =>
-              typeof block === "object" && block !== null && "text" in block
-                ? String((block as { text: unknown }).text)
-                : "",
-            )
+      const systemMessage = (parsed.messages ?? []).find(
+        (message) => message.role === "system",
+      );
+      const system = Array.isArray(systemMessage?.content)
+        ? systemMessage.content
+            .map((block) => {
+              if (
+                typeof block !== "object" ||
+                block === null ||
+                !("text" in block)
+              ) {
+                return "";
+              }
+              return String(block.text);
+            })
             .join("\n")
-        : String(lastUser?.content ?? "");
+        : String(systemMessage?.content ?? "");
 
-      const chunks = content.includes("## Phase: consolidate")
-        ? [
-            {
-              delta: {
-                role: "assistant",
-                tool_calls: [
-                  {
-                    index: 0,
-                    id: "call-tracing-submit",
-                    type: "function",
-                    function: {
-                      name: "submit_architect_decomposition",
-                      arguments: JSON.stringify(envelope),
-                    },
+      let chunks: Array<{
+        delta: Record<string, unknown>;
+        finish: string | null;
+      }>;
+      if (system.includes("submit_survey_notes")) {
+        chunks = [
+          {
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-tracing-survey",
+                  type: "function",
+                  function: {
+                    name: "submit_survey_notes",
+                    arguments: JSON.stringify(SURVEY_NOTES),
                   },
-                ],
-              },
-              finish: null,
+                },
+              ],
             },
-            { delta: {}, finish: "tool_calls" },
-          ]
-        : [
-            { delta: { role: "assistant", content: "Working." }, finish: null },
-            { delta: {}, finish: "stop" },
-          ];
+            finish: null,
+          },
+          { delta: {}, finish: "tool_calls" },
+        ];
+      } else if (system.includes("submit_plan_draft")) {
+        chunks = [
+          {
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-tracing-plan",
+                  type: "function",
+                  function: {
+                    name: "submit_plan_draft",
+                    arguments: JSON.stringify(envelope),
+                  },
+                },
+              ],
+            },
+            finish: null,
+          },
+          { delta: {}, finish: "tool_calls" },
+        ];
+      } else if (system.includes("submit_architect_decomposition")) {
+        chunks = [
+          {
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-tracing-submit",
+                  type: "function",
+                  function: {
+                    name: "submit_architect_decomposition",
+                    arguments: JSON.stringify(envelope),
+                  },
+                },
+              ],
+            },
+            finish: null,
+          },
+          { delta: {}, finish: "tool_calls" },
+        ];
+      } else {
+        chunks = [
+          { delta: { role: "assistant", content: "Working." }, finish: null },
+          { delta: {}, finish: "stop" },
+        ];
+      }
 
       response.writeHead(200, {
         "content-type": "text/event-stream",
@@ -161,6 +211,8 @@ function writeConfig(dir: string): string {
 const ENVELOPE = {
   kind: "architect_decomposition",
   summary: "Two-task plan covering the tracing pipeline.",
+  requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+  journey: [{ after_task: 0, working_state: "goal holds" }],
   acceptance: [
     {
       description: "Pipeline runs",
@@ -172,8 +224,19 @@ const ENVELOPE = {
       title: "Only task",
       spec: "Land the pipeline.",
       depends_on: [],
+      files: ["src/main.ts"],
+      evidence: ["true"],
     },
   ],
+};
+
+const SURVEY_NOTES = {
+  kind: "architect_survey_notes",
+  requirements: [{ id: "R1", text: "goal holds" }],
+  findings: [{ path: "README.md", note: "root" }],
+  commands: { test: "true" },
+  conventions: [],
+  gaps: [],
 };
 
 describe("run tracing with the pi runtime and an in-memory exporter", () => {

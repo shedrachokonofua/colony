@@ -97,7 +97,7 @@ test.describe("console project running tab", () => {
       );
       await expect(tablist).toBeVisible({ timeout: 15000 });
       const scopesTab = tablist.getByRole("tab", { name: "Scopes" });
-      const runningTab = tablist.getByRole("tab", { name: "Running" });
+      const runningTab = tablist.getByRole("tab", { name: "Running tasks" });
       await expect(scopesTab).toBeVisible();
       await expect(runningTab).toBeVisible();
       await expect(runningTab).not.toHaveAttribute("aria-selected", "true");

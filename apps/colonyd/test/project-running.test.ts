@@ -106,11 +106,26 @@ function scopeWithTasks(
       {
         kind: "architect_decomposition",
         summary: "test plan",
+        requirements: [
+          {
+            id: "R1",
+            text: "goal",
+            tasks: titles.map((_, index) => index),
+          },
+        ],
+        journey: [
+          {
+            after_task: titles.length - 1,
+            working_state: "goal",
+          },
+        ],
         acceptance: [{ description: "goal", command: "true" }],
-        tasks: titles.map((title) => ({
+        tasks: titles.map((title, index) => ({
           title,
           spec: `do ${title}`,
           depends_on: [],
+          files: [`src/task-${index}.ts`],
+          evidence: ["true"],
         })),
       },
       "svc:test",

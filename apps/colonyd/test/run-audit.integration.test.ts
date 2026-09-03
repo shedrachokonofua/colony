@@ -36,6 +36,8 @@ interface ModelStubHandle {
 const ENVELOPE = {
   kind: "architect_decomposition",
   summary: "Decomposition covering the run-audit test.",
+  requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+  journey: [{ after_task: 0, working_state: "goal holds" }],
   acceptance: [
     {
       description: "Goal verified",
@@ -47,8 +49,19 @@ const ENVELOPE = {
       title: "Task 1",
       spec: "Do something.",
       depends_on: [],
+      files: ["src/main.ts"],
+      evidence: ["true"],
     },
   ],
+};
+
+const SURVEY_NOTES = {
+  kind: "architect_survey_notes",
+  requirements: [{ id: "R1", text: "goal holds" }],
+  findings: [{ path: "README.md", note: "root" }],
+  commands: { test: "true" },
+  conventions: [],
+  gaps: [],
 };
 
 function initGitRepo(dir: string): void {
@@ -65,8 +78,8 @@ function initGitRepo(dir: string): void {
 }
 
 /**
- * Stub OpenAI completions server that executes a tool call and bash command
- * before submitting the decomposition envelope.
+ * Stub OpenAI completions server that routes each staged architect session by
+ * the submit tool named in its SYSTEM message.
  */
 async function startModelStub(): Promise<ModelStubHandle> {
   let callCount = 0;
@@ -83,67 +96,35 @@ async function startModelStub(): Promise<ModelStubHandle> {
         messages?: { role: string; content: unknown }[];
       };
       const model = parsed.model;
-      const lastUser = [...(parsed.messages ?? [])]
-        .reverse()
-        .find((message) => message.role === "user");
-      const content = Array.isArray(lastUser?.content)
-        ? lastUser.content
-            .map((block) =>
-              typeof block === "object" && block !== null && "text" in block
-                ? String((block as { text: unknown }).text)
-                : "",
-            )
+      const systemMessage = (parsed.messages ?? []).find(
+        (message) => message.role === "system",
+      );
+      const system = Array.isArray(systemMessage?.content)
+        ? systemMessage.content
+            .map((block) => {
+              if (
+                typeof block !== "object" ||
+                block === null ||
+                !("text" in block)
+              ) {
+                return "";
+              }
+              return String(block.text);
+            })
             .join("\n")
-        : String(lastUser?.content ?? "");
+        : String(systemMessage?.content ?? "");
+      const hasToolResult = (parsed.messages ?? []).some(
+        (message) => message.role === "tool",
+      );
 
       let chunks: Array<{
         delta: Record<string, unknown>;
         finish: string | null;
       }>;
 
-      if (content.includes("## Critique")) {
-        // Architect critique pass: return approval
-        chunks = [
-          {
-            delta: {
-              role: "assistant",
-              content: JSON.stringify({ verdict: "approve", findings: [] }),
-            },
-            finish: null,
-          },
-          { delta: {}, finish: "stop" },
-        ];
-      } else if (content.includes("## Phase: consolidate")) {
-        // Phase 3: Submit final architect decomposition
-        chunks = [
-          {
-            delta: {
-              role: "assistant",
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call-audit-submit",
-                  type: "function",
-                  function: {
-                    name: "submit_architect_decomposition",
-                    arguments: JSON.stringify(ENVELOPE),
-                  },
-                },
-              ],
-            },
-            finish: null,
-          },
-          { delta: {}, finish: "tool_calls" },
-        ];
-      } else if (
-        content.includes("## Phase: survey") ||
-        content.includes("## Phase: decompose")
-      ) {
-        // If the model hasn't called bash yet in this phase, emit a bash tool call
-        const hasToolResult = (parsed.messages ?? []).some(
-          (m) => m.role === "tool",
-        );
+      if (system.includes("submit_survey_notes")) {
         if (!hasToolResult) {
+          // Preserve the inspection call used by the audit assertions.
           chunks = [
             {
               delta: {
@@ -171,13 +152,65 @@ async function startModelStub(): Promise<ModelStubHandle> {
             {
               delta: {
                 role: "assistant",
-                content: "Phase exploration complete.",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-audit-survey",
+                    type: "function",
+                    function: {
+                      name: "submit_survey_notes",
+                      arguments: JSON.stringify(SURVEY_NOTES),
+                    },
+                  },
+                ],
               },
               finish: null,
             },
-            { delta: {}, finish: "stop" },
+            { delta: {}, finish: "tool_calls" },
           ];
         }
+      } else if (system.includes("submit_plan_draft")) {
+        chunks = [
+          {
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-audit-plan",
+                  type: "function",
+                  function: {
+                    name: "submit_plan_draft",
+                    arguments: JSON.stringify(ENVELOPE),
+                  },
+                },
+              ],
+            },
+            finish: null,
+          },
+          { delta: {}, finish: "tool_calls" },
+        ];
+      } else if (system.includes("submit_architect_decomposition")) {
+        chunks = [
+          {
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-audit-submit",
+                  type: "function",
+                  function: {
+                    name: "submit_architect_decomposition",
+                    arguments: JSON.stringify(ENVELOPE),
+                  },
+                },
+              ],
+            },
+            finish: null,
+          },
+          { delta: {}, finish: "tool_calls" },
+        ];
       } else {
         chunks = [
           { delta: { role: "assistant", content: "Working." }, finish: null },
@@ -205,7 +238,6 @@ async function startModelStub(): Promise<ModelStubHandle> {
       response.end();
     });
   });
-
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   stubServers.push(server);
   const addr = server.address();

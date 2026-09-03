@@ -326,8 +326,18 @@ describe("project reference files in packets", () => {
       {
         kind: "architect_decomposition",
         summary: "test",
+        requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "goal holds" }],
         acceptance: [{ description: "d", command: "true" }],
-        tasks: [{ title: "task1", spec: "spec1", depends_on: [] }],
+        tasks: [
+          {
+            title: "task1",
+            spec: "spec1",
+            depends_on: [],
+            files: ["src/task1.ts"],
+            evidence: ["true"],
+          },
+        ],
       },
       "human:op-1",
     );
@@ -390,8 +400,18 @@ describe("project reference files in packets", () => {
       {
         kind: "architect_decomposition",
         summary: "test",
+        requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "goal holds" }],
         acceptance: [{ description: "d", command: "true" }],
-        tasks: [{ title: "task1", spec: "spec1", depends_on: [] }],
+        tasks: [
+          {
+            title: "task1",
+            spec: "spec1",
+            depends_on: [],
+            files: ["src/task1.ts"],
+            evidence: ["true"],
+          },
+        ],
       },
       "human:op-1",
     );

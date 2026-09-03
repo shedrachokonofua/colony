@@ -165,7 +165,11 @@ function checkSharedFilesWithoutEdge(
   envelope: ArchitectDecompositionV2,
 ): DecompositionValidationError[] {
   const errors: DecompositionValidationError[] = [];
-  const pathsByTask = envelope.tasks.map((task) => extractFilePaths(task.spec));
+  // The declared file list plus any path the spec names: the declaration is
+  // the contract, the spec scan catches what the declaration forgot.
+  const pathsByTask = envelope.tasks.map((task) => [
+    ...new Set([...task.files, ...extractFilePaths(task.spec)]),
+  ]);
   const reachable = envelope.tasks.map((_task, index) =>
     reachableFrom(
       index,
@@ -222,18 +226,15 @@ function checkTaskOverBudget(
 ): DecompositionValidationError[] {
   const errors: DecompositionValidationError[] = [];
   for (const [taskIndex, task] of envelope.tasks.entries()) {
-    const prediction = predictTaskCost(
-      gate.model,
-      extractFilePaths(task.spec),
-      gate.budget_ms,
-    );
+    // Priced on the declared files: that is what the task claims it touches.
+    const prediction = predictTaskCost(gate.model, task.files, gate.budget_ms);
     if (prediction.predicted_ms <= prediction.budget_ms) continue;
     errors.push({
       taskIndex,
       rule: "task_over_budget",
       message:
         `task ${taskIndex} ("${task.title}") predicted ${prediction.predicted_ms} ms ` +
-        `from ${prediction.files_touched} spec file paths (model v1, ${gate.model.sample_size} samples) ` +
+        `from ${prediction.files_touched} declared files (model v1, ${gate.model.sample_size} samples) ` +
         `which exceeds the ${prediction.budget_ms} ms implementer budget. Re-plan this task into smaller outcome-oriented tasks.`,
     });
   }

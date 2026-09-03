@@ -185,8 +185,18 @@ describe("runMergeGate success evidence", () => {
       {
         kind: "architect_decomposition",
         summary: "one task",
+        requirements: [{ id: "R1", text: "holds", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "holds" }],
         acceptance: [{ description: "holds", command: "true" }],
-        tasks: [{ title: "t", spec: "touch note.txt", depends_on: [] }],
+        tasks: [
+          {
+            title: "t",
+            spec: "touch note.txt",
+            depends_on: [],
+            files: ["note.txt"],
+            evidence: ["true"],
+          },
+        ],
       },
       "svc:test",
     );

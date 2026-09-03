@@ -10,6 +10,12 @@ import { runArchitect } from "./runs/architect.js";
 import { runImplement } from "./runs/implement.js";
 import { runMergeGate } from "./runs/merge-gate.js";
 import { reconcileRejectedReview, runReview } from "./runs/review.js";
+import {
+  latestPlanReview,
+  MAX_PLAN_REVIEW_ROUNDS,
+  planReviewRounds,
+  runPlanReview,
+} from "./runs/plan-review.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
 import {
   buildValidationExtensionInput,
@@ -114,9 +120,9 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
       retryOrFailScope(ctx, run.scope_id, "lease_expired");
     } else if (run.kind === "merge_gate" && run.task_id) {
       requeueGateTask(ctx, run.task_id);
-    } else if (run.kind === "review") {
-      // Task stays mr_open; the next tick re-dispatches a review at the
-      // current head SHA. Review is evidence, not a task-state owner.
+    } else if (run.kind === "review" || run.kind === "plan_review") {
+      // Task stays mr_open (or the scope stays planning); the next tick
+      // re-dispatches a review. Review is evidence, not a state owner.
     } else if (run.kind === "validate") {
       // Credential-free: no token to revoke. The scope stays `validating`
       // and the operator revalidates via POST /scopes/:id/revalidate.
@@ -653,10 +659,17 @@ async function advanceScopePlanning(
     }
 
     if (scope.status === "planning") {
-      const activeArchitect = ctx.store
-        .runsForScope(scope.id)
-        .some((r) => r.kind === "architect" && r.status === "running");
+      const scopeRuns = ctx.store.runsForScope(scope.id);
+      const activeArchitect = scopeRuns.some(
+        (r) => r.kind === "architect" && r.status === "running",
+      );
       if (activeArchitect) continue;
+      if (
+        scopeRuns.some(
+          (r) => r.kind === "plan_review" && r.status === "running",
+        )
+      )
+        continue;
 
       const lastArchitect = ctx.store
         .runsForScope(scope.id)
@@ -697,6 +710,38 @@ async function advanceScopePlanning(
             blocked_reason: "plan_json unparseable",
           });
           continue;
+        }
+        // The plan goes through the reviewer chain before anyone builds on
+        // it - the same loop an implementer's MR gets. request_changes
+        // clears the plan with the findings and the architect runs again
+        // (the branch above); approve lets it through to the operator or
+        // to materialization. Without a reviewer configured the plan is
+        // trusted as before.
+        if (ctx.agents.planReviewer) {
+          const review = latestPlanReview(
+            ctx,
+            scope.id,
+            scope.plan_json,
+            lastArchitect.id,
+          );
+          if (!review) {
+            const rounds = planReviewRounds(ctx, scope.id);
+            if (rounds >= MAX_PLAN_REVIEW_ROUNDS) {
+              ctx.store.setScopeStatus(scope.id, "blocked", SERVICE_ACTOR, {
+                blocked_reason: `plan review rejected ${rounds} consecutive times`,
+              });
+              continue;
+            }
+            const slot = pickDispatchSlot(ctx, "reviewer");
+            if (!slot.allowed) continue;
+            dispatch(
+              runPlanReview(ctx, scope, plan, rounds + 1, {
+                startModelId: slot.startModelId ?? undefined,
+              }),
+            );
+            continue;
+          }
+          if (review.verdict !== "approve") continue;
         }
         if (ctx.config.hitlMode === "yolo" && scope.approvals !== "manual") {
           ctx.store.materializePlan(scope.id, plan, SERVICE_ACTOR);

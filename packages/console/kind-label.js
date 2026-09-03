@@ -3,6 +3,7 @@
 // identically.
 export const KIND_LABEL = {
   architect: "plan",
+  plan_review: "plan review",
   implement: "build",
   review: "review",
   merge_gate: "gate",

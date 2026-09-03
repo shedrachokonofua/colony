@@ -1,17 +1,42 @@
 import { describe, expect, it } from "bun:test";
 
-import { createArchitectSubmitTool } from "./pi-runner-common.js";
+import { createArchitectSubmitTool } from "./architect-stages.js";
 import { createArchitectExtensionSubmitTool } from "./architect-extension.js";
+
 function decomposition(
-  tasks: Array<{ title: string; spec: string; depends_on?: number[] }>,
+  tasks: Array<{
+    title: string;
+    spec: string;
+    depends_on?: number[];
+    files?: string[];
+    evidence?: string[];
+  }>,
 ) {
   // The zod schema defaults depends_on to []; mirror that so the accepted
   // envelope compares equal to what zod parses.
   return {
     kind: "architect_decomposition" as const,
     summary: "Plan the scope.",
+    requirements: [
+      {
+        id: "R1",
+        text: "the scope goal holds",
+        tasks: tasks.map((_, index) => index),
+      },
+    ],
+    journey: [
+      {
+        after_task: Math.max(tasks.length - 1, 0),
+        working_state: "the scope goal holds",
+      },
+    ],
     acceptance: [{ description: "Tests pass.", command: "npm test" }],
-    tasks: tasks.map((task) => ({ depends_on: [], ...task })),
+    tasks: tasks.map((task, index) => ({
+      depends_on: [],
+      files: [`src/task-${index}.ts`],
+      evidence: ["true"],
+      ...task,
+    })),
   };
 }
 
@@ -110,7 +135,7 @@ describe("architect submission", () => {
         undefined,
         undefined as never,
       ),
-    ).rejects.toThrow(/depends_on index 5/);
+    ).rejects.toThrow(/depends_on 5 is not a task index/);
     expect(captured).toBeUndefined();
   });
 
@@ -154,7 +179,15 @@ describe("architect submission", () => {
       }, tightGate);
 
       const oversized = decomposition([
-        { title: "Monster", spec: oversizedSpec },
+        {
+          title: "Monster",
+          spec: oversizedSpec,
+          files: [
+            "packages/core/src/store.ts",
+            "packages/core/src/cache.ts",
+            "apps/colonyd/src/tick.ts",
+          ],
+        },
       ]);
       const rejection = tool.execute(
         "submit-gate",
@@ -165,7 +198,7 @@ describe("architect submission", () => {
       );
       await expect(rejection).rejects.toThrow("task_over_budget");
       await expect(rejection).rejects.toThrow(
-        "predicted 1800000 ms from 3 spec file paths (model v1, 3 samples)",
+        "predicted 1800000 ms from 3 declared files (model v1, 3 samples)",
       );
       await expect(rejection).rejects.toThrow(
         "exceeds the 900000 ms implementer budget",
@@ -201,6 +234,11 @@ describe("architect submission", () => {
         {
           title: "Consumer",
           spec: `Consume the store contract produced by a sibling task via ${oversizedSpec}`,
+          files: [
+            "packages/core/src/store.ts",
+            "packages/core/src/cache.ts",
+            "apps/colonyd/src/tick.ts",
+          ],
         },
       ]);
       const rejection = tool.execute(

@@ -87,8 +87,18 @@ describe("notifier loop (unit/headless)", () => {
         {
           kind: "architect_decomposition",
           summary: "test plan",
+          requirements: [{ id: "R1", text: "ok", tasks: [0] }],
+          journey: [{ after_task: 0, working_state: "ok" }],
           acceptance: [{ description: "ok", command: "true" }],
-          tasks: [{ title: "Test Task", spec: "Do something", depends_on: [] }],
+          tasks: [
+            {
+              title: "Test Task",
+              spec: "Do something",
+              depends_on: [],
+              files: ["src/test-task.ts"],
+              evidence: ["true"],
+            },
+          ],
         },
         "svc:colonyd",
       );

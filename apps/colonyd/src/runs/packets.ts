@@ -1,3 +1,4 @@
+import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 
@@ -38,6 +39,20 @@ export interface ArchitectPacket {
   body: string;
   project: PacketProject | null;
   repo: AgentPacketRepo;
+  /** Findings from the previous plan's review (reviewer or operator). */
+  plan_feedback?: string;
+}
+
+export interface PlanReviewPacket {
+  kind: "plan_review";
+  scope_id: string;
+  goal: string;
+  body: string;
+  project: PacketProject | null;
+  repo: AgentPacketRepo;
+  plan: ArchitectDecompositionV2;
+  /** Which review round this is (1-based). */
+  round: number;
 }
 
 export interface ArchitectExtensionPacket {
@@ -165,6 +180,39 @@ export function buildArchitectPacket(
       branch: scope.default_branch,
       base_commit: baseSha,
     },
+    ...(scope.plan_feedback ? { plan_feedback: scope.plan_feedback } : {}),
+  };
+}
+
+export function buildPlanReviewPacket(
+  scope: Scope,
+  project: Project | null,
+  files: readonly ProjectFile[],
+  baseSha: string,
+  plan: ArchitectDecompositionV2,
+  round: number,
+): PlanReviewPacket {
+  return {
+    kind: "plan_review",
+    scope_id: scope.id,
+    goal: scope.goal,
+    body: [
+      `Scope goal: ${scope.goal}`,
+      "",
+      `Plan review round ${round}. Judge the proposed plan against this repository and submit plan_review_verdict.`,
+      projectContextSection(project),
+      projectFilesSection(files),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    project: packetProject(project, files),
+    repo: {
+      url: scope.provider_repo_path,
+      branch: scope.default_branch,
+      base_commit: baseSha,
+    },
+    plan,
+    round,
   };
 }
 

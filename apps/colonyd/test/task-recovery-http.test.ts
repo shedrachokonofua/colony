@@ -15,8 +15,18 @@ const stores: Store[] = [];
 const plan: ArchitectDecompositionV2 = {
   kind: "architect_decomposition",
   summary: "one recovery task",
+  requirements: [{ id: "R1", text: "recovery plan goal", tasks: [0] }],
+  journey: [{ after_task: 0, working_state: "recovery plan goal" }],
   acceptance: [{ description: "recovery plan goal", command: "true" }],
-  tasks: [{ title: "Recover me", spec: "finish the work", depends_on: [] }],
+  tasks: [
+    {
+      title: "Recover me",
+      spec: "finish the work",
+      depends_on: [],
+      files: ["src/recovery.ts"],
+      evidence: ["true"],
+    },
+  ],
 };
 
 afterEach(() => {

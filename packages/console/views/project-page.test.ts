@@ -334,7 +334,7 @@ describe("project-page tabs", () => {
     const tabs = [...el.querySelectorAll(".tabs .tab")];
     expect(tabs.map((t) => t.textContent.trim())).toEqual([
       "Scopes",
-      "Running",
+      "Running tasks",
       "Settings",
     ]);
     expect(tabs[0].getAttribute("aria-selected")).toBe("true");

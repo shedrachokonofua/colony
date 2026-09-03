@@ -33,8 +33,18 @@ const MAX_ATTEMPTS = 3;
 const PLAN: ArchitectDecompositionV2 = {
   kind: "architect_decomposition",
   summary: "Single-task decomposition.",
+  requirements: [{ id: "R1", text: "fake goal holds", tasks: [0] }],
+  journey: [{ after_task: 0, working_state: "fake goal holds" }],
   acceptance: [{ description: "fake goal holds", command: "true" }],
-  tasks: [{ title: "Task A", spec: "Do A.", depends_on: [] }],
+  tasks: [
+    {
+      title: "Task A",
+      spec: "Do A.",
+      depends_on: [],
+      files: ["src/a.ts"],
+      evidence: ["true"],
+    },
+  ],
 };
 
 let dir: string;

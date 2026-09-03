@@ -1,3 +1,4 @@
+import type { RunAuditSink } from "./audit-sink.js";
 import type { PiModelSpec } from "./pi-runner-common.js";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { createServer, type Server } from "node:http";
@@ -385,5 +386,62 @@ describe("exec deadline surfacing", () => {
         toolContext,
       ),
     ).rejects.toThrow(/timed out after 600 seconds/);
+  });
+});
+
+describe("exec output bounding", () => {
+  it("retains only a bounded tail of a chatty exec while counting every byte", async () => {
+    // A build loop that spews hundreds of MB must not live in colonyd: the SDK
+    // keeps 50 KB for the model and the ledger keeps 1000 chars. Every byte is
+    // still counted, and the SDK receives one bounded delivery, not the stream.
+    const line = `${"x".repeat(1023)}\n`;
+    const chunks = 2048; // 2 MiB of stdout, 1 KiB per chunk
+    const handle: SandboxHandle = {
+      exec: (_request, onEvent) => {
+        for (let i = 0; i < chunks; i += 1) {
+          onEvent({
+            kind: "stdout",
+            seq: i,
+            data: `${String(i).padStart(4, "0")}${line.slice(4)}`,
+          });
+        }
+        onEvent({ kind: "stderr", seq: chunks, data: "warn\n" });
+        return Promise.resolve({ exitCode: 0, timedOut: false });
+      },
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new Error("unused")),
+      destroy: () => Promise.resolve(),
+    };
+    const commands: {
+      stdout_bytes: number;
+      stderr_bytes: number;
+      truncated_tail: string;
+    }[] = [];
+    const auditSink = {
+      appendEvent: (_runId: string, _kind: string, detail: unknown) => {
+        commands.push(detail as (typeof commands)[number]);
+      },
+    } as unknown as RunAuditSink;
+    const tools = buildSandboxTools(handle, "/workspace", {
+      auditSink,
+      runId: "run-chatty",
+    });
+    const bash = tools.find((tool) => tool.name === "bash") as AgentTool;
+    const result = await bash.execute(
+      "b-chatty",
+      { command: "yes | head -c 2M" },
+      undefined,
+      undefined,
+      toolContext,
+    );
+    const text = toolText(result);
+    expect(text).toContain("earlier output bytes dropped");
+    expect(text).toContain(`2047${line.slice(4, 40)}`);
+    expect(text).not.toContain(`0000${line.slice(4, 40)}`);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]!.stdout_bytes).toBe(chunks * 1024);
+    expect(commands[0]!.stderr_bytes).toBe(5);
+    expect(commands[0]!.truncated_tail.endsWith("warn\n")).toBe(true);
+    expect(commands[0]!.truncated_tail.length).toBeLessThanOrEqual(1000);
   });
 });

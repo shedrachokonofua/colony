@@ -19,6 +19,8 @@ export interface ScriptKnobs {
   gateCalls: Map<string, number>;
   reviewerRejectFirst: boolean;
   reviewerCalls: number;
+  planReviewRejectFirst: boolean;
+  planReviewCalls: number;
   validateFail: boolean;
   validateFailFirstFor: Set<string>;
   // internal counters for validation retry per scope
@@ -147,8 +149,18 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
         return {
           kind: "architect_decomposition",
           summary: "Single-task decomposition.",
+          requirements: [{ id: "R1", text: "fake goal holds", tasks: [0] }],
+          journey: [{ after_task: 0, working_state: "fake goal holds" }],
           acceptance: [{ description: "fake goal holds", command: "true" }],
-          tasks: [{ title: "Task A", spec: "Do A.", depends_on: [] }],
+          tasks: [
+            {
+              title: "Task A",
+              spec: "Do A.",
+              depends_on: [],
+              files: ["src/a.ts"],
+              evidence: ["true"],
+            },
+          ],
         };
       }
       const body =
@@ -160,13 +172,26 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
         return {
           kind: "architect_decomposition",
           summary: "Revised decomposition addressing operator feedback.",
+          requirements: [{ id: "R1", text: "fake goal holds", tasks: [0, 1] }],
+          journey: [
+            { after_task: 0, working_state: "A holds" },
+            { after_task: 1, working_state: "fake goal holds" },
+          ],
           acceptance: [{ description: "fake goal holds", command: "true" }],
           tasks: [
-            { title: "Revised Task A", spec: "Do revised A.", depends_on: [] },
+            {
+              title: "Revised Task A",
+              spec: "Do revised A.",
+              depends_on: [],
+              files: ["src/a.ts"],
+              evidence: ["true"],
+            },
             {
               title: "Revised Task B",
               spec: "Do revised B.",
               depends_on: [0],
+              files: ["src/b.ts"],
+              evidence: ["true"],
             },
           ],
         };
@@ -174,11 +199,51 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
       return {
         kind: "architect_decomposition",
         summary: "Two-task decomposition: A then B.",
+        requirements: [{ id: "R1", text: "fake goal holds", tasks: [0, 1] }],
+        journey: [
+          { after_task: 0, working_state: "A holds" },
+          { after_task: 1, working_state: "fake goal holds" },
+        ],
         acceptance: [{ description: "fake goal holds", command: "true" }],
         tasks: [
-          { title: "Task A", spec: "Do A.", depends_on: [] },
-          { title: "Task B", spec: "Do B.", depends_on: [0] },
+          {
+            title: "Task A",
+            spec: "Do A.",
+            depends_on: [],
+            files: ["src/a.ts"],
+            evidence: ["true"],
+          },
+          {
+            title: "Task B",
+            spec: "Do B.",
+            depends_on: [0],
+            files: ["src/b.ts"],
+            evidence: ["true"],
+          },
         ],
+      };
+    }
+
+    if (environment.role === "plan_reviewer") {
+      script.planReviewCalls += 1;
+      if (script.planReviewRejectFirst && script.planReviewCalls === 1) {
+        return {
+          kind: "plan_review_verdict",
+          verdict: "request_changes",
+          summary: "Task B's evidence does not prove B.",
+          findings: [
+            { severity: "major", task: 1, note: "evidence must exercise B" },
+          ],
+          inspected: [],
+        };
+      }
+      return {
+        kind: "plan_review_verdict",
+        verdict: "approve",
+        summary:
+          "Approved: every task lands alone, the evidence commands prove each one, and the journey reaches the goal.",
+        findings: [],
+        inspected: [{ file: "src/a.ts", note: "checked against the plan" }],
       };
     }
 
@@ -297,6 +362,8 @@ export function createScriptedBoundary(): ScriptedBoundary {
     gateCalls: new Map<string, number>(),
     reviewerRejectFirst: false,
     reviewerCalls: 0,
+    planReviewRejectFirst: false,
+    planReviewCalls: 0,
     validateFail: false,
     validateFailFirstFor: new Set<string>(),
     _validateCalls: new Map<string, number>(),
@@ -504,6 +571,8 @@ export function resetScript(
   script.gateCalls = new Map();
   script.reviewerRejectFirst = false;
   script.reviewerCalls = 0;
+  script.planReviewRejectFirst = false;
+  script.planReviewCalls = 0;
   script.validateFail = false;
   script.validateFailFirstFor = wrapValidateSet(script, new Set());
   script._validateCalls = new Map();

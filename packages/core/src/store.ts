@@ -165,6 +165,7 @@ export interface Run {
   readonly task_id: TaskId | null;
   readonly kind:
     | "architect"
+    | "plan_review"
     | "implement"
     | "merge_gate"
     | "review"
@@ -1186,14 +1187,16 @@ export class Store {
     );
     const apply = this.db.transaction(() => {
       for (const [index, task] of plan.tasks.entries()) {
+        // The plan's grounding rides in the spec text: implementers and
+        // reviewers read one document, and the size prediction is priced on
+        // the same declared files the architect's gate used.
+        const spec = renderTaskSpec(task);
         insertTask.run(
           ids[index],
           scope.id,
           task.title,
-          task.spec,
-          JSON.stringify(
-            predictTaskCost(costModel, extractSpecPaths(task.spec), budgetMs),
-          ),
+          spec,
+          JSON.stringify(predictTaskCost(costModel, task.files, budgetMs)),
         );
         for (const dep of task.depends_on) {
           insertDep.run(ids[index], ids[dep]);
@@ -2083,6 +2086,24 @@ function assertAcyclic(deps: ReadonlyArray<readonly number[]>): void {
 const SPEC_FILE_PATH_PATTERN =
   /[A-Za-z0-9_.\-]+(\/[A-Za-z0-9_.\-]+)+\.[A-Za-z0-9]{1,8}/g;
 
-function extractSpecPaths(spec: string): string[] {
-  return spec.match(SPEC_FILE_PATH_PATTERN) ?? [];
+/**
+ * A materialized task's spec: the architect's outcome-oriented text plus the
+ * files it declared and the commands that prove it, so the implementer and
+ * the reviewer read the same contract the plan reviewer approved.
+ */
+function renderTaskSpec(task: {
+  readonly spec: string;
+  readonly files: readonly string[];
+  readonly evidence: readonly string[];
+}): string {
+  return [
+    task.spec.trimEnd(),
+    "",
+    "## Files",
+    ...task.files.map((file) => `- ${file}`),
+    "",
+    "## Evidence",
+    "Each command fails before this task and passes on its branch:",
+    ...task.evidence.map((cmd) => `- \`${cmd}\``),
+  ].join("\n");
 }

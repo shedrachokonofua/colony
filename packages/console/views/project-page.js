@@ -52,7 +52,7 @@ export class ProjectPage extends ColonyElement {
    */
   static TABS = [
     ["scopes", "Scopes"],
-    ["running", "Running"],
+    ["running", "Running tasks"],
     ["settings", "Settings"],
   ];
 

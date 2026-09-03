@@ -321,8 +321,18 @@ describe("operator console", () => {
       {
         kind: "architect_decomposition",
         summary: "one task",
+        requirements: [{ id: "R1", text: "ui plan goal", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "ui plan goal" }],
         acceptance: [{ description: "ui plan goal", command: "true" }],
-        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+        tasks: [
+          {
+            title: "t",
+            spec: "s",
+            depends_on: [],
+            files: ["src/t.ts"],
+            evidence: ["true"],
+          },
+        ],
       },
       "human:op-1",
     );
@@ -371,8 +381,18 @@ describe("operator console", () => {
       JSON.stringify({
         kind: "architect_decomposition",
         summary: "v1",
+        requirements: [{ id: "R1", text: "ui plan goal", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "ui plan goal" }],
         acceptance: [{ description: "ui plan goal", command: "true" }],
-        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+        tasks: [
+          {
+            title: "t",
+            spec: "s",
+            depends_on: [],
+            files: ["src/t.ts"],
+            evidence: ["true"],
+          },
+        ],
       }),
     );
 
@@ -395,8 +415,18 @@ describe("operator console", () => {
       JSON.stringify({
         kind: "architect_decomposition",
         summary: "v2",
+        requirements: [{ id: "R1", text: "ui plan goal", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "ui plan goal" }],
         acceptance: [{ description: "ui plan goal", command: "true" }],
-        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+        tasks: [
+          {
+            title: "t",
+            spec: "s",
+            depends_on: [],
+            files: ["src/t.ts"],
+            evidence: ["true"],
+          },
+        ],
       }),
     );
     expect(store.getScope(scope.id)!.plan_feedback).toBeNull();
@@ -406,8 +436,18 @@ describe("operator console", () => {
       {
         kind: "architect_decomposition",
         summary: "v2",
+        requirements: [{ id: "R1", text: "ui plan goal", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "ui plan goal" }],
         acceptance: [{ description: "ui plan goal", command: "true" }],
-        tasks: [{ title: "t", spec: "s", depends_on: [] }],
+        tasks: [
+          {
+            title: "t",
+            spec: "s",
+            depends_on: [],
+            files: ["src/t.ts"],
+            evidence: ["true"],
+          },
+        ],
       },
       "human:op-1",
     );
@@ -459,8 +499,18 @@ describe("operator controls", () => {
       {
         kind: "architect_decomposition",
         summary: "one",
+        requirements: [{ id: "R1", text: "ui plan goal", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "ui plan goal" }],
         acceptance: [{ description: "ui plan goal", command: "true" }],
-        tasks: [{ title: "t", spec: "original spec", depends_on: [] }],
+        tasks: [
+          {
+            title: "t",
+            spec: "original spec",
+            depends_on: [],
+            files: ["src/t.ts"],
+            evidence: ["true"],
+          },
+        ],
       },
       "svc:test",
     );

@@ -70,8 +70,18 @@ function virtualDeps(
 const PLAN: ArchitectDecompositionV2 = {
   kind: "architect_decomposition",
   summary: "one task",
+  requirements: [{ id: "R1", text: "ok", tasks: [0] }],
+  journey: [{ after_task: 0, working_state: "ok" }],
   acceptance: [{ description: "ok", command: "true" }],
-  tasks: [{ title: "t", spec: "s", depends_on: [] }],
+  tasks: [
+    {
+      title: "t",
+      spec: "s",
+      depends_on: [],
+      files: ["src/t.ts"],
+      evidence: ["true"],
+    },
+  ],
 };
 
 /** Store seeded with a planning scope carrying a queued task. */

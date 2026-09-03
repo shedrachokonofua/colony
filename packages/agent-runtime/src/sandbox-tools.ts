@@ -57,6 +57,59 @@ const ANSI_PATTERN =
 const LEDGER_TAIL_CHARS = 1000;
 
 /**
+ * Bytes of exec output colonyd retains per command. Everything above this is
+ * counted and dropped as it arrives: the SDK's bash tool keeps only the last
+ * 50 KB for the model, and the ledger keeps 1000 chars, so retaining more buys
+ * nothing and cost the daemon its event loop (a chatty build loop produced a
+ * 3 GB RSS and a wedged /health on 2026-09-03: the SDK re-truncates the whole
+ * accumulated output on every chunk, quadratic in output size). Agent-facing
+ * execs hand the SDK one bounded chunk at exec end instead of the live stream.
+ */
+const EXEC_TAIL_BYTES = 256 * 1024;
+
+/** Internal execs (find, sed, git) parse their output; keep a larger tail. */
+const INTERNAL_TAIL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Arrival-ordered exec output bounded to the last `cap` bytes. Byte counts
+ * are the true stream lengths; only the retained tail is materialized.
+ */
+class OutputTail {
+  readonly chunks: { kind: "stdout" | "stderr"; buffer: Buffer }[] = [];
+  stdoutBytes = 0;
+  stderrBytes = 0;
+  private retained = 0;
+
+  constructor(private readonly cap: number) {}
+
+  push(data: Uint8Array | string, kind: "stdout" | "stderr"): void {
+    const buffer = Buffer.from(data);
+    if (kind === "stdout") this.stdoutBytes += buffer.byteLength;
+    else this.stderrBytes += buffer.byteLength;
+    this.chunks.push({ kind, buffer });
+    this.retained += buffer.byteLength;
+    while (this.chunks.length > 1 && this.retained > this.cap) {
+      const dropped = this.chunks.shift()!;
+      this.retained -= dropped.buffer.byteLength;
+    }
+    if (this.retained > this.cap) {
+      // A single chunk larger than the cap: keep its tail.
+      const only = this.chunks[0]!;
+      only.buffer = only.buffer.subarray(only.buffer.byteLength - this.cap);
+      this.retained = this.cap;
+    }
+  }
+
+  get droppedBytes(): number {
+    return this.stdoutBytes + this.stderrBytes - this.retained;
+  }
+
+  buffer(): Buffer {
+    return Buffer.concat(this.chunks.map((chunk) => chunk.buffer));
+  }
+}
+
+/**
  * Relativize an absolute path against the run workspace so the handle resolves
  * it inside its own scratch root. `"."` represents the workspace root.
  */
@@ -80,7 +133,7 @@ async function execCapture(
     };
   } = {},
 ): Promise<ExecCapture> {
-  const chunks: { kind: "stdout" | "stderr"; buffer: Buffer }[] = [];
+  const tail = new OutputTail(INTERNAL_TAIL_BYTES);
   const startedAt = Date.now();
   try {
     const output = await runWithSignal(
@@ -92,15 +145,7 @@ async function execCapture(
         timeoutMs: options.timeoutMs,
       },
       options.signal,
-      (data, kind) => {
-        chunks.push({ kind, buffer: Buffer.from(data) });
-      },
-    );
-    const stdout = Buffer.concat(
-      chunks.filter((c) => c.kind === "stdout").map((c) => c.buffer),
-    );
-    const stderr = Buffer.concat(
-      chunks.filter((c) => c.kind === "stderr").map((c) => c.buffer),
+      (data, kind) => tail.push(data, kind),
     );
     emitLedger(
       options.execOptions,
@@ -108,13 +153,13 @@ async function execCapture(
       options.cwd,
       output.exitCode,
       Date.now() - startedAt,
-      chunks,
+      tail,
     );
     return {
-      output: Buffer.concat(chunks.map((c) => c.buffer)),
+      output: tail.buffer(),
       exitCode: output.exitCode,
-      stdoutBytes: stdout.byteLength,
-      stderrBytes: stderr.byteLength,
+      stdoutBytes: tail.stdoutBytes,
+      stderrBytes: tail.stderrBytes,
     };
   } catch (err) {
     // Abort paths (pre-aborted signal, mid-exec cancel) leave no completed
@@ -136,12 +181,14 @@ async function execCapture(
  * ANSI-stripped and redacted. Byte counts above are the raw captured lengths;
  * only this human-readable tail is cleaned.
  */
-function outputTail(
-  chunks: readonly { kind: "stdout" | "stderr"; buffer: Buffer }[],
-  secrets: readonly string[],
-): string {
+function outputTail(tail: OutputTail, secrets: readonly string[]): string {
+  // Decode only what can matter: 4x the char budget covers any UTF-8 width
+  // before the ANSI strip shortens it, so the regex never walks megabytes.
   const combined = stripAnsi(
-    chunks.map((chunk) => chunk.buffer.toString("utf8")).join(""),
+    tail
+      .buffer()
+      .subarray(-LEDGER_TAIL_CHARS * 4)
+      .toString("utf8"),
   );
   return redactText(combined.slice(-LEDGER_TAIL_CHARS), secrets);
 }
@@ -173,7 +220,7 @@ function emitLedger(
   cwd: string | undefined,
   exitCode: number | null,
   durationMs: number,
-  chunks: readonly { kind: "stdout" | "stderr"; buffer: Buffer }[],
+  tail: OutputTail,
 ): void {
   const secrets = execOptions?.secrets ?? [];
   execOptions?.ledger?.command({
@@ -181,13 +228,9 @@ function emitLedger(
     cwd: cwd === undefined ? undefined : redactText(cwd, secrets),
     exit_code: exitCode,
     duration_ms: durationMs,
-    stdout_bytes: chunks
-      .filter((chunk) => chunk.kind === "stdout")
-      .reduce((total, chunk) => total + chunk.buffer.byteLength, 0),
-    stderr_bytes: chunks
-      .filter((chunk) => chunk.kind === "stderr")
-      .reduce((total, chunk) => total + chunk.buffer.byteLength, 0),
-    truncated_tail: outputTail(chunks, secrets),
+    stdout_bytes: tail.stdoutBytes,
+    stderr_bytes: tail.stderrBytes,
+    truncated_tail: outputTail(tail, secrets),
   });
 }
 
@@ -269,30 +312,42 @@ function bashOperations(
 ): BashOperations {
   return {
     exec: async (command, cwd, { onData, signal, timeout, env }) => {
-      const chunks: { kind: "stdout" | "stderr"; buffer: Buffer }[] = [];
+      const tail = new OutputTail(EXEC_TAIL_BYTES);
       const startedAt = Date.now();
-      const result = await runWithSignal(
-        handle,
-        {
-          command,
-          cwd: toWorkspaceRelative(base, cwd),
-          env: toEnvRecord(env),
-          timeoutMs: timeout !== undefined ? timeout * 1000 : undefined,
-        },
-        signal,
-        (data, kind) => {
-          const buffer = Buffer.from(data);
-          chunks.push({ kind, buffer });
-          onData(buffer);
-        },
-      );
+      let result: Awaited<ReturnType<typeof runWithSignal>>;
+      try {
+        result = await runWithSignal(
+          handle,
+          {
+            command,
+            cwd: toWorkspaceRelative(base, cwd),
+            env: toEnvRecord(env),
+            timeoutMs: timeout !== undefined ? timeout * 1000 : undefined,
+          },
+          signal,
+          (data, kind) => tail.push(data, kind),
+        );
+      } finally {
+        // One bounded delivery, after the stream ends: the SDK re-truncates
+        // its accumulated output on every chunk, so streaming the raw output
+        // is quadratic and unbounded output retention lives in colonyd.
+        if (tail.chunks.length > 0) onData(tail.buffer());
+        if (tail.droppedBytes > 0) {
+          // Trailing so it survives the SDK's own tail truncation.
+          onData(
+            Buffer.from(
+              `\n[colony: ${tail.droppedBytes} earlier output bytes dropped; only the last ${EXEC_TAIL_BYTES} bytes were kept]\n`,
+            ),
+          );
+        }
+      }
       emitLedger(
         execOptions,
         command,
         toWorkspaceRelative(base, cwd),
         result.exitCode,
         Date.now() - startedAt,
-        chunks,
+        tail,
       );
       if (result.timedOut) {
         // The shim's `timeout:<seconds>` contract renders as "Command timed
