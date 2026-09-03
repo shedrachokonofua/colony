@@ -1046,6 +1046,23 @@ describe("GitLabProviderAdapter commits and pipelines", () => {
           json({ id: 77, status: "success", sha: "abc123" }),
         );
       }
+      const sha40 = "a".repeat(40);
+      if (
+        method === "GET" &&
+        path ===
+          `/projects/20/pipelines?sha=${sha40}&per_page=1&order_by=id&sort=desc`
+      ) {
+        return Promise.resolve(
+          json([{ id: 81, status: "running", sha: sha40 }]),
+        );
+      }
+      if (
+        method === "GET" &&
+        path ===
+          `/projects/20/pipelines?sha=${"b".repeat(40)}&per_page=1&order_by=id&sort=desc`
+      ) {
+        return Promise.resolve(json([]));
+      }
       if (method === "POST" && path === "/projects/20/pipeline?ref=main") {
         return Promise.resolve(
           json({ id: 78, status: "pending", sha: "abc123" }),
@@ -1078,6 +1095,15 @@ describe("GitLabProviderAdapter commits and pipelines", () => {
 
     const triggered = await adapter.pipelines.trigger(repo, "main");
     expect(triggered.status).toBe("pending");
+
+    // The gate asks by commit SHA. /pipelines/:id wants a pipeline id, so a
+    // SHA always 404'd and the gate raced CI on every merge (2026-09-03);
+    // a SHA resolves to the newest pipeline for that commit instead.
+    const bySha = await adapter.pipelines.getStatus(repo, "a".repeat(40));
+    expect(bySha).toMatchObject({ id: "81", status: "running" });
+    await expect(
+      adapter.pipelines.getStatus(repo, "b".repeat(40)),
+    ).rejects.toMatchObject({ status: 404 });
   });
 });
 

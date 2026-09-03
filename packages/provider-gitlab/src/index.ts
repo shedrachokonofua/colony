@@ -672,13 +672,36 @@ export class GitLabProviderAdapter implements ProviderAdapter {
 
   readonly pipelines: ProviderAdapter["pipelines"] = {
     getStatus: async (repo, id) => {
-      const pipeline = await this.repoApi<
-        GitLabEntity & {
-          readonly status?: string;
-          readonly sha?: string;
-        }
-      >(repo.id, `/pipelines/${encodePath(id)}`);
-      return toPipeline(this.provider, pipeline);
+      type GitLabPipeline = GitLabEntity & {
+        readonly status?: string;
+        readonly sha?: string;
+      };
+      // Callers pass the commit SHA the gate is about to merge. GitLab's
+      // /pipelines/:id wants a pipeline id, so a SHA always 404'd and the
+      // gate read that as "no pipeline, proceed" - racing CI on every
+      // merge (col-e3021988.12: three 405s while its pipeline ran,
+      // 2026-09-03). Look the pipeline up by SHA; newest wins.
+      const bySha = /^[0-9a-f]{40}$/i.test(String(id));
+      if (!bySha) {
+        const pipeline = await this.repoApi<GitLabPipeline>(
+          repo.id,
+          `/pipelines/${encodePath(id)}`,
+        );
+        return toPipeline(this.provider, pipeline);
+      }
+      const pipelines = await this.repoApi<GitLabPipeline[]>(
+        repo.id,
+        `/pipelines?sha=${encodeURIComponent(String(id))}&per_page=1&order_by=id&sort=desc`,
+      );
+      const newest = pipelines[0];
+      if (!newest) {
+        throw new GitLabProviderError(
+          `no pipeline for sha ${String(id)}`,
+          404,
+          "pipeline_not_found",
+        );
+      }
+      return toPipeline(this.provider, newest);
     },
     trigger: async (repo, ref) => {
       const pipeline = await this.repoApi<
