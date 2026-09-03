@@ -729,8 +729,10 @@ export class PiBaseAgentRunner implements PiRunner {
       // caller sees it instead of the underlying quota error, and waiting out
       // 300s cooldown windows one empty turn at a time is never better than
       // moving to the fallback (the next run returns to the primary anyway).
+      // Includes credit exhaustion: a 402 "Insufficient balance" from a
+      // provider leg (Cline, 2026-09-03) is a dead leg, not a model failure.
       const QUOTA_ERROR_RE =
-        /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at|no deployments available/i;
+        /usage exceeds|frequency limit|weekly.*(usage|limit)|quota.*(exceed|exhaust|reset)|rate.?limit.*reset at|no deployments available|insufficient balance|\b402\b/i;
       // A leg whose only answers are transport/5xx failures is dead, but a
       // single blip is not a verdict: five consecutive connection-class
       // errors on the CURRENT model with no successful turn in between is
