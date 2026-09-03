@@ -209,3 +209,102 @@ export async function controlReset(): Promise<void> {
   const res = await fetch(`${CONTROL_URL}/control/reset`, { method: "POST" });
   expect(res.ok).toBeTruthy();
 }
+
+// The four exports below run inside the page through page.evaluate: they are
+// serialised as source, so each must close over nothing. The repo's tsconfig
+// carries no DOM lib (server code shares it), so each reaches its globals
+// through globalThis instead of naming them.
+
+/**
+ * Select the first `chars` characters of `selector`'s first text node and
+ * return the selected length, or -1 when the host or its text is missing.
+ * page.evaluate passes exactly one argument, so the pair travels as a tuple.
+ */
+export function selectFirstText([selector, chars]: [string, number]): number {
+  const view = globalThis as unknown as {
+    document: {
+      querySelector(selector: string): unknown;
+      createTreeWalker(
+        root: unknown,
+        filter: number,
+      ): {
+        nextNode(): { length: number } | null;
+      };
+      createRange(): {
+        setStart(node: unknown, offset: number): void;
+        setEnd(node: unknown, offset: number): void;
+      };
+    };
+    NodeFilter: { SHOW_TEXT: number };
+    getSelection(): {
+      removeAllRanges(): void;
+      addRange(range: unknown): void;
+      toString(): string;
+    } | null;
+  };
+  const host = view.document.querySelector(selector);
+  if (!host) return -1;
+  const walker = view.document.createTreeWalker(
+    host,
+    view.NodeFilter.SHOW_TEXT,
+  );
+  const node = walker.nextNode();
+  if (!node) return -1;
+  const range = view.document.createRange();
+  range.setStart(node, 0);
+  range.setEnd(node, Math.min(chars, node.length));
+  const selection = view.getSelection();
+  if (!selection) return -1;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return selection.toString().length;
+}
+
+/** The length of the page's current text selection, or -1. */
+export function selectionLength(): number {
+  const selection = (
+    globalThis as unknown as {
+      getSelection(): { toString(): string } | null;
+    }
+  ).getSelection();
+  return selection ? selection.toString().length : -1;
+}
+
+/** Whether the named custom element is defined in the page. */
+export function customElementDefined(name: string): boolean {
+  const registry = (
+    globalThis as unknown as {
+      customElements: { get(name: string): unknown };
+    }
+  ).customElements;
+  return Boolean(registry.get(name));
+}
+
+/**
+ * The computed `display`, `gap`, and `align-items` of the first node matching
+ * `selector`, or null when it is absent. A run row's layout comes from
+ * styles.css, so reading it back is what proves the class is wired to a rule
+ * rather than merely present in the markup.
+ */
+export function computedLayout(selector: string): {
+  display: string;
+  gap: string;
+  align: string;
+} | null {
+  const view = globalThis as unknown as {
+    document: { querySelector(selector: string): unknown };
+    getComputedStyle(node: unknown): {
+      display: string;
+      gap: string;
+      alignItems: string;
+    };
+  };
+  const node = view.document.querySelector(selector);
+  if (!node) return null;
+  const style = view.getComputedStyle(node);
+  return {
+    display: style.display,
+    gap: style.gap,
+    align: style.alignItems,
+  };
+}
