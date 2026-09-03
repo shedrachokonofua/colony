@@ -275,9 +275,12 @@ function architectAttempts(ctx: ColonydContext, scopeId: string): number {
   // latest `scope.unblocked`. Counting all of history re-blocked a scope on
   // the very next tick without running anything (col-1e4f99fd, 2026-09-02:
   // unblocked twice, never planned again).
+  // listAudit returns its window oldest-first: the LATEST unblock is the
+  // last match, not the first. Taking the first re-blocked col-1ee0d633 and
+  // col-fa9f6385 on the tick after their second unblock (2026-09-03).
   const since = ctx.store
     .listAudit({ scope_id: scopeId, limit: 500 })
-    .events.find((row) => row.action === "scope.unblocked")?.at;
+    .events.findLast((row) => row.action === "scope.unblocked")?.at;
   return ctx.store
     .runsForScope(scopeId)
     .filter(

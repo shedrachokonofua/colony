@@ -1451,6 +1451,53 @@ describe("colonyd fake end-to-end loop", () => {
     expect(handle.ctx.store.getScope(scopeId)!.status).toBe("done");
   }, 30_000);
 
+  it("a second unblock restarts the architect budget from the LATEST unblock", async () => {
+    // The audit window comes back oldest-first; counting from the first
+    // unblock ever recorded re-blocked col-1ee0d633 and col-fa9f6385 on the
+    // tick after their second unblock, without running anything (2026-09-03).
+    const scopeId = await createScope("unblock twice");
+    handle.ctx.store.setScopeStatus(scopeId, "planning", ACTOR);
+    const app = buildApp(handle.ctx);
+    const exhaust = () => {
+      for (let i = 0; i < 3; i += 1) {
+        const run = handle.ctx.store.startRun({
+          scope_id: scopeId,
+          task_id: null,
+          kind: "architect",
+          lease_ttl_ms: 60_000,
+        });
+        handle.ctx.store.finishRun(run.id, "failed", {
+          error: "timeout_without_envelope",
+        });
+      }
+      handle.ctx.store.setScopeStatus(scopeId, "blocked", ACTOR, {
+        reason: "architect retries exhausted: timeout_without_envelope",
+      });
+    };
+    const unblock = async () => {
+      const res = await app.request(`/scopes/${scopeId}/unblock`, {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      });
+      expect(res.status).toBe(200);
+    };
+
+    exhaust();
+    await unblock();
+    exhaust(); // three more failures after the first unblock
+    await unblock();
+
+    // One tick: the scope must dispatch an architect, not re-block.
+    await tickAndSettle();
+    const scope = handle.ctx.store.getScope(scopeId)!;
+    expect(scope.status).not.toBe("blocked");
+    expect(
+      handle.ctx.store
+        .runsForScope(scopeId)
+        .filter((r) => r.kind === "architect" && r.status !== "failed").length,
+    ).toBeGreaterThan(0);
+  }, 30_000);
+
   it("a validation that never ran is re-run, not handed to an architect", async () => {
     // col-7064acc1 (2026-09-03): an etcd stall failed the sandbox create;
     // the scope spent an extension round asking an architect to diagnose a
