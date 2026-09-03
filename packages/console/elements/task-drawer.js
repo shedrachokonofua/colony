@@ -31,6 +31,7 @@ export class TaskDrawer extends ColonyElement {
     config: { type: Object },
     _amendDraft: { state: true },
     _feedbackDraft: { state: true },
+    drafts: { type: Object },
     _drafts: { state: true },
     // The confirm kind the shell armed (merge/stop/cancel) renders the
     // drawer's two-step buttons; see #actionButtons.
@@ -53,8 +54,14 @@ export class TaskDrawer extends ColonyElement {
     this.confirm = null;
     this._amendDraft = "";
     this._feedbackDraft = "";
+    /** @type {Map<string, { amend: string, feedback: string }> | null} */
+    this.drafts = null;
     /** @type {Map<string, { amend: string, feedback: string }>} */
     this._drafts = new Map();
+  }
+
+  get #draftMap() {
+    return this.drafts instanceof Map ? this.drafts : this._drafts;
   }
 
   /** @param {Map<string, unknown>} changed */
@@ -65,11 +72,13 @@ export class TaskDrawer extends ColonyElement {
         changed.get("task")
       );
       if (old?.id)
-        this._drafts.set(old.id, {
+        this.#draftMap.set(old.id, {
           amend: this._amendDraft,
           feedback: this._feedbackDraft,
         });
-      const saved = this.task?.id ? this._drafts.get(this.task.id) : undefined;
+      const saved = this.task?.id
+        ? this.#draftMap.get(this.task.id)
+        : undefined;
       this._amendDraft = saved?.amend ?? "";
       this._feedbackDraft = saved?.feedback ?? "";
     }
@@ -88,6 +97,16 @@ export class TaskDrawer extends ColonyElement {
   /** @param {string} path @param {Record<string, unknown>} body */
   #feedback(path, body) {
     this.#emit("colony-feedback", { path, body });
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.task?.id) {
+      this.#draftMap.set(this.task.id, {
+        amend: this._amendDraft,
+        feedback: this._feedbackDraft,
+      });
+    }
   }
 
   // Amend/feedback textareas are plain (not live()): lit only writes .value

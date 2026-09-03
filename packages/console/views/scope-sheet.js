@@ -92,6 +92,7 @@ export class ScopeSheet extends ColonyElement {
     config: { type: Object },
     // The shell's armed confirm kind (merge/stop/cancel/abandon/approve-plan…); the
     // abandon/approve-plan button renders its Confirm step while it matches.
+    taskDrafts: { state: true },
     confirm: { type: String },
   };
 
@@ -115,6 +116,8 @@ export class ScopeSheet extends ColonyElement {
     this.config = null;
     /** @type {string | null} */
     this.confirm = null;
+    /** @type {Map<string, { amend: string, feedback: string }>} */
+    this.taskDrafts = new Map();
   }
 
   /** @param {string} type @param {Record<string, unknown>} [detail] */
@@ -259,6 +262,7 @@ export class ScopeSheet extends ColonyElement {
               .runEvents=${this.runEvents}
               .config=${this.config}
               .confirm=${this.confirm}
+              .drafts=${this.taskDrafts}
             ></task-drawer>`
           : nothing
         : nothing}
