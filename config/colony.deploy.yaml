@@ -42,7 +42,9 @@ providers:
       kind: api_key
       value: COLONY_OPENAI_COMPATIBLE_API_KEY
     models:
-      - id: router/muse-spark-1.2-contributor
+      # 2026-09-02: the 1.2-contributor route left the gateway; 1.3 (index 61,
+      # 235 tok/s) replaces it. The contributor lane is cheaper but throttled.
+      - id: router/muse-spark-1.3-contributor
         name: muse-spark
         reasoning: true
         context_window: 1048576
@@ -137,6 +139,31 @@ providers:
       # headroom). Quality-escalation seat: reviewer first fallback, architect
       # fallback, developer last resort. The litellm leg drops max_tokens
       # (Cursor 400s on it).
+      - id: router/muse-spark-1.3
+        name: muse-spark-1.3
+        reasoning: true
+        context_window: 1048576
+        max_tokens: 16384
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
+      - id: antigravity/gemini-3.8-flash
+        name: gemini-3.8-flash
+        reasoning: true
+        context_window: 1048576
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
+      - id: qwen-cloud/qwen3.8-flash
+        name: qwen3.8-flash
+        reasoning: true
+        context_window: 1000000
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
+      - id: router/mimo-v2.5-pro
+        name: mimo-v2.5-pro
+        reasoning: true
+        context_window: 262144
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
       - id: cursor/grok-4.6
         name: grok-4.6
         reasoning: true
