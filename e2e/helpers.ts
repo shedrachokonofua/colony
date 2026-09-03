@@ -210,10 +210,11 @@ export async function controlReset(): Promise<void> {
   expect(res.ok).toBeTruthy();
 }
 
-// The four exports below run inside the page through page.evaluate: they are
-// serialised as source, so each must close over nothing. The repo's tsconfig
-// carries no DOM lib (server code shares it), so each reaches its globals
-// through globalThis instead of naming them.
+// The exports below run inside the page through page.evaluate: Playwright
+// serialises each as source, so none may reference another binding in this
+// module — a shared local would be undefined on the far side. The repo's
+// tsconfig carries no DOM lib (server code shares it), so each reaches its
+// globals through globalThis instead of naming them.
 
 /**
  * Select the first `chars` characters of `selector`'s first text node and
