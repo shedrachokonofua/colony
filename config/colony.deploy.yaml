@@ -175,7 +175,7 @@ agents:
   # hy4 leads: the one lane with in-loop evidence (7/7 valid ledger outcomes,
   # Tencent's 163-expert side-by-side beats GLM/Kimi on engineering). Behind
   # it, AA Index with throughput as the tie-break for this long-horizon role:
-  # spark 61 (186 tok/s, $0.55/task), gemini-3.8-flash 59 (302 tok/s, $0.58),
+  # spark Contributor 61 (186 tok/s, public-work-only), gemini-3.8-flash 59
   # glm-5.3-flash 57 ($0.09), deepseek-v4-flash 52 (137 tok/s, $0.11),
   # qwen3.8-flash. Quota state is not a ranking input.
   developer:
@@ -183,7 +183,7 @@ agents:
     model: hy4-preview
     fallback_models:
       [
-        muse-spark-1.3,
+        muse-spark,
         gemini-3.8-flash,
         glm-5.3-flash,
         deepseek-v4-flash,
