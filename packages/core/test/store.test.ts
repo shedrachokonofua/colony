@@ -62,7 +62,6 @@ describe("state machine", () => {
       ["queued", "mr_open"],
       ["queued", "blocked"],
       ["queued", "queued"],
-      ["running", "merged"],
       ["mr_open", "running"],
       ["merged", "queued"],
       ["merged", "blocked"],

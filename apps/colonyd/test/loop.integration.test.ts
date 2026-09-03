@@ -920,6 +920,39 @@ describe("colonyd fake end-to-end loop", () => {
     expect(store.getTask(taskId)!.state).toBe("queued");
   }, 30_000);
 
+  it("an implement run whose head equals the base is a no-op: task merged, no MR", async () => {
+    // col-7064acc1.5 (2026-09-03): the operator had already landed the fix on
+    // main, the implementer verified and changed nothing, colonyd opened a
+    // zero-diff MR, GitLab called it unmergeable, and the conflict path
+    // requeued a second implement run 15 s later.
+    script.singleTask = true;
+    const scopeId = await createScope("already landed");
+    // The default branch head equals what the implementer will report.
+    await provider.branches.create({ id: repoId }, "main", SHA_A);
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // dispatch A -> no-op
+    const task = handle.ctx.store.listTasks(scopeId)[0]!;
+    expect(task.state).toBe("merged");
+    expect(task.mr_iid).toBeNull();
+    const runs = handle.ctx.store
+      .runsForTask(task.id)
+      .filter((r) => r.kind === "implement");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("succeeded");
+    const actions = handle.ctx.store
+      .listAudit({ task_id: task.id, limit: 100 })
+      .events.map((row) => row.action);
+    expect(actions).toContain("mr.skipped_noop");
+    expect(actions).not.toContain("mr.opened");
+    // A second tick must not dispatch again.
+    await tickAndSettle();
+    expect(
+      handle.ctx.store
+        .runsForTask(task.id)
+        .filter((r) => r.kind === "implement"),
+    ).toHaveLength(1);
+  }, 30_000);
+
   it("review rejection cap: ten consecutive request_changes block the task and scope", async () => {
     await handle.shutdown();
     handle = await bootHeadless(join(dir, `review-cap-${Date.now()}.db`), {

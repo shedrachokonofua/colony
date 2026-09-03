@@ -38,6 +38,8 @@ export const TERMINAL_SCOPE_STATUSES: ReadonlySet<ScopeStatus> = new Set([
  *
  *   queued   -> running    dispatch; deps all merged, next_retry_at<=now, scope active
  *   running  -> mr_open    implement run succeeded: branch pushed, MR opened by colonyd
+ *   running  -> merged     implement run found the task already satisfied on the
+ *                          default branch (pushed head == base): nothing to merge
  *   running  -> queued     run failed/lease expired, or operator stops a run for retry
  *   running  -> blocked    attempts exhausted, or envelope status='blocked'
  *   mr_open  -> merged     gate passed AND GitLab reports merged at gated SHA
@@ -50,7 +52,7 @@ export const TERMINAL_SCOPE_STATUSES: ReadonlySet<ScopeStatus> = new Set([
  */
 const TASK_TRANSITIONS: Readonly<Record<TaskState, readonly TaskState[]>> = {
   queued: ["running", "merged", "canceled"],
-  running: ["mr_open", "queued", "blocked", "canceled"],
+  running: ["mr_open", "merged", "queued", "blocked", "canceled"],
   mr_open: ["merged", "queued", "blocked", "canceled"],
   merged: [],
   blocked: ["queued", "merged", "canceled"],

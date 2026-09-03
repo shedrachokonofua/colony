@@ -300,6 +300,35 @@ async function executeImplement(
         ctx.store.listRunEventsByName(runId, "pi_model_fallback"),
     );
 
+    if (mrIid === undefined && envelope.head_sha === baseSha) {
+      // The branch carries no commits beyond the default branch: the task
+      // was already satisfied on main (an operator or a sibling landed it
+      // first). GitLab reports an empty MR as unmergeable and the conflict
+      // path would requeue it forever (col-7064acc1.5, 2026-09-03: two
+      // implement runs in 15 s over a zero-diff MR). Nothing to merge.
+      ctx.store.finishRun(runId, "succeeded", {
+        head_sha: envelope.head_sha,
+        envelope_json: JSON.stringify(envelope),
+        evidence_json: JSON.stringify({ commands: envelope.commands }),
+      });
+      runSpan?.end("succeeded");
+      ctx.store.audit(SERVICE_ACTOR, "mr.skipped_noop", {
+        scope_id: scope.id,
+        task_id: task.id,
+        run_id: runId,
+        detail: { head_sha: envelope.head_sha, base_sha: baseSha },
+      });
+      const current = ctx.store.getTask(task.id)!;
+      ctx.store.transitionTask(
+        current.id,
+        current.state_version,
+        "merged",
+        SERVICE_ACTOR,
+        { branch: envelope.branch },
+      );
+      return;
+    }
+
     if (mrIid === undefined) {
       const mr = await ctx.provider.mergeRequests.open(repo, {
         source_branch: envelope.branch,
