@@ -24,6 +24,7 @@
 ### Task 1: Colony advisor wiring
 
 **Files:**
+
 - Modify: `packages/agent-runtime/src/pi-runner-common.ts`
 - Modify: `packages/agent-runtime/src/pi-base-agent-runner.ts`
 - Modify: `apps/colonyd/src/agent-runtime.ts`
@@ -31,6 +32,7 @@
 - Modify: `docs/superpowers/specs/2026-09-04-always-on-muse-advisor-design.md`
 
 **Interfaces:**
+
 - Consumes: existing `PiModelSpec`, `PiRunnerBaseOptions`, `Settings.isolated()`, `createAgentSession()`, and Colony's explicit `session.setModel()` fallback loop.
 - Produces: `PiRunnerBaseOptions.advisorModel?: PiModelSpec`; eligible session settings and private advisor discovery configuration.
 
