@@ -375,10 +375,12 @@ export async function buildPiSession(
   const thinkingLevel = toSdkThinkingLevel(
     options.thinkingLevel ?? options.defaultThinkingLevel,
   );
+  // The resolved model is the gate: it is undefined whenever the advisor's
+  // provider is unconfigured or its credential is unavailable, and `role`
+  // excludes the architect (shouldEnableColonyAdvisor re-checks both per
+  // session, since siblings use the transient journal).
   const advisorConfigured =
-    input.advisorModel !== undefined &&
-    input.advisorSpec !== undefined &&
-    input.role !== "architect";
+    input.advisorModel !== undefined && input.role !== "architect";
   let advisorAgentDir: string | undefined;
   if (advisorConfigured) {
     advisorAgentDir = provisionAdvisorAgentDir(

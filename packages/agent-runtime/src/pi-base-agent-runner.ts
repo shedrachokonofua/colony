@@ -1023,8 +1023,7 @@ export class PiBaseAgentRunner implements PiRunner {
               state.zeroOutputStalled = false;
               state.jigglesUsed = 0;
               state.connectionErrors = 0;
-              state.quotaScanFloor =
-                stageSession.agent.state.messages.length;
+              state.quotaScanFloor = stageSession.agent.state.messages.length;
             };
             const forceStageSubmit = (turn: number): void => {
               // Never carry a forced directive across a model switch.
@@ -1219,8 +1218,7 @@ export class PiBaseAgentRunner implements PiRunner {
               state.zeroOutputStalled = false;
               state.jigglesUsed = 0;
               state.connectionErrors = 0;
-              state.quotaScanFloor =
-                activeSession.agent.state.messages.length;
+              state.quotaScanFloor = activeSession.agent.state.messages.length;
             }
             // The packet prompt once, or just the failure prompt on a later
             // candidate - the packet is already in the continued
@@ -1405,10 +1403,7 @@ export class PiBaseAgentRunner implements PiRunner {
         unsubscribeGuards();
       }
 
-      if (
-        capturedEnvelope === undefined &&
-        state.failureReason === undefined
-      ) {
+      if (capturedEnvelope === undefined && state.failureReason === undefined) {
         if (state.submissionRejectionReason !== undefined) {
           state.failureReason = `submission_rejected: ${state.submissionRejectionReason}`;
         } else if (
