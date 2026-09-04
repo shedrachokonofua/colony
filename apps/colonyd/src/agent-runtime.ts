@@ -161,6 +161,19 @@ export async function createAgentWiring(
   }
 
   const broker = createConfigCredentialBroker(agentsToCheck);
+  const advisorResolvedModel =
+    developerConfig.providerKey === "openai_compatible"
+      ? [developerConfig.model, ...developerConfig.fallbackModels].find(
+          (candidate) => candidate.id === "router/muse-spark-1.3-contributor",
+        )
+      : undefined;
+  const advisorModel = advisorResolvedModel
+    ? modelFromConfig({
+        ...developerConfig,
+        model: advisorResolvedModel,
+        fallbackModels: [],
+      })
+    : undefined;
   const engine = await createEngine(config.sandbox.engine, config);
   const webTools = resolveWebToolsConfig(env().COLONY_SEARXNG_URL);
   const { PiArchitectRunner } =
@@ -204,6 +217,7 @@ export async function createAgentWiring(
         broker,
         model: modelFromConfig(planReviewerConfig!),
         fallbackModels: fallbackModelsFromConfig(planReviewerConfig!),
+        ...(advisorModel ? { advisorModel } : {}),
         maxTurns: planReviewerConfig!.ceilings.maxTurns,
         runTimeoutMs: planReviewerConfig!.ceilings.timeoutMs,
         thinkingLevel: planReviewerConfig!.thinkingLevel,
@@ -223,6 +237,7 @@ export async function createAgentWiring(
         broker,
         model: modelFromConfig(reviewerConfig),
         fallbackModels: fallbackModelsFromConfig(reviewerConfig),
+        ...(advisorModel ? { advisorModel } : {}),
         maxTurns: reviewerConfig.ceilings.maxTurns,
         runTimeoutMs: reviewerConfig.ceilings.timeoutMs,
         thinkingLevel: reviewerConfig.thinkingLevel,
@@ -266,6 +281,7 @@ export async function createAgentWiring(
         broker,
         model: modelFromConfig(developerConfig),
         fallbackModels: fallbackModelsFromConfig(developerConfig),
+        ...(advisorModel ? { advisorModel } : {}),
         maxTurns: developerConfig.ceilings.maxTurns,
         runTimeoutMs: developerConfig.ceilings.timeoutMs,
         thinkingLevel: developerConfig.thinkingLevel,

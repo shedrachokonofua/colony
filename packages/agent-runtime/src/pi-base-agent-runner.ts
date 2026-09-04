@@ -1,11 +1,14 @@
-import { rmSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   ModelRegistry,
   SessionManager,
   Settings,
+  buildWorkspaceTree,
   createAgentSession,
   discoverAuthStorage,
+  discoverContextFiles,
   type AgentSession,
   type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
@@ -30,6 +33,7 @@ import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
+  type PiModelSpec,
   type ArchitectSizeGate,
   DEFAULT_PI_RUN_TIMEOUT_MS,
   buildArchitectFinalizerPrompt,
@@ -102,6 +106,44 @@ export type PiWorkspaceMode = "repo-required" | "scratch";
 
 /** Binding name reported to the credential broker for colonyd runs. */
 export const PI_RUNTIME_BINDING_NAME = "colonyd";
+
+export const COLONY_ADVISOR_NAME = "colony-critic";
+export const COLONY_ADVISOR_INSTRUCTIONS = [
+  "Emit nit for feedback that can wait.",
+  "Emit blocker only when the primary must stop or change course immediately.",
+  "Never emit concern.",
+].join(" ");
+export function shouldEnableColonyAdvisor(
+  role: AgentRuntimeRole,
+  journal: "run" | "transient",
+  hasAdvisorModel: boolean,
+): boolean {
+  return hasAdvisorModel && role !== "architect" && journal === "run";
+}
+
+function provisionAdvisorAgentDir(model: PiModelSpec): string {
+  const dir = mkdtempSync(join(tmpdir(), "colony-advisor-"));
+  try {
+    const instructions = COLONY_ADVISOR_INSTRUCTIONS.replaceAll("\n", " ");
+    writeFileSync(
+      join(dir, "WATCHDOG.yml"),
+      [
+        "advisors:",
+        `  - name: ${COLONY_ADVISOR_NAME}`,
+        `    model: ${model.provider}/${model.id}:xhigh`,
+        "    tools: [read, grep, glob]",
+        "    instructions: |",
+        `      ${instructions}`,
+        "",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return dir;
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
 
 /**
  * Run `fn` inside the run root's span context when one was bound, so SDK
@@ -249,6 +291,15 @@ export class PiBaseAgentRunner implements PiRunner {
     const runToken = packetRepo(request.packet)?.credentials?.token;
     let model = await resolvePiModel(request, this.options.model);
     const models = [model, ...(this.options.fallbackModels ?? [])];
+    const availableModels =
+      this.options.advisorModel &&
+      !models.some(
+        (candidate) =>
+          candidate.provider === this.options.advisorModel!.provider &&
+          candidate.id === this.options.advisorModel!.id,
+      )
+        ? [...models, this.options.advisorModel]
+        : models;
     const workTools = this.options.tools ?? this.profile.defaultTools;
     let failureReason: string | undefined;
     let timeoutTriggered = false;
@@ -298,6 +349,7 @@ export class PiBaseAgentRunner implements PiRunner {
     /** Path of the session JSONL that becomes the transcript artifact. */
     let runSessionFile: string | undefined;
     let handle: SandboxHandle | undefined;
+    let advisorAgentDir: string | undefined;
     let workspaceProbe: (() => void) | undefined;
     // Live subagent sessions. A parent abort that leaves children running
     // can never finalize: the task tool awaits a child that nobody told to
@@ -338,7 +390,7 @@ export class PiBaseAgentRunner implements PiRunner {
       // The credential broker owns key resolution; the registry only needs a
       // provider record per model so `createAgentSession` can resolve selectors.
       const providerApiKeys = new Map<string, string>();
-      for (const candidate of models) {
+      for (const candidate of availableModels) {
         if (providerApiKeys.has(candidate.provider)) continue;
         const apiKey = await broker.resolve({
           provider: candidate.provider,
@@ -352,7 +404,7 @@ export class PiBaseAgentRunner implements PiRunner {
       const authStorage = await discoverAuthStorage();
       const modelRegistry = new ModelRegistry(authStorage);
       for (const [provider, apiKey] of providerApiKeys) {
-        const providerModels = models.filter(
+        const providerModels = availableModels.filter(
           (candidate) => candidate.provider === provider,
         );
         const first = providerModels[0]!;
@@ -402,6 +454,17 @@ export class PiBaseAgentRunner implements PiRunner {
       if (!primaryModel) {
         throw new Error(
           `no credentialed provider for ${models[0]?.provider}/${models[0]?.id}; check the ${request.environment.role} agent's provider auth`,
+        );
+      }
+      const resolvedAdvisorModel = this.options.advisorModel
+        ? modelRegistry.find(
+            this.options.advisorModel.provider,
+            this.options.advisorModel.id,
+          )
+        : undefined;
+      if (this.options.advisorModel && !resolvedAdvisorModel) {
+        throw new Error(
+          `no credentialed provider for advisor ${this.options.advisorModel.provider}/${this.options.advisorModel.id}`,
         );
       }
 
@@ -481,7 +544,18 @@ export class PiBaseAgentRunner implements PiRunner {
       const thinkingLevel = toSdkThinkingLevel(
         this.options.thinkingLevel ?? this.profile.defaultThinkingLevel,
       );
-      const buildSettings = () =>
+      const advisorConfigured =
+        resolvedAdvisorModel !== undefined && this.profile.role !== "architect";
+      if (advisorConfigured) {
+        advisorAgentDir = provisionAdvisorAgentDir(this.options.advisorModel!);
+      }
+      const advisorContextFiles = advisorConfigured
+        ? discoverContextFiles(cwd)
+        : undefined;
+      const advisorWorkspaceTree = advisorConfigured
+        ? buildWorkspaceTree(cwd)
+        : undefined;
+      const buildSettings = (enableAdvisor: boolean) =>
         Settings.isolated({
           "compaction.enabled": true,
           "retry.enabled": true,
@@ -493,6 +567,16 @@ export class PiBaseAgentRunner implements PiRunner {
           "todo.enabled": true,
           "todo.reminders": true,
           "goal.enabled": true,
+          "advisor.enabled": enableAdvisor,
+          ...(enableAdvisor
+            ? {
+                "advisor.syncBacklog": "off" as const,
+                "retry.modelFallback": false,
+                modelRoles: {
+                  advisor: `${this.options.advisorModel!.provider}/${this.options.advisorModel!.id}:xhigh`,
+                },
+              }
+            : {}),
           // A dead upstream stream must become a bounded retry, not a
           // run-long hang: muse once sat 31 minutes emitting zero tokens and
           // only the wall clock killed the run. Defaults are -1 (disabled).
@@ -526,62 +610,83 @@ export class PiBaseAgentRunner implements PiRunner {
          * (and rewriting) the run's transcript.
          */
         journal: "run" | "transient";
-      }) => ({
-        cwd,
-        model: primaryModel,
-        thinkingLevel,
-        authStorage,
-        modelRegistry,
-        getApiKey: async (candidate: { provider: string }) =>
-          broker.resolve({
-            provider: candidate.provider,
-            capability: `agent.llm.${candidate.provider}.invoke`,
-            bindingName: PI_RUNTIME_BINDING_NAME,
-            environment: request.environment,
-          }),
-        scopedModels: resolvedModels.map((candidate) => ({ model: candidate })),
-        settings: buildSettings(),
-        systemPrompt: perSession.systemPrompt,
-        // Only the run session is file-backed: the SDK writes its JSONL under
-        // the durable sessions root (<sessionsDir>/sessions/<runId>/session.jsonl)
-        // so teardown can persist it as a transcript artifact, and the agent's
-        // git worktree never sees the file. Without a configured root the run
-        // dir is the sessions root, which is why teardown deletes the scratch
-        // copy (or relocates it when the upload failed) before removing it.
-        sessionManager:
-          perSession.journal === "run"
-            ? await createFileSessionManager(
-                this.options.sessionsDir ?? cwd,
-                runId,
-                cwd,
-              )
-            : SessionManager.inMemory(cwd),
-        // Colony owns every tool a run may call: the sandbox-routed file/shell
-        // tools when an engine is configured, plus the role's submit tool and
-        // any web tools. Nothing may reach the daemon's own filesystem.
-        customTools: perSession.customTools,
-        toolNames: perSession.toolNames,
-        restrictToolNames: true,
-        allowRestrictedCustomTools: true,
-        // Arming prewalk keeps the todo tool active, which is what drives omp's
-        // mid-run progress reminders.
-        ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
-        deadline,
-        enableMCP: false,
-        enableLsp: false,
-        disableExtensionDiscovery: true,
-        // GenAI spans only when the caller bound a run root span context:
-        // without it no tracing code path may activate. The SDK parents its
-        // spans on whatever OTEL context is active at prompt time, which the
-        // prompt wrappers below bind to environment.traceContext.
-        ...(request.environment.traceContext !== undefined
-          ? {
-              telemetry: {
-                attributes: { "colony.run_id": runId },
-              },
-            }
-          : {}),
-      });
+      }) => {
+        const useAdvisor = shouldEnableColonyAdvisor(
+          this.profile.role,
+          perSession.journal,
+          resolvedAdvisorModel !== undefined,
+        );
+        return {
+          // Advisor discovery must not walk the untrusted checkout: a project
+          // WATCHDOG.yml could otherwise add mutating advisors that bypass the
+          // sandbox. The supplied SessionManager still owns the real workspace
+          // cwd used by tools and prompts.
+          cwd: useAdvisor ? advisorAgentDir! : cwd,
+          ...(useAdvisor
+            ? {
+                agentDir: advisorAgentDir!,
+                contextFiles: await advisorContextFiles,
+                workspaceTree: await advisorWorkspaceTree,
+              }
+            : {}),
+          model: primaryModel,
+          thinkingLevel,
+          authStorage,
+          modelRegistry,
+          getApiKey: async (candidate: { provider: string }) =>
+            broker.resolve({
+              provider: candidate.provider,
+              capability: `agent.llm.${candidate.provider}.invoke`,
+              bindingName: PI_RUNTIME_BINDING_NAME,
+              environment: request.environment,
+            }),
+          scopedModels: [
+            ...resolvedModels.map((candidate) => ({ model: candidate })),
+            ...(resolvedAdvisorModel ? [{ model: resolvedAdvisorModel }] : []),
+          ],
+          settings: buildSettings(useAdvisor),
+          systemPrompt: perSession.systemPrompt,
+          // Only the run session is file-backed: the SDK writes its JSONL under
+          // the durable sessions root (<sessionsDir>/sessions/<runId>/session.jsonl)
+          // so teardown can persist it as a transcript artifact, and the agent's
+          // git worktree never sees the file. Without a configured root the run
+          // dir is the sessions root, which is why teardown deletes the scratch
+          // copy (or relocates it when the upload failed) before removing it.
+          sessionManager:
+            perSession.journal === "run"
+              ? await createFileSessionManager(
+                  this.options.sessionsDir ?? cwd,
+                  runId,
+                  cwd,
+                )
+              : SessionManager.inMemory(cwd),
+          // Colony owns every tool a run may call: the sandbox-routed file/shell
+          // tools when an engine is configured, plus the role's submit tool and
+          // any web tools. Nothing may reach the daemon's own filesystem.
+          customTools: perSession.customTools,
+          toolNames: perSession.toolNames,
+          restrictToolNames: true,
+          allowRestrictedCustomTools: true,
+          // Arming prewalk keeps the todo tool active, which is what drives omp's
+          // mid-run progress reminders.
+          ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
+          deadline,
+          enableMCP: false,
+          enableLsp: false,
+          disableExtensionDiscovery: true,
+          // GenAI spans only when the caller bound a run root span context:
+          // without it no tracing code path may activate. The SDK parents its
+          // spans on whatever OTEL context is active at prompt time, which the
+          // prompt wrappers below bind to environment.traceContext.
+          ...(request.environment.traceContext !== undefined
+            ? {
+                telemetry: {
+                  attributes: { "colony.run_id": runId },
+                },
+              }
+            : {}),
+        };
+      };
 
       // Subagents: Colony's own task tool. The SDK's native one is unusable
       // here - its child sessions do not inherit customTools/restrictToolNames,
@@ -1693,6 +1798,9 @@ export class PiBaseAgentRunner implements PiRunner {
       //     override root, and a failed upload has already parked its copy
       //     outside this tree.
       rmSync(cwd, { recursive: true, force: true });
+      if (advisorAgentDir) {
+        rmSync(advisorAgentDir, { recursive: true, force: true });
+      }
       // (4) The sandbox pod goes last: destroy after the workspace is gone.
       await handle?.destroy();
     }
