@@ -75,7 +75,8 @@ build:colonyd:
     - echo "$CI_REGISTRY_PASSWORD" | buildah login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/colonyd"
-    - buildah bud --layers=true --build-arg "COLONY_VERSION=$CI_COMMIT_SHA" -f Dockerfile -t "$IMAGE:$CI_COMMIT_SHA" .
+    - CACHE_IMAGE="$IMAGE/cache"
+    - buildah bud --layers=true --cache-from "$CACHE_IMAGE" --cache-to "$CACHE_IMAGE" --cache-ttl=24h --build-arg "COLONY_VERSION=$CI_COMMIT_SHA" -f Dockerfile -t "$IMAGE:$CI_COMMIT_SHA" .
     - buildah push "$IMAGE:$CI_COMMIT_SHA"
     - |
       if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
@@ -99,7 +100,8 @@ build:sandbox:
     - echo "$CI_REGISTRY_PASSWORD" | buildah login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
     - IMAGE="$CI_REGISTRY_IMAGE/sandbox"
-    - buildah bud --layers=true -f docker/sandbox/Dockerfile -t "$IMAGE:$CI_COMMIT_SHA" docker/sandbox
+    - CACHE_IMAGE="$IMAGE/cache"
+    - buildah bud --layers=true --cache-from "$CACHE_IMAGE" --cache-to "$CACHE_IMAGE" --cache-ttl=24h -f docker/sandbox/Dockerfile -t "$IMAGE:$CI_COMMIT_SHA" docker/sandbox
     - buildah push "$IMAGE:$CI_COMMIT_SHA"
     - |
       if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then

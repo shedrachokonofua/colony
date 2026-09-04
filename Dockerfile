@@ -36,11 +36,9 @@ RUN bun install --frozen-lockfile
 FROM docker.io/oven/bun:${BUN_VERSION}-debian AS runtime
 ARG BUN_VERSION=1.3.14
 WORKDIR /workspace
-ARG COLONY_VERSION=unknown
 ENV NODE_ENV=production \
     HOME=/tmp \
-    TMPDIR=/tmp \
-    COLONY_VERSION=$COLONY_VERSION
+    TMPDIR=/tmp
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
@@ -49,5 +47,7 @@ COPY package.json bun.lock tsconfig.base.json tsconfig.json ./
 COPY packages ./packages
 COPY apps ./apps
 COPY config ./config
+ARG COLONY_VERSION=unknown
+ENV COLONY_VERSION=$COLONY_VERSION
 USER bun
 CMD ["bun", "apps/colonyd/src/main.ts"]
