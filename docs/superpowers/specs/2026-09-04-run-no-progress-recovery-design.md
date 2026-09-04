@@ -2,7 +2,7 @@
 
 ## Incident (2026-09-04)
 
-Two implement runs for `col-c8f58a57.3` appeared hung for ~10 minutes each: no run events, lease still renewing. Investigation showed neither run was stuck. Each was waiting on a sandbox `bash` call (`bun test packages/agent-runtime`, 476 s; `npm run test:unit`, 590 s). Only tool *end* is recorded in `run_events` (`tool_call`/`command` rows), so a long-running command is indistinguishable from a dead run in the API and console.
+Two implement runs for `col-c8f58a57.3` appeared hung for ~10 minutes each: no run events, lease still renewing. Investigation showed neither run was stuck. Each was waiting on a sandbox `bash` call (`bun test packages/agent-runtime`, 476 s; `npm run test:unit`, 590 s). Only tool _end_ is recorded in `run_events` (`tool_call`/`command` rows), so a long-running command is indistinguishable from a dead run in the API and console.
 
 Two real defects surfaced alongside:
 
@@ -18,13 +18,13 @@ The runtime already has a liveness watchdog (`installRunGuards`: 12 min silence 
 `PiRunnerBaseOptions` gains two optional fields, defaults identical to today:
 
 - `jiggleBackoffMs?: number` — replaces the `JIGGLE_BACKOFF_MS = 15_000` constant in `pi-base-agent-runner.ts`. Sleep is `jiggleBackoffMs * jigglesUsed`.
-- `retryBaseDelayMs?: number` — forwarded to the SDK settings block beside `retry.maxRetries` as `retry.baseDelayMs` (SDK default 500).
+- `retryMaxRetries?: number` — controls the SDK-level retry budget, retaining the production default of four.
 
 Production config never sets them.
 
 ### Tests
 
-`pi-model-fallback.test.ts` passes `jiggleBackoffMs: 1` and `retryBaseDelayMs: 1` and shrinks `runTimeoutMs` walls accordingly. Assertions are unchanged: same models requested, same `pi_model_fallback` / `pi_zero_output_jiggle` / stall events, same envelopes. Target: file under 10 s.
+`pi-model-fallback.test.ts` passes `jiggleBackoffMs: 1` and `retryMaxRetries: 0`. Its connection fixture returns a settled transport-class error without exercising `pi-ai`'s independent HTTP retry loop; the assertions still cover the runner's five-consecutive-error budget, per-model reset, fallback order, jiggles, and envelopes. Target: file under 15 s.
 
 Any remaining fixed waits in unit tests that do not involve a live socket use `jest.useFakeTimers()` per the repo rule.
 
@@ -47,10 +47,10 @@ Any remaining fixed waits in unit tests that do not involve a live socket use `j
 
 ### Runtime → colonyd
 
-The runner already observes `tool_execution_start` / `tool_execution_end` in `installRunGuards` and emits `pi_tool_observation` at end. It additionally logs `pi_tool_start` `{tool, detail}` at start. colonyd's `createRunEventSink` maps:
+The runner already observes `tool_execution_start` / `tool_execution_end` in `installRunGuards`. It additionally logs `pi_tool_start` `{tool, detail}` at start and `pi_tool_end` when the last concurrent tool settles. colonyd's `createRunEventSink` maps:
 
 - `pi_tool_start` → `setRunActiveTool`
-- `pi_tool_observation` → `clearRunActiveTool`
+- `pi_tool_end` → `clearRunActiveTool`
 - `pi_turn_usage` → `touchRunProgress`
 
 The sink already persists every event to `run_events`; no second path is introduced.
@@ -81,11 +81,11 @@ Not affected: first implementation, interrupted-run continuity, merge-gate landi
 
 ## Slice 4: CI without nix
 
-`validate` and `unit-tests` run on `oven/bun:<colony-versions.json bun>` with git installed. `e2e-tests` runs on the Playwright image matching `@playwright/test` with bun installed on top; `COLONY_TEST_CHROMIUM_PATH` points at the bundled chromium. `flake.nix` stays for local development. Image tags are derived from `colony-versions.json` so the existing single-source pin holds.
+`validate` and `unit-tests` run on `oven/bun:<colony-versions.json bun>` with git installed. `e2e-tests` runs on the Playwright image matching `@playwright/test` with bun installed on top; Playwright uses the image's bundled browser. `flake.nix` stays for local development.
 
 ## Tests
 
-- Slice 1: `pi-model-fallback.test.ts` green under 10 s; full `test:unit` under 90 s locally.
+- Slice 1: `pi-model-fallback.test.ts` green under 15 s; full `test:unit` under 90 s locally.
 - Slice 2: store tests for set/clear/touch and migration parity; sink test mapping the three events; console run-line test rendering the active tool.
 - Slice 3: runtime test — reviewer-repair packet, model submits rejected SHA → `completion_rejected`, then pushes a new commit and is accepted; second no-change → fallback model; exhaustion → `repair_no_change`. colonyd integration test — fake adapter returns rejected SHA → run fails `repair_no_change`, task never enters `mr_open`.
 - Slice 4: verified by the pipeline on the MR.
