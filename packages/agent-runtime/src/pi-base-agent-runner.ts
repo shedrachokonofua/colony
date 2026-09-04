@@ -1304,7 +1304,11 @@ export class PiBaseAgentRunner implements PiRunner {
             // so one transient never costs a configured candidate.
             prompt = CONNECTION_RETRY_PROMPT;
           } else if (state.zeroOutputStalled) {
-            state.zeroOutputStalled = false;
+            // Deliberately NOT cleared here: the flag is the loop's memory
+            // that the current leg has gone mute. Only real progress (a tool
+            // call, output tokens) or a model switch clears it, so an
+            // exhausted continuation budget still falls over instead of
+            // resetting the jiggle budget on every steer.
             const quotaError = lastAssistantQuotaError();
             if (quotaError) state.jigglesUsed = ZERO_OUTPUT_JIGGLES;
             if (state.jigglesUsed < ZERO_OUTPUT_JIGGLES) {
