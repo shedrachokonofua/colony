@@ -10,6 +10,8 @@ stages:
   - test
   - build
 
+# Nested Buildah A/B (pipelines 5043/5044): overlay added about 90s per
+# image on this runner, so keep vfs until the substrate changes.
 variables:
   STORAGE_DRIVER: "vfs"
   BUILDAH_FORMAT: "docker"
@@ -64,6 +66,8 @@ playwright-tests:
   script:
     - timeout -k 15 1800 bun run test:e2e
 
+# Job pods discard their local layer store at exit. Registry-backed caches
+# retain stable layers across pods/nodes; the 24h TTL refreshes apt metadata.
 build:colonyd:
   stage: build
   image: quay.io/buildah/stable:latest
