@@ -11,7 +11,7 @@ stages:
   - build
 
 variables:
-  STORAGE_DRIVER: "overlay"
+  STORAGE_DRIVER: "vfs"
   BUILDAH_FORMAT: "docker"
 
 workflow:
