@@ -98,6 +98,13 @@ describe("run-line", () => {
     expect(active?.querySelector("run-duration")?.textContent).toContain(
       "1m 05s",
     );
+    el.run = {
+      ...el.run,
+      status: "succeeded",
+      finished_at: new Date().toISOString(),
+    };
+    await el.updateComplete;
+    expect(el.querySelector(".active-operation")).toBeNull();
   });
 
   it("renders the trace link only when config and trace_id exist", async () => {

@@ -86,7 +86,7 @@ export class RunLine extends ColonyElement {
             ? ` · ${run.error}`
             : ""}
         </p>
-        ${run.active_tool
+        ${run.status === "running" && run.active_tool
           ? html`<p class="active-operation">
               running
               ${run.active_tool}${run.active_tool_detail

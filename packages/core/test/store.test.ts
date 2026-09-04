@@ -801,8 +801,19 @@ describe("Store", () => {
       active_tool_started_at: null,
       last_progress_at: "2026-09-04T18:02:00.000Z",
     });
+    store.setRunActiveTool(
+      run.id,
+      "submit_implementer_completion",
+      null,
+      "2026-09-04T18:02:30.000Z",
+    );
 
     store.finishRun(run.id, "succeeded");
+    expect(store.getRun(run.id)).toMatchObject({
+      active_tool: null,
+      active_tool_detail: null,
+      active_tool_started_at: null,
+    });
     store.setRunActiveTool(
       run.id,
       "bash",

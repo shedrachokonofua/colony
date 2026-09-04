@@ -1694,7 +1694,9 @@ export class Store {
       .prepare(
         `UPDATE runs SET status = @status, head_sha = @head_sha,
          envelope_json = @envelope_json, evidence_json = @evidence_json,
-         error = @error, fault_json = @fault_json, finished_at = @now
+         error = @error, fault_json = @fault_json, finished_at = @now,
+         last_progress_at = @now, active_tool = NULL,
+         active_tool_detail = NULL, active_tool_started_at = NULL
          WHERE id = @id AND status = 'running'`,
       )
       .run(
