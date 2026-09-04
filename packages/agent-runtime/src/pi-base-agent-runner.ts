@@ -389,15 +389,38 @@ export class PiBaseAgentRunner implements PiRunner {
     try {
       // The credential broker owns key resolution; the registry only needs a
       // provider record per model so `createAgentSession` can resolve selectors.
+      // Advisor-only providers are optional: an unavailable advisor must not
+      // turn a healthy primary run into a failed run. Providers used by the
+      // primary chain keep the existing failure behavior.
+      const primaryProviders = new Set(
+        models.map((candidate) => candidate.provider),
+      );
       const providerApiKeys = new Map<string, string>();
       for (const candidate of availableModels) {
         if (providerApiKeys.has(candidate.provider)) continue;
-        const apiKey = await broker.resolve({
-          provider: candidate.provider,
-          capability: `agent.llm.${candidate.provider}.invoke`,
-          bindingName: PI_RUNTIME_BINDING_NAME,
-          environment: request.environment,
-        });
+        const advisorOnlyProvider =
+          this.options.advisorModel?.provider === candidate.provider &&
+          !primaryProviders.has(candidate.provider);
+        let apiKey: string | undefined;
+        try {
+          apiKey = await broker.resolve({
+            provider: candidate.provider,
+            capability: `agent.llm.${candidate.provider}.invoke`,
+            bindingName: PI_RUNTIME_BINDING_NAME,
+            environment: request.environment,
+          });
+        } catch (error) {
+          if (!advisorOnlyProvider) throw error;
+          this.options.logger?.warn?.(
+            {
+              runId,
+              provider: candidate.provider,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "pi_advisor_credential_unavailable",
+          );
+          continue;
+        }
         if (!apiKey) continue;
         providerApiKeys.set(candidate.provider, apiKey);
       }
@@ -462,11 +485,9 @@ export class PiBaseAgentRunner implements PiRunner {
             this.options.advisorModel.id,
           )
         : undefined;
-      if (this.options.advisorModel && !resolvedAdvisorModel) {
-        throw new Error(
-          `no credentialed provider for advisor ${this.options.advisorModel.provider}/${this.options.advisorModel.id}`,
-        );
-      }
+      // Advisor resolution is optional. A missing registry entry means the
+      // primary session runs without an advisor; never add an alternate model
+      // to the advisor role or alter Colony's primary fallback chain.
 
       const { customTools, toolNames } = (() => {
         // use the session-local capture so the submit envelope is wired
