@@ -323,10 +323,15 @@ describe("installRunGuards evidence wiring", () => {
   it("feeds the collector from the guard subscription: one row per call, usage, summary", async () => {
     const { events, sink } = recordingSink();
     const evidence = new RunEvidenceCollector("run-8", sink, []);
+    const logs: RecordedEvent[] = [];
     const agent = fakeAgent();
     const unsubscribe = installRunGuards(agent as never, "run-8", {
       abort: () => agent.abort(),
       evidence,
+      redactSecrets: ["secret-token"],
+      logger: {
+        info: (detail, event) => logs.push({ event, detail }),
+      },
       rejectionToolName: "submit_implementer_completion",
       livenessTimeoutMs: 0,
       maxTurns: 100,
@@ -335,7 +340,7 @@ describe("installRunGuards evidence wiring", () => {
       type: "tool_execution_start",
       toolCallId: "c1",
       toolName: "bash",
-      args: { command: "echo hi" },
+      args: { command: "echo secret-token" },
       intent: "probe",
     });
     agent.emit({
@@ -372,7 +377,17 @@ describe("installRunGuards evidence wiring", () => {
       tool: "bash",
       intent: "probe",
     });
-    expect(toolDetail(toolRows[0]).args).toEqual({ command: "echo hi" });
+    expect(toolDetail(toolRows[0]).args).toEqual({
+      command: "echo secret-token",
+    });
+    expect(logs).toContainEqual({
+      event: "pi_tool_start",
+      detail: expect.objectContaining({
+        runId: "run-8",
+        tool: "bash",
+        detail: "echo [REDACTED]",
+      }),
+    });
     expect(typeof toolDetail(toolRows[0]).duration_ms).toBe("number");
     expect(events.some((e) => e.event === "pi_usage")).toBe(true);
     expect(events.some((e) => e.event === "run_summary")).toBe(true);

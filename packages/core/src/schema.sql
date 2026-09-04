@@ -80,6 +80,10 @@ CREATE TABLE IF NOT EXISTS runs (
   error TEXT,
   fault_json TEXT,                           -- structured Fault at finish; backfilled for legacy failed runs
   adopted INTEGER NOT NULL DEFAULT 0,
+  last_progress_at TEXT,
+  active_tool TEXT,
+  active_tool_detail TEXT,
+  active_tool_started_at TEXT,
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT
 );

@@ -56,6 +56,22 @@ export function createRunEventSink(store: Store): RunEventSink {
       if (event === "pi_model_fallback" && typeof detail.to === "string") {
         store.setRunModel(runId, detail.to);
       }
+      if (
+        event === "pi_tool_start" &&
+        typeof detail.tool === "string" &&
+        typeof detail.startedAt === "string"
+      ) {
+        store.setRunActiveTool(
+          runId,
+          detail.tool,
+          typeof detail.detail === "string" ? detail.detail : null,
+          detail.startedAt,
+        );
+      } else if (event === "pi_tool_observation") {
+        store.clearRunActiveTool(runId, new Date().toISOString());
+      } else if (event === "pi_turn_usage") {
+        store.touchRunProgress(runId, new Date().toISOString());
+      }
     } catch {
       // The activity feed must never break a run.
     }

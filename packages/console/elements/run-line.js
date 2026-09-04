@@ -86,6 +86,19 @@ export class RunLine extends ColonyElement {
             ? ` · ${run.error}`
             : ""}
         </p>
+        ${run.active_tool
+          ? html`<p class="active-operation">
+              running
+              ${run.active_tool}${run.active_tool_detail
+                ? `: ${run.active_tool_detail}`
+                : ""}
+              ·
+              <run-duration
+                .startedAt=${run.active_tool_started_at}
+                .finishedAt=${null}
+              ></run-duration>
+            </p>`
+          : nothing}
         ${traceUrl
           ? html`<a
               class="run-trace"

@@ -395,6 +395,16 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "scope-plan-directives",
     apply: migrateScopePlanDirectives,
   },
+  {
+    version: 15,
+    name: "runs-active-operation",
+    apply: (db) => {
+      addColumn(db, "runs", "last_progress_at", "TEXT");
+      addColumn(db, "runs", "active_tool", "TEXT");
+      addColumn(db, "runs", "active_tool_detail", "TEXT");
+      addColumn(db, "runs", "active_tool_started_at", "TEXT");
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

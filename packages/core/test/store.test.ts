@@ -767,6 +767,50 @@ describe("Store", () => {
     store.setRunModel(finished.id, "m2");
     expect(store.getRun(finished.id)!.model_id).toBe("m2");
   });
+  it("tracks active tool progress only for running runs", () => {
+    const scopeId = seededScope();
+    const run = store.startRun({
+      scope_id: scopeId,
+      kind: "implement",
+      lease_ttl_ms: 1000,
+    });
+    expect(store.getRun(run.id)!.last_progress_at).not.toBeNull();
+
+    store.setRunActiveTool(
+      run.id,
+      "bash",
+      "bun run test:unit",
+      "2026-09-04T18:00:00.000Z",
+    );
+    expect(store.getRun(run.id)).toMatchObject({
+      active_tool: "bash",
+      active_tool_detail: "bun run test:unit",
+      active_tool_started_at: "2026-09-04T18:00:00.000Z",
+      last_progress_at: "2026-09-04T18:00:00.000Z",
+    });
+
+    store.touchRunProgress(run.id, "2026-09-04T18:01:00.000Z");
+    expect(store.getRun(run.id)!.last_progress_at).toBe(
+      "2026-09-04T18:01:00.000Z",
+    );
+
+    store.clearRunActiveTool(run.id, "2026-09-04T18:02:00.000Z");
+    expect(store.getRun(run.id)).toMatchObject({
+      active_tool: null,
+      active_tool_detail: null,
+      active_tool_started_at: null,
+      last_progress_at: "2026-09-04T18:02:00.000Z",
+    });
+
+    store.finishRun(run.id, "succeeded");
+    store.setRunActiveTool(
+      run.id,
+      "bash",
+      "must not persist",
+      "2026-09-04T18:03:00.000Z",
+    );
+    expect(store.getRun(run.id)!.active_tool).toBeNull();
+  });
 
   it("counts active runs by model", () => {
     const scopeId = seededScope();
@@ -1245,7 +1289,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(14);
+        expect(LATEST_SCHEMA_VERSION).toBe(15);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),

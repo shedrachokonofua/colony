@@ -188,6 +188,10 @@ export interface Run {
   /** Run root span's trace id; links spans recorded elsewhere to this run. */
   readonly trace_id: string | null;
   readonly error: string | null;
+  readonly last_progress_at: string | null;
+  readonly active_tool: string | null;
+  readonly active_tool_detail: string | null;
+  readonly active_tool_started_at: string | null;
   /** Structured fault JSON; set at finish time or by the v13 backfill. */
   readonly fault_json: string | null;
   readonly started_at: string;
@@ -1539,8 +1543,8 @@ export class Store {
     const lease = new Date(Date.now() + input.lease_ttl_ms).toISOString();
     this.db
       .prepare(
-        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id, trace_id)
-         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id, @trace_id)`,
+        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id, trace_id, last_progress_at)
+         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id, @trace_id, @last_progress_at)`,
       )
       .run(
         named({
@@ -1553,6 +1557,7 @@ export class Store {
           workspace_path: input.workspace_path ?? null,
           model_id: input.model_id ?? null,
           trace_id: input.trace_id ?? null,
+          last_progress_at: new Date().toISOString(),
         }),
       );
     const run = this.getRun(id);
@@ -1598,6 +1603,38 @@ export class Store {
         `UPDATE runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'`,
       )
       .run(lease, runId);
+  }
+  setRunActiveTool(
+    runId: string,
+    tool: string,
+    detail: string | null,
+    startedAt: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE runs
+         SET active_tool = ?, active_tool_detail = ?, active_tool_started_at = ?, last_progress_at = ?
+         WHERE id = ? AND status = 'running'`,
+      )
+      .run(tool, detail, startedAt, startedAt, runId);
+  }
+
+  clearRunActiveTool(runId: string, progressAt: string): void {
+    this.db
+      .prepare(
+        `UPDATE runs
+         SET active_tool = NULL, active_tool_detail = NULL, active_tool_started_at = NULL, last_progress_at = ?
+         WHERE id = ? AND status = 'running'`,
+      )
+      .run(progressAt, runId);
+  }
+
+  touchRunProgress(runId: string, progressAt: string): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET last_progress_at = ? WHERE id = ? AND status = 'running'`,
+      )
+      .run(progressAt, runId);
   }
 
   /** Record the live sandbox a run is executing in (set at sandbox creation). */

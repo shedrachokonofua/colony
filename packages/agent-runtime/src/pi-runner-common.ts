@@ -33,6 +33,7 @@ import type { PiRunRequest } from "./pi-adapter.js";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { WebToolsConfig } from "./web-tools.js";
 import { RunEvidenceCollector, toolResultText } from "./run-evidence.js";
+import { redactValue } from "./redact.js";
 
 export interface PiRunnerLogger {
   info?(fields: Record<string, unknown>, message: string): void;
@@ -114,6 +115,8 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
    * live, pinned its parent reviewer 30 minutes past the wall (2026-09-01).
    */
   readonly abort: () => void;
+  /** Exact secrets to remove from active-operation details before logging. */
+  readonly redactSecrets?: readonly string[];
   /** Evidence collector fed by the guard subscription; noop when unset. */
   readonly evidence?: RunEvidenceCollector;
   /**
@@ -801,6 +804,19 @@ export function installRunGuards(
   // triggers and continuation steers retry the mute model until the wall.
   // N consecutive empty assistant messages with no tool activity = stall.
   const zeroOutputStallTurns = options.zeroOutputStallTurns ?? 3;
+  function activeToolDetail(
+    args: unknown,
+    secrets: readonly string[] = [],
+  ): string | null {
+    const redacted = redactValue(args, secrets);
+    if (!redacted || typeof redacted !== "object" || Array.isArray(redacted))
+      return null;
+    const record = redacted as Record<string, unknown>;
+    const detail = record.command ?? record.path ?? record.pattern;
+    if (typeof detail !== "string" || !detail.trim()) return null;
+    return detail.length <= 200 ? detail : `${detail.slice(0, 199)}…`;
+  }
+
   let zeroOutputTurns = 0;
 
   const unsubscribe = agent.subscribe((event) => {
@@ -809,6 +825,15 @@ export function installRunGuards(
       inFlightTools += 1;
       zeroOutputTurns = 0;
       options.evidence?.toolStart(event.toolCallId, event.args, event.intent);
+      options.logger?.info?.(
+        {
+          runId,
+          tool: event.toolName,
+          detail: activeToolDetail(event.args, options.redactSecrets),
+          startedAt: new Date().toISOString(),
+        },
+        "pi_tool_start",
+      );
     }
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
