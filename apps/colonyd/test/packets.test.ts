@@ -483,8 +483,14 @@ describe("project reference files in packets", () => {
       "colony/x",
       "base",
     );
-    expect(fresh.body).toContain("git rebase origin/");
-    expect(fresh.body).not.toContain("LAND IT");
+    expect(fresh.execution_context.mode).toBe("fresh");
+    expect(fresh.execution_context.remote_head).toEqual({
+      status: "not_requested",
+    });
+    expect(fresh.body).not.toContain(
+      "Start repair work from the remote task branch",
+    );
+    expect(fresh.body).toContain("Durable task requirements");
 
     const landing = buildImplementPacket(
       task,
@@ -515,10 +521,85 @@ describe("project reference files in packets", () => {
         rejectedHeadSha: "a".repeat(40),
       },
     );
-    expect(repair.repair).toEqual({ rejected_head_sha: "a".repeat(40) });
     expect(repair.body).toContain(
-      `The reviewer rejected head \`${"a".repeat(40)}\``,
+      `The reviewer rejected historical head \`${"a".repeat(40)}\``,
     );
+  });
+
+  it("separates current repair evidence from dated historical revisions", async () => {
+    const { store, app } = appWithStore();
+    const scopeResult = await createScope(app, {
+      goal: "repair evidence",
+      title: "repair evidence",
+      repo: { path: "so/demo" },
+    });
+    store.setScopeStatus(scopeResult.id, "planning", "human:op-1");
+    store.materializePlan(
+      scopeResult.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        requirements: [{ id: "R1", text: "goal", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "goal" }],
+        acceptance: [{ description: "goal", command: "true" }],
+        tasks: [
+          {
+            title: "repair",
+            spec: "Preserve the existing change.",
+            depends_on: [],
+            files: ["src/repair.ts"],
+            evidence: ["true"],
+          },
+        ],
+      },
+      "human:op-1",
+    );
+    const task = store.listTasks(scopeResult.id)[0]!;
+    const packet = buildImplementPacket(
+      task,
+      store.getScope(scopeResult.id)!,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/repair",
+      "base",
+      {
+        executionContext: {
+          mode: "repair",
+          branch: "colony/repair",
+          target_branch: "main",
+          target_head_sha: "base",
+          remote_head: { status: "known", value: "current" },
+          pipeline: {
+            status: "known",
+            value: { status: "success", commit_sha: "current" },
+          },
+          current_objective: "Repair only verified current findings.",
+        },
+        currentReviewFindings: "- **high** `src/repair.ts`: current defect",
+        currentRejectedHeadSha: "current",
+        historicalEvidence: [
+          {
+            kind: "review",
+            at: "2026-09-01T00:00:00.000Z",
+            head_sha: "old",
+            text: "- **high** old defect",
+          },
+        ],
+      },
+    );
+    expect(packet.execution_context.pipeline).toEqual({
+      status: "known",
+      value: { status: "success", commit_sha: "current" },
+    });
+    expect(packet.body).toContain("## Current review findings");
+    expect(packet.body).toContain("current defect");
+    expect(packet.body).toContain(
+      "## Historical evidence (dated and revision-scoped)",
+    );
+    expect(packet.body).toContain("head `old`");
+    expect(packet.body).toContain("old defect");
+    expect(packet.body).toContain("Do not blindly repeat an old CI fix");
   });
 
   it("materializes real file bytes from a builder-produced packet into the workspace", async () => {

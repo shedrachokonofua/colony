@@ -87,6 +87,21 @@ const modelCostSchema = z
   })
   .strict();
 
+const modelCompatSchema = z
+  .object({
+    /**
+     * Whether the provider accepts a named forced `tool_choice`.
+     * Omitted values preserve the SDK's model-specific default.
+     */
+    supportsForcedToolChoice: z.boolean().optional(),
+    /**
+     * Whether reasoning must be disabled when a named forced `tool_choice`
+     * is sent.
+     */
+    disableReasoningOnForcedToolChoice: z.boolean().optional(),
+  })
+  .strict();
+
 const modelSchema = z
   .object({
     id: z.string().min(1),
@@ -98,6 +113,8 @@ const modelSchema = z
     max_tokens: z.number().int().positive().optional(),
     /** Cap on concurrently RUNNING runs for this model entry; absent = unlimited. */
     max_parallel_runs: z.number().int().positive().optional(),
+    /** Sparse SDK compatibility overrides for forced tool choice. */
+    compat: modelCompatSchema.optional(),
     cost: modelCostSchema.optional(),
   })
   .strict();
@@ -327,10 +344,16 @@ export type ResolvedAuth =
       readonly providerKey: string;
     };
 
+export interface ResolvedModelCompat {
+  readonly supportsForcedToolChoice?: boolean;
+  readonly disableReasoningOnForcedToolChoice?: boolean;
+}
+
 export interface ResolvedModelConfig {
   readonly id: string;
   readonly name: string;
   readonly reasoning?: boolean;
+  readonly compat?: ResolvedModelCompat;
   readonly contextWindow?: number;
   readonly maxTokens?: number;
   readonly maxParallelRuns?: number;
@@ -341,7 +364,6 @@ export interface ResolvedModelConfig {
     readonly cacheWrite?: number;
   };
 }
-
 export interface ResolvedAgentConfig {
   readonly role: AgentRole;
   readonly providerKey: string;
@@ -760,6 +782,7 @@ function toResolvedModel(
     id: model.id,
     name: model.name ?? model.id,
     reasoning: model.reasoning,
+    compat: model.compat,
     contextWindow: model.context_window,
     maxTokens: model.max_tokens,
     maxParallelRuns: model.max_parallel_runs ?? undefined,

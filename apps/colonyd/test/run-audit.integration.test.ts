@@ -11,10 +11,18 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { resetEnvCache } from "@colony/config";
 import { FakeProviderAdapter } from "@colony/provider";
+import { resetEnvCache } from "@colony/config";
+import type {
+  ArchitectDecompositionV2,
+  PlanReviewVerdictV1,
+} from "@colony/schemas";
+import { formatPlanReviewFeedback } from "@colony/agent-runtime";
 import { boot, type ColonydHandle } from "../src/main.js";
-import { runArchitect } from "../src/runs/architect.js";
+import {
+  findArchitectRevisionContext,
+  runArchitect,
+} from "../src/runs/architect.js";
 
 const stubServers: Server[] = [];
 
@@ -33,7 +41,7 @@ interface ModelStubHandle {
   baseUrl: string;
 }
 
-const ENVELOPE = {
+const ENVELOPE: ArchitectDecompositionV2 = {
   kind: "architect_decomposition",
   summary: "Decomposition covering the run-audit test.",
   requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
@@ -365,4 +373,86 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
     expect(auditDetail["run_id"]).toBe(run.id);
     expect(auditDetail["status"]).toBe("succeeded");
   }, 30_000);
+  it("reuses the reviewed plan after an unblock but rejects it after operator replan", () => {
+    if (!handle) throw new Error("boot failed");
+    const scope = handle.ctx.store.createScope({
+      goal: "revision context test",
+      title: "revision context test",
+      provider_repo_id: "revision-repo",
+      provider_repo_path: gitRepoDir,
+    });
+    handle.ctx.store.setScopeStatus(scope.id, "planning", "test");
+    const architectRun = handle.ctx.store.startRun({
+      scope_id: scope.id,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+      base_sha: "architect-base",
+    });
+    const planJson = JSON.stringify(ENVELOPE);
+    handle.ctx.store.finishRun(architectRun.id, "succeeded", {
+      envelope_json: planJson,
+    });
+    handle.ctx.store.setScopePlan(scope.id, planJson);
+
+    const verdict: PlanReviewVerdictV1 = {
+      kind: "plan_review_verdict",
+      verdict: "request_changes",
+      summary: "The task needs a queue-safe state transition.",
+      findings: [
+        {
+          severity: "blocker",
+          task: 0,
+          note: "Use the queue-safe state transition. \n",
+        },
+      ],
+      inspected: [
+        {
+          file: "src/main.ts",
+          note: "Checked the plan's requested queue-safe state transition.",
+        },
+      ],
+    };
+    const reviewRun = handle.ctx.store.startRun({
+      scope_id: scope.id,
+      kind: "plan_review",
+      lease_ttl_ms: 60_000,
+    });
+    const feedback = formatPlanReviewFeedback(verdict, 1);
+    handle.ctx.store.finishRun(reviewRun.id, "succeeded", {
+      envelope_json: JSON.stringify(verdict),
+      evidence_json: JSON.stringify({
+        verdict: "request_changes",
+        round: 1,
+        plan_hash: createHash("sha256").update(planJson).digest("hex"),
+      }),
+    });
+    handle.ctx.store.requestReviewReplan(scope.id, `${feedback}\t`);
+    handle.ctx.store.audit("test", "scope.plan_rejected", {
+      scope_id: scope.id,
+      run_id: reviewRun.id,
+    });
+
+    handle.ctx.store.setScopeStatus(scope.id, "blocked", "test");
+    handle.ctx.store.setScopeStatus(scope.id, "planning", "test");
+    handle.ctx.store.audit("test", "scope.unblocked", {
+      scope_id: scope.id,
+      detail: { to: "planning" },
+    });
+    const revision = findArchitectRevisionContext(
+      handle.ctx,
+      handle.ctx.store.getScope(scope.id)!,
+    );
+    expect(revision?.rejected_plan).toEqual(ENVELOPE);
+    expect(revision?.review_run_id).toBe(reviewRun.id);
+    expect(revision?.review_base_sha).toBeNull();
+    expect(revision?.feedback).toBe(feedback.trim());
+
+    handle.ctx.store.requestOperatorReplan(scope.id, "Replace the approach.");
+    expect(
+      findArchitectRevisionContext(
+        handle.ctx,
+        handle.ctx.store.getScope(scope.id)!,
+      ),
+    ).toBeNull();
+  });
 });

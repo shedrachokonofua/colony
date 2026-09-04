@@ -2,14 +2,18 @@ import {
   type ImplementerCompletionV2,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
 } from "@colony/schemas";
-import type { Scope, Store, Task } from "@colony/core";
+import type { Scope, Task } from "@colony/core";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
-import { buildImplementPacket, type ImplementContinuity } from "./packets.js";
+import {
+  buildImplementPacket,
+  type ImplementHistoricalEvidence,
+  type ImplementExecutionContext,
+} from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 import {
   amendBranchWithTrailer,
@@ -152,14 +156,39 @@ async function executeImplement(
 
     const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
       .sha;
-    const branch = `colony/${task.id}`;
+    const branch = task.branch ?? `colony/${task.id}`;
+    const interrupted = interruptedAttempt(ctx, task, runId);
+    const executionContext = await buildImplementExecutionContext(
+      ctx,
+      repo,
+      task,
+      scope.default_branch,
+      branch,
+      baseSha,
+      interrupted !== undefined,
+    );
+    const currentHead =
+      executionContext.remote_head.status === "known"
+        ? executionContext.remote_head.value
+        : undefined;
+    const reviewRepair = latestReviewRepair(
+      ctx,
+      task,
+      currentHead,
+      executionContext.mode === "repair",
+    );
+    const gate = latestGateFailure(ctx, task, currentHead);
+    const historicalEvidence = [
+      ...(interrupted ? [interrupted.evidence] : []),
+      ...reviewRepair.historical,
+      ...gate.historical,
+    ];
     const project = scope.project_name
       ? (ctx.store.getProject(scope.project_name) ?? null)
       : null;
     const files = scope.project_name
       ? ctx.store.listProjectFiles(scope.project_name)
       : [];
-    const reviewRepair = latestReviewRepair(ctx, task);
     const { repo: repoWithCredentials, ...packet } = buildImplementPacket(
       task,
       scope,
@@ -169,14 +198,12 @@ async function executeImplement(
       branch,
       baseSha,
       {
-        interrupted: interruptedAttempt(ctx, task),
-        openMr:
-          task.mr_iid !== null
-            ? `MR !${task.mr_iid} is open on branch \`${branch}\`.`
-            : undefined,
-        gateFailure: latestGateFailure(ctx, task),
-        reviewFindings: reviewRepair?.findings,
-        rejectedHeadSha: reviewRepair?.rejectedHeadSha,
+        executionContext,
+        historicalEvidence,
+        operatorFeedback: task.human_feedback ?? undefined,
+        currentGateFailure: gate.active,
+        currentReviewFindings: reviewRepair.active?.findings,
+        currentRejectedHeadSha: reviewRepair.rejectedHeadSha,
       },
     );
     const full = {
@@ -257,8 +284,9 @@ async function executeImplement(
       runSpan?.end("failed", "envelope has no command evidence");
       return;
     }
+
     if (
-      reviewRepair?.rejectedHeadSha &&
+      reviewRepair.rejectedHeadSha &&
       envelope.head_sha === reviewRepair.rejectedHeadSha
     ) {
       const reason = "repair_no_change";
@@ -305,8 +333,21 @@ async function executeImplement(
           mrIid = task.mr_iid;
           mrReused = true;
         }
-      } catch {
-        // Stale MR reference — open a fresh one below.
+      } catch (err) {
+        if (
+          typeof err !== "object" ||
+          err === null ||
+          !("status" in err) ||
+          (typeof err.status !== "number" && typeof err.status !== "string") ||
+          Number(err.status) !== 404
+        ) {
+          throw new Error(
+            `existing MR lookup failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        // A confirmed 404 means the stored MR reference is stale.
       }
     }
     // Model provenance: the implement runs that contributed to this branch
@@ -461,20 +502,108 @@ async function executeImplement(
     }
   }
 }
+async function buildImplementExecutionContext(
+  ctx: ColonydContext,
+  repo: ProviderRepoRef,
+  task: Task,
+  targetBranch: string,
+  branch: string,
+  targetHeadSha: string,
+  hasInterruptedAttempt: boolean,
+): Promise<ImplementExecutionContext> {
+  const repair =
+    hasInterruptedAttempt || task.branch !== null || task.mr_iid !== null;
+  if (!repair) {
+    return {
+      mode: "fresh",
+      branch,
+      target_branch: targetBranch,
+      target_head_sha: targetHeadSha,
+      remote_head: { status: "not_requested" },
+      pipeline: { status: "not_requested" },
+      current_objective:
+        "Implement the durable task requirements on the new task branch.",
+    };
+  }
 
-/**
- * Continuity for a retry after an interrupted attempt. A run killed by the
- * wall clock or a colonyd restart leaves no envelope, so the next attempt used
- * to start blank and re-explore from scratch — sometimes re-deriving work its
- * predecessor had already pushed. Tell it what happened and where to look.
- */
+  let remoteHead: ImplementExecutionContext["remote_head"];
+  try {
+    remoteHead = {
+      status: "known",
+      value: (await ctx.provider.commits.get(repo, branch)).sha,
+    };
+  } catch (err) {
+    remoteHead = {
+      status: "unknown",
+      reason: `remote task-branch lookup failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+  let pipeline: ImplementExecutionContext["pipeline"];
+  if (remoteHead.status !== "known") {
+    pipeline = {
+      status: "unknown",
+      reason: "remote task-branch HEAD is unknown",
+    };
+  } else {
+    try {
+      const current = await ctx.provider.pipelines.getStatus(
+        repo,
+        remoteHead.value,
+      );
+      if (!current.status || current.status === "unknown") {
+        pipeline = {
+          status: "unknown",
+          reason: "provider returned no current pipeline outcome",
+        };
+      } else {
+        pipeline = {
+          status: "known",
+          value: {
+            status: current.status,
+            ...(current.commit_sha ? { commit_sha: current.commit_sha } : {}),
+          },
+        };
+      }
+    } catch (err) {
+      pipeline = {
+        status: "unknown",
+        reason: `pipeline lookup failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      };
+    }
+  }
+  return {
+    mode: "repair",
+    branch,
+    target_branch: targetBranch,
+    target_head_sha: targetHeadSha,
+    remote_head: remoteHead,
+    pipeline,
+    current_objective:
+      task.mr_iid === null
+        ? "Resume the existing task branch from its remote HEAD; preserve completed work and make only incremental changes required by the durable requirements."
+        : `Repair or land the existing MR !${task.mr_iid} from the current remote task-branch HEAD; preserve completed work, do not start over or open a new MR, and make only incremental changes required by verified current evidence.`,
+  };
+}
+
+interface ReviewRepair {
+  active?: { findings: string; rejectedHeadSha: string };
+  /** The latest rejection that has not been superseded by a later approval. */
+  rejectedHeadSha?: string;
+  historical: ImplementHistoricalEvidence[];
+}
+
 function interruptedAttempt(
   ctx: ColonydContext,
   task: Task,
-): string | undefined {
+  excludeRunId: string,
+): { evidence: ImplementHistoricalEvidence } | undefined {
   const runs = ctx.store
     .runsForTask(task.id)
-    .filter((run) => run.kind === "implement");
+    .filter((run) => run.kind === "implement" && run.id !== excludeRunId);
   const last = runs.at(-1);
   if (!last || last.status !== "failed" || !last.error) return undefined;
   if (!INTERRUPTED_RUN_ERROR.test(last.error)) return undefined;
@@ -485,19 +614,34 @@ function interruptedAttempt(
         )
       : undefined;
   const ran = minutes === undefined ? "" : ` after ${minutes} minutes`;
-  return [
-    `The previous attempt was cut off${ran} (${last.error}) without submitting an envelope.`,
-    "It may already have pushed part of this task. BEFORE writing anything:",
-    "- `git log --oneline origin/<branch> -5` and `git diff origin/<base_commit>...origin/<branch>` (branch and base_commit are in packet.repo) to see what already landed.",
-    "- Continue from that state; never restart work that is already pushed.",
-    "Then write the remaining change, push it early, and submit.",
-  ].join("\n");
+  return {
+    evidence: {
+      kind: "interrupted",
+      at: last.finished_at ?? last.started_at,
+      ...((last.head_sha ?? last.base_sha)
+        ? { head_sha: last.head_sha ?? last.base_sha! }
+        : {}),
+      text: [
+        `The previous attempt was cut off${ran} (${last.error}) without submitting an envelope.`,
+        "It may already have pushed part of this task. BEFORE writing anything:",
+        "- Inspect the remote task branch and its diff against packet.repo.base_commit to see what already landed.",
+        "- Continue from that state; never restart work that is already pushed.",
+        "Then write the remaining change, push it early, and submit.",
+      ].join("\n"),
+    },
+  };
 }
 
 function latestReviewRepair(
   ctx: ColonydContext,
   task: Task,
-): { findings: string; rejectedHeadSha?: string } | undefined {
+  currentHead: string | undefined,
+  repairMode: boolean,
+): ReviewRepair {
+  const historical: ImplementHistoricalEvidence[] = [];
+  let currentResolved = false;
+  let historicalAdded = false;
+  const uncertainRepairHead = repairMode && currentHead === undefined;
   const runs = ctx.store
     .runsForTask(task.id)
     .filter((r) => r.kind === "review" && r.status === "succeeded");
@@ -505,6 +649,7 @@ function latestReviewRepair(
     if (!run.evidence_json) continue;
     let evidence: {
       verdict?: string;
+      head_sha?: string;
       findings?: ReadonlyArray<{
         severity?: string;
         file?: string;
@@ -516,45 +661,138 @@ function latestReviewRepair(
     } catch {
       continue;
     }
-    if (evidence.verdict !== "request_changes") continue;
+    if (
+      evidence.verdict !== "request_changes" &&
+      evidence.verdict !== "approve"
+    ) {
+      continue;
+    }
+    const headSha =
+      evidence.head_sha ?? run.head_sha ?? run.base_sha ?? undefined;
+    if (!headSha) continue;
     const findings = evidence.findings ?? [];
-    return {
-      findings:
-        findings.length === 0
+    const text =
+      evidence.verdict === "approve"
+        ? "Reviewer approved this head."
+        : findings.length === 0
           ? run.evidence_json
           : findings
               .map((f) => {
                 const loc = f.file ? " `" + f.file + "`" : "";
-                return (
-                  "- **" +
-                  (f.severity ?? "note") +
-                  "**" +
-                  loc +
-                  ": " +
-                  (f.note ?? "")
-                );
+                return `- **${f.severity ?? "note"}**${loc}: ${f.note ?? ""}`;
               })
-              .join("\n"),
-      ...(run.head_sha ? { rejectedHeadSha: run.head_sha } : {}),
-    };
+              .join("\n");
+
+    // If the current branch head is unavailable, the newest review still
+    // determines whether a rejection remains unsuperseded. Keep that guard
+    // separate from current-review classification: the packet must not claim
+    // this SHA is the current head merely because the lookup was uncertain.
+    if (uncertainRepairHead && !currentResolved) {
+      currentResolved = true;
+      if (evidence.verdict === "request_changes") {
+        historical.push({
+          kind: "review",
+          at: run.finished_at ?? run.started_at,
+          head_sha: headSha,
+          text,
+        });
+        return { rejectedHeadSha: headSha, historical };
+      }
+      return { historical };
+    }
+
+    if (
+      currentHead !== undefined &&
+      headSha === currentHead &&
+      !currentResolved
+    ) {
+      currentResolved = true;
+      if (evidence.verdict === "request_changes") {
+        return {
+          active: { findings: text, rejectedHeadSha: headSha },
+          rejectedHeadSha: headSha,
+          historical,
+        };
+      }
+      return { historical };
+    }
+    if (!historicalAdded && evidence.verdict === "request_changes") {
+      historicalAdded = true;
+      historical.push({
+        kind: "review",
+        at: run.finished_at ?? run.started_at,
+        head_sha: headSha,
+        text,
+      });
+    }
   }
-  return undefined;
+  return { historical };
+}
+
+interface GateRepair {
+  active?: string;
+  historical: ImplementHistoricalEvidence[];
 }
 
 function latestGateFailure(
   ctx: ColonydContext,
   task: Task,
-): string | undefined {
+  currentHead: string | undefined,
+): GateRepair {
+  let currentResolved = false;
+  let historicalAdded = false;
+  const historical: ImplementHistoricalEvidence[] = [];
   const runs = ctx.store
     .runsForTask(task.id)
-    .filter((r) => r.kind === "merge_gate" && r.status === "failed");
-  const latest = runs.at(-1);
-  if (!latest) return undefined;
-  return (
-    latest.evidence_json ?? latest.error ?? "gate run failed without evidence"
-  );
+    .filter((r) => r.kind === "merge_gate");
+  for (const run of [...runs].reverse()) {
+    let evidence: Record<string, unknown> = {};
+    if (run.evidence_json) {
+      try {
+        evidence = JSON.parse(run.evidence_json) as Record<string, unknown>;
+      } catch {
+        // The run/base identity still scopes the terminal outcome.
+      }
+    }
+    const headSha =
+      typeof evidence.head_sha === "string"
+        ? evidence.head_sha
+        : (run.head_sha ?? run.base_sha ?? undefined);
+    if (!headSha) continue;
+    if (run.status === "succeeded") {
+      if (
+        currentHead !== undefined &&
+        headSha === currentHead &&
+        !currentResolved
+      ) {
+        currentResolved = true;
+        continue;
+      }
+      continue;
+    }
+    if (run.status !== "failed") continue;
+    const text =
+      run.evidence_json ?? run.error ?? "gate run failed without evidence";
+    if (
+      currentHead !== undefined &&
+      headSha === currentHead &&
+      !currentResolved
+    ) {
+      currentResolved = true;
+      return { active: text, historical };
+    }
+    if (!historicalAdded) {
+      historicalAdded = true;
+      historical.push({
+        kind: "gate",
+        at: run.finished_at ?? run.started_at,
+        head_sha: headSha,
+        text,
+      });
+    }
+  }
+  return { historical };
 }
-
 function buildMrDescription(
   task: Task,
   envelope: ImplementerCompletionV2,

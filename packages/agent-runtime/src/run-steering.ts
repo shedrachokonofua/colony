@@ -1,3 +1,5 @@
+import type { AgentRuntimeRole } from "./adapter.js";
+
 /**
  * Mid-run steering for agent runs.
  *
@@ -39,12 +41,68 @@ export function packetObjective(packet: {
 }
 
 export interface RunSteeringOptions {
+  /** Role-specific guidance for this run. */
+  readonly role: AgentRuntimeRole;
   /** Wall-clock budget for the run; the same value that arms the abort guard. */
   readonly runTimeoutMs: number;
-  /** Work branch the implementer must push to. */
+  /** Work branch used by developer steering. */
   readonly branch?: string;
   /** Injectable clock for tests. */
   readonly now?: () => number;
+}
+
+function submissionTool(role: AgentRuntimeRole): string {
+  if (role === "reviewer") return "submit_reviewer_verdict";
+  if (role === "plan_reviewer") return "submit_plan_review_verdict";
+  return "the submission tool for the current planning stage";
+}
+
+function roleNudge(
+  role: AgentRuntimeRole,
+  calls: number,
+  nudgeNumber: number,
+  pushed: boolean,
+  branch: string,
+): string[] {
+  if (role === "developer") {
+    if (nudgeNumber === 1) {
+      return [
+        `${calls} tool calls without a file change. You know enough now; stop exploring and write the plan you will execute: the remaining steps in order, with the exact files, symbols, commands, and checks each one needs.`,
+        "Then start executing it in this same turn — do not end your turn on the plan.",
+      ];
+    }
+    const landed = pushed
+      ? "Your pushed commit is the only work that survives this run"
+      : "Nothing is on the work branch yet, and a run that is killed keeps only what you pushed";
+    return [
+      `${calls} more tool calls without a file change or push. ${landed}.`,
+      `Make the smallest complete change the spec requires, commit it, and \`git push origin ${branch}\` before any further exploration or full-suite run. Then continue.`,
+    ];
+  }
+
+  if (role === "architect") {
+    return nudgeNumber === 1
+      ? [
+          `${calls} inspection calls without a new plan artifact. Stop broad exploration and assemble the grounded plan: list the remaining tasks, verified files, contracts, dependencies, and evidence commands.`,
+          `Then call ${submissionTool(role)} in this same turn; do not end on planning notes.`,
+        ]
+      : [
+          `${calls} more inspection calls without advancing the plan. Consolidate the evidence already gathered, correct any unsupported task or dependency, and submit the complete plan.`,
+          `Call ${submissionTool(role)} before doing more exploration.`,
+        ];
+  }
+
+  const deliverable =
+    role === "reviewer" ? "review verdict" : "plan-review verdict";
+  return nudgeNumber === 1
+    ? [
+        `${calls} inspection calls since the last checkpoint. Stop broad exploration and consolidate the ${deliverable}: record concrete findings or the inspected basis for approval.`,
+        `Then call ${submissionTool(role)} in this same turn; continue with inspection only.`,
+      ]
+    : [
+        `${calls} more inspection calls since the last checkpoint. Recheck only the highest-risk open question, then submit the ${deliverable} supported by what you inspected.`,
+        `Call ${submissionTool(role)} before doing more exploration. This read-only run needs no repository mutation; submit what the evidence supports.`,
+      ];
 }
 
 /** Progress-aware nudge/steer generator for a single agent run. */
@@ -55,6 +113,7 @@ export class RunSteering {
   #pushed = false;
   /** Last failed bash command and its consecutive-failure count. */
   #lastFailedCommand = "";
+  readonly #role: AgentRuntimeRole;
   #repeatFailures = 0;
   #repeatNudges = 0;
   readonly #startedAt: number;
@@ -63,6 +122,7 @@ export class RunSteering {
   readonly #now: () => number;
 
   constructor(options: RunSteeringOptions) {
+    this.#role = options.role;
     this.#runTimeoutMs = options.runTimeoutMs;
     this.#branch = options.branch ?? "the work branch";
     this.#now = options.now ?? (() => Date.now());
@@ -110,19 +170,22 @@ export class RunSteering {
     if (this.#repeatFailures < 2 || this.#repeatNudges >= 2) return null;
     this.#repeatFailures = 0;
     this.#repeatNudges += 1;
+    const message =
+      this.#role === "developer"
+        ? "Change something before the next attempt: fix the underlying cause, adjust the command (for a timeout, pass the bash tool's timeout parameter in seconds), or take a different route to the same goal."
+        : "Do not repeat the failed inspection command unchanged: adjust its invocation or use a different read-only inspection route before submitting.";
     return [
       "<system-reminder>",
       "The same command just failed twice in a row with the same invocation. Re-running it unchanged will fail again and burns your budget.",
-      "Change something before the next attempt: fix the underlying cause, adjust the command (for a timeout, pass the bash tool's timeout parameter in seconds), or take a different route to the same goal.",
+      message,
       "</system-reminder>",
     ].join("\n");
   }
 
   /**
    * Reminder to fold into the next tool result when the run has spent many
-   * calls without changing or pushing anything. Escalates: the first asks for
-   * the concrete plan the exploration should have produced (omp's prewalk-plan
-   * demand), the second insists on a pushed checkpoint.
+   * calls without changing anything relevant to its role. Escalates twice,
+   * then remains silent.
    */
   takeDriftNudge(): string | null {
     if (this.#nudges >= MAX_NUDGES) return null;
@@ -130,21 +193,9 @@ export class RunSteering {
     const calls = this.#callsSinceProgress;
     this.#callsSinceProgress = 0;
     this.#nudges += 1;
-    if (this.#nudges === 1) {
-      return [
-        "<system-reminder>",
-        `${calls} tool calls without a file change. You know enough now; stop exploring and write the plan you will execute: the remaining steps in order, with the exact files, symbols, commands, and checks each one needs.`,
-        "Then start executing it in this same turn — do not end your turn on the plan.",
-        "</system-reminder>",
-      ].join("\n");
-    }
-    const landed = this.#pushed
-      ? "Your pushed commit is the only work that survives this run"
-      : "Nothing is on the work branch yet, and a run that is killed keeps only what you pushed";
     return [
       "<system-reminder>",
-      `${calls} more tool calls without a file change or push. ${landed}.`,
-      `Make the smallest complete change the spec requires, commit it, and \`git push origin ${this.#branch}\` before any further exploration or full-suite run. Then continue.`,
+      ...roleNudge(this.#role, calls, this.#nudges, this.#pushed, this.#branch),
       "</system-reminder>",
     ].join("\n");
   }
@@ -158,24 +209,50 @@ export class RunSteering {
     if (this.#continuations >= MAX_CONTINUATIONS) return null;
     if (this.remainingMs() <= 60_000) return null;
     this.#continuations += 1;
+    const roleGuidance =
+      this.#role === "developer"
+        ? [
+            "If work remains, keep working. If the spec is satisfied, verify it against current repository state (`git log -1`, the diff against the base, the spec's required commands) and then submit.",
+          ]
+        : this.#role === "architect"
+          ? [
+              `The repository is read-only. If the plan is grounded, verify its task files, contracts, dependencies, and evidence, then call ${submissionTool(this.#role)}.`,
+              "Use the remaining budget only to improve the submitted plan's grounding.",
+            ]
+          : [
+              `The repository is read-only. If inspection is complete, call ${submissionTool(this.#role)} with concrete findings or the inspected basis for approval.`,
+              "Use the remaining budget only to improve the verdict's evidence.",
+            ];
     return [
-      "Continue this task. It is not finished until a submission is accepted.",
+      this.#role === "developer"
+        ? "Continue this task. It is not finished until a submission is accepted."
+        : `Continue this ${this.#role === "architect" ? "planning task" : "inspection"}. It is not finished until a submission is accepted.`,
       "<objective>",
       objective,
       "</objective>",
       `- Elapsed: ${this.elapsedMinutes()} min of ${this.budgetMinutes()} min budget`,
-      `- Pushed a commit so far: ${this.#pushed ? "yes" : "no"}`,
+      ...(this.#role === "developer"
+        ? [`- Pushed a commit so far: ${this.#pushed ? "yes" : "no"}`]
+        : []),
       "NEVER redefine success as a smaller, easier, or already-completed subset of the spec.",
-      "If work remains, keep working. If the spec is satisfied, verify it against current repository state (`git log -1`, the diff against the base, the spec's required commands) and then submit.",
+      ...roleGuidance,
     ].join("\n");
   }
 
   /** System-prompt block telling the model what clock it is on. */
   budgetBlock(): string {
+    if (this.#role === "developer") {
+      return [
+        "# Run budget",
+        `- This run is aborted after ${this.budgetMinutes()} minutes of wall clock. Work that is not pushed when it ends is lost.`,
+        "- Push your first commit early and keep pushing; never start a full-suite run with unpushed work.",
+      ].join("\n");
+    }
     return [
       "# Run budget",
-      `- This run is aborted after ${this.budgetMinutes()} minutes of wall clock. Work that is not pushed when it ends is lost.`,
-      "- Push your first commit early and keep pushing; never start a full-suite run with unpushed work.",
+      `- This run is aborted after ${this.budgetMinutes()} minutes of wall clock.`,
+      `- This is a read-only ${this.#role === "architect" ? "planning" : "inspection"} run; use the remaining time to ground your work and submit the required result.`,
+      `- Submit ${submissionTool(this.#role)} before the wall-clock deadline.`,
     ].join("\n");
   }
 

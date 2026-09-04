@@ -117,6 +117,7 @@ function systemText(request: ChatRequest): string {
 interface Scenario {
   /** Decide the model's reply from the request; return tool call chunks. */
   reply: (request: ChatRequest, turn: number) => string[];
+  packet?: Record<string, unknown>;
 }
 
 async function runScenario(scenario: Scenario): Promise<{
@@ -192,6 +193,7 @@ async function runScenario(scenario: Scenario): Promise<{
       goal: "Add GET /version returning the build sha",
       plan_directives: "Repair failed CI automatically.",
       head_sha: "a".repeat(40),
+      ...scenario.packet,
     },
     environment: { role: "architect" },
   });
@@ -202,8 +204,55 @@ async function runScenario(scenario: Scenario): Promise<{
 function stageOf(request: ChatRequest): "plan" | "verify" {
   return systemText(request).includes("submit_plan_draft") ? "plan" : "verify";
 }
-
 describe("staged architect", () => {
+  it("carries the exact rejected plan into a revision rather than fresh planning", async () => {
+    let firstPlanPrompt = "";
+    let planningTurns = 0;
+    const rejected = plan("rejected");
+    const feedback =
+      "Plan review round 1: request_changes.\nFix the migration collision.\n\n1. [blocker] task 0: use the queue-safe state transition.";
+    const { result, requests } = await runScenario({
+      packet: {
+        plan_feedback: feedback,
+        revision_context: {
+          rejected_plan: rejected,
+          review_run_id: "review-1",
+          review_base_sha: "base-before-review",
+          plan_hash: "hash-rejected",
+          planning_epoch: "scope.unblocked:7",
+          feedback,
+        },
+      },
+      reply: (request) => {
+        switch (stageOf(request)) {
+          case "plan":
+            planningTurns += 1;
+            if (planningTurns === 1) {
+              firstPlanPrompt = firstUserText(request);
+              return toolCallChunks("submit_plan_draft", plan("revised"));
+            }
+            throw new Error("planning should submit on the first turn");
+          case "verify":
+            return toolCallChunks(
+              "submit_architect_decomposition",
+              plan("verified revision"),
+            );
+        }
+      },
+    });
+
+    expect(result.reason).toBeUndefined();
+    expect(firstPlanPrompt).toContain('"summary": "rejected"');
+    expect(firstPlanPrompt.split('"summary": "rejected"').length - 1).toBe(1);
+    expect(firstPlanPrompt).toContain("review-1");
+    expect(firstPlanPrompt).toContain("base-before-review");
+    expect(firstPlanPrompt).toContain("hash-rejected");
+    expect(firstPlanPrompt).toContain("scope.unblocked:7");
+    expect(firstPlanPrompt).toContain("Fix the migration collision.");
+    expect(firstPlanPrompt).toContain("Repair failed CI automatically.");
+    expect(requests.map(stageOf)).toEqual(["plan", "verify"]);
+  }, 60_000);
+
   it("discovers and plans in one session, then verifies independently", async () => {
     let planningTurns = 0;
     const { result, requests, logs } = await runScenario({

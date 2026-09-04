@@ -1,9 +1,14 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Context } from "@opentelemetry/api";
 import type { Model } from "@oh-my-pi/pi-ai";
 import {
   SessionManager,
   Settings,
+  buildWorkspaceTree,
   createAgentSession,
+  discoverContextFiles,
   type AgentSession,
   type AuthStorage,
   type CreateAgentSessionOptions,
@@ -14,12 +19,18 @@ import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import type { SandboxHandle } from "@colony/sandbox";
 import type { CredentialBroker } from "./credential-broker.js";
 import type { RunAuditSink } from "./audit-sink.js";
-import type { AgentRunEnvironment, AgentRuntimePacket } from "./adapter.js";
+import type {
+  AgentRunEnvironment,
+  AgentRuntimePacket,
+  AgentRuntimeRole,
+} from "./adapter.js";
 import { packetObjective } from "./run-steering.js";
 import {
   DEFAULT_PI_RUN_TIMEOUT_MS,
   buildSubagentSystemPrompt,
   installRunGuards,
+  sanitizeSecret,
+  type PiModelSpec,
   type PiRunnerLogger,
 } from "./pi-runner-common.js";
 import {
@@ -76,6 +87,53 @@ export const CONNECTION_ERROR_RE =
 /** Consecutive connection-class failures that settle a provider leg as dead. */
 export const MODEL_CONNECTION_ERROR_LIMIT = 5;
 
+export const COLONY_ADVISOR_NAME = "colony-critic";
+export const COLONY_ADVISOR_INSTRUCTIONS = [
+  "Emit nit for feedback that can wait.",
+  "Emit blocker only when the primary must stop or change course immediately.",
+  "Never emit concern.",
+].join(" ");
+
+/**
+ * Advisors review the run journal, so only the session that owns it gets one.
+ * The architect is excluded: its staged sessions plan and verify, and a
+ * critic second-guessing a plan mid-discovery derails the decomposition.
+ */
+export function shouldEnableColonyAdvisor(
+  role: AgentRuntimeRole,
+  journal: "run" | "transient",
+  hasAdvisorModel: boolean,
+): boolean {
+  return hasAdvisorModel && role !== "architect" && journal === "run";
+}
+
+function provisionAdvisorAgentDir(
+  model: PiModelSpec,
+  parentDir = tmpdir(),
+): string {
+  const dir = mkdtempSync(join(parentDir, "colony-advisor-"));
+  try {
+    const instructions = COLONY_ADVISOR_INSTRUCTIONS.replaceAll("\n", " ");
+    writeFileSync(
+      join(dir, "WATCHDOG.yml"),
+      [
+        "advisors:",
+        `  - name: ${COLONY_ADVISOR_NAME}`,
+        `    model: ${model.provider}/${model.id}:xhigh`,
+        "    tools: [read, grep, glob]",
+        "    instructions: |",
+        `      ${instructions}`,
+        "",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return dir;
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 /**
  * The run-scoped state the session's guards and hooks write back into, and
  * that the prompt loop reads to drive the model. The runner owns it and
@@ -105,6 +163,12 @@ export interface PiRunState {
    * ago cannot demote a healthy provider.
    */
   quotaScanFloor: number;
+  /**
+   * Why the terminal tool last refused a submission. Recorded by the guard
+   * subscription's end-event seam and read at finalization, so a run that
+   * never submitted reports the refusal instead of a generic no-submission.
+   */
+  submissionRejectionReason?: string;
 }
 
 /** Everything the builder needs that its caller has already resolved. */
@@ -141,6 +205,15 @@ export interface PiSessionInput {
    * session is never prompted; its first stage owns the transcript path.
    */
   readonly journal: "run" | "transient";
+  /**
+   * The run's critic model, already resolved against the registry by the
+   * caller. Only the journal-owning session of a non-architect role runs
+   * one; an unavailable advisor must never fail the primary run.
+   */
+  readonly advisorModel?: Model;
+  readonly advisorSpec?: PiModelSpec;
+  /** Role the advisor gate consults; the architect never gets a critic. */
+  readonly role: AgentRuntimeRole;
 }
 
 /** Runner-level knobs the builder reads but does not decide. */
@@ -157,6 +230,8 @@ export interface PiSessionOptions {
   readonly logToolArgs?: boolean;
   /** The packet's repo token: a live secret for the evidence redactor. */
   readonly runToken?: string;
+  /** Where the advisor's private agent dir is created; unset means tmpdir. */
+  readonly scratchDir?: string;
 }
 
 /**
@@ -221,6 +296,12 @@ export interface PiSession {
     observeInspection?: (toolName: string, args: unknown) => void,
   ) => () => void;
   readonly takeSubmitDeadlineNudge: (force?: boolean) => string | null;
+  /**
+   * Removes the advisor's private agent dir. The runner calls it in
+   * teardown, after its own workspace removal; the dir is never inside the
+   * checkout, so it outlives the run otherwise.
+   */
+  readonly removeAdvisorDir: () => void;
   /**
    * The quota verdict of the CURRENT model on `target`, for the jiggle
    * policy. `target` is explicit because a staged run swaps the live session.
@@ -294,7 +375,24 @@ export async function buildPiSession(
   const thinkingLevel = toSdkThinkingLevel(
     options.thinkingLevel ?? options.defaultThinkingLevel,
   );
-  const buildSettings = () =>
+  const advisorConfigured =
+    input.advisorModel !== undefined &&
+    input.advisorSpec !== undefined &&
+    input.role !== "architect";
+  let advisorAgentDir: string | undefined;
+  if (advisorConfigured) {
+    advisorAgentDir = provisionAdvisorAgentDir(
+      input.advisorSpec!,
+      options.scratchDir,
+    );
+  }
+  const advisorContextFiles = advisorConfigured
+    ? discoverContextFiles(cwd)
+    : undefined;
+  const advisorWorkspaceTree = advisorConfigured
+    ? buildWorkspaceTree(cwd)
+    : undefined;
+  const buildSettings = (enableAdvisor: boolean) =>
     Settings.isolated({
       "compaction.enabled": true,
       "retry.enabled": true,
@@ -306,6 +404,16 @@ export async function buildPiSession(
       "todo.enabled": true,
       "todo.reminders": true,
       "goal.enabled": true,
+      "advisor.enabled": enableAdvisor,
+      ...(enableAdvisor
+        ? {
+            "advisor.syncBacklog": "off" as const,
+            "retry.modelFallback": false,
+            modelRoles: {
+              advisor: `${input.advisorSpec!.provider}/${input.advisorSpec!.id}:xhigh`,
+            },
+          }
+        : {}),
       // A dead upstream stream must become a bounded retry, not a
       // run-long hang: muse once sat 31 minutes emitting zero tokens and
       // only the wall clock killed the run. Defaults are -1 (disabled).
@@ -329,52 +437,73 @@ export async function buildPiSession(
     toolNames: readonly string[];
     prewalk: boolean;
     journal: "run" | "transient";
-  }) => ({
-    cwd,
-    model: primaryModel,
-    thinkingLevel,
-    authStorage,
-    modelRegistry,
-    getApiKey: async (candidate: { provider: string }) =>
-      broker.resolve({
-        provider: candidate.provider,
-        capability: `agent.llm.${candidate.provider}.invoke`,
-        bindingName: PI_RUNTIME_BINDING_NAME,
-        environment: environment,
-      }),
-    scopedModels: scopedModels.map((candidate) => ({ model: candidate })),
-    settings: buildSettings(),
-    systemPrompt: perSession.systemPrompt,
-    sessionManager:
-      perSession.journal === "run"
-        ? sessionManager
-        : SessionManager.inMemory(cwd),
-    // Colony owns every tool a run may call: the sandbox-routed file/shell
-    // tools when an engine is configured, plus the role's submit tool and
-    // any web tools. Nothing may reach the daemon's own filesystem.
-    customTools: [...perSession.customTools],
-    toolNames: [...perSession.toolNames],
-    restrictToolNames: true,
-    allowRestrictedCustomTools: true,
-    // Arming prewalk keeps the todo tool active, which is what drives omp's
-    // mid-run progress reminders.
-    ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
-    deadline,
-    enableMCP: false,
-    enableLsp: false,
-    disableExtensionDiscovery: true,
-    // GenAI spans only when the caller bound a run root span context:
-    // without it no tracing code path may activate. The SDK parents its
-    // spans on whatever OTEL context is active at prompt time, which the
-    // prompt wrappers bind to environment.traceContext.
-    ...(traceContext !== undefined
-      ? {
-          telemetry: {
-            attributes: { "colony.run_id": runId },
-          },
-        }
-      : {}),
-  });
+  }) => {
+    const useAdvisor = shouldEnableColonyAdvisor(
+      input.role,
+      perSession.journal,
+      input.advisorModel !== undefined,
+    );
+    return {
+      // Advisor discovery must not walk the untrusted checkout: a project
+      // WATCHDOG.yml could otherwise add mutating advisors that bypass the
+      // sandbox. The supplied SessionManager still owns the real workspace
+      // cwd used by tools and prompts.
+      cwd: useAdvisor ? advisorAgentDir! : cwd,
+      ...(useAdvisor
+        ? {
+            agentDir: advisorAgentDir!,
+            contextFiles: await advisorContextFiles,
+            workspaceTree: await advisorWorkspaceTree,
+          }
+        : {}),
+      model: primaryModel,
+      thinkingLevel,
+      authStorage,
+      modelRegistry,
+      getApiKey: async (candidate: { provider: string }) =>
+        broker.resolve({
+          provider: candidate.provider,
+          capability: `agent.llm.${candidate.provider}.invoke`,
+          bindingName: PI_RUNTIME_BINDING_NAME,
+          environment: environment,
+        }),
+      scopedModels: [
+        ...scopedModels.map((candidate) => ({ model: candidate })),
+        ...(input.advisorModel ? [{ model: input.advisorModel }] : []),
+      ],
+      settings: buildSettings(useAdvisor),
+      systemPrompt: perSession.systemPrompt,
+      sessionManager:
+        perSession.journal === "run"
+          ? sessionManager
+          : SessionManager.inMemory(cwd),
+      // Colony owns every tool a run may call: the sandbox-routed file/shell
+      // tools when an engine is configured, plus the role's submit tool and
+      // any web tools. Nothing may reach the daemon's own filesystem.
+      customTools: [...perSession.customTools],
+      toolNames: [...perSession.toolNames],
+      restrictToolNames: true,
+      allowRestrictedCustomTools: true,
+      // Arming prewalk keeps the todo tool active, which is what drives omp's
+      // mid-run progress reminders.
+      ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
+      deadline,
+      enableMCP: false,
+      enableLsp: false,
+      disableExtensionDiscovery: true,
+      // GenAI spans only when the caller bound a run root span context:
+      // without it no tracing code path may activate. The SDK parents its
+      // spans on whatever OTEL context is active at prompt time, which the
+      // prompt wrappers bind to environment.traceContext.
+      ...(traceContext !== undefined
+        ? {
+            telemetry: {
+              attributes: { "colony.run_id": runId },
+            },
+          }
+        : {}),
+    };
+  };
 
   // Subagents: Colony's own task tool. The SDK's native one is unusable
   // here - its child sessions do not inherit customTools/restrictToolNames,
@@ -522,11 +651,24 @@ export async function buildPiSession(
     submitName: string,
     observeInspection?: (toolName: string, args: unknown) => void,
   ): (() => void) => {
+    // Recovery belongs to one session/model leg: a staged session and a
+    // fresh guard installation must never inherit a prior leg's stall or
+    // submission rejection.
+    state.zeroOutputStalled = false;
+    state.submissionRejectionReason = undefined;
     const unsubscribeGuards = installRunGuards(target.agent, runId, {
       maxTurns: options.maxTurns,
       logger: options.logger,
       evidence,
       rejectionToolName: submitName,
+      onSubmissionRejected: (reason) => {
+        const detail = sanitizeSecret(
+          reason.replace(/\s+/g, " ").trim(),
+          runToken,
+        ).slice(0, 400);
+        state.submissionRejectionReason =
+          detail || "terminal submission was rejected";
+      },
       onFailure: (reason) => {
         state.failureReason ??= reason;
       },
@@ -541,6 +683,12 @@ export async function buildPiSession(
         if (message.stopReason !== "error") {
           state.connectionErrors = 0;
           state.lastConnectionError = undefined;
+          // Real output proves the leg is alive: a stall budget is only
+          // spent by consecutive empty turns.
+          if (message.outputTokens > 0) {
+            state.zeroOutputStalled = false;
+            state.jigglesUsed = 0;
+          }
           return;
         }
         if (
@@ -574,6 +722,9 @@ export async function buildPiSession(
           const verdict = hooks.repairRejection!.onUnchanged();
           if (verdict.action === "failover") {
             await target.setModel(verdict.model);
+            // A new candidate starts a fresh leg: the stall the old one
+            // accumulated says nothing about this one.
+            state.zeroOutputStalled = false;
           } else if (verdict.action === "exhausted") {
             state.failureReason = "repair_no_change";
             abortDeliberate();
@@ -635,6 +786,7 @@ export async function buildPiSession(
       }
       // Any real progress proves the leg is alive: a jiggle budget and a
       // connection budget are only spent by consecutive failures.
+      state.zeroOutputStalled = false;
       state.jigglesUsed = 0;
       state.connectionErrors = 0;
       steering.observeToolCall(
@@ -728,5 +880,10 @@ export async function buildPiSession(
     takeSubmitDeadlineNudge,
     lastAssistantQuotaError,
     buildSessionOptions,
+    removeAdvisorDir: () => {
+      if (advisorAgentDir === undefined) return;
+      rmSync(advisorAgentDir, { recursive: true, force: true });
+      advisorAgentDir = undefined;
+    },
   };
 }

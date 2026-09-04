@@ -1,11 +1,12 @@
-import { rmSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   ModelRegistry,
+  SessionManager,
   createAgentSession,
   discoverAuthStorage,
   type AgentSession,
-  type SessionManager,
   type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import type { Context } from "@opentelemetry/api";
@@ -30,6 +31,7 @@ import type {
 import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
+  type PiModelSpec,
   type ArchitectSizeGate,
   DEFAULT_PI_RUN_TIMEOUT_MS,
   buildArchitectFinalizerPrompt,
@@ -48,6 +50,7 @@ import {
   installWorkspaceProbe,
   WORKSPACE_LOST_REASON,
   packetRepo,
+  sanitizeSecret,
   provisionRepoWorkspace,
   provisionScratchDir,
   resolvePiModel,
@@ -105,6 +108,13 @@ import {
 
 export type PiWorkspaceMode = "repo-required" | "scratch";
 
+// The advisor helpers live with the session builder that consumes them;
+// re-exported because callers and tests import them from the runner.
+export {
+  COLONY_ADVISOR_INSTRUCTIONS,
+  COLONY_ADVISOR_NAME,
+  shouldEnableColonyAdvisor,
+} from "./pi-session.js";
 export interface PiRoleProfile {
   readonly role: AgentRuntimeRole;
   readonly kind: PiRunner["kind"];
@@ -257,6 +267,15 @@ export class PiBaseAgentRunner implements PiRunner {
     const runToken = packetRepo(request.packet)?.credentials?.token;
     let model = await resolvePiModel(request, this.options.model);
     const models = [model, ...(this.options.fallbackModels ?? [])];
+    const availableModels =
+      this.options.advisorModel &&
+      !models.some(
+        (candidate) =>
+          candidate.provider === this.options.advisorModel!.provider &&
+          candidate.id === this.options.advisorModel!.id,
+      )
+        ? [...models, this.options.advisorModel]
+        : models;
     const workTools = this.options.tools ?? this.profile.defaultTools;
     /**
      * The run's live state, owned here and shared with the session builder:
@@ -304,6 +323,7 @@ export class PiBaseAgentRunner implements PiRunner {
     let clearTimeoutGuard: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
+    let submissionRejectionReason: string | undefined;
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
       resolveCapturedEnvelope = resolve;
     });
@@ -311,6 +331,11 @@ export class PiBaseAgentRunner implements PiRunner {
     /** Path of the session JSONL that becomes the transcript artifact. */
     let runSessionFile: string | undefined;
     let handle: SandboxHandle | undefined;
+    /**
+     * Set once the session is built: the advisor's private agent dir lives
+     * outside the checkout and must be removed in teardown.
+     */
+    let removeAdvisorDir: (() => void) | undefined;
     let workspaceProbe: (() => void) | undefined;
     // Live subagent sessions. A parent abort that leaves children running
     // can never finalize: the task tool awaits a child that nobody told to
@@ -360,22 +385,45 @@ export class PiBaseAgentRunner implements PiRunner {
     try {
       // The credential broker owns key resolution; the registry only needs a
       // provider record per model so `createAgentSession` can resolve selectors.
+      // Advisor-only providers are optional: an unavailable advisor must not
+      // turn a healthy primary run into a failed run. Providers used by the
+      // primary chain keep the existing failure behavior.
+      const primaryProviders = new Set(
+        models.map((candidate) => candidate.provider),
+      );
       const providerApiKeys = new Map<string, string>();
-      for (const candidate of models) {
+      for (const candidate of availableModels) {
         if (providerApiKeys.has(candidate.provider)) continue;
-        const apiKey = await broker.resolve({
-          provider: candidate.provider,
-          capability: `agent.llm.${candidate.provider}.invoke`,
-          bindingName: PI_RUNTIME_BINDING_NAME,
-          environment: request.environment,
-        });
+        const advisorOnlyProvider =
+          this.options.advisorModel?.provider === candidate.provider &&
+          !primaryProviders.has(candidate.provider);
+        let apiKey: string | undefined;
+        try {
+          apiKey = await broker.resolve({
+            provider: candidate.provider,
+            capability: `agent.llm.${candidate.provider}.invoke`,
+            bindingName: PI_RUNTIME_BINDING_NAME,
+            environment: request.environment,
+          });
+        } catch (error) {
+          if (!advisorOnlyProvider) throw error;
+          this.options.logger?.warn?.(
+            {
+              runId,
+              provider: candidate.provider,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "pi_advisor_credential_unavailable",
+          );
+          continue;
+        }
         if (!apiKey) continue;
         providerApiKeys.set(candidate.provider, apiKey);
       }
       const authStorage = await discoverAuthStorage();
       const modelRegistry = new ModelRegistry(authStorage);
       for (const [provider, apiKey] of providerApiKeys) {
-        const providerModels = models.filter(
+        const providerModels = availableModels.filter(
           (candidate) => candidate.provider === provider,
         );
         const first = providerModels[0]!;
@@ -389,6 +437,7 @@ export class PiBaseAgentRunner implements PiRunner {
             api: candidate.api,
             baseUrl: candidate.baseUrl,
             reasoning: candidate.reasoning,
+            thinking: candidate.thinking,
             input: [...candidate.input],
             cost: { ...candidate.cost },
             // Every Colony route is an OpenAI-compatible gateway that speaks
@@ -398,7 +447,11 @@ export class PiBaseAgentRunner implements PiRunner {
             // catalog as prompt text and sends no `tools` array, and the model
             // answers with literal `<tool_call>` text that nothing parses
             // (qwen3.8-max as reviewer, 0/4 with zero tool calls, 2026-09-03).
-            supportsTools: true,
+            supportsTools: candidate.supportsTools ?? true,
+            // Preserve route-level compatibility policy across registry
+            // resolution and runtime fallback (e.g. disabling reasoning when
+            // a named tool choice is forced on a thinking-incompatible relay).
+            compat: candidate.compat,
             // Colony's config leaves these nullable; the registry wants numbers.
             contextWindow: candidate.contextWindow ?? 128_000,
             maxTokens: candidate.maxTokens ?? 16_384,
@@ -427,6 +480,15 @@ export class PiBaseAgentRunner implements PiRunner {
           `no credentialed provider for ${models[0]?.provider}/${models[0]?.id}; check the ${request.environment.role} agent's provider auth`,
         );
       }
+      const resolvedAdvisorModel = this.options.advisorModel
+        ? modelRegistry.find(
+            this.options.advisorModel.provider,
+            this.options.advisorModel.id,
+          )
+        : undefined;
+      // Advisor resolution is optional. A missing registry entry means the
+      // primary session runs without an advisor; never add an alternate model
+      // to the advisor role or alter Colony's primary fallback chain.
 
       const { customTools, toolNames } = (() => {
         // use the session-local capture so the submit envelope is wired
@@ -450,6 +512,7 @@ export class PiBaseAgentRunner implements PiRunner {
         };
       })();
       const steering = new RunSteering({
+        role: this.profile.role,
         runTimeoutMs: this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS,
         branch: packetRepo(request.packet)?.branch,
       });
@@ -587,6 +650,13 @@ export class PiBaseAgentRunner implements PiRunner {
           // Staged roles bring their own file-backed first session; this one
           // is never prompted and must not own the transcript path.
           journal: pipeline.length > 0 ? "transient" : "run",
+          role: this.profile.role,
+          ...(resolvedAdvisorModel !== undefined
+            ? { advisorModel: resolvedAdvisorModel }
+            : {}),
+          ...(this.options.advisorModel !== undefined
+            ? { advisorSpec: this.options.advisorModel }
+            : {}),
         },
         {
           ...(this.options.webTools ? { webTools: this.options.webTools } : {}),
@@ -610,6 +680,9 @@ export class PiBaseAgentRunner implements PiRunner {
             ? { logToolArgs: this.options.logToolArgs }
             : {}),
           ...(runToken ? { runToken } : {}),
+          ...(this.options.scratchDir !== undefined
+            ? { scratchDir: this.options.scratchDir }
+            : {}),
         },
         {
           state,
@@ -661,6 +734,7 @@ export class PiBaseAgentRunner implements PiRunner {
         },
       );
       session = built.session;
+      removeAdvisorDir = built.removeAdvisorDir;
       if (pipeline.length === 0 && !resumed) {
         runSessionFile = session.sessionManager.getSessionFile() ?? undefined;
       }
@@ -734,6 +808,10 @@ export class PiBaseAgentRunner implements PiRunner {
             // ends the run immediately.
             if (state.cancellationTriggered) throw err;
             if (state.timeoutTriggered) return true;
+            // A guard/runtime failure is already the decisive cause. The
+            // session abort rejects the prompt with an opaque SDK error;
+            // never relabel that error as a provider failure.
+            if (state.failureReason !== undefined) return true;
             // The candidate loop advances by one; steer it onto the next
             // candidate WITH capacity (see nextCandidateIndex).
             const nextIndex = nextCandidateIndex(index);
@@ -771,8 +849,15 @@ export class PiBaseAgentRunner implements PiRunner {
               );
               return advance();
             }
-            if (!next || state.failureReason !== undefined) {
-              throw err;
+            if (!next) {
+              // No candidate left to steer to: classify the protocol failure
+              // instead of throwing past finalization, so the run keeps a
+              // reason rather than surfacing an opaque SDK error.
+              state.failureReason = `provider_protocol_failure: ${sanitizeSecret(
+                errText.replace(/\s+/g, " ").trim(),
+                runToken,
+              ).slice(0, 160)}`;
+              return false;
             }
             this.options.logger?.warn?.(
               { runId, from: candidate.id, to: next.id, error: errText },
@@ -921,7 +1006,42 @@ export class PiBaseAgentRunner implements PiRunner {
             // it actually spends.
             let assistantTurns = 0;
             let capped = false;
+            const sameCandidate = (
+              left: { provider: string; id: string } | undefined,
+              right: { provider: string; id: string },
+            ): boolean =>
+              left?.provider === right.provider && left.id === right.id;
+            const activateStageCandidate = async (
+              candidate: (typeof resolvedModels)[number],
+            ): Promise<void> => {
+              if (sameCandidate(stageSession.model, candidate)) return;
+              // A failed forced call is requeued by the SDK. It was built from
+              // the previous model; discard it before switching and let the
+              // finalizer arm a fresh directive for the active candidate.
+              stageSession.toolChoiceQueue.removeByLabel("user-force");
+              await stageSession.setModel(candidate);
+              state.zeroOutputStalled = false;
+              state.jigglesUsed = 0;
+              state.connectionErrors = 0;
+              state.quotaScanFloor =
+                stageSession.agent.state.messages.length;
+            };
             const forceStageSubmit = (turn: number): void => {
+              // Never carry a forced directive across a model switch.
+              stageSession.toolChoiceQueue.removeByLabel("user-force");
+              const compat = stageSession.model?.compat;
+              if (
+                compat !== undefined &&
+                typeof compat === "object" &&
+                "supportsForcedToolChoice" in compat &&
+                compat.supportsForcedToolChoice === false
+              ) {
+                this.options.logger?.info?.(
+                  { runId, sandboxId, stage: stage.name, turn },
+                  "architect_stage_submit_force_unsupported",
+                );
+                return;
+              }
               try {
                 stageSession.setForcedToolChoice(stageSubmit.name);
                 this.options.logger?.info?.(
@@ -985,16 +1105,18 @@ export class PiBaseAgentRunner implements PiRunner {
                 packet: request.packet,
                 ...artifacts,
               });
+              let firstCandidate = true;
               for (; index < resolvedModels.length; index += 1) {
                 const candidate = resolvedModels[index]!;
-                if (stageSession.model?.id !== candidate.id) {
-                  await stageSession.setModel(candidate);
-                  state.jigglesUsed = 0;
-                  state.connectionErrors = 0;
-                  state.quotaScanFloor =
-                    stageSession.agent.state.messages.length;
-                  prompt = MODEL_FAILED_PROMPT;
+                if (!sameCandidate(stageSession.model, candidate)) {
+                  await activateStageCandidate(candidate);
+                  // A fresh stage session is created on primaryModel even
+                  // when the prior stage fell back. Preserve this stage's
+                  // complete prompt for that active candidate; only later
+                  // same-stage fallbacks need the abbreviated continuation.
+                  if (!firstCandidate) prompt = MODEL_FAILED_PROMPT;
                 }
+                firstCandidate = false;
                 if (
                   await driveSession(
                     stageSession,
@@ -1020,15 +1142,27 @@ export class PiBaseAgentRunner implements PiRunner {
                 await stageSession
                   .setActiveToolsByName([stageSubmit.name])
                   .catch(() => undefined);
+                const candidate =
+                  resolvedModels[Math.min(index, resolvedModels.length - 1)]!;
+                await activateStageCandidate(candidate);
                 forceStageSubmit(assistantTurns);
-                const candidate = resolvedModels[index] ?? resolvedModels[0]!;
-                await driveSession(
+                const stopped = await driveSession(
                   stageSession,
                   `This stage ends only when you call ${stageSubmit.name}. Call it now with what you have; nothing else you write counts.`,
                   candidate,
                   landed,
                   stagePromise,
                 );
+                // driveSession uses index=next-1 for its candidate-loop
+                // caller. This loop has no increment expression, so advance
+                // explicitly or the same failed model is forced forever.
+                if (
+                  !stopped &&
+                  state.failureReason === undefined &&
+                  index + 1 < resolvedModels.length
+                ) {
+                  index += 1;
+                }
               }
             } finally {
               unsubscribeTurns();
@@ -1054,7 +1188,10 @@ export class PiBaseAgentRunner implements PiRunner {
                 !state.timeoutTriggered &&
                 !state.cancellationTriggered
               ) {
-                state.failureReason = `architect_stage_${stage.name}_no_submission`;
+                state.failureReason =
+                  state.submissionRejectionReason !== undefined
+                    ? `submission_rejected: ${state.submissionRejectionReason}`
+                    : `architect_stage_${stage.name}_no_submission`;
               }
               return;
             }
@@ -1079,9 +1216,11 @@ export class PiBaseAgentRunner implements PiRunner {
             const candidate = resolvedModels[index]!;
             if (index > 0) {
               await activeSession.setModel(candidate);
+              state.zeroOutputStalled = false;
               state.jigglesUsed = 0;
               state.connectionErrors = 0;
-              state.quotaScanFloor = activeSession.agent.state.messages.length;
+              state.quotaScanFloor =
+                activeSession.agent.state.messages.length;
             }
             // The packet prompt once, or just the failure prompt on a later
             // candidate - the packet is already in the continued
@@ -1146,6 +1285,7 @@ export class PiBaseAgentRunner implements PiRunner {
             state.jigglesUsed = 0;
             state.connectionErrors = 0;
             await session.setModel(next);
+            state.zeroOutputStalled = false;
             state.quotaScanFloor = session.agent.state.messages.length;
             this.options.logger?.warn?.(
               {
@@ -1186,6 +1326,7 @@ export class PiBaseAgentRunner implements PiRunner {
               state.connectionErrors = 0;
               const next = resolvedModels[index]!;
               await session.setModel(next);
+              state.zeroOutputStalled = false;
               state.quotaScanFloor = session.agent.state.messages.length;
               this.options.logger?.warn?.(
                 {
@@ -1262,16 +1403,20 @@ export class PiBaseAgentRunner implements PiRunner {
 
       if (
         capturedEnvelope === undefined &&
-        this.profile.requireRepositoryInspection &&
-        !state.repositoryInspected
+        state.failureReason === undefined
       ) {
-        state.failureReason ??= "repository_inspection_required";
-      } else if (capturedEnvelope === undefined) {
-        // No separate finalizer pass: a rejected submission surfaces as a tool
-        // error and keeps the session open, the SDK retries transport failures,
-        // and the continuation steer re-prompts a model that stopped early. If
-        // the run still produced no envelope, colonyd retries the attempt.
-        state.failureReason ??= "finalize_no_submission";
+        if (state.submissionRejectionReason !== undefined) {
+          state.failureReason = `submission_rejected: ${state.submissionRejectionReason}`;
+        } else if (
+          this.profile.requireRepositoryInspection &&
+          !state.repositoryInspected
+        ) {
+          state.failureReason = "repository_inspection_required";
+        } else {
+          // A clean run that never invoked the terminal tool is distinct
+          // from a provider/protocol failure or a rejected submission.
+          state.failureReason = "finalize_no_submission";
+        }
       }
     } finally {
       // Audit capture is strictly post-decision: the PiRunResult below (and
@@ -1358,6 +1503,9 @@ export class PiBaseAgentRunner implements PiRunner {
       //     override root, and a failed upload has already parked its copy
       //     outside this tree.
       rmSync(cwd, { recursive: true, force: true });
+      // The advisor's private agent dir lives outside the checkout, so it
+      // outlives the workspace removal above unless it is taken here.
+      removeAdvisorDir?.();
       // (4) The sandbox pod goes last: destroy after the workspace is gone.
       await handle?.destroy();
     }

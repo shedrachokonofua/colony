@@ -91,6 +91,9 @@ providers:
         name: kimi-k3
         reasoning: true
         context_window: 1048576
+        # K3 rejects named forced tool_choice while reasoning is enabled.
+        compat:
+          disableReasoningOnForcedToolChoice: true
         max_tokens: 131072
         # Weekly token window (exhausted 2026-08-30); 2 stops a review
         # stampede from draining it in one afternoon.
