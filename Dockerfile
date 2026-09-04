@@ -13,6 +13,7 @@ ARG BUN_VERSION=1.3.14
 # Keep mutable source layers small under Buildah's vfs driver. The runtime
 # consumes the assembled tree once instead of snapshotting node_modules for
 # every changed source directory.
+# Both downstream stages consume this tree, keeping their source set identical.
 FROM scratch AS source
 COPY package.json bun.lock tsconfig.base.json tsconfig.json /workspace/
 COPY packages /workspace/packages
