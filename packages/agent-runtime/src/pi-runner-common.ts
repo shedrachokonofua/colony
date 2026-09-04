@@ -71,6 +71,8 @@ export interface PiRunnerBaseOptions {
   readonly model?: PiModelSpec | PiModelResolver;
   readonly webTools?: WebToolsConfig;
   readonly fallbackModels?: readonly PiModelSpec[];
+  /** Dedicated OMP advisor model. It is registered but never joins the primary fallback chain. */
+  readonly advisorModel?: PiModelSpec;
   readonly thinkingLevel?:
     | "off"
     | "minimal"

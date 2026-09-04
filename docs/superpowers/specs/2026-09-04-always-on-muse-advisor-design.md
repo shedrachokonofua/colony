@@ -24,7 +24,7 @@ Attach OMP's existing native advisor runtime to every Colony-owned primary Pi se
 
 ## Runtime Wiring
 
-Add an optional `advisorModel: PiModelSpec` to `PiRunnerBaseOptions`. `createAgentWiring()` supplies the deployed architect model as that value only after verifying its provider and ID are exactly `openai_compatible/router/muse-spark-1.3-contributor`. Architect runners do not receive the option.
+Add an optional `advisorModel: PiModelSpec` to `PiRunnerBaseOptions`. `createAgentWiring()` selects only model ID `router/muse-spark-1.3-contributor` from the resolved developer chain on provider `openai_compatible` and supplies it to developer, reviewer, and plan-reviewer runners. The deployed configuration contains that exact route; configurations without it remain unadvised. Architect runners do not receive the option.
 
 `PiBaseAgentRunner` keeps primary candidates and session-available models distinct:
 
@@ -50,7 +50,7 @@ Eligible primary settings add:
 ```ts
 {
   "advisor.enabled": true,
-  "advisor.syncBacklog": false,
+  "advisor.syncBacklog": "off",
   "retry.modelFallback": false,
   modelRoles: {
     advisor: "openai_compatible/router/muse-spark-1.3-contributor:xhigh",
