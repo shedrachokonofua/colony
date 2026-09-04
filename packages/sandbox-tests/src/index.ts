@@ -4,9 +4,7 @@ export {
   type EngineTestOptions,
   type MakeEngine,
 } from "./describe-engine-tests.js";
-export {
-  describeSandboxConformance,
-} from "./sandbox-conformance.js";
+export { describeSandboxConformance } from "./sandbox-conformance.js";
 export {
   createContractStubHandle,
   type ContractStubHandle,

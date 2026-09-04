@@ -51,6 +51,8 @@ const WINDOW_FILE_LINES = 40;
 const WINDOW_LIMIT = 10;
 const TOOL_FILE = "nested/conformance-tools.txt";
 const TOOL_FILE_BODY = "conformance-tools-body\n";
+const EDIT_FILE = "conformance-edit.txt";
+const EDIT_FILE_BODY = "alpha\nbeta\n";
 
 /**
  * The wrapper surface this suite drives. Message shape is a property of the
@@ -64,7 +66,10 @@ interface SandboxToolLike {
 }
 
 interface ToolResult {
-  readonly content: readonly { readonly type: string; readonly text?: string }[];
+  readonly content: readonly {
+    readonly type: string;
+    readonly text?: string;
+  }[];
 }
 
 /** The wrappers ignore the extension context; the SDK signature wants one. */
@@ -192,30 +197,21 @@ function buildTools(
 }
 
 /**
- * Fetches a wrapper by name, failing loudly when it is missing: the agent
- * prompts name these tools, so a wrapper set that drops one is a conformance
- * failure rather than a test bug.
+ * Invokes a tool through its ToolDefinition, as the agent session would. A
+ * missing wrapper is a conformance failure, not a test bug: the agent prompts
+ * name these tools.
  */
-function requireTool(
+async function invoke(
   tools: Record<string, SandboxToolLike>,
   name: string,
-): SandboxToolLike {
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
   const tool = tools[name];
   if (!tool) {
     throw new Error(
       `buildSandboxTools registered no "${name}" tool (have: ${Object.keys(tools).join(", ")})`,
     );
   }
-  return tool;
-}
-
-/** Invokes a tool through its ToolDefinition, as the agent session would. */
-async function invoke(
-  tools: Record<string, SandboxToolLike>,
-  name: string,
-  params: Record<string, unknown>,
-): Promise<ToolResult> {
-  const tool = requireTool(tools, name);
   const execute = tool.execute as (...args: unknown[]) => Promise<ToolResult>;
   return execute("conformance", params, undefined, undefined, TOOL_CONTEXT);
 }
@@ -247,9 +243,9 @@ async function checkGitWorkflow(
       "git commit -q -m conformance-note",
     );
     expect(commit.exitCode).toBe(0);
-    expect(
-      (await execInSandbox(handle, "git ls-files")).stdout,
-    ).toContain(COMMITTED_FILE);
+    expect((await execInSandbox(handle, "git ls-files")).stdout).toContain(
+      COMMITTED_FILE,
+    );
 
     const branch = `conformance-${engineName}`;
     const push = await execInSandbox(
@@ -332,7 +328,9 @@ async function checkWindowedRead(makeEngine: MakeEngine): Promise<void> {
         limit: WINDOW_LIMIT,
       }),
     );
-    expect(windowed).toContain(`${WINDOW_LIMIT}:conformance line ${WINDOW_LIMIT}`);
+    expect(windowed).toContain(
+      `${WINDOW_LIMIT}:conformance line ${WINDOW_LIMIT}`,
+    );
     // A window that ends before the file does is not truncation, and calling
     // it one makes models rewrite whole files they never saw the end of.
     expect(windowed).toContain("more line(s) not shown");
@@ -348,29 +346,26 @@ async function checkWindowedRead(makeEngine: MakeEngine): Promise<void> {
 
 async function checkEditRejections(makeEngine: MakeEngine): Promise<void> {
   await withSandbox(makeEngine, undefined, async ({ handle, workspace }) => {
-    await handle.writeFile(TOOL_FILE.replace("nested/", ""), "alpha\nbeta\n");
+    await handle.writeFile(EDIT_FILE, EDIT_FILE_BODY);
     const tools = buildTools(handle, workspace);
-    const path = TOOL_FILE.replace("nested/", "");
 
     await expect(
       invoke(tools, "edit", {
-        path,
+        path: EDIT_FILE,
         edits: [{ oldText: "alpha", newText: "alpha" }],
       }),
     ).rejects.toThrow(/oldText equals newText/);
 
+    // Naming the file is what lets an agent find its own mistake instead of
+    // guessing which path it meant.
     await expect(
       invoke(tools, "edit", {
-        path,
+        path: EDIT_FILE,
         edits: [{ oldText: "absent-from-the-file", newText: "gamma" }],
       }),
-    ).rejects.toThrow(new RegExp(path));
-    await expect(
-      invoke(tools, "edit", {
-        path,
-        edits: [{ oldText: "absent-from-the-file", newText: "gamma" }],
-      }),
-    ).rejects.toThrow(/oldText not found/);
+    ).rejects.toThrow(new RegExp(EDIT_FILE));
+
+    expect(String(await handle.readFile(EDIT_FILE))).toBe(EDIT_FILE_BODY);
   });
 }
 
@@ -383,12 +378,12 @@ async function checkBashMessages(makeEngine: MakeEngine): Promise<void> {
   await withSandbox(makeEngine, undefined, async ({ handle, workspace }) => {
     const tools = buildTools(handle, workspace);
 
-    const ok = toolText(await invoke(tools, "bash", { command: "true" }));
-    expect(ok).toBe("(no output)");
-
-    await expect(
-      invoke(tools, "bash", { command: "false" }),
-    ).rejects.toThrow(/Command exited with code 1/);
+    // Exit 0 resolves; the numeric exit code is what the agent branches on,
+    // and the wrapper turns any other code into a tool error.
+    await invoke(tools, "bash", { command: "true" });
+    await expect(invoke(tools, "bash", { command: "false" })).rejects.toThrow(
+      /Command exited with code 1/,
+    );
 
     const streams = toolText(
       await invoke(tools, "bash", {
@@ -400,7 +395,9 @@ async function checkBashMessages(makeEngine: MakeEngine): Promise<void> {
 
     // Under the cap: every byte the command produced is surfaced, with no
     // drop note. Over it: the tail plus a note naming the cap.
-    const modest = toolText(await invoke(tools, "bash", { command: "seq 1 100" }));
+    const modest = toolText(
+      await invoke(tools, "bash", { command: "seq 1 100" }),
+    );
     expect(modest).toContain("1\n2");
     expect(modest).toContain("100");
     expect(modest).not.toContain("earlier output bytes dropped");
@@ -421,7 +418,10 @@ async function checkFileToolWrappers(makeEngine: MakeEngine): Promise<void> {
     const tools = buildTools(handle, workspace);
 
     const wrote = toolText(
-      await invoke(tools, "write", { path: TOOL_FILE, content: TOOL_FILE_BODY }),
+      await invoke(tools, "write", {
+        path: TOOL_FILE,
+        content: TOOL_FILE_BODY,
+      }),
     );
     expect(wrote).toContain(`wrote ${TOOL_FILE}`);
     expect(String(await handle.readFile(TOOL_FILE))).toBe(TOOL_FILE_BODY);
