@@ -22,7 +22,7 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
  * a plan that cannot converge in this many rounds has a problem the
  * architect cannot fix alone.
  */
-export const MAX_PLAN_REVIEW_ROUNDS = 5;
+export const MAX_PLAN_REVIEW_ROUNDS = 10;
 
 export interface PlanReviewRunOptions {
   readonly leaseTtlMs?: number;
@@ -299,19 +299,26 @@ export function latestPlanReview(
   return null;
 }
 
-/** Plan reviews on this scope that sent the plan back (rejections). */
+/**
+ * Plan reviews on this scope that sent the plan back (rejections), counted
+ * since the latest epoch marker. An operator continue/replan or unblock
+ * starts a fresh rejection budget, mirroring the architectAttempts pattern:
+ * listAudit returns its window oldest-first, so the LATEST marker is the
+ * last match, not the first. No marker means a legacy scope (col-1e4f99fd):
+ * count all of history.
+ */
 export function planReviewRounds(ctx: ColonydContext, scopeId: string): number {
-  let rejections = 0;
-  for (const run of ctx.store.runsForScope(scopeId)) {
-    if (run.kind !== "plan_review" || run.status !== "succeeded") continue;
-    try {
-      const evidence = JSON.parse(run.evidence_json ?? "{}") as {
-        verdict?: unknown;
-      };
-      if (evidence.verdict === "request_changes") rejections += 1;
-    } catch {
-      // an unreadable verdict is no verdict
-    }
-  }
-  return rejections;
+  const events = ctx.store.listAudit({ scope_id: scopeId, limit: 500 }).events;
+  const marker = events
+    .filter(
+      (row) =>
+        row.action === "scope.plan_review_continued" ||
+        row.action === "scope.plan_review_replanned" ||
+        row.action === "scope.unblocked",
+    )
+    .at(-1);
+  return events.filter(
+    (row) =>
+      row.action === "scope.plan_rejected" && (!marker || row.id > marker.id),
+  ).length;
 }

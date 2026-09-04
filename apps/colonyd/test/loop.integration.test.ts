@@ -520,7 +520,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(task.spec).toContain("## Evidence");
   }, 30_000);
 
-  it("plan review: five rejections block the scope", async () => {
+  it("plan review: ten rejections block the scope", async () => {
     await handle.shutdown();
     handle = await bootHeadless(join(dir, `plan-review-cap-${Date.now()}.db`), {
       reviewRequired: true,
@@ -533,25 +533,39 @@ describe("colonyd fake end-to-end loop", () => {
     // Every review rejects (the knob rejects call 1; the counter resets
     // once the plan is cleared). Each round: propose, review, reject.
     script.planReviewRejectFirst = true;
-    let rejections = 0;
-    for (let tick = 0; tick < 40 && rejections < 5; tick += 1) {
-      script.planReviewCalls = 0;
-      await tickAndSettle();
-      rejections = store
+    const rejectedCount = () =>
+      store
         .listAudit({ scope_id: scopeId, limit: 1000 })
         .events.filter((row) => row.action === "scope.plan_rejected").length;
+    let rejections = 0;
+    for (let tick = 0; tick < 80 && rejections < 9; tick += 1) {
+      script.planReviewCalls = 0;
+      await tickAndSettle();
+      rejections = rejectedCount();
     }
-    expect(rejections).toBe(5);
-    // The sixth proposal meets the cap: blocked, not reviewed.
-    for (let tick = 0; tick < 6; tick += 1) {
+    expect(rejections).toBe(9);
+    // Nine consecutive rejections stay under the cap: still planning,
+    // not blocked.
+    expect(store.getScope(scopeId)!.status).toBe("planning");
+    for (let tick = 0; tick < 80 && rejections < 10; tick += 1) {
+      script.planReviewCalls = 0;
+      await tickAndSettle();
+      rejections = rejectedCount();
+    }
+    expect(rejections).toBe(10);
+    // The next proposal meets the cap: blocked, not reviewed.
+    for (let tick = 0; tick < 11; tick += 1) {
       await tickAndSettle();
       if (store.getScope(scopeId)!.status === "blocked") break;
     }
     const scope = store.getScope(scopeId)!;
     expect(scope.status).toBe("blocked");
     expect(scope.blocked_reason).toBe(
-      "plan review rejected 5 consecutive times",
+      "plan review rejected 10 consecutive times",
     );
+    expect(rejectedCount()).toBe(10);
+    // The block keeps the latest revised plan for the operator.
+    expect(scope.plan_json).not.toBeNull();
   }, 60_000);
 
   it("happy path: scope draft->planning->active->done; A merges before B dispatches", async () => {
