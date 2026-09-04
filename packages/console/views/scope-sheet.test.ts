@@ -67,6 +67,14 @@ function makeSheet(detailValue, props = {}) {
   return el;
 }
 
+function buttonsIn(root) {
+  return Array.from(root.querySelectorAll("button"));
+}
+
+function buttonWithText(root, text) {
+  return buttonsIn(root).find((b) => b.textContent?.trim() === text);
+}
+
 function eventsOf(el) {
   const seen = [];
   for (const type of [
@@ -440,3 +448,180 @@ describe("scope-sheet goal and proposed-task surfaces", () => {
     expect(el.querySelector("task-dag")?.drawerOpen).toBe(false);
   });
 });
+
+describe("plan-review cap escape hatch", () => {
+  const planJson = JSON.stringify({ summary: "cap plan", tasks: PLANNED });
+
+  it("renders four cap actions for cap-blocked scope with parsed plan (matching regex including legacy 5)", async () => {
+    const world = detail({
+      scope: {
+        ...SCOPE_CLOSED,
+        status: "blocked",
+        blocked_reason: "plan review rejected 5 consecutive times",
+        plan_json: planJson,
+      },
+    });
+    const el = makeSheet(world);
+    await el.updateComplete;
+
+    const planCard = el.querySelector("plan-card");
+    expect(planCard).toBeTruthy();
+    await planCard.updateComplete;
+
+    const continueBtn = buttonWithText(planCard, "Continue");
+    const approveBtn = buttonWithText(planCard, "Approve latest plan");
+    const abandonBtn = buttonWithText(planCard, "Abandon");
+    const replanBtn = buttonWithText(planCard, "Request replan");
+
+    expect(continueBtn).toBeTruthy();
+    expect(approveBtn).toBeTruthy();
+    expect(abandonBtn).toBeTruthy();
+    expect(replanBtn).toBeTruthy();
+
+    // Verify "Unblock" does not appear as a button label in planCard
+    const unblockBtn = buttonWithText(planCard, "Unblock");
+    expect(unblockBtn).toBeUndefined();
+
+    // Verify events emitted by the four actions
+    const seen = eventsOf(el);
+
+    // 1. Continue automated review button
+    continueBtn.click();
+    expect(seen).toContainEqual([
+      "colony-task-action",
+      { path: "/scopes/col-x/plan-review-continue" },
+    ]);
+
+    // 2. Approve latest plan button
+    approveBtn.click();
+    expect(seen).toContainEqual([
+      "colony-task-action",
+      { path: "/scopes/col-x/plan-review-approve" },
+    ]);
+
+    // 3. Abandon button
+    abandonBtn.click();
+    expect(seen).toContainEqual([
+      "colony-abandon",
+      { scopeId: "col-x" },
+    ]);
+
+    // 4. Replan form with feedback
+    const form = planCard.querySelector("form.feedback");
+    const textarea = form.querySelector('textarea[name="feedback"]');
+    expect(textarea.required).toBe(true);
+
+    textarea.value = "Please rethink task dependencies";
+    form.dispatchEvent(
+      new window.Event("submit", { bubbles: true, cancelable: true }),
+    );
+    expect(seen).toContainEqual([
+      "colony-feedback",
+      {
+        path: "/scopes/col-x/plan-review-replan",
+        body: { feedback: "Please rethink task dependencies" },
+      },
+    ]);
+  });
+
+  it("suppresses generic Unblock button on validation-card when cap regex matches", async () => {
+    const world = detail({
+      scope: {
+        ...SCOPE_CLOSED,
+        status: "blocked",
+        blocked_reason: "plan review rejected 3 consecutive times",
+        plan_json: planJson,
+      },
+      runs: [
+        {
+          id: "run-val-1",
+          kind: "validate",
+          status: "failed",
+          started_at: "2026-01-01T00:00:00Z",
+          finished_at: "2026-01-01T00:01:00Z",
+          evidence_json: JSON.stringify({ passed: false, results: [{ exit_code: 1, index: 0 }] }),
+        },
+      ],
+    });
+    const el = makeSheet(world);
+    await el.updateComplete;
+
+    const valCard = el.querySelector("validation-card");
+    expect(valCard).toBeTruthy();
+    await valCard.updateComplete;
+
+    const retryBtn = valCard.querySelector(".validation-retry");
+    expect(retryBtn).toBeNull();
+  });
+
+  it("preserves generic Unblock on validation-card for non-cap blocked scopes and shows none of the four cap actions", async () => {
+    const world = detail({
+      scope: {
+        ...SCOPE_CLOSED,
+        status: "blocked",
+        blocked_reason: "architect-attempt budget exhausted",
+        plan_json: planJson,
+      },
+      runs: [
+        {
+          id: "run-val-1",
+          kind: "validate",
+          status: "failed",
+          started_at: "2026-01-01T00:00:00Z",
+          finished_at: "2026-01-01T00:01:00Z",
+          evidence_json: JSON.stringify({ passed: false, results: [{ exit_code: 1, index: 0 }] }),
+        },
+      ],
+    });
+    const el = makeSheet(world);
+    await el.updateComplete;
+
+    const planCard = el.querySelector("plan-card");
+    await planCard.updateComplete;
+    expect(buttonWithText(planCard, "Continue")).toBeUndefined();
+    expect(buttonWithText(planCard, "Approve latest plan")).toBeUndefined();
+    expect(planCard.querySelector(".cap-actions")).toBeNull();
+
+    const valCard = el.querySelector("validation-card");
+    await valCard.updateComplete;
+    const retryBtn = valCard.querySelector(".validation-retry");
+    expect(retryBtn).toBeTruthy();
+    expect(retryBtn.textContent?.trim()).toBe("Run validation again");
+
+    const seen = eventsOf(el);
+    retryBtn.click();
+    expect(seen).toContainEqual([
+      "colony-task-action",
+      { path: "/scopes/col-x/unblock" },
+    ]);
+  });
+
+  it("planning path preserves Approve plan label unchanged", async () => {
+    const world = detail({
+      scope: {
+        ...SCOPE_CLOSED,
+        status: "planning",
+        blocked_reason: null,
+        plan_json: planJson,
+      },
+    });
+    const el = makeSheet(world);
+    await el.updateComplete;
+
+    const planCard = el.querySelector("plan-card");
+    await planCard.updateComplete;
+
+    const approvePlanBtn = buttonWithText(planCard, "Approve plan");
+    expect(approvePlanBtn).toBeTruthy();
+    expect(buttonWithText(planCard, "Approve latest plan")).toBeUndefined();
+    expect(buttonWithText(planCard, "Continue")).toBeUndefined();
+
+    const seen = eventsOf(el);
+    approvePlanBtn.click();
+    expect(seen).toContainEqual([
+      "colony-task-action",
+      { path: "/scopes/col-x/approve-plan" },
+    ]);
+  });
+});
+

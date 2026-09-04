@@ -77,6 +77,23 @@ export function planMarkdown(scope, plan) {
   return parts.join("\n");
 }
 
+export const PLAN_REVIEW_CAP_REASON =
+  /^plan review rejected \d+ consecutive times$/;
+
+/**
+ * @param {Record<string, any> | null | undefined} scope
+ * @param {import("../dag.js").Plan | null} plan
+ */
+export function isCapBlockedWithPlan(scope, plan) {
+  return Boolean(
+    scope &&
+      scope.status === "blocked" &&
+      typeof scope.blocked_reason === "string" &&
+      PLAN_REVIEW_CAP_REASON.test(scope.blocked_reason) &&
+      plan,
+  );
+}
+
 export class PlanCard extends ColonyElement {
   static properties = {
     scope: { type: Object },
@@ -137,6 +154,7 @@ export class PlanCard extends ColonyElement {
         ? "Architect is drawing the plan."
         : "";
     const approvable = scope.status === "planning" && plan;
+    const isCapBlocked = isCapBlockedWithPlan(scope, plan);
     return html`<aside class="card">
       <p class="card-head">Plan</p>
       <div class="card-body">
@@ -212,6 +230,63 @@ export class PlanCard extends ColonyElement {
                     event.preventDefault();
                     this.#emit("colony-feedback", {
                       path: `/scopes/${scope.id}/replan`,
+                      body: {
+                        feedback: String(
+                          new FormData(
+                            /** @type {HTMLFormElement} */ (event.target),
+                          ).get("feedback") ?? "",
+                        ),
+                      },
+                    });
+                  }
+                }
+              >
+                <textarea
+                  name="feedback"
+                  required
+                  placeholder="What should the architect change? Rejecting re-plans with this feedback."
+                ></textarea>
+                <button class="btn" type="submit">Request replan</button>
+              </form>`
+          : nothing}
+        ${isCapBlocked
+          ? html`<div class="plan-actions cap-actions">
+                <button
+                  class="btn btn-solid"
+                  @click=${() =>
+                    this.#emit("colony-task-action", {
+                      path: `/scopes/${scope.id}/plan-review-continue`,
+                    })}
+                >
+                  Continue
+                </button>
+                <button
+                  class="btn"
+                  @click=${() =>
+                    this.#emit("colony-task-action", {
+                      path: `/scopes/${scope.id}/plan-review-approve`,
+                    })}
+                >
+                  Approve latest plan
+                </button>
+                <button
+                  class="btn btn-danger"
+                  @click=${() =>
+                    this.#emit("colony-abandon", {
+                      scopeId: scope.id,
+                    })}
+                >
+                  Abandon
+                </button>
+                ${this.#planTaskList(plan)}
+              </div>
+              <form
+                class="feedback"
+                @submit=${
+                  /** @param {SubmitEvent} event */ (event) => {
+                    event.preventDefault();
+                    this.#emit("colony-feedback", {
+                      path: `/scopes/${scope.id}/plan-review-replan`,
                       body: {
                         feedback: String(
                           new FormData(
