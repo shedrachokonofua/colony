@@ -427,6 +427,7 @@ export class PiBaseAgentRunner implements PiRunner {
         };
       })();
       const steering = new RunSteering({
+        role: this.profile.role,
         runTimeoutMs: this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS,
         branch: packetRepo(request.packet)?.branch,
       });
@@ -838,6 +839,9 @@ export class PiBaseAgentRunner implements PiRunner {
         submitName: string,
         observeInspection?: (toolName: string, args: unknown) => void,
       ): (() => void) => {
+        // Recovery belongs to one session/model leg. Staged sessions and a
+        // fresh guard installation must never inherit a prior leg's stall.
+        zeroOutputStalled = false;
         const unsubscribeGuards = installRunGuards(target.agent, runId, {
           maxTurns:
             this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
@@ -859,6 +863,10 @@ export class PiBaseAgentRunner implements PiRunner {
             if (message.stopReason !== "error") {
               connectionErrors = 0;
               lastConnectionError = undefined;
+              if (message.outputTokens > 0) {
+                zeroOutputStalled = false;
+                jigglesUsed = 0;
+              }
               return;
             }
             if (
@@ -909,6 +917,7 @@ export class PiBaseAgentRunner implements PiRunner {
                   const next = resolvedModels[index]!;
                   unchangedRepairSubmissions = 0;
                   await target.setModel(next);
+                  zeroOutputStalled = false;
                   this.options.logger?.warn?.(
                     {
                       runId,
@@ -978,6 +987,7 @@ export class PiBaseAgentRunner implements PiRunner {
           if (!context.isError) {
             observeInspection?.(context.toolCall.name, context.args);
           }
+          zeroOutputStalled = false;
           jigglesUsed = 0;
           connectionErrors = 0;
           steering.observeToolCall(
@@ -1333,6 +1343,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 const candidate = resolvedModels[index]!;
                 if (stageSession.model?.id !== candidate.id) {
                   await stageSession.setModel(candidate);
+                  zeroOutputStalled = false;
                   jigglesUsed = 0;
                   connectionErrors = 0;
                   quotaScanFloor = stageSession.agent.state.messages.length;
@@ -1422,6 +1433,7 @@ export class PiBaseAgentRunner implements PiRunner {
             const candidate = resolvedModels[index]!;
             if (index > 0) {
               await activeSession.setModel(candidate);
+              zeroOutputStalled = false;
               jigglesUsed = 0;
               connectionErrors = 0;
               quotaScanFloor = activeSession.agent.state.messages.length;
@@ -1481,6 +1493,7 @@ export class PiBaseAgentRunner implements PiRunner {
             jigglesUsed = 0;
             connectionErrors = 0;
             await session.setModel(next);
+            zeroOutputStalled = false;
             quotaScanFloor = session.agent.state.messages.length;
             this.options.logger?.warn?.(
               {
@@ -1499,7 +1512,6 @@ export class PiBaseAgentRunner implements PiRunner {
             // so one transient never costs a configured candidate.
             prompt = CONNECTION_RETRY_PROMPT;
           } else if (zeroOutputStalled) {
-            zeroOutputStalled = false;
             const quotaError = lastAssistantQuotaError();
             if (quotaError) jigglesUsed = ZERO_OUTPUT_JIGGLES;
             if (jigglesUsed < ZERO_OUTPUT_JIGGLES) {
@@ -1521,6 +1533,7 @@ export class PiBaseAgentRunner implements PiRunner {
               connectionErrors = 0;
               const next = resolvedModels[index]!;
               await session.setModel(next);
+              zeroOutputStalled = false;
               quotaScanFloor = session.agent.state.messages.length;
               this.options.logger?.warn?.(
                 {

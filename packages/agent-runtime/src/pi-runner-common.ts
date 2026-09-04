@@ -142,6 +142,7 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onAssistantMessage?: (message: {
     readonly stopReason: string;
     readonly errorMessage: string | undefined;
+    readonly outputTokens: number;
   }) => void;
   readonly zeroOutputStallTurns?: number;
   /**
@@ -911,6 +912,7 @@ export function installRunGuards(
       options.onAssistantMessage?.({
         stopReason: event.message.stopReason,
         errorMessage: event.message.errorMessage,
+        outputTokens: usage?.output ?? 0,
       });
       if ((usage?.output ?? 0) === 0) {
         zeroOutputTurns += 1;

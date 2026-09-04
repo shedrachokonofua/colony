@@ -71,6 +71,7 @@ const sseChunk = (
   response: ServerResponse,
   model: string,
   choices: unknown[],
+  usage?: { completion_tokens: number; prompt_tokens?: number },
 ): void => {
   response.write(
     `data: ${JSON.stringify({
@@ -79,8 +80,55 @@ const sseChunk = (
       created: 1,
       model,
       choices,
+      ...(usage ? { usage } : {}),
     })}\n\n`,
   );
+};
+
+// A clean empty `stop` is retried internally by pi-ai. `length` gives the
+// runner a settled zero-token terminal response so this test isolates Colony's
+// recovery state rather than the provider's own empty-completion policy.
+const respondEmpty = (
+  response: ServerResponse,
+  model: string,
+  reasoning = false,
+): void => {
+  response.writeHead(200, sseHeaders);
+  sseChunk(response, model, [
+    {
+      index: 0,
+      delta: {
+        role: "assistant",
+        ...(reasoning ? { reasoning_content: "Still thinking." } : {}),
+      },
+      finish_reason: null,
+    },
+  ]);
+  sseChunk(response, model, [{ index: 0, delta: {}, finish_reason: "length" }]);
+  response.end("data: [DONE]\n\n");
+};
+
+const respondMeaningfulText = (
+  response: ServerResponse,
+  model: string,
+): void => {
+  response.writeHead(200, sseHeaders);
+  sseChunk(response, model, [
+    {
+      index: 0,
+      delta: { role: "assistant", content: "I have enough evidence." },
+      finish_reason: null,
+    },
+  ]);
+  sseChunk(response, model, [
+    {
+      index: 0,
+      delta: {},
+      finish_reason: "stop",
+      usage: { completion_tokens: 3, prompt_tokens: 1 },
+    },
+  ]);
+  response.end("data: [DONE]\n\n");
 };
 
 /** A settled transport-class error; status 400 avoids testing pi-ai's own retry loop. */
@@ -253,6 +301,7 @@ describe("Pi model fallback", () => {
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
+
       maxTokens: 8_192,
     });
     const scratchDir = mkdtempSync(join(tmpdir(), "colony-fallback-test-"));
@@ -297,6 +346,262 @@ describe("Pi model fallback", () => {
     expect(fallbackWarnings[0].fields.from).toBe("primary");
     expect(fallbackWarnings[0].fields.to).toBe("fallback");
   });
+
+  it("keeps recovering a mute primary across exhausted continuations before fallback", async () => {
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const headSha = "7".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
+      findings: [],
+      inspected: [{ file: "src/main.ts", note: "checked" }],
+      head_sha: headSha,
+    };
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response) => {
+        if (model === "primary") return respondEmpty(response, model);
+        respondVerdictToolCall(response, model, envelope);
+      },
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-empty-recovery-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "fallback")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        jiggleBackoffMs: 0,
+        maxTurns: 12,
+        runTimeoutMs: 120_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
+      },
+    );
+
+    const result = await runner.run({
+      runId: "empty-recovery-contract",
+      packet: { goal: "Review the change", head_sha: headSha },
+      environment: { role: "reviewer" },
+    });
+
+    expect(requestedModels).toEqual([
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+      "fallback",
+    ]);
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(envelope);
+    expect(
+      warnings.filter((warning) => warning.message === "pi_zero_output_jiggle"),
+    ).toHaveLength(2);
+  }, 90_000);
+
+  it("treats reasoning-only stops as empty through fallback recovery", async () => {
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const headSha = "8".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
+      findings: [],
+      inspected: [{ file: "src/main.ts", note: "checked" }],
+      head_sha: headSha,
+    };
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response) => {
+        if (model === "primary") return respondEmpty(response, model, true);
+        respondVerdictToolCall(response, model, envelope);
+      },
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-reasoning-recovery-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "fallback")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        jiggleBackoffMs: 0,
+        maxTurns: 12,
+        runTimeoutMs: 120_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
+      },
+    );
+
+    const result = await runner.run({
+      runId: "reasoning-recovery-contract",
+      packet: { goal: "Review the change", head_sha: headSha },
+      environment: { role: "reviewer" },
+    });
+
+    expect(requestedModels).toEqual([
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+      "fallback",
+    ]);
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(envelope);
+    expect(
+      warnings.filter((warning) => warning.message === "pi_zero_output_jiggle"),
+    ).toHaveLength(2);
+  }, 90_000);
+
+  it("bounds a persistent empty-output primary without a fallback", async () => {
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const { baseUrl, requestedModels } = await startGateway((model, response) =>
+      respondEmpty(response, model),
+    );
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-empty-solo-test-"));
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        jiggleBackoffMs: 0,
+        maxTurns: 12,
+        runTimeoutMs: 120_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
+      },
+    );
+
+    const result = await runner.run({
+      runId: "empty-solo-contract",
+      packet: { goal: "Review the change", head_sha: "9".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(requestedModels).toEqual([
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+    ]);
+    expect(result.reason).toBe("zero_output_stall");
+    expect(
+      warnings.filter((warning) => warning.message === "pi_zero_output_jiggle"),
+    ).toHaveLength(2);
+  }, 90_000);
+
+  it("disarms recovery when the same model makes meaningful progress", async () => {
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const headSha = "a".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
+      findings: [],
+      inspected: [{ file: "src/main.ts", note: "checked" }],
+      head_sha: headSha,
+    };
+    let primaryRequests = 0;
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response) => {
+        primaryRequests += 1;
+        if (primaryRequests <= 3) return respondEmpty(response, model);
+        if (primaryRequests === 4)
+          return respondMeaningfulText(response, model);
+        respondVerdictToolCall(response, model, envelope);
+      },
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-progress-recovery-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "fallback")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        jiggleBackoffMs: 0,
+        maxTurns: 12,
+        runTimeoutMs: 120_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
+      },
+    );
+
+    const result = await runner.run({
+      runId: "progress-recovery-contract",
+      packet: { goal: "Review the change", head_sha: headSha },
+      environment: { role: "reviewer" },
+    });
+
+    expect(requestedModels).toEqual([
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+    ]);
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(envelope);
+    expect(
+      warnings.filter((warning) => warning.message === "pi_zero_output_jiggle"),
+    ).toHaveLength(1);
+    expect(
+      warnings.filter((warning) => warning.message === "pi_run_continuation"),
+    ).toHaveLength(3);
+  }, 90_000);
 
   it("a prior model's quota error never short-circuits the current model's stall handling", async () => {
     const requestedModels: string[] = [];
