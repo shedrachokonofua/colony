@@ -39,7 +39,9 @@ export interface ArchitectPacket {
   body: string;
   project: PacketProject | null;
   repo: AgentPacketRepo;
-  /** Findings from the previous plan's review (reviewer or operator). */
+  /** Durable operator-authored amendments to the original scope goal. */
+  plan_directives?: string;
+  /** Findings from the latest rejected plan review. */
   plan_feedback?: string;
 }
 
@@ -51,6 +53,8 @@ export interface PlanReviewPacket {
   project: PacketProject | null;
   repo: AgentPacketRepo;
   plan: ArchitectDecompositionV2;
+  /** Durable operator-authored amendments the reviewer must enforce. */
+  plan_directives?: string;
   /** Which review round this is (1-based). */
   round: number;
 }
@@ -156,6 +160,16 @@ function projectFilesSection(files: readonly ProjectFile[]): string {
   return `## Project reference files (read on demand)\n${lines.join("\n")}\n`;
 }
 
+function operatorPlanDirectivesSection(scope: Scope): string {
+  if (!scope.plan_directives.trim()) return "";
+  return [
+    "## Authoritative operator planning directives",
+    scope.plan_directives,
+    "",
+    "These directives are durable scope requirements. Later directives supersede earlier directives only where they explicitly conflict.",
+  ].join("\n");
+}
+
 export function buildArchitectPacket(
   scope: Scope,
   project: Project | null,
@@ -181,6 +195,9 @@ export function buildArchitectPacket(
       base_commit: baseSha,
     },
     ...(scope.plan_feedback ? { plan_feedback: scope.plan_feedback } : {}),
+    ...(scope.plan_directives
+      ? { plan_directives: scope.plan_directives }
+      : {}),
   };
 }
 
@@ -199,7 +216,9 @@ export function buildPlanReviewPacket(
     body: [
       `Scope goal: ${scope.goal}`,
       "",
+      operatorPlanDirectivesSection(scope),
       `Plan review round ${round}. Judge the proposed plan against this repository and submit plan_review_verdict.`,
+      "Return request_changes if the plan omits or contradicts any non-superseded operator directive.",
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -212,6 +231,9 @@ export function buildPlanReviewPacket(
       base_commit: baseSha,
     },
     plan,
+    ...(scope.plan_directives
+      ? { plan_directives: scope.plan_directives }
+      : {}),
     round,
   };
 }
@@ -364,13 +386,15 @@ function buildArchitectBody(scope: Scope): string {
     "Pure verify/QA tasks with no diff cannot pass a merge gate — fold verification into the task that produces the change, as required evidence.",
     "Tasks creating shared contracts (schemas, wire protocols, exported test suites) must say so in their spec: contract changes are permanent and get the strictest review.",
   ];
+  const directives = operatorPlanDirectivesSection(scope);
+  if (directives) lines.push("", directives);
   if (scope.plan_feedback) {
     lines.push(
       "",
-      "## Operator feedback on your previous plan",
+      "## Findings from the latest rejected plan review",
       scope.plan_feedback,
       "",
-      "The previous decomposition was rejected. Revise it to address this feedback.",
+      "Revise the decomposition to address these findings without dropping the scope goal or any non-superseded operator directive.",
     );
   }
   return lines.join("\n");

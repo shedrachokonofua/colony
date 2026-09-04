@@ -126,6 +126,7 @@ export interface Scope {
   readonly project_name: string | null;
   readonly approvals: ScopeApprovals;
   readonly plan_feedback: string | null;
+  readonly plan_directives: string;
   readonly status: ScopeStatus;
   readonly provider_repo_id: string;
   readonly provider_repo_path: string;
@@ -1046,7 +1047,7 @@ export class Store {
     return scope;
   }
 
-  /** Store the architect's proposed plan; consumes any pending feedback. */
+  /** Store the architect's proposed plan; consumes reviewer findings only. */
   setScopePlan(id: ScopeId | string, planJson: string): void {
     this.db
       .prepare(
@@ -1056,17 +1057,45 @@ export class Store {
   }
 
   /**
-   * Reject the proposed plan with feedback: the plan is cleared and the
-   * next tick re-dispatches the architect with the feedback in its packet.
+   * Append an authoritative operator directive and reject the current plan.
+   * The append and invalidation are one statement so no accepted plan can
+   * omit a directive that was successfully recorded.
    */
-  requestReplan(id: ScopeId | string, feedback: string): Scope {
+  requestOperatorReplan(id: ScopeId | string, feedback: string): Scope {
+    const now = nowIso();
+    const directive = `## Operator planning directive (${now})\n${feedback.trim()}`;
+    this.db
+      .prepare(
+        `UPDATE scopes
+         SET plan_json = NULL,
+             plan_feedback = NULL,
+             plan_directives = CASE
+               WHEN plan_directives = '' THEN ?
+               ELSE plan_directives || char(10) || char(10) || ?
+             END,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(directive, directive, now, id);
+    const scope = this.getScope(id);
+    if (!scope)
+      throw new Error(`scope lost after operator replan request: ${id}`);
+    return scope;
+  }
+
+  /**
+   * Reject the proposed plan with reviewer findings. Durable operator
+   * directives remain untouched for every later architect and reviewer.
+   */
+  requestReviewReplan(id: ScopeId | string, feedback: string): Scope {
     this.db
       .prepare(
         `UPDATE scopes SET plan_json = NULL, plan_feedback = ?, updated_at = ? WHERE id = ?`,
       )
       .run(feedback, nowIso(), id);
     const scope = this.getScope(id);
-    if (!scope) throw new Error(`scope lost after replan request: ${id}`);
+    if (!scope)
+      throw new Error(`scope lost after review replan request: ${id}`);
     return scope;
   }
 

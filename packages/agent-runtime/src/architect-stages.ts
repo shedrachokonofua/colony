@@ -347,18 +347,32 @@ export function createPlanReviewSubmitTool(
 // ---------------------------------------------------------------------------
 
 function goalOf(packet: AgentRuntimePacket): string {
-  const goal = (packet as { goal?: unknown }).goal;
-  return typeof goal === "string" ? goal : JSON.stringify(packet);
+  const goal = "goal" in packet ? packet.goal : undefined;
+  const base = typeof goal === "string" ? goal : JSON.stringify(packet);
+  const directives =
+    "plan_directives" in packet ? packet.plan_directives : undefined;
+  if (typeof directives !== "string" || !directives.trim()) return base;
+  return [
+    base,
+    "",
+    "## Authoritative operator planning directives",
+    directives,
+    "",
+    "These directives are mandatory. Later directives supersede earlier directives only where they explicitly conflict.",
+  ].join("\n");
 }
 
 function projectContextOf(packet: AgentRuntimePacket): string | null {
-  const doc = (packet as { project?: { context_doc?: unknown } }).project
-    ?.context_doc;
+  const project = "project" in packet ? packet.project : undefined;
+  const doc =
+    project && typeof project === "object" && "context_doc" in project
+      ? project.context_doc
+      : undefined;
   return typeof doc === "string" && doc.trim() ? doc : null;
 }
 
 function reviewFeedbackOf(packet: AgentRuntimePacket): string | null {
-  const feedback = (packet as { plan_feedback?: unknown }).plan_feedback;
+  const feedback = "plan_feedback" in packet ? packet.plan_feedback : undefined;
   return typeof feedback === "string" && feedback.trim() ? feedback : null;
 }
 

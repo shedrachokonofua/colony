@@ -216,7 +216,7 @@ async function executePlanReview(
       return;
     }
     if (verdict.verdict === "request_changes") {
-      ctx.store.requestReplan(
+      ctx.store.requestReviewReplan(
         scope.id,
         formatPlanReviewFeedback(verdict, round),
       );

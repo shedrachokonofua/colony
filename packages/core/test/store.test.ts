@@ -195,6 +195,40 @@ describe("Store", () => {
     expect(store.taskDeps(tasks[1]!.id)).toEqual([tasks[0]!.id]);
   });
 
+  it("keeps operator plan directives through repeated reviewer replans", () => {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    store.setScopePlan(scopeId, JSON.stringify(plan()));
+
+    store.requestOperatorReplan(scopeId, "Add automatic delivery repair.");
+    let scope = store.getScope(scopeId)!;
+    expect(scope.plan_json).toBeNull();
+    expect(scope.plan_feedback).toBeNull();
+    expect(scope.plan_directives).toContain("Add automatic delivery repair.");
+
+    store.setScopePlan(scopeId, JSON.stringify(plan()));
+    store.requestReviewReplan(scopeId, "Plan review round 1: add evidence.");
+    scope = store.getScope(scopeId)!;
+    expect(scope.plan_feedback).toBe("Plan review round 1: add evidence.");
+    expect(scope.plan_directives).toContain("Add automatic delivery repair.");
+
+    store.setScopePlan(scopeId, JSON.stringify(plan()));
+    store.requestReviewReplan(
+      scopeId,
+      "Plan review round 2: fix state semantics.",
+    );
+    scope = store.getScope(scopeId)!;
+    expect(scope.plan_feedback).toBe(
+      "Plan review round 2: fix state semantics.",
+    );
+    expect(scope.plan_directives).toContain("Add automatic delivery repair.");
+
+    store.setScopePlan(scopeId, JSON.stringify(plan()));
+    scope = store.getScope(scopeId)!;
+    expect(scope.plan_feedback).toBeNull();
+    expect(scope.plan_directives).toContain("Add automatic delivery repair.");
+  });
+
   it("appends extension tasks while preserving existing ids and wiring deps", () => {
     const scopeId = seededScope();
     store.setScopeStatus(scopeId, "planning", "svc:colonyd");
@@ -1211,7 +1245,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(13);
+        expect(LATEST_SCHEMA_VERSION).toBe(14);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),

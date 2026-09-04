@@ -84,8 +84,10 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
           };
         }
         const revised =
-          typeof (packet as { plan_feedback?: unknown }).plan_feedback ===
-          "string";
+          ("plan_feedback" in packet &&
+            typeof packet.plan_feedback === "string") ||
+          ("plan_directives" in packet &&
+            typeof packet.plan_directives === "string");
         return {
           kind: "architect_decomposition",
           summary: revised

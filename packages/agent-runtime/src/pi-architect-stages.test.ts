@@ -199,6 +199,7 @@ async function runScenario(scenario: Scenario): Promise<{
     packet: {
       kind: "architect_scope",
       goal: "Add GET /version returning the build sha",
+      plan_directives: "Repair failed CI automatically.",
       head_sha: "a".repeat(40),
     },
     environment: { role: "architect" },
@@ -246,11 +247,15 @@ describe("staged architect", () => {
     const planPrompt = firstUserText(requests[1]!);
     expect(planPrompt).toContain("## Survey notes");
     expect(planPrompt).toContain("no version route yet");
+    expect(planPrompt).toContain("Repair failed CI automatically.");
     expect(requests[1]!.messages.filter((m) => m.role === "user")).toHaveLength(
       1,
     );
     // The verify stage saw the draft.
     expect(firstUserText(requests[2]!)).toContain('"summary": "draft"');
+    expect(firstUserText(requests[2]!)).toContain(
+      "Repair failed CI automatically.",
+    );
 
     // Tools per stage: survey and verify may inspect and delegate; plan may
     // only read and submit.

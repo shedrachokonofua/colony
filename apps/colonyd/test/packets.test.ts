@@ -9,6 +9,7 @@ import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import {
   buildArchitectPacket,
+  buildPlanReviewPacket,
   buildImplementPacket,
   buildReviewPacket,
   projectContextSection,
@@ -130,6 +131,61 @@ describe("project context packets", () => {
     });
     // The builder never mints credentials; architect.ts attaches the token.
     expect("credentials" in packet.repo).toBe(false);
+  });
+
+  it("carries durable directives into every planning role packet", async () => {
+    const { store, app } = appWithStore();
+    const created = await createScope(app, {
+      goal: "show delivery stages",
+      title: "show delivery stages",
+      repo: { path: "so/demo" },
+    });
+    const plan = {
+      kind: "architect_decomposition" as const,
+      summary: "Show stages and repair failed CI.",
+      requirements: [{ id: "R1", text: "Repair failed CI.", tasks: [0] }],
+      journey: [{ after_task: 0, working_state: "Failed CI is repaired." }],
+      acceptance: [{ description: "observable", command: "true" }],
+      tasks: [
+        {
+          title: "Repair CI",
+          spec: "Dispatch an evidence-backed repair.",
+          depends_on: [],
+          files: ["apps/colonyd/src/tick.ts"],
+          evidence: ["true"],
+        },
+      ],
+    };
+    store.requestOperatorReplan(
+      created.id,
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    store.setScopePlan(created.id, JSON.stringify(plan));
+    store.requestReviewReplan(created.id, "Keep dispatch idempotent.");
+    const scope = store.getScope(created.id)!;
+    const architect = buildArchitectPacket(
+      scope,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+    expect(architect.plan_directives).toContain(
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    expect(architect.body).toContain(
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    expect(architect.body).toContain("Keep dispatch idempotent.");
+
+    const review = buildPlanReviewPacket(scope, null, [], "abc123", plan, 2);
+    expect(review.plan_directives).toBe(architect.plan_directives);
+    expect(review.body).toContain(
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    expect(review.body).toContain(
+      "Return request_changes if the plan omits or contradicts",
+    );
   });
 
   it("gives a scope with no project a null project field and no background section", async () => {
