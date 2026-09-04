@@ -628,34 +628,9 @@ describe("Pi model fallback", () => {
           );
           return;
         }
-        // "second" and "third" both stream an EMPTY completion: role delta,
-        // no content, clean stop - the mute-model shape.
-        response.writeHead(200, {
-          "content-type": "text/event-stream",
-          connection: "keep-alive",
-          "cache-control": "no-cache",
-        });
-        response.write(
-          `data: ${JSON.stringify({
-            id: "chatcmpl-empty",
-            object: "chat.completion.chunk",
-            created: 1,
-            model,
-            choices: [
-              { index: 0, delta: { role: "assistant" }, finish_reason: null },
-            ],
-          })}\n\n`,
-        );
-        response.write(
-          `data: ${JSON.stringify({
-            id: "chatcmpl-empty",
-            object: "chat.completion.chunk",
-            created: 1,
-            model,
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          })}\n\n`,
-        );
-        response.end("data: [DONE]\n\n");
+        // "second" and "third" both answer with the settled mute-model shape;
+        // see respondEmpty for why `length` and not a clean `stop`.
+        respondEmpty(response, model);
       });
     });
     servers.push(server);
@@ -694,10 +669,6 @@ describe("Pi model fallback", () => {
         broker: { resolve: () => "test-key" },
         ...FAST_RETRY,
         maxTurns: 8,
-        // The wall must be long enough for three empty turns + the first
-        // 15s jiggle even on a slow CI box (9s starved the stall entirely
-        // there), yet shorter than jiggle 1 + jiggle 2 completing - so
-        // "third" is reachable ONLY via the stale-quota shortcut, the bug.
         runTimeoutMs: 30_000,
         logger: {
           warn: (fields: Record<string, unknown>, message: string) => {
@@ -714,13 +685,25 @@ describe("Pi model fallback", () => {
     });
 
     expect(requestedModels).toContain("second");
-    expect(requestedModels).not.toContain("third");
     expect(result.reason).toBeDefined();
     // The stall took the jiggle path on the CURRENT model instead of
-    // inheriting primary's quota verdict.
+    // inheriting primary's quota verdict: "second" is jiggled, and any
+    // failover away from it is a stall verdict, never the stale quota one.
     expect(
-      warnings.some((warning) => warning.message === "pi_zero_output_jiggle"),
+      warnings.some(
+        (warning) =>
+          warning.message === "pi_zero_output_jiggle" &&
+          warning.fields["model"] === "second",
+      ),
     ).toBe(true);
+    const fallbacksFromSecond = warnings.filter(
+      (warning) =>
+        warning.message === "pi_model_fallback" &&
+        warning.fields["from"] === "second",
+    );
+    for (const fallback of fallbacksFromSecond) {
+      expect(fallback.fields["error"]).toBe("zero_output_stall");
+    }
   }, 90_000);
 
   it("fails over to the next configured model after five consecutive connection errors", async () => {
