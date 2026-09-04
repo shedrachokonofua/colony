@@ -152,8 +152,8 @@ export async function captureWorkspace(input: {
     }
 
     // 5. Generate manifest covering changed-vs-head set (compared against parentSha)
-    // Run in a single sandbox script using node to avoid multiple sandbox exec roundtrips
-    const manifestScript = `node -e '
+    // Bun is guaranteed by the sandbox image and the colonyd runtime.
+    const manifestScript = `bun -e '
 const { execSync } = require("child_process");
 const { createHash } = require("crypto");
 
