@@ -154,7 +154,9 @@ describe("run-line", () => {
       error: "429 Too Many Requests",
     });
     await el.updateComplete;
-    expect(el.querySelector(".meta")?.textContent).toContain("provider/rate_limit");
+    expect(el.querySelector(".meta")?.textContent).toContain(
+      "provider/rate_limit",
+    );
   });
 
   it("renders an unknown badge with class fault-unknown when fault layer is unknown", async () => {

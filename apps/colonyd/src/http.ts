@@ -127,7 +127,6 @@ function serializeRun(run: Run): Run & { fault: Fault | null } {
   };
 }
 
-
 const scopesQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),

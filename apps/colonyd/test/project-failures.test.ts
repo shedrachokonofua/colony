@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { appWithStore, scopeWithTasks, advanceTask } from "./project-running.test.js";
+import {
+  appWithStore,
+  scopeWithTasks,
+  advanceTask,
+} from "./project-running.test.js";
 import type { Run } from "@colony/core";
 
 describe("GET /projects/:name/failures and run.fault serialization", () => {
@@ -17,7 +21,11 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
 
     store.finishRun(run.id, "failed", {
       error: "rate limited",
-      fault: { layer: "provider", code: "rate_limit", detail: "429 too many requests" },
+      fault: {
+        layer: "provider",
+        code: "rate_limit",
+        detail: "429 too many requests",
+      },
     });
 
     // Check GET /tasks/:id
@@ -25,7 +33,9 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(taskRes.status).toBe(200);
-    const taskBody = (await taskRes.json()) as { runs: Array<{ fault: unknown }> };
+    const taskBody = (await taskRes.json()) as {
+      runs: Array<{ fault: unknown }>;
+    };
     expect(taskBody.runs[0]!.fault).toEqual({
       layer: "provider",
       code: "rate_limit",
@@ -37,7 +47,9 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(scopeRes.status).toBe(200);
-    const scopeBody = (await scopeRes.json()) as { runs: Array<{ fault: unknown }> };
+    const scopeBody = (await scopeRes.json()) as {
+      runs: Array<{ fault: unknown }>;
+    };
     expect(scopeBody.runs[0]!.fault).toEqual({
       layer: "provider",
       code: "rate_limit",
@@ -68,39 +80,65 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       headers: { "X-Actor-Id": "human:op-1" },
     });
     expect(runningRes.status).toBe(200);
-    const runningBody = (await runningRes.json()) as Array<{ run: { fault: unknown } }>;
+    const runningBody = (await runningRes.json()) as Array<{
+      run: { fault: unknown };
+    }>;
     expect(runningBody[0]!.run.fault).toBeNull();
   });
 
   it("GET /projects/:name/failures returns paginated failures and census counts", async () => {
     const { store, app } = appWithStore();
-    const { scope_id, task_ids } = scopeWithTasks(store, "census-proj", ["T1", "T2"]);
+    const { scope_id, task_ids } = scopeWithTasks(store, "census-proj", [
+      "T1",
+      "T2",
+    ]);
 
     // Run 1: provider failure
-    const r1 = store.startRun({ scope_id, task_id: task_ids[0]!, kind: "implement", lease_ttl_ms: 60_000 });
+    const r1 = store.startRun({
+      scope_id,
+      task_id: task_ids[0]!,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
     store.finishRun(r1.id, "failed", {
       fault: { layer: "provider", code: "rate_limit" },
     });
 
     // Run 2: model failure
-    const r2 = store.startRun({ scope_id, task_id: task_ids[1]!, kind: "implement", lease_ttl_ms: 60_000 });
+    const r2 = store.startRun({
+      scope_id,
+      task_id: task_ids[1]!,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
     store.finishRun(r2.id, "failed", {
       fault: { layer: "model", code: "syntax_error" },
     });
 
     // Run 3: colonyd failure
-    const r3 = store.startRun({ scope_id, kind: "architect", lease_ttl_ms: 60_000 });
+    const r3 = store.startRun({
+      scope_id,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+    });
     store.finishRun(r3.id, "failed", {
       fault: { layer: "colonyd", code: "process_restart" },
     });
 
     // Run 4: succeeded run (should not be counted in failures)
-    const r4 = store.startRun({ scope_id, kind: "architect", lease_ttl_ms: 60_000 });
+    const r4 = store.startRun({
+      scope_id,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+    });
     store.finishRun(r4.id, "succeeded");
 
-    const res = await app.request(`/projects/census-proj/failures?limit=2&offset=0`, {
-      headers: { "X-Actor-Id": "human:op-1" },
-    });
+    const res = await app.request(
+      `/projects/census-proj/failures?limit=2&offset=0`,
+      {
+        headers: { "X-Actor-Id": "human:op-1" },
+      },
+    );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       total: number;

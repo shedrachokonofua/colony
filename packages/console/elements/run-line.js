@@ -75,7 +75,8 @@ export class RunLine extends ColonyElement {
         ? fault.layer === "unknown"
           ? html` · <span class="badge fault-unknown">unknown</span> ·
               ${fault.code}`
-          : html` · <span class="fault-info">${fault.layer}/${fault.code}</span>`
+          : html` ·
+              <span class="fault-info">${fault.layer}/${fault.code}</span>`
         : nothing;
     return html`<div class="run" data-status=${run.status}>
       <i></i>

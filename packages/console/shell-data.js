@@ -143,20 +143,21 @@ export async function refresh(app) {
     if (projectName) {
       // The project route owns this refresh: it must not touch board or
       // sheet state, and it must preserve an in-flight editor "Saved.".
-      const [project, scopesPage, runningRows, failuresData] = await Promise.all([
-        app.api(`/projects/${encodeURIComponent(projectName)}`, {
-          notFound: "null",
-        }),
-        app.api(
-          `/scopes?limit=${PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
-        ),
-        app.api(`/projects/${encodeURIComponent(projectName)}/running`, {
-          notFound: "null",
-        }),
-        app.api(`/projects/${encodeURIComponent(projectName)}/failures`, {
-          notFound: "null",
-        }),
-      ]);
+      const [project, scopesPage, runningRows, failuresData] =
+        await Promise.all([
+          app.api(`/projects/${encodeURIComponent(projectName)}`, {
+            notFound: "null",
+          }),
+          app.api(
+            `/scopes?limit=${PAGE_SIZE}&offset=${offset}&project=${encodeURIComponent(projectName)}`,
+          ),
+          app.api(`/projects/${encodeURIComponent(projectName)}/running`, {
+            notFound: "null",
+          }),
+          app.api(`/projects/${encodeURIComponent(projectName)}/failures`, {
+            notFound: "null",
+          }),
+        ]);
       app.projectPage = {
         name: projectName,
         project: project === null ? null : project.project,

@@ -296,7 +296,14 @@ export class ProjectPage extends ColonyElement {
       </section>`;
     }
     const counts = failures.counts ?? {};
-    const layers = ["model", "harness", "sandbox", "provider", "colonyd", "unknown"];
+    const layers = [
+      "model",
+      "harness",
+      "sandbox",
+      "provider",
+      "colonyd",
+      "unknown",
+    ];
     const items = failures.items ?? [];
 
     const grouped = new Map();
@@ -331,7 +338,9 @@ export class ProjectPage extends ColonyElement {
                   html`<li class="census-item">
                     <span class="census-code">${item.code}</span>
                     <span class="census-meta mono">
-                      ${item.taskId ? html`<span class="task-id">${item.taskId}</span> · ` : nothing}
+                      ${item.taskId
+                        ? html`<span class="task-id">${item.taskId}</span> · `
+                        : nothing}
                       <span class="run-id">${item.runId.slice(0, 8)}</span> ·
                       <span class="census-at">${rel(item.at)}</span>
                     </span>
