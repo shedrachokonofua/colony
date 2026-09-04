@@ -59,53 +59,58 @@ async function startModelStub(envelope: unknown): Promise<ModelStubHandle> {
             })
             .join("\n")
         : String(systemMessage?.content ?? "");
+      const hasToolResult = (parsed.messages ?? []).some(
+        (message) => message.role === "tool",
+      );
 
       let chunks: Array<{
         delta: Record<string, unknown>;
         finish: string | null;
       }>;
-      if (system.includes("submit_survey_notes")) {
-        chunks = [
-          {
-            delta: {
-              role: "assistant",
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call-tracing-survey",
-                  type: "function",
-                  function: {
-                    name: "submit_survey_notes",
-                    arguments: JSON.stringify(SURVEY_NOTES),
+      if (system.includes("submit_plan_draft")) {
+        if (!hasToolResult) {
+          chunks = [
+            {
+              delta: {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-tracing-inspect",
+                    type: "function",
+                    function: {
+                      name: "bash",
+                      arguments: JSON.stringify({ command: "pwd" }),
+                    },
                   },
-                },
-              ],
+                ],
+              },
+              finish: null,
             },
-            finish: null,
-          },
-          { delta: {}, finish: "tool_calls" },
-        ];
-      } else if (system.includes("submit_plan_draft")) {
-        chunks = [
-          {
-            delta: {
-              role: "assistant",
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call-tracing-plan",
-                  type: "function",
-                  function: {
-                    name: "submit_plan_draft",
-                    arguments: JSON.stringify(envelope),
+            { delta: {}, finish: "tool_calls" },
+          ];
+        } else {
+          chunks = [
+            {
+              delta: {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-tracing-plan",
+                    type: "function",
+                    function: {
+                      name: "submit_plan_draft",
+                      arguments: JSON.stringify(envelope),
+                    },
                   },
-                },
-              ],
+                ],
+              },
+              finish: null,
             },
-            finish: null,
-          },
-          { delta: {}, finish: "tool_calls" },
-        ];
+            { delta: {}, finish: "tool_calls" },
+          ];
+        }
       } else if (system.includes("submit_architect_decomposition")) {
         chunks = [
           {
@@ -228,15 +233,6 @@ const ENVELOPE = {
       evidence: ["true"],
     },
   ],
-};
-
-const SURVEY_NOTES = {
-  kind: "architect_survey_notes",
-  requirements: [{ id: "R1", text: "goal holds" }],
-  findings: [{ path: "README.md", note: "root" }],
-  commands: { test: "true" },
-  conventions: [],
-  gaps: [],
 };
 
 describe("run tracing with the pi runtime and an in-memory exporter", () => {

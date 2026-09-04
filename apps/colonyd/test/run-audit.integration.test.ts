@@ -55,15 +55,6 @@ const ENVELOPE = {
   ],
 };
 
-const SURVEY_NOTES = {
-  kind: "architect_survey_notes",
-  requirements: [{ id: "R1", text: "goal holds" }],
-  findings: [{ path: "README.md", note: "root" }],
-  commands: { test: "true" },
-  conventions: [],
-  gaps: [],
-};
-
 function initGitRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
   execSync("git init -b main", { cwd: dir, stdio: "pipe" });
@@ -122,7 +113,7 @@ async function startModelStub(): Promise<ModelStubHandle> {
         finish: string | null;
       }>;
 
-      if (system.includes("submit_survey_notes")) {
+      if (system.includes("submit_plan_draft")) {
         if (!hasToolResult) {
           // Preserve the inspection call used by the audit assertions.
           chunks = [
@@ -155,11 +146,11 @@ async function startModelStub(): Promise<ModelStubHandle> {
                 tool_calls: [
                   {
                     index: 0,
-                    id: "call-audit-survey",
+                    id: "call-audit-plan",
                     type: "function",
                     function: {
-                      name: "submit_survey_notes",
-                      arguments: JSON.stringify(SURVEY_NOTES),
+                      name: "submit_plan_draft",
+                      arguments: JSON.stringify(ENVELOPE),
                     },
                   },
                 ],
@@ -169,27 +160,6 @@ async function startModelStub(): Promise<ModelStubHandle> {
             { delta: {}, finish: "tool_calls" },
           ];
         }
-      } else if (system.includes("submit_plan_draft")) {
-        chunks = [
-          {
-            delta: {
-              role: "assistant",
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call-audit-plan",
-                  type: "function",
-                  function: {
-                    name: "submit_plan_draft",
-                    arguments: JSON.stringify(ENVELOPE),
-                  },
-                },
-              ],
-            },
-            finish: null,
-          },
-          { delta: {}, finish: "tool_calls" },
-        ];
       } else if (system.includes("submit_architect_decomposition")) {
         chunks = [
           {

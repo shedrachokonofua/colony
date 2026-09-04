@@ -64,6 +64,7 @@ import {
   PLAN_REVIEW_SYSTEM_PROMPT,
   planReviewVerdictTypeBox,
   type ArchitectStage,
+  type InspectionManifest,
   type StageArtifacts,
 } from "./architect-stages.js";
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
@@ -686,8 +687,8 @@ export class PiBaseAgentRunner implements PiRunner {
             subagentTool.name,
           ],
           prewalk: true,
-          // Staged roles bring their own file-backed session (the survey);
-          // this one is never prompted and must not own the transcript path.
+          // Staged roles bring their own file-backed first session; this one
+          // is never prompted and must not own the transcript path.
           journal: stages.length > 0 ? "transient" : "run",
         }),
       );
@@ -794,13 +795,11 @@ export class PiBaseAgentRunner implements PiRunner {
         this.options.auditSink,
         runToken ? [runToken] : [],
       );
-      // Submit-deadline enforcement: re-steering only fires when a model
-      // STOPS without submitting, so a model that investigates forever never
-      // hears it (grok-4.6 spent 44 of 45 minutes probing a diff with zero
-      // submit attempts, twice, 2026-09-01). When the wall is near and
-      // nothing is submitted, every tool result carries the clock.
+      // Re-steering normally fires only when a model stops. A near-deadline
+      // reminder also reaches models that keep investigating, but does not
+      // advertise a time allowance: models given a number tend to spend it.
       const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
-      let lastDeadlineNudgeAt = 0;
+      let lastDeadlineNudgeAt = Number.NEGATIVE_INFINITY;
       const takeSubmitDeadlineNudge = (force = false): string | null => {
         if (submissionCaptured()) return null;
         const remainingMs = deadline - Date.now();
@@ -808,10 +807,9 @@ export class PiBaseAgentRunner implements PiRunner {
         if (!force && performance.now() - lastDeadlineNudgeAt < 60_000)
           return null;
         lastDeadlineNudgeAt = performance.now();
-        const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
         return [
           "<system-reminder>",
-          `~${remainingMin} minute(s) of wall clock remain and nothing has been submitted. Stop investigating NOW and call ${activeStage?.submitName ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
+          `The submission window is closing. Stop investigating NOW and call ${activeStage?.submitName ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
           "</system-reminder>",
         ].join("\n");
       };
@@ -838,6 +836,7 @@ export class PiBaseAgentRunner implements PiRunner {
       const armSession = (
         target: AgentSession,
         submitName: string,
+        observeInspection?: (toolName: string, args: unknown) => void,
       ): (() => void) => {
         const unsubscribeGuards = installRunGuards(target.agent, runId, {
           maxTurns:
@@ -975,6 +974,9 @@ export class PiBaseAgentRunner implements PiRunner {
             REPOSITORY_INSPECTION_TOOLS[context.toolCall.name] === true
           ) {
             repositoryInspected = true;
+          }
+          if (!context.isError) {
+            observeInspection?.(context.toolCall.name, context.args);
           }
           jigglesUsed = 0;
           connectionErrors = 0;
@@ -1129,16 +1131,56 @@ export class PiBaseAgentRunner implements PiRunner {
          * stage, armed like the run session, its tools narrowed to what the
          * stage may do plus its own submit tool. A stage ends only by that
          * tool; past its turn cap the tools collapse to the submit tool
-         * alone. Each stage's artifact feeds the next; the final stage's
-         * submission is the run's envelope. Provider failure inside a stage
-         * fails over to the next candidate and re-prompts the SAME stage -
-         * earlier artifacts survive.
+         * alone. The planning stage discovers and drafts; successful
+         * inspection inputs become a compact manifest for the independent
+         * verifier. The verifier's submission is the run envelope.
          */
         const runStagedPlan = async (): Promise<void> => {
           const artifacts: {
-            notes?: StageArtifacts["notes"];
+            inspection?: InspectionManifest;
             draft?: StageArtifacts["draft"];
           } = {};
+          const inspectedPaths = new Set<string>();
+          const searches = new Set<string>();
+          const commands = new Set<string>();
+          const stringArg = (
+            args: unknown,
+            key: string,
+          ): string | undefined => {
+            if (!args || typeof args !== "object" || !(key in args)) return;
+            const value = Reflect.get(args, key);
+            return typeof value === "string" && value.trim()
+              ? value.trim()
+              : undefined;
+          };
+          const observeInspection = (toolName: string, args: unknown): void => {
+            if (toolName === "read" || toolName === "ls") {
+              const path = stringArg(args, "path");
+              if (path) inspectedPaths.add(path);
+              return;
+            }
+            if (toolName === "grep") {
+              const pattern = stringArg(args, "pattern");
+              const path = stringArg(args, "path");
+              if (pattern)
+                searches.add(path ? `${pattern} @ ${path}` : pattern);
+              return;
+            }
+            if (toolName === "glob") {
+              const path = stringArg(args, "path");
+              if (path) searches.add(`glob: ${path}`);
+              return;
+            }
+            if (toolName === "bash") {
+              const command = stringArg(args, "command");
+              if (command) commands.add(command);
+            }
+          };
+          const inspectionManifest = (): InspectionManifest => ({
+            paths: [...inspectedPaths],
+            searches: [...searches],
+            commands: [...commands],
+          });
           // The run session was built for the single-prompt shape; stages
           // bring their own. Drop it so its guards never fire on a stage.
           unsubscribeGuards();
@@ -1182,8 +1224,8 @@ export class PiBaseAgentRunner implements PiRunner {
               ...(stage.subagents ? [subagentTool] : []),
             ];
             // Without a sandbox engine the work tools are SDK builtins that
-            // exist only by name; listing custom tools alone left the survey
-            // with submit + task and no way to read (lab, 2026-09-03).
+            // exist only by name. Listing custom tools alone would leave an
+            // inspection stage unable to read.
             const stageBuiltinNames = toolNames.filter(
               (name) =>
                 name !== submitTool.name &&
@@ -1193,27 +1235,30 @@ export class PiBaseAgentRunner implements PiRunner {
             const stageSession = (
               await createAgentSession(
                 await buildSessionOptions({
-                  systemPrompt: `${stage.systemPrompt}\n\n${steering.budgetBlock()}`,
+                  systemPrompt: stage.systemPrompt,
                   customTools: stageCustomTools,
                   toolNames: [
                     ...stageCustomTools.map((tool) => tool.name),
                     ...stageBuiltinNames,
                   ],
                   prewalk: false,
-                  // The survey is the bulk of the run's reading and the
-                  // transcript operators need; later stages are small and
-                  // their artifacts are logged whole below.
-                  journal: stage.name === "survey" ? "run" : "transient",
+                  // The first stage owns the durable transcript; later stages
+                  // are compact checks whose artifacts are logged below.
+                  journal: stage === stages[0] ? "run" : "transient",
                 }),
               )
             ).session;
             session = stageSession;
-            if (stage.name === "survey") {
+            if (stage === stages[0]) {
               runSessionFile =
                 stageSession.sessionManager.getSessionFile() ?? undefined;
             }
             activeStage = { name: stage.name, submitName: stageSubmit.name };
-            const unarm = armSession(stageSession, stageSubmit.name);
+            const unarm = armSession(
+              stageSession,
+              stageSubmit.name,
+              stage.name === "plan" ? observeInspection : undefined,
+            );
             // Turn cap: past it, only the submit tool remains. Measured on
             // grok-4.6: a phase-budget trigger never fired because it does
             // not overstay phases, it overstays the run; turns are the unit
@@ -1357,11 +1402,8 @@ export class PiBaseAgentRunner implements PiRunner {
               return;
             }
             if (!isFinal) {
-              if (stage.name === "survey") {
-                artifacts.notes = stageCaptured as StageArtifacts["notes"];
-              } else if (stage.name === "plan") {
-                artifacts.draft = stageCaptured as StageArtifacts["draft"];
-              }
+              artifacts.draft = stageCaptured as StageArtifacts["draft"];
+              artifacts.inspection = inspectionManifest();
               stageSession.dispose();
               if (session === stageSession) session = undefined;
             }
@@ -1579,8 +1621,8 @@ export class PiBaseAgentRunner implements PiRunner {
       //     session manager that owns the file path) and the run-dir removal
       //     in (3). A session that never reached disk leaves no transcript,
       //     which capture treats as a silent skip, not an outage.
-      // The file-backed session is the run session, or the survey stage of a
-      // staged run - never whichever session happens to be live at teardown.
+      // The file-backed session is the run session, or the first stage of a
+      // staged run—not whichever session happens to be live at teardown.
       const sessionFile =
         runSessionFile ?? session?.sessionManager.getSessionFile() ?? undefined;
       let uploaded = false;

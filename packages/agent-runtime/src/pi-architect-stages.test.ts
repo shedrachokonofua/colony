@@ -51,15 +51,6 @@ function sseChunk(delta: unknown, finish: string | null): string {
   })}\n\n`;
 }
 
-const NOTES = {
-  kind: "architect_survey_notes",
-  requirements: [{ id: "R1", text: "GET /version returns the build sha" }],
-  findings: [{ path: "src/http.ts", note: "router lives here" }],
-  commands: { test: "bun test" },
-  conventions: ["tests beside sources"],
-  gaps: ["no version route yet"],
-};
-
 function plan(summary: string) {
   return {
     kind: "architect_decomposition",
@@ -208,22 +199,21 @@ async function runScenario(scenario: Scenario): Promise<{
 }
 
 /** Route on the stage: each stage's system prompt names its submit tool. */
-function stageOf(request: ChatRequest): "survey" | "plan" | "verify" {
-  const system = systemText(request);
-  if (system.includes("submit_survey_notes")) return "survey";
-  if (system.includes("submit_plan_draft")) return "plan";
-  return "verify";
+function stageOf(request: ChatRequest): "plan" | "verify" {
+  return systemText(request).includes("submit_plan_draft") ? "plan" : "verify";
 }
 
 describe("staged architect", () => {
-  it("runs survey, plan, verify as separate sessions with typed hand-offs", async () => {
+  it("discovers and plans in one session, then verifies independently", async () => {
+    let planningTurns = 0;
     const { result, requests, logs } = await runScenario({
       reply: (request) => {
         switch (stageOf(request)) {
-          case "survey":
-            return toolCallChunks("submit_survey_notes", NOTES);
           case "plan":
-            return toolCallChunks("submit_plan_draft", plan("draft"));
+            planningTurns += 1;
+            return planningTurns === 1
+              ? toolCallChunks("bash", { command: "pwd" })
+              : toolCallChunks("submit_plan_draft", plan("draft"));
           case "verify":
             return toolCallChunks(
               "submit_architect_decomposition",
@@ -235,74 +225,77 @@ describe("staged architect", () => {
     expect(result.reason).toBeUndefined();
     expect((result.envelope as { summary: string }).summary).toBe("verified");
 
-    // Three sessions, three system prompts, in order.
-    const stages = requests.map(stageOf);
-    expect(stages).toEqual(["survey", "plan", "verify"]);
+    expect(requests.map(stageOf)).toEqual(["plan", "plan", "verify"]);
     const started = logs
-      .filter((l) => l.message === "architect_stage")
-      .map((l) => l.fields.stage);
-    expect(started).toEqual(["survey", "plan", "verify"]);
+      .filter((entry) => entry.message === "architect_stage")
+      .map((entry) => entry.fields.stage);
+    expect(started).toEqual(["plan", "verify"]);
 
-    // The plan stage saw the survey notes and nothing of the survey chat.
-    const planPrompt = firstUserText(requests[1]!);
-    expect(planPrompt).toContain("## Survey notes");
-    expect(planPrompt).toContain("no version route yet");
+    const planPrompt = firstUserText(requests[0]!);
+    expect(planPrompt).toContain("Add GET /version");
     expect(planPrompt).toContain("Repair failed CI automatically.");
-    expect(requests[1]!.messages.filter((m) => m.role === "user")).toHaveLength(
-      1,
-    );
-    // The verify stage saw the draft.
-    expect(firstUserText(requests[2]!)).toContain('"summary": "draft"');
-    expect(firstUserText(requests[2]!)).toContain(
-      "Repair failed CI automatically.",
-    );
+    const verifyPrompt = firstUserText(requests[2]!);
+    expect(verifyPrompt).toContain('"summary": "draft"');
+    expect(verifyPrompt).toContain("## Mechanical inspection manifest");
+    expect(verifyPrompt).toContain('"pwd"');
+    expect(verifyPrompt).toContain("Repair failed CI automatically.");
+    const closingNudge = requests[1]!.messages
+      .map((message) => textOf(message.content))
+      .join("\n");
+    expect(closingNudge).toContain("The submission window is closing");
+    expect(closingNudge).not.toMatch(/\b\d+\s*(?:minutes?|mins?)\b/i);
 
-    // Tools per stage: survey and verify may inspect and delegate; plan may
-    // only read and submit.
-    const names = (r: ChatRequest) =>
-      (r.tools ?? []).map((t) => t.function.name);
-    expect(names(requests[0]!)).toContain("submit_survey_notes");
-    expect(names(requests[0]!)).toContain("task");
-    // The work tools are SDK builtins here (no engine); a survey that cannot
-    // read is a survey by delegation only.
+    const names = (request: ChatRequest) =>
+      (request.tools ?? []).map((tool) => tool.function.name);
     expect(names(requests[0]!)).toEqual(
-      expect.arrayContaining(["read", "grep", "glob", "bash"]),
+      expect.arrayContaining([
+        "submit_plan_draft",
+        "read",
+        "grep",
+        "glob",
+        "bash",
+        "task",
+      ]),
     );
-    expect(names(requests[1]!)).toEqual(
-      expect.arrayContaining(["submit_plan_draft", "read"]),
+    expect(names(requests[2]!)).toEqual(
+      expect.arrayContaining([
+        "submit_architect_decomposition",
+        "read",
+        "grep",
+        "task",
+      ]),
     );
-    expect(names(requests[1]!)).not.toContain("task");
-    expect(names(requests[1]!)).not.toContain("grep");
-    expect(names(requests[1]!)).not.toContain("bash");
-    expect(names(requests[2]!)).toContain("submit_architect_decomposition");
-    expect(names(requests[2]!)).toContain("task");
-    expect(names(requests[2]!)).toContain("grep");
+    expect(
+      names(requests[0]!).some((name) => name === "submit_survey_notes"),
+    ).toBe(false);
 
-    // Every stage logged its close with the artifact it produced.
-    const done = logs.filter((l) => l.message === "architect_stage_done");
-    expect(done.map((l) => l.fields.stage)).toEqual([
-      "survey",
-      "plan",
-      "verify",
-    ]);
-    expect(done[0]!.fields.landed).toBe(true);
-    expect((done[0]!.fields.artifact as { kind: string }).kind).toBe(
-      "architect_survey_notes",
+    const done = logs.filter(
+      (entry) => entry.message === "architect_stage_done",
     );
+    expect(done.map((entry) => entry.fields.stage)).toEqual(["plan", "verify"]);
+    expect((done[0]!.fields.artifact as { kind: string }).kind).toBe(
+      "architect_decomposition",
+    );
+
+    for (const request of requests) {
+      expect(`${systemText(request)}\n${firstUserText(request)}`).not.toMatch(
+        /\b\d+\s*(?:minutes?|mins?)\b/i,
+      );
+    }
   }, 60_000);
 
-  it("forces the submit tool when a stage needs a steer", async () => {
-    let forcedSurveyRequest: ChatRequest | undefined;
+  it("forces the plan submit tool when discovery needs a steer", async () => {
+    let forcedPlanRequest: ChatRequest | undefined;
     const { result, requests, logs } = await runScenario({
       reply: (request) => {
         switch (stageOf(request)) {
-          case "survey":
+          case "plan":
             if (
               request.tool_choice?.type === "function" &&
-              request.tool_choice.function?.name === "submit_survey_notes"
+              request.tool_choice.function?.name === "submit_plan_draft"
             ) {
-              forcedSurveyRequest = request;
-              return toolCallChunks("submit_survey_notes", NOTES);
+              forcedPlanRequest = request;
+              return toolCallChunks("submit_plan_draft", plan("draft"));
             }
             return [
               sseChunk(
@@ -314,8 +307,6 @@ describe("staged architect", () => {
               ),
               sseChunk({}, "stop"),
             ];
-          case "plan":
-            return toolCallChunks("submit_plan_draft", plan("draft"));
           case "verify":
             return toolCallChunks(
               "submit_architect_decomposition",
@@ -326,41 +317,36 @@ describe("staged architect", () => {
     });
 
     expect(result.reason).toBeUndefined();
-    expect(forcedSurveyRequest).toBeDefined();
-    expect(forcedSurveyRequest?.tool_choice).toEqual({
+    expect(forcedPlanRequest?.tool_choice).toEqual({
       type: "function",
-      function: { name: "submit_survey_notes" },
+      function: { name: "submit_plan_draft" },
     });
     expect(
-      logs.filter((l) => l.message === "architect_stage_submit_forced"),
+      logs.filter((entry) => entry.message === "architect_stage_submit_forced"),
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          fields: expect.objectContaining({ stage: "survey", turn: 1 }),
+          fields: expect.objectContaining({ stage: "plan", turn: 1 }),
         }),
       ]),
     );
     expect(
-      requests.filter((request) => stageOf(request) === "survey"),
+      requests.filter((request) => stageOf(request) === "plan"),
     ).toHaveLength(2);
   }, 60_000);
 
-  it("a stage that keeps reading past its turn cap is left with only its submit tool", async () => {
-    // The survey stage caps at 60 turns; the fake keeps calling `read`
-    // until the request arrives with a single tool, then submits.
+  it("a planning stage that keeps reading is left with only its submit tool", async () => {
     let capSeen = false;
     const { result, requests, logs } = await runScenario({
       reply: (request) => {
-        const tools = (request.tools ?? []).map((t) => t.function.name);
+        const tools = (request.tools ?? []).map((tool) => tool.function.name);
         switch (stageOf(request)) {
-          case "survey":
-            if (tools.length === 1 && tools[0] === "submit_survey_notes") {
-              capSeen = true;
-              return toolCallChunks("submit_survey_notes", NOTES);
-            }
-            return toolCallChunks("read", { path: "src/http.ts" });
           case "plan":
-            return toolCallChunks("submit_plan_draft", plan("draft"));
+            if (tools.length === 1 && tools[0] === "submit_plan_draft") {
+              capSeen = true;
+              return toolCallChunks("submit_plan_draft", plan("draft"));
+            }
+            return toolCallChunks("bash", { command: "pwd" });
           case "verify":
             return toolCallChunks(
               "submit_architect_decomposition",
@@ -371,20 +357,21 @@ describe("staged architect", () => {
     });
     expect(capSeen).toBe(true);
     expect(result.reason).toBeUndefined();
-    const cap = logs.find((l) => l.message === "architect_stage_turn_cap");
-    expect(cap?.fields.stage).toBe("survey");
-    expect(cap?.fields.turns).toBe(60);
-    const surveyRequests = requests.filter((r) => stageOf(r) === "survey");
-    expect(surveyRequests.length).toBeGreaterThan(60);
+    const cap = logs.find(
+      (entry) => entry.message === "architect_stage_turn_cap",
+    );
+    expect(cap?.fields.stage).toBe("plan");
+    expect(cap?.fields.turns).toBe(40);
+    const planRequests = requests.filter(
+      (request) => stageOf(request) === "plan",
+    );
+    expect(planRequests.length).toBeGreaterThan(40);
   }, 120_000);
 
-  it("a stage the model never submits fails the run with the stage named", async () => {
-    // The plan stage stops without calling submit_plan_draft, twice steered.
+  it("a planning stage the model never submits fails before verification", async () => {
     const { result, logs } = await runScenario({
       reply: (request) => {
         switch (stageOf(request)) {
-          case "survey":
-            return toolCallChunks("submit_survey_notes", NOTES);
           case "plan":
             return [
               sseChunk(
@@ -398,13 +385,12 @@ describe("staged architect", () => {
         }
       },
     });
-    // The runner's unfinished marker, never a plan.
     expect(result.envelope).toEqual({ __unfinished: true });
     expect(result.reason).toBe("architect_stage_plan_no_submission");
     expect(
       logs
-        .filter((l) => l.message === "architect_stage")
-        .map((l) => l.fields.stage),
-    ).toEqual(["survey", "plan"]);
+        .filter((entry) => entry.message === "architect_stage")
+        .map((entry) => entry.fields.stage),
+    ).toEqual(["plan"]);
   }, 60_000);
 });

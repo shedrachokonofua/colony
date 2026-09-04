@@ -1,10 +1,6 @@
 import { Type } from "@oh-my-pi/omptype/typebox";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import {
-  ArchitectDecompositionV2,
-  ArchitectSurveyNotesV1,
-  PlanReviewVerdictV1,
-} from "@colony/schemas";
+import { ArchitectDecompositionV2, PlanReviewVerdictV1 } from "@colony/schemas";
 import type { AgentRuntimePacket } from "./adapter.js";
 import { validateDecompositionEnvelope } from "./envelope-validation.js";
 import {
@@ -15,33 +11,25 @@ import {
 } from "./pi-runner-common.js";
 
 /**
- * The architect as three chats with typed hand-offs.
+ * The architect as two fresh chats with a typed hand-off.
  *
- * One transcript with phase prompts appended was the failure: a model that
- * reads never feels the phase end, the survey's sixty reads sit in context
- * while it is meant to be deciding, and the final submit competes with the
- * same tools that made reading attractive (grok-4.6: 0/6 as planning
- * architect, 65 reads and six written "submitting now" per run, never a
- * submit call; 2/2 as reviewer, where the job is a bounded object with a
- * terminal condition in the first sentence, 2026-09-03).
+ * Grounding is work, not a deliverable. A standalone survey stage added a
+ * schema submission and retry boundary, then the planning stage reopened the
+ * same files. Discovery now happens in the planning session. The runner
+ * records successful inspection inputs mechanically and gives that manifest,
+ * rather than model-authored survey prose, to an independent verifier.
  *
- * Each stage is a fresh session that sees only the artifact of the stage
- * before it and ends only by calling its own submit tool. The runner owns
- * the transitions: past a stage's turn cap the tools collapse to the submit
- * tool alone (a model alone with submit submits within seconds; the
- * measured trigger is turns, not wall clock). The plan stage has no search
- * tools at all - it grounds through the notes and may open a named file,
- * but cannot browse. The final stage's submission is the run's envelope.
+ * Each stage ends only through its submit tool. Past a turn cap, the runner
+ * removes every other tool. Runtime ceilings stay in the runner; prompts do
+ * not tell the model how long it may spend.
  *
- *   survey  packet ──────────────▶ SurveyNotes   (inspect + subagents)
- *   plan    goal + notes + review ─▶ draft plan   (read only)
- *   verify  goal + notes + draft ─▶ plan          (inspect + subagents, size-gated)
+ *   plan    packet + repository ─▶ draft plan + inspection manifest
+ *   verify  goal + draft + manifest ─▶ final plan (size-gated)
  *
- * Review happens outside the run: colonyd sends the plan through the
- * reviewer chain (plan_review) and re-dispatches the architect with the
- * findings, the same loop an implementer's MR goes through.
+ * Review happens outside the run: colonyd sends the final plan through the
+ * reviewer chain and re-dispatches the architect with findings.
  */
-export const ARCHITECT_STAGES = ["survey", "plan", "verify"] as const;
+export const ARCHITECT_STAGES = ["plan", "verify"] as const;
 export type ArchitectStageName = (typeof ARCHITECT_STAGES)[number];
 
 /** Sandbox tools a stage may use besides its own submit tool. */
@@ -57,7 +45,7 @@ export interface ArchitectStage {
   readonly subagents: boolean;
   /**
    * Assistant turns after which the stage's tools collapse to its submit
-   * tool. Sized to the work: survey reads, plan thinks, verify checks.
+   * tool. This is an internal ceiling, never a prompt allowance.
    */
   readonly turnCap: number;
   /** The stage's terminal tool; its capture is the stage artifact. */
@@ -67,57 +55,21 @@ export interface ArchitectStage {
   ) => ToolDefinition;
 }
 
+export interface InspectionManifest {
+  readonly paths: readonly string[];
+  readonly searches: readonly string[];
+  readonly commands: readonly string[];
+}
+
 export interface StageArtifacts {
   readonly packet: AgentRuntimePacket;
-  readonly notes?: ArchitectSurveyNotesV1;
+  readonly inspection?: InspectionManifest;
   readonly draft?: ArchitectDecompositionV2;
 }
 
 // ---------------------------------------------------------------------------
 // Wire schemas (TypeBox mirrors of the zod contracts; the zod parses)
 // ---------------------------------------------------------------------------
-
-const requirementRef = Type.Object(
-  {
-    id: Type.String({ pattern: "^R\\d+$" }),
-    text: Type.String({ minLength: 1 }),
-  },
-  { additionalProperties: false },
-);
-
-export const architectSurveyNotesTypeBox = Type.Object(
-  {
-    kind: Type.Literal("architect_survey_notes"),
-    requirements: Type.Array(requirementRef, { minItems: 1, maxItems: 40 }),
-    findings: Type.Array(
-      Type.Object(
-        {
-          path: Type.String({ minLength: 1 }),
-          note: Type.String({ minLength: 1 }),
-        },
-        { additionalProperties: false },
-      ),
-      { minItems: 1, maxItems: 60 },
-    ),
-    commands: Type.Object(
-      {
-        install: Type.Optional(Type.String({ minLength: 1 })),
-        build: Type.Optional(Type.String({ minLength: 1 })),
-        typecheck: Type.Optional(Type.String({ minLength: 1 })),
-        lint: Type.Optional(Type.String({ minLength: 1 })),
-        test: Type.Optional(Type.String({ minLength: 1 })),
-      },
-      { additionalProperties: false },
-    ),
-    conventions: Type.Optional(
-      Type.Array(Type.String({ minLength: 1 }), { maxItems: 30 }),
-    ),
-    gaps: Type.Optional(
-      Type.Array(Type.String({ minLength: 1 }), { maxItems: 30 }),
-    ),
-  },
-  { additionalProperties: false },
-);
 
 const architectTaskTypeBox = Type.Object(
   {
@@ -157,7 +109,7 @@ export const architectDecompositionEnvelopeTypeBox = Type.Object(
         minItems: 1,
         maxItems: 40,
         description:
-          "Every requirement from the survey, each mapped to the task indexes that deliver it. A task no requirement maps to is rejected.",
+          "Every goal or operator-directive requirement, each mapped to the task indexes that deliver it. A task no requirement maps to is rejected.",
       },
     ),
     journey: Type.Array(
@@ -236,26 +188,6 @@ export const planReviewVerdictTypeBox = Type.Object(
 // ---------------------------------------------------------------------------
 // Submit tools
 // ---------------------------------------------------------------------------
-
-export function createSurveySubmitTool(
-  capture: (value: unknown) => void,
-): ToolDefinition {
-  return {
-    name: "submit_survey_notes",
-    label: "Submit survey notes",
-    description:
-      "Final action of the survey. Submit the goal split into atomic requirements, the files and seams that matter (each confirmed to exist), the repository's real commands, its conventions, and what the goal needs that is not there yet. A rejected submission keeps the session open so you can correct and resubmit.",
-    parameters: architectSurveyNotesTypeBox,
-    execute: async (_toolCallId, rawParams) => {
-      capture(parseEnvelopeArguments(ArchitectSurveyNotesV1, rawParams));
-      return Promise.resolve({
-        content: [{ type: "text", text: "survey notes captured" }],
-        details: {},
-        terminate: true,
-      });
-    },
-  };
-}
 
 export function createPlanDraftSubmitTool(
   capture: (value: unknown) => void,
@@ -385,41 +317,29 @@ function terminalRule(tool: string, deliverable: string): string {
   return `# How this session ends\nThis session ends when you call \`${tool}\`, and only then. ${deliverable} If you run out of turns, your tools will be reduced to that one call: submit what you have rather than nothing.`;
 }
 
-const SURVEY_SYSTEM_PROMPT = [
+const PLAN_SYSTEM_PROMPT = [
   "# Role",
-  "You are the Colony Architect, surveying. Your job in this session is to read the goal against the repository and come back with the facts a plan will be built on. You do not plan here.",
+  "You are the Colony Architect, discovering and planning. Inspect the goal against the repository, then produce a task DAG that autonomous implementers execute independently. Each implementer sees ONLY its task spec, so every spec must be complete.",
   "",
   ENVIRONMENT_BLOCK,
   "",
-  "# What the notes must contain",
-  "- requirements: the goal split into atomic requirements a reviewer could check one at a time. Number them R1, R2, ... Everything the goal asks for, nothing it does not.",
-  "- findings: the files and seams that matter for this goal, each with why. Only paths you opened; a path you did not read is not a finding.",
-  "- commands: the repository's real install/build/typecheck/lint/test commands as its manifests define them.",
-  "- conventions: what you observed about where code and tests live, naming, and framework idioms.",
-  "- gaps: what the goal needs that the repository does not have yet.",
-  "Delegate independent lookups to `task` subagents and issue them together; they share your workspace.",
-  "",
-  terminalRule(
-    "submit_survey_notes",
-    "The notes are the deliverable; there is no other output.",
-  ),
-].join("\n");
-
-const PLAN_SYSTEM_PROMPT = [
-  "# Role",
-  "You are the Colony Architect, planning. From the survey notes you turn the goal into a task DAG that autonomous implementers execute independently. Each implementer sees ONLY its task spec - specs must be unambiguous and complete, because nobody answers questions later.",
-  "",
-  "# What you have",
-  "The survey notes are your view of the repository. You may `read` a file the notes name to check a detail; you cannot search. If the notes are missing something you need, plan around what is verified and say so in the summary - the verify stage will check the repository.",
+  "# Discover only what the plan needs",
+  "- Split the goal and operator directives into atomic requirements a reviewer can check. Number them R1, R2, ...; preserve everything requested.",
+  "- Inspect the source, tests, manifests, and existing seams that determine the change. Use only paths you verify or explicitly assign a task to create.",
+  "- Find the repository's real install, build, typecheck, lint, and test commands needed as evidence.",
+  "- Delegate independent lookups together. Stop broad exploration once the requirements, seams, contracts, and commands needed for a defensible plan are known.",
   "",
   buildArchitectDecompositionRules(),
   "",
   "# The plan is a claim you back",
-  "- requirements: carry every survey requirement through, each mapped to the task indexes that deliver it. A task that delivers no requirement is padding and is rejected.",
-  "- journey: the working states in landing order - after each task merges, what can a user or the system now do that it could not before. The last state is the delivered goal. Plan so that every state is real: if a task's merge changes nothing observable, fold it into the task that makes it observable.",
-  "- Every task names its files and its evidence commands. A task's evidence must fail on the default branch and pass on the task's branch.",
+  "- requirements: map every goal and operator-directive requirement to the task indexes that deliver it. A task that delivers no requirement is padding and is rejected.",
+  "- journey: state what works after each task lands. The final state delivers the whole goal; fold non-observable scaffolding into the task that makes it usable.",
+  "- Every task names verified or explicitly created files and exact evidence commands. Evidence must fail on the default branch and pass on the task branch.",
   "",
-  terminalRule("submit_plan_draft", "The draft plan is the deliverable."),
+  terminalRule(
+    "submit_plan_draft",
+    "The grounded draft plan is the deliverable.",
+  ),
 ].join("\n");
 
 const VERIFY_SYSTEM_PROMPT = [
@@ -433,7 +353,7 @@ const VERIFY_SYSTEM_PROMPT = [
   "- evidence: each command runs in this repository (correct runner, correct test path, correct flags) and would fail before the task lands.",
   "- contracts: where task B consumes what task A produces, both specs state the same exact paths, exported symbols, and shapes. Restate them verbatim in both.",
   "- depends_on: an edge for every produced-consumed relation; no edge where there is none.",
-  "Delegate per-task verification to `task` subagents and issue them together; each subagent gets the goal, the notes' commands and conventions, and one task.",
+  "Delegate independent per-task verification together; give each subagent the goal, the mechanical inspection manifest, and one task.",
   "",
   buildArchitectDecompositionRules(),
   "",
@@ -469,8 +389,12 @@ export const PLAN_REVIEW_SYSTEM_PROMPT = [
   terminalRule("submit_plan_review_verdict", "The verdict is the deliverable."),
 ].join("\n");
 
-function notesBlock(notes: ArchitectSurveyNotesV1): string {
-  return ["## Survey notes", JSON.stringify(notes, null, 2)].join("\n");
+function inspectionBlock(manifest: InspectionManifest): string {
+  return [
+    "## Mechanical inspection manifest",
+    "Generated from successful tool calls in the planning session:",
+    JSON.stringify(manifest, null, 2),
+  ].join("\n");
 }
 
 function feedbackBlock(packet: AgentRuntimePacket): string[] {
@@ -488,40 +412,19 @@ function feedbackBlock(packet: AgentRuntimePacket): string[] {
 export function buildArchitectStages(): readonly ArchitectStage[] {
   return [
     {
-      name: "survey",
-      systemPrompt: SURVEY_SYSTEM_PROMPT,
+      name: "plan",
+      systemPrompt: PLAN_SYSTEM_PROMPT,
       tools: "inspect",
       subagents: true,
-      turnCap: 60,
-      submitTool: (capture) => createSurveySubmitTool(capture),
+      turnCap: 40,
+      submitTool: (capture) => createPlanDraftSubmitTool(capture),
       prompt: ({ packet }) =>
         [
           buildPacketPrompt(packet),
-          "",
-          "## Survey",
-          "Read the goal against this repository and submit the survey notes.",
-        ].join("\n"),
-    },
-    {
-      name: "plan",
-      systemPrompt: PLAN_SYSTEM_PROMPT,
-      tools: "read_only",
-      subagents: false,
-      turnCap: 30,
-      submitTool: (capture) => createPlanDraftSubmitTool(capture),
-      prompt: ({ packet, notes }) =>
-        [
-          "## Goal",
-          goalOf(packet),
-          ...(projectContextOf(packet)
-            ? ["", "## Project context", projectContextOf(packet)!]
-            : []),
-          "",
-          notesBlock(notes!),
           ...feedbackBlock(packet),
           "",
-          "## Plan",
-          "Produce the draft plan and submit it.",
+          "## Discover and plan",
+          "Inspect the repository until the plan is grounded, then submit the draft.",
         ].join("\n"),
     },
     {
@@ -529,22 +432,25 @@ export function buildArchitectStages(): readonly ArchitectStage[] {
       systemPrompt: VERIFY_SYSTEM_PROMPT,
       tools: "inspect",
       subagents: true,
-      turnCap: 80,
+      turnCap: 40,
       submitTool: (capture, sizeGate) =>
         createArchitectSubmitTool(capture, sizeGate),
-      prompt: ({ packet, notes, draft }) =>
+      prompt: ({ packet, inspection, draft }) =>
         [
           "## Goal",
           goalOf(packet),
+          ...(projectContextOf(packet)
+            ? ["", "## Project context", projectContextOf(packet)!]
+            : []),
           "",
-          notesBlock(notes!),
+          inspectionBlock(inspection!),
           "",
           "## Draft plan",
           JSON.stringify(draft, null, 2),
           ...feedbackBlock(packet),
           "",
           "## Verify",
-          "Verify every task against the repository, fix the plan in place, and submit it.",
+          "Check the draft against the repository, fix it in place, and submit the final plan.",
         ].join("\n"),
     },
   ];

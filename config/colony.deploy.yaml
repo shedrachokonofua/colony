@@ -226,12 +226,11 @@ agents:
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
-  # 2026-09-03: spark leads through the Contributor route. Staged architect
-  # lab 3/3 submissions in 5-8 min (survey/plan/verify); AA Index 61 at xhigh.
+  # 2026-09-03: spark leads through the Contributor route after completing
+  # all staged-architect lab submissions; AA Index 61 at xhigh.
   # Contributor is $0.10/M input and $0.20/M output. Behind it, AA Index order:
-  # glm-5.3 60, kimi-k3 60, gemini-3.8-flash 59,
-  # Forced submit_survey_notes still produced no tool call after two steers
-  # (grok-toolchoice, 2026-09-03); grok-4.6 is removed from this chain.
+  # glm-5.3 60, kimi-k3 60, gemini-3.8-flash 59. Grok-4.6 failed forced
+  # structured submission after two steers and is excluded from this chain.
   architect:
     provider: openai_compatible
     model: muse-spark
