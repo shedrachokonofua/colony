@@ -127,10 +127,6 @@ providers:
         # Shares one llama-server with interactive use; never double-book it.
         max_parallel_runs: 1
         cost: { input: 0, output: 0 }
-      # Grok 4.6 through the Cursor bridge (separate subscription pool with
-      # headroom). Quality-escalation seat: reviewer first fallback, architect
-      # fallback, developer last resort. The litellm leg drops max_tokens
-      # (Cursor 400s on it).
       - id: router/muse-spark-1.3
         name: muse-spark-1.3
         reasoning: true
@@ -156,7 +152,8 @@ providers:
         context_window: 262144
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
-      - id: cursor/grok-4.6
+      # Grok 4.6 through the SuperGrok bridge; bypasses Cursor Composer.
+      - id: supergrok/grok-4.6
         name: grok-4.6
         reasoning: true
         context_window: 262144
