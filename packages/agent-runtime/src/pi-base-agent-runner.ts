@@ -1,6 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { rmSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import {
   ModelRegistry,
   SessionManager,
@@ -31,7 +30,6 @@ import type {
 import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
-  type PiModelSpec,
   type ArchitectSizeGate,
   DEFAULT_PI_RUN_TIMEOUT_MS,
   buildArchitectFinalizerPrompt,
@@ -323,7 +321,6 @@ export class PiBaseAgentRunner implements PiRunner {
     let clearTimeoutGuard: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
-    let submissionRejectionReason: string | undefined;
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
       resolveCapturedEnvelope = resolve;
     });
