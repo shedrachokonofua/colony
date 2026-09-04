@@ -108,6 +108,8 @@ export {
   type PiApiKind,
   type ResolvedAgentConfig,
   type ResolvedAuth,
+  type ResolvedModelCompat,
+  type ResolvedModelConfig,
   type S3ArtifactBackendConfig,
   type SandboxEngine,
 } from "./colony-config.js";

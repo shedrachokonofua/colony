@@ -195,4 +195,39 @@ describe("run event sink persists pi_model_fallback", () => {
 
     expect(store.getRun(run.id)!.model_id).toBe("fallback");
   });
+
+  it("maps tool lifecycle events onto the active run operation", () => {
+    const dbDir = mkdtempSync(join(tmpdir(), "colony-progress-store-"));
+    scratchDirs.push(dbDir);
+    const store = new Store(join(dbDir, "test.db"));
+    const scope = store.createScope({
+      goal: "active tool sink",
+      title: "active tool sink",
+      provider_repo_id: "1",
+      provider_repo_path: "so/fake",
+    });
+    const run = store.startRun({
+      scope_id: scope.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    const sink = createRunEventSink(store);
+
+    sink(run.id, "pi_tool_start", {
+      tool: "bash",
+      detail: "bun run test:unit",
+      startedAt: "2026-09-04T18:00:00.000Z",
+    });
+    expect(store.getRun(run.id)).toMatchObject({
+      active_tool: "bash",
+      active_tool_detail: "bun run test:unit",
+      active_tool_started_at: "2026-09-04T18:00:00.000Z",
+    });
+    sink(run.id, "pi_tool_end", { tool: "bash", isError: false });
+    expect(store.getRun(run.id)).toMatchObject({
+      active_tool: null,
+      active_tool_detail: null,
+      active_tool_started_at: null,
+    });
+  });
 });

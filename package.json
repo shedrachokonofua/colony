@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/console/tsconfig.json",
     "test": "bun test apps packages scripts",
     "test:unit": "git ls-files 'apps/**/*.test.ts' 'packages/**/*.test.ts' 'scripts/*.test.ts' | grep -v '\\.integration\\.test\\.ts$' | xargs bun test",
+    "test:integration": "git ls-files 'apps/**/*.integration.test.ts' 'packages/**/*.integration.test.ts' 'scripts/*.integration.test.ts' | xargs -n 1 bun test",
     "test:e2e": "playwright test",
     "lint": "prettier --check .",
     "format": "prettier --write ."

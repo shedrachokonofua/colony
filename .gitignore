@@ -22,6 +22,7 @@ logs/
 data/
 test-results/
 playwright-report/
+.worktrees/
 
 # Vendored console UI deps are script output (bun run vendor:ui) but committed
 # so a fresh clone serves them; VENDOR.md documents the exact versions.

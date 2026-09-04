@@ -321,6 +321,15 @@ function truncate(text: string | null | undefined, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
+/**
+ * Migration 14: keep operator-authored planning directives separate from
+ * ephemeral plan-review findings so repeated review rounds cannot erase scope
+ * requirements.
+ */
+function migrateScopePlanDirectives(db: Db): void {
+  addColumn(db, "scopes", "plan_directives", "TEXT NOT NULL DEFAULT ''");
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -380,6 +389,21 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 13,
     name: "runs-fault-json-backfill",
     apply: migrateRunsFaultJsonBackfill,
+  },
+  {
+    version: 14,
+    name: "scope-plan-directives",
+    apply: migrateScopePlanDirectives,
+  },
+  {
+    version: 15,
+    name: "runs-active-operation",
+    apply: (db) => {
+      addColumn(db, "runs", "last_progress_at", "TEXT");
+      addColumn(db, "runs", "active_tool", "TEXT");
+      addColumn(db, "runs", "active_tool_detail", "TEXT");
+      addColumn(db, "runs", "active_tool_started_at", "TEXT");
+    },
   },
 ];
 

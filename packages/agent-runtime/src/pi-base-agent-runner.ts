@@ -1,11 +1,14 @@
-import { rmSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   ModelRegistry,
   SessionManager,
   Settings,
+  buildWorkspaceTree,
   createAgentSession,
   discoverAuthStorage,
+  discoverContextFiles,
   type AgentSession,
   type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
@@ -30,6 +33,7 @@ import type { PiRunRequest, PiRunResult, PiRunner } from "./pi-adapter.js";
 import {
   type ActivePiRun,
   type PiRunnerBaseOptions,
+  type PiModelSpec,
   type ArchitectSizeGate,
   DEFAULT_PI_RUN_TIMEOUT_MS,
   buildArchitectFinalizerPrompt,
@@ -48,6 +52,7 @@ import {
   installWorkspaceProbe,
   WORKSPACE_LOST_REASON,
   packetRepo,
+  sanitizeSecret,
   provisionRepoWorkspace,
   provisionScratchDir,
   resolvePiModel,
@@ -64,6 +69,7 @@ import {
   PLAN_REVIEW_SYSTEM_PROMPT,
   planReviewVerdictTypeBox,
   type ArchitectStage,
+  type InspectionManifest,
   type StageArtifacts,
 } from "./architect-stages.js";
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
@@ -101,6 +107,47 @@ export type PiWorkspaceMode = "repo-required" | "scratch";
 
 /** Binding name reported to the credential broker for colonyd runs. */
 export const PI_RUNTIME_BINDING_NAME = "colonyd";
+
+export const COLONY_ADVISOR_NAME = "colony-critic";
+export const COLONY_ADVISOR_INSTRUCTIONS = [
+  "Emit nit for feedback that can wait.",
+  "Emit blocker only when the primary must stop or change course immediately.",
+  "Never emit concern.",
+].join(" ");
+export function shouldEnableColonyAdvisor(
+  role: AgentRuntimeRole,
+  journal: "run" | "transient",
+  hasAdvisorModel: boolean,
+): boolean {
+  return hasAdvisorModel && role !== "architect" && journal === "run";
+}
+
+function provisionAdvisorAgentDir(
+  model: PiModelSpec,
+  parentDir = tmpdir(),
+): string {
+  const dir = mkdtempSync(join(parentDir, "colony-advisor-"));
+  try {
+    const instructions = COLONY_ADVISOR_INSTRUCTIONS.replaceAll("\n", " ");
+    writeFileSync(
+      join(dir, "WATCHDOG.yml"),
+      [
+        "advisors:",
+        `  - name: ${COLONY_ADVISOR_NAME}`,
+        `    model: ${model.provider}/${model.id}:xhigh`,
+        "    tools: [read, grep, glob]",
+        "    instructions: |",
+        `      ${instructions}`,
+        "",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return dir;
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
 
 /**
  * Run `fn` inside the run root's span context when one was bound, so SDK
@@ -248,6 +295,15 @@ export class PiBaseAgentRunner implements PiRunner {
     const runToken = packetRepo(request.packet)?.credentials?.token;
     let model = await resolvePiModel(request, this.options.model);
     const models = [model, ...(this.options.fallbackModels ?? [])];
+    const availableModels =
+      this.options.advisorModel &&
+      !models.some(
+        (candidate) =>
+          candidate.provider === this.options.advisorModel!.provider &&
+          candidate.id === this.options.advisorModel!.id,
+      )
+        ? [...models, this.options.advisorModel]
+        : models;
     const workTools = this.options.tools ?? this.profile.defaultTools;
     let failureReason: string | undefined;
     let timeoutTriggered = false;
@@ -290,6 +346,7 @@ export class PiBaseAgentRunner implements PiRunner {
     let clearTimeoutGuard: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
+    let submissionRejectionReason: string | undefined;
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
       resolveCapturedEnvelope = resolve;
     });
@@ -297,6 +354,7 @@ export class PiBaseAgentRunner implements PiRunner {
     /** Path of the session JSONL that becomes the transcript artifact. */
     let runSessionFile: string | undefined;
     let handle: SandboxHandle | undefined;
+    let advisorAgentDir: string | undefined;
     let workspaceProbe: (() => void) | undefined;
     // Live subagent sessions. A parent abort that leaves children running
     // can never finalize: the task tool awaits a child that nobody told to
@@ -336,22 +394,45 @@ export class PiBaseAgentRunner implements PiRunner {
     try {
       // The credential broker owns key resolution; the registry only needs a
       // provider record per model so `createAgentSession` can resolve selectors.
+      // Advisor-only providers are optional: an unavailable advisor must not
+      // turn a healthy primary run into a failed run. Providers used by the
+      // primary chain keep the existing failure behavior.
+      const primaryProviders = new Set(
+        models.map((candidate) => candidate.provider),
+      );
       const providerApiKeys = new Map<string, string>();
-      for (const candidate of models) {
+      for (const candidate of availableModels) {
         if (providerApiKeys.has(candidate.provider)) continue;
-        const apiKey = await broker.resolve({
-          provider: candidate.provider,
-          capability: `agent.llm.${candidate.provider}.invoke`,
-          bindingName: PI_RUNTIME_BINDING_NAME,
-          environment: request.environment,
-        });
+        const advisorOnlyProvider =
+          this.options.advisorModel?.provider === candidate.provider &&
+          !primaryProviders.has(candidate.provider);
+        let apiKey: string | undefined;
+        try {
+          apiKey = await broker.resolve({
+            provider: candidate.provider,
+            capability: `agent.llm.${candidate.provider}.invoke`,
+            bindingName: PI_RUNTIME_BINDING_NAME,
+            environment: request.environment,
+          });
+        } catch (error) {
+          if (!advisorOnlyProvider) throw error;
+          this.options.logger?.warn?.(
+            {
+              runId,
+              provider: candidate.provider,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "pi_advisor_credential_unavailable",
+          );
+          continue;
+        }
         if (!apiKey) continue;
         providerApiKeys.set(candidate.provider, apiKey);
       }
       const authStorage = await discoverAuthStorage();
       const modelRegistry = new ModelRegistry(authStorage);
       for (const [provider, apiKey] of providerApiKeys) {
-        const providerModels = models.filter(
+        const providerModels = availableModels.filter(
           (candidate) => candidate.provider === provider,
         );
         const first = providerModels[0]!;
@@ -365,6 +446,7 @@ export class PiBaseAgentRunner implements PiRunner {
             api: candidate.api,
             baseUrl: candidate.baseUrl,
             reasoning: candidate.reasoning,
+            thinking: candidate.thinking,
             input: [...candidate.input],
             cost: { ...candidate.cost },
             // Every Colony route is an OpenAI-compatible gateway that speaks
@@ -374,7 +456,11 @@ export class PiBaseAgentRunner implements PiRunner {
             // catalog as prompt text and sends no `tools` array, and the model
             // answers with literal `<tool_call>` text that nothing parses
             // (qwen3.8-max as reviewer, 0/4 with zero tool calls, 2026-09-03).
-            supportsTools: true,
+            supportsTools: candidate.supportsTools ?? true,
+            // Preserve route-level compatibility policy across registry
+            // resolution and runtime fallback (e.g. disabling reasoning when
+            // a named tool choice is forced on a thinking-incompatible relay).
+            compat: candidate.compat,
             // Colony's config leaves these nullable; the registry wants numbers.
             contextWindow: candidate.contextWindow ?? 128_000,
             maxTokens: candidate.maxTokens ?? 16_384,
@@ -403,6 +489,15 @@ export class PiBaseAgentRunner implements PiRunner {
           `no credentialed provider for ${models[0]?.provider}/${models[0]?.id}; check the ${request.environment.role} agent's provider auth`,
         );
       }
+      const resolvedAdvisorModel = this.options.advisorModel
+        ? modelRegistry.find(
+            this.options.advisorModel.provider,
+            this.options.advisorModel.id,
+          )
+        : undefined;
+      // Advisor resolution is optional. A missing registry entry means the
+      // primary session runs without an advisor; never add an alternate model
+      // to the advisor role or alter Colony's primary fallback chain.
 
       const { customTools, toolNames } = (() => {
         // use the session-local capture so the submit envelope is wired
@@ -426,6 +521,7 @@ export class PiBaseAgentRunner implements PiRunner {
         };
       })();
       const steering = new RunSteering({
+        role: this.profile.role,
         runTimeoutMs: this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS,
         branch: packetRepo(request.packet)?.branch,
       });
@@ -480,7 +576,21 @@ export class PiBaseAgentRunner implements PiRunner {
       const thinkingLevel = toSdkThinkingLevel(
         this.options.thinkingLevel ?? this.profile.defaultThinkingLevel,
       );
-      const buildSettings = () =>
+      const advisorConfigured =
+        resolvedAdvisorModel !== undefined && this.profile.role !== "architect";
+      if (advisorConfigured) {
+        advisorAgentDir = provisionAdvisorAgentDir(
+          this.options.advisorModel!,
+          this.options.scratchDir,
+        );
+      }
+      const advisorContextFiles = advisorConfigured
+        ? discoverContextFiles(cwd)
+        : undefined;
+      const advisorWorkspaceTree = advisorConfigured
+        ? buildWorkspaceTree(cwd)
+        : undefined;
+      const buildSettings = (enableAdvisor: boolean) =>
         Settings.isolated({
           "compaction.enabled": true,
           "retry.enabled": true,
@@ -488,10 +598,20 @@ export class PiBaseAgentRunner implements PiRunner {
           // with exponential backoff, defaulting to 10 attempts. On a dead
           // leg that spends the whole run wall inside one prompt, so bound
           // the budget the leg may burn before the runner sees an error.
-          "retry.maxRetries": 4,
+          "retry.maxRetries": this.options.retryMaxRetries ?? 4,
           "todo.enabled": true,
           "todo.reminders": true,
           "goal.enabled": true,
+          "advisor.enabled": enableAdvisor,
+          ...(enableAdvisor
+            ? {
+                "advisor.syncBacklog": "off" as const,
+                "retry.modelFallback": false,
+                modelRoles: {
+                  advisor: `${this.options.advisorModel!.provider}/${this.options.advisorModel!.id}:xhigh`,
+                },
+              }
+            : {}),
           // A dead upstream stream must become a bounded retry, not a
           // run-long hang: muse once sat 31 minutes emitting zero tokens and
           // only the wall clock killed the run. Defaults are -1 (disabled).
@@ -525,62 +645,83 @@ export class PiBaseAgentRunner implements PiRunner {
          * (and rewriting) the run's transcript.
          */
         journal: "run" | "transient";
-      }) => ({
-        cwd,
-        model: primaryModel,
-        thinkingLevel,
-        authStorage,
-        modelRegistry,
-        getApiKey: async (candidate: { provider: string }) =>
-          broker.resolve({
-            provider: candidate.provider,
-            capability: `agent.llm.${candidate.provider}.invoke`,
-            bindingName: PI_RUNTIME_BINDING_NAME,
-            environment: request.environment,
-          }),
-        scopedModels: resolvedModels.map((candidate) => ({ model: candidate })),
-        settings: buildSettings(),
-        systemPrompt: perSession.systemPrompt,
-        // Only the run session is file-backed: the SDK writes its JSONL under
-        // the durable sessions root (<sessionsDir>/sessions/<runId>/session.jsonl)
-        // so teardown can persist it as a transcript artifact, and the agent's
-        // git worktree never sees the file. Without a configured root the run
-        // dir is the sessions root, which is why teardown deletes the scratch
-        // copy (or relocates it when the upload failed) before removing it.
-        sessionManager:
-          perSession.journal === "run"
-            ? await createFileSessionManager(
-                this.options.sessionsDir ?? cwd,
-                runId,
-                cwd,
-              )
-            : SessionManager.inMemory(cwd),
-        // Colony owns every tool a run may call: the sandbox-routed file/shell
-        // tools when an engine is configured, plus the role's submit tool and
-        // any web tools. Nothing may reach the daemon's own filesystem.
-        customTools: perSession.customTools,
-        toolNames: perSession.toolNames,
-        restrictToolNames: true,
-        allowRestrictedCustomTools: true,
-        // Arming prewalk keeps the todo tool active, which is what drives omp's
-        // mid-run progress reminders.
-        ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
-        deadline,
-        enableMCP: false,
-        enableLsp: false,
-        disableExtensionDiscovery: true,
-        // GenAI spans only when the caller bound a run root span context:
-        // without it no tracing code path may activate. The SDK parents its
-        // spans on whatever OTEL context is active at prompt time, which the
-        // prompt wrappers below bind to environment.traceContext.
-        ...(request.environment.traceContext !== undefined
-          ? {
-              telemetry: {
-                attributes: { "colony.run_id": runId },
-              },
-            }
-          : {}),
-      });
+      }) => {
+        const useAdvisor = shouldEnableColonyAdvisor(
+          this.profile.role,
+          perSession.journal,
+          resolvedAdvisorModel !== undefined,
+        );
+        return {
+          // Advisor discovery must not walk the untrusted checkout: a project
+          // WATCHDOG.yml could otherwise add mutating advisors that bypass the
+          // sandbox. The supplied SessionManager still owns the real workspace
+          // cwd used by tools and prompts.
+          cwd: useAdvisor ? advisorAgentDir! : cwd,
+          ...(useAdvisor
+            ? {
+                agentDir: advisorAgentDir!,
+                contextFiles: await advisorContextFiles,
+                workspaceTree: await advisorWorkspaceTree,
+              }
+            : {}),
+          model: primaryModel,
+          thinkingLevel,
+          authStorage,
+          modelRegistry,
+          getApiKey: async (candidate: { provider: string }) =>
+            broker.resolve({
+              provider: candidate.provider,
+              capability: `agent.llm.${candidate.provider}.invoke`,
+              bindingName: PI_RUNTIME_BINDING_NAME,
+              environment: request.environment,
+            }),
+          scopedModels: [
+            ...resolvedModels.map((candidate) => ({ model: candidate })),
+            ...(resolvedAdvisorModel ? [{ model: resolvedAdvisorModel }] : []),
+          ],
+          settings: buildSettings(useAdvisor),
+          systemPrompt: perSession.systemPrompt,
+          // Only the run session is file-backed: the SDK writes its JSONL under
+          // the durable sessions root (<sessionsDir>/sessions/<runId>/session.jsonl)
+          // so teardown can persist it as a transcript artifact, and the agent's
+          // git worktree never sees the file. Without a configured root the run
+          // dir is the sessions root, which is why teardown deletes the scratch
+          // copy (or relocates it when the upload failed) before removing it.
+          sessionManager:
+            perSession.journal === "run"
+              ? await createFileSessionManager(
+                  this.options.sessionsDir ?? cwd,
+                  runId,
+                  cwd,
+                )
+              : SessionManager.inMemory(cwd),
+          // Colony owns every tool a run may call: the sandbox-routed file/shell
+          // tools when an engine is configured, plus the role's submit tool and
+          // any web tools. Nothing may reach the daemon's own filesystem.
+          customTools: perSession.customTools,
+          toolNames: perSession.toolNames,
+          restrictToolNames: true,
+          allowRestrictedCustomTools: true,
+          // Arming prewalk keeps the todo tool active, which is what drives omp's
+          // mid-run progress reminders.
+          ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
+          deadline,
+          enableMCP: false,
+          enableLsp: false,
+          disableExtensionDiscovery: true,
+          // GenAI spans only when the caller bound a run root span context:
+          // without it no tracing code path may activate. The SDK parents its
+          // spans on whatever OTEL context is active at prompt time, which the
+          // prompt wrappers below bind to environment.traceContext.
+          ...(request.environment.traceContext !== undefined
+            ? {
+                telemetry: {
+                  attributes: { "colony.run_id": runId },
+                },
+              }
+            : {}),
+        };
+      };
 
       // Subagents: Colony's own task tool. The SDK's native one is unusable
       // here - its child sessions do not inherit customTools/restrictToolNames,
@@ -686,8 +827,8 @@ export class PiBaseAgentRunner implements PiRunner {
             subagentTool.name,
           ],
           prewalk: true,
-          // Staged roles bring their own file-backed session (the survey);
-          // this one is never prompted and must not own the transcript path.
+          // Staged roles bring their own file-backed first session; this one
+          // is never prompted and must not own the transcript path.
           journal: stages.length > 0 ? "transient" : "run",
         }),
       );
@@ -721,7 +862,7 @@ export class PiBaseAgentRunner implements PiRunner {
       // increasing backoff before abandoning it; any real progress (a tool
       // call) resets the budget.
       const ZERO_OUTPUT_JIGGLES = 2;
-      const JIGGLE_BACKOFF_MS = 15_000;
+      const jiggleBackoffMs = this.options.jiggleBackoffMs ?? 15_000;
       // Quota exhaustion (weekly caps, frequency limits with a distant reset)
       // never recovers inside a jiggle window: fail over immediately instead
       // of burning wake cycles against a benched provider. "No deployments
@@ -794,13 +935,11 @@ export class PiBaseAgentRunner implements PiRunner {
         this.options.auditSink,
         runToken ? [runToken] : [],
       );
-      // Submit-deadline enforcement: re-steering only fires when a model
-      // STOPS without submitting, so a model that investigates forever never
-      // hears it (grok-4.6 spent 44 of 45 minutes probing a diff with zero
-      // submit attempts, twice, 2026-09-01). When the wall is near and
-      // nothing is submitted, every tool result carries the clock.
+      // Re-steering normally fires only when a model stops. A near-deadline
+      // reminder also reaches models that keep investigating, but does not
+      // advertise a time allowance: models given a number tend to spend it.
       const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
-      let lastDeadlineNudgeAt = 0;
+      let lastDeadlineNudgeAt = Number.NEGATIVE_INFINITY;
       const takeSubmitDeadlineNudge = (force = false): string | null => {
         if (submissionCaptured()) return null;
         const remainingMs = deadline - Date.now();
@@ -808,10 +947,9 @@ export class PiBaseAgentRunner implements PiRunner {
         if (!force && performance.now() - lastDeadlineNudgeAt < 60_000)
           return null;
         lastDeadlineNudgeAt = performance.now();
-        const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
         return [
           "<system-reminder>",
-          `~${remainingMin} minute(s) of wall clock remain and nothing has been submitted. Stop investigating NOW and call ${activeStage?.submitName ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
+          `The submission window is closing. Stop investigating NOW and call ${activeStage?.submitName ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
           "</system-reminder>",
         ].join("\n");
       };
@@ -823,16 +961,43 @@ export class PiBaseAgentRunner implements PiRunner {
        * the same protection; only the submit tool name varies.
        */
       let activeStage: { name: string; submitName: string } | null = null;
+      // Active model index survives past the prompt loop so submit-gate
+      // failures and stall recovery share one fallback chain.
+      let index = 0;
+      let unchangedRepairSubmissions = 0;
+      const packetRepair = request.packet.repair;
+      const rejectedRepairHead =
+        packetRepair &&
+        typeof packetRepair === "object" &&
+        "rejected_head_sha" in packetRepair &&
+        typeof packetRepair.rejected_head_sha === "string"
+          ? packetRepair.rejected_head_sha
+          : undefined;
       const armSession = (
         target: AgentSession,
         submitName: string,
+        observeInspection?: (toolName: string, args: unknown) => void,
       ): (() => void) => {
+        // Recovery belongs to one session/model leg. Staged sessions and a
+        // fresh guard installation must never inherit a prior leg's stall or
+        // submission rejection.
+        zeroOutputStalled = false;
+        submissionRejectionReason = undefined;
         const unsubscribeGuards = installRunGuards(target.agent, runId, {
           maxTurns:
             this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
           logger: this.options.logger,
           evidence,
+          redactSecrets: runToken ? [runToken] : [],
           rejectionToolName: submitName,
+          onSubmissionRejected: (reason) => {
+            const detail = sanitizeSecret(
+              reason.replace(/\s+/g, " ").trim(),
+              runToken,
+            ).slice(0, 400);
+            submissionRejectionReason =
+              detail || "terminal submission was rejected";
+          },
           onFailure: (reason) => {
             failureReason ??= reason;
           },
@@ -847,6 +1012,10 @@ export class PiBaseAgentRunner implements PiRunner {
             if (message.stopReason !== "error") {
               connectionErrors = 0;
               lastConnectionError = undefined;
+              if (message.outputTokens > 0) {
+                zeroOutputStalled = false;
+                jigglesUsed = 0;
+              }
               return;
             }
             if (
@@ -872,6 +1041,48 @@ export class PiBaseAgentRunner implements PiRunner {
               reason:
                 "Inspect the repository first: read or search real source/test files (read, grep, glob, bash, or a task subagent) before submitting.",
             };
+          }
+          if (
+            context.toolCall.name === submitName &&
+            rejectedRepairHead !== undefined
+          ) {
+            const args = context.args as {
+              status?: unknown;
+              head_sha?: unknown;
+            };
+            if (
+              args.status === "complete" &&
+              args.head_sha === rejectedRepairHead
+            ) {
+              unchangedRepairSubmissions += 1;
+              if (unchangedRepairSubmissions >= 2) {
+                const nextIndex = nextCandidateIndex(index);
+                if (nextIndex === null) {
+                  failureReason = "repair_no_change";
+                  void abortRun();
+                } else {
+                  const from = resolvedModels[index]?.id;
+                  index = nextIndex;
+                  const next = resolvedModels[index]!;
+                  unchangedRepairSubmissions = 0;
+                  await target.setModel(next);
+                  zeroOutputStalled = false;
+                  this.options.logger?.warn?.(
+                    {
+                      runId,
+                      from,
+                      to: next.id,
+                      error: "repair_no_change",
+                    },
+                    "pi_model_fallback",
+                  );
+                }
+              }
+              return {
+                block: true,
+                reason: `Submission rejected: reviewer repair did not change rejected head ${rejectedRepairHead}. Commit and push a fix, then submit the new remote head SHA.`,
+              };
+            }
           }
           if (
             context.toolCall.name === submitName &&
@@ -922,6 +1133,10 @@ export class PiBaseAgentRunner implements PiRunner {
           ) {
             repositoryInspected = true;
           }
+          if (!context.isError) {
+            observeInspection?.(context.toolCall.name, context.args);
+          }
+          zeroOutputStalled = false;
           jigglesUsed = 0;
           connectionErrors = 0;
           steering.observeToolCall(
@@ -971,9 +1186,6 @@ export class PiBaseAgentRunner implements PiRunner {
       };
       const unsubscribeGuards = armSession(session, submitTool.name);
 
-      // Active model index survives past the prompt loop so the continuation
-      // loop can keep falling over to remaining candidates on stalls.
-      let index = 0;
       try {
         const MODEL_FAILED_PROMPT =
           "The previous model failed. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
@@ -1026,6 +1238,10 @@ export class PiBaseAgentRunner implements PiRunner {
             // ends the run immediately.
             if (cancellationTriggered) throw err;
             if (timeoutTriggered) return true;
+            // A guard/runtime failure is already the decisive cause. The
+            // session abort rejects the prompt with an opaque SDK error;
+            // never relabel that error as a provider failure.
+            if (failureReason !== undefined) return true;
             // The candidate loop advances by one; steer it onto the next
             // candidate WITH capacity (see nextCandidateIndex).
             const nextIndex = nextCandidateIndex(index);
@@ -1062,8 +1278,12 @@ export class PiBaseAgentRunner implements PiRunner {
               );
               return advance();
             }
-            if (!next || failureReason !== undefined) {
-              throw err;
+            if (!next) {
+              failureReason = `provider_protocol_failure: ${sanitizeSecret(
+                errText.replace(/\s+/g, " ").trim(),
+                runToken,
+              ).slice(0, 160)}`;
+              return false;
             }
             this.options.logger?.warn?.(
               { runId, from: candidate.id, to: next.id, error: errText },
@@ -1078,16 +1298,56 @@ export class PiBaseAgentRunner implements PiRunner {
          * stage, armed like the run session, its tools narrowed to what the
          * stage may do plus its own submit tool. A stage ends only by that
          * tool; past its turn cap the tools collapse to the submit tool
-         * alone. Each stage's artifact feeds the next; the final stage's
-         * submission is the run's envelope. Provider failure inside a stage
-         * fails over to the next candidate and re-prompts the SAME stage -
-         * earlier artifacts survive.
+         * alone. The planning stage discovers and drafts; successful
+         * inspection inputs become a compact manifest for the independent
+         * verifier. The verifier's submission is the run envelope.
          */
         const runStagedPlan = async (): Promise<void> => {
           const artifacts: {
-            notes?: StageArtifacts["notes"];
+            inspection?: InspectionManifest;
             draft?: StageArtifacts["draft"];
           } = {};
+          const inspectedPaths = new Set<string>();
+          const searches = new Set<string>();
+          const commands = new Set<string>();
+          const stringArg = (
+            args: unknown,
+            key: string,
+          ): string | undefined => {
+            if (!args || typeof args !== "object" || !(key in args)) return;
+            const value = Reflect.get(args, key);
+            return typeof value === "string" && value.trim()
+              ? value.trim()
+              : undefined;
+          };
+          const observeInspection = (toolName: string, args: unknown): void => {
+            if (toolName === "read" || toolName === "ls") {
+              const path = stringArg(args, "path");
+              if (path) inspectedPaths.add(path);
+              return;
+            }
+            if (toolName === "grep") {
+              const pattern = stringArg(args, "pattern");
+              const path = stringArg(args, "path");
+              if (pattern)
+                searches.add(path ? `${pattern} @ ${path}` : pattern);
+              return;
+            }
+            if (toolName === "glob") {
+              const path = stringArg(args, "path");
+              if (path) searches.add(`glob: ${path}`);
+              return;
+            }
+            if (toolName === "bash") {
+              const command = stringArg(args, "command");
+              if (command) commands.add(command);
+            }
+          };
+          const inspectionManifest = (): InspectionManifest => ({
+            paths: [...inspectedPaths],
+            searches: [...searches],
+            commands: [...commands],
+          });
           // The run session was built for the single-prompt shape; stages
           // bring their own. Drop it so its guards never fire on a stage.
           unsubscribeGuards();
@@ -1131,8 +1391,8 @@ export class PiBaseAgentRunner implements PiRunner {
               ...(stage.subagents ? [subagentTool] : []),
             ];
             // Without a sandbox engine the work tools are SDK builtins that
-            // exist only by name; listing custom tools alone left the survey
-            // with submit + task and no way to read (lab, 2026-09-03).
+            // exist only by name. Listing custom tools alone would leave an
+            // inspection stage unable to read.
             const stageBuiltinNames = toolNames.filter(
               (name) =>
                 name !== submitTool.name &&
@@ -1142,34 +1402,71 @@ export class PiBaseAgentRunner implements PiRunner {
             const stageSession = (
               await createAgentSession(
                 await buildSessionOptions({
-                  systemPrompt: `${stage.systemPrompt}\n\n${steering.budgetBlock()}`,
+                  systemPrompt: stage.systemPrompt,
                   customTools: stageCustomTools,
                   toolNames: [
                     ...stageCustomTools.map((tool) => tool.name),
                     ...stageBuiltinNames,
                   ],
                   prewalk: false,
-                  // The survey is the bulk of the run's reading and the
-                  // transcript operators need; later stages are small and
-                  // their artifacts are logged whole below.
-                  journal: stage.name === "survey" ? "run" : "transient",
+                  // The first stage owns the durable transcript; later stages
+                  // are compact checks whose artifacts are logged below.
+                  journal: stage === stages[0] ? "run" : "transient",
                 }),
               )
             ).session;
             session = stageSession;
-            if (stage.name === "survey") {
+            if (stage === stages[0]) {
               runSessionFile =
                 stageSession.sessionManager.getSessionFile() ?? undefined;
             }
             activeStage = { name: stage.name, submitName: stageSubmit.name };
-            const unarm = armSession(stageSession, stageSubmit.name);
+            const unarm = armSession(
+              stageSession,
+              stageSubmit.name,
+              stage.name === "plan" ? observeInspection : undefined,
+            );
             // Turn cap: past it, only the submit tool remains. Measured on
             // grok-4.6: a phase-budget trigger never fired because it does
             // not overstay phases, it overstays the run; turns are the unit
             // it actually spends.
             let assistantTurns = 0;
             let capped = false;
+            const sameCandidate = (
+              left: { provider: string; id: string } | undefined,
+              right: { provider: string; id: string },
+            ): boolean =>
+              left?.provider === right.provider && left.id === right.id;
+            const activateStageCandidate = async (
+              candidate: (typeof resolvedModels)[number],
+            ): Promise<void> => {
+              if (sameCandidate(stageSession.model, candidate)) return;
+              // A failed forced call is requeued by the SDK. It was built from
+              // the previous model; discard it before switching and let the
+              // finalizer arm a fresh directive for the active candidate.
+              stageSession.toolChoiceQueue.removeByLabel("user-force");
+              await stageSession.setModel(candidate);
+              zeroOutputStalled = false;
+              jigglesUsed = 0;
+              connectionErrors = 0;
+              quotaScanFloor = stageSession.agent.state.messages.length;
+            };
             const forceStageSubmit = (turn: number): void => {
+              // Never carry a forced directive across a model switch.
+              stageSession.toolChoiceQueue.removeByLabel("user-force");
+              const compat = stageSession.model?.compat;
+              if (
+                compat !== undefined &&
+                typeof compat === "object" &&
+                "supportsForcedToolChoice" in compat &&
+                compat.supportsForcedToolChoice === false
+              ) {
+                this.options.logger?.info?.(
+                  { runId, sandboxId, stage: stage.name, turn },
+                  "architect_stage_submit_force_unsupported",
+                );
+                return;
+              }
               try {
                 stageSession.setForcedToolChoice(stageSubmit.name);
                 this.options.logger?.info?.(
@@ -1233,15 +1530,18 @@ export class PiBaseAgentRunner implements PiRunner {
                 packet: request.packet,
                 ...artifacts,
               });
+              let firstCandidate = true;
               for (; index < resolvedModels.length; index += 1) {
                 const candidate = resolvedModels[index]!;
-                if (stageSession.model?.id !== candidate.id) {
-                  await stageSession.setModel(candidate);
-                  jigglesUsed = 0;
-                  connectionErrors = 0;
-                  quotaScanFloor = stageSession.agent.state.messages.length;
-                  prompt = MODEL_FAILED_PROMPT;
+                if (!sameCandidate(stageSession.model, candidate)) {
+                  await activateStageCandidate(candidate);
+                  // A fresh stage session is created on primaryModel even
+                  // when the prior stage fell back. Preserve this stage's
+                  // complete prompt for that active candidate; only later
+                  // same-stage fallbacks need the abbreviated continuation.
+                  if (!firstCandidate) prompt = MODEL_FAILED_PROMPT;
                 }
+                firstCandidate = false;
                 if (
                   await driveSession(
                     stageSession,
@@ -1267,15 +1567,27 @@ export class PiBaseAgentRunner implements PiRunner {
                 await stageSession
                   .setActiveToolsByName([stageSubmit.name])
                   .catch(() => undefined);
+                const candidate =
+                  resolvedModels[Math.min(index, resolvedModels.length - 1)]!;
+                await activateStageCandidate(candidate);
                 forceStageSubmit(assistantTurns);
-                const candidate = resolvedModels[index] ?? resolvedModels[0]!;
-                await driveSession(
+                const stopped = await driveSession(
                   stageSession,
                   `This stage ends only when you call ${stageSubmit.name}. Call it now with what you have; nothing else you write counts.`,
                   candidate,
                   landed,
                   stagePromise,
                 );
+                // driveSession uses index=next-1 for its candidate-loop
+                // caller. This loop has no increment expression, so advance
+                // explicitly or the same failed model is forced forever.
+                if (
+                  !stopped &&
+                  failureReason === undefined &&
+                  index + 1 < resolvedModels.length
+                ) {
+                  index += 1;
+                }
               }
             } finally {
               unsubscribeTurns();
@@ -1301,16 +1613,16 @@ export class PiBaseAgentRunner implements PiRunner {
                 !timeoutTriggered &&
                 !cancellationTriggered
               ) {
-                failureReason = `architect_stage_${stage.name}_no_submission`;
+                failureReason =
+                  submissionRejectionReason !== undefined
+                    ? `submission_rejected: ${submissionRejectionReason}`
+                    : `architect_stage_${stage.name}_no_submission`;
               }
               return;
             }
             if (!isFinal) {
-              if (stage.name === "survey") {
-                artifacts.notes = stageCaptured as StageArtifacts["notes"];
-              } else if (stage.name === "plan") {
-                artifacts.draft = stageCaptured as StageArtifacts["draft"];
-              }
+              artifacts.draft = stageCaptured as StageArtifacts["draft"];
+              artifacts.inspection = inspectionManifest();
               stageSession.dispose();
               if (session === stageSession) session = undefined;
             }
@@ -1329,6 +1641,7 @@ export class PiBaseAgentRunner implements PiRunner {
             const candidate = resolvedModels[index]!;
             if (index > 0) {
               await activeSession.setModel(candidate);
+              zeroOutputStalled = false;
               jigglesUsed = 0;
               connectionErrors = 0;
               quotaScanFloor = activeSession.agent.state.messages.length;
@@ -1388,6 +1701,7 @@ export class PiBaseAgentRunner implements PiRunner {
             jigglesUsed = 0;
             connectionErrors = 0;
             await session.setModel(next);
+            zeroOutputStalled = false;
             quotaScanFloor = session.agent.state.messages.length;
             this.options.logger?.warn?.(
               {
@@ -1406,7 +1720,6 @@ export class PiBaseAgentRunner implements PiRunner {
             // so one transient never costs a configured candidate.
             prompt = CONNECTION_RETRY_PROMPT;
           } else if (zeroOutputStalled) {
-            zeroOutputStalled = false;
             const quotaError = lastAssistantQuotaError();
             if (quotaError) jigglesUsed = ZERO_OUTPUT_JIGGLES;
             if (jigglesUsed < ZERO_OUTPUT_JIGGLES) {
@@ -1416,11 +1729,11 @@ export class PiBaseAgentRunner implements PiRunner {
                   runId,
                   model: resolvedModels[index]?.id,
                   jiggle: jigglesUsed,
-                  backoffMs: JIGGLE_BACKOFF_MS * jigglesUsed,
+                  backoffMs: jiggleBackoffMs * jigglesUsed,
                 },
                 "pi_zero_output_jiggle",
               );
-              await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
+              await sleep(jiggleBackoffMs * jigglesUsed);
             } else if (nextCandidateIndex(index) !== null) {
               const from = resolvedModels[index]?.id;
               index = nextCandidateIndex(index)!;
@@ -1428,6 +1741,7 @@ export class PiBaseAgentRunner implements PiRunner {
               connectionErrors = 0;
               const next = resolvedModels[index]!;
               await session.setModel(next);
+              zeroOutputStalled = false;
               quotaScanFloor = session.agent.state.messages.length;
               this.options.logger?.warn?.(
                 {
@@ -1502,18 +1816,19 @@ export class PiBaseAgentRunner implements PiRunner {
         unsubscribeGuards();
       }
 
-      if (
-        capturedEnvelope === undefined &&
-        this.profile.requireRepositoryInspection &&
-        !repositoryInspected
-      ) {
-        failureReason ??= "repository_inspection_required";
-      } else if (capturedEnvelope === undefined) {
-        // No separate finalizer pass: a rejected submission surfaces as a tool
-        // error and keeps the session open, the SDK retries transport failures,
-        // and the continuation steer re-prompts a model that stopped early. If
-        // the run still produced no envelope, colonyd retries the attempt.
-        failureReason ??= "finalize_no_submission";
+      if (capturedEnvelope === undefined && failureReason === undefined) {
+        if (submissionRejectionReason !== undefined) {
+          failureReason = `submission_rejected: ${submissionRejectionReason}`;
+        } else if (
+          this.profile.requireRepositoryInspection &&
+          !repositoryInspected
+        ) {
+          failureReason = "repository_inspection_required";
+        } else {
+          // A clean run that never invoked the terminal tool is distinct from
+          // a provider/protocol failure or a rejected submission.
+          failureReason = "finalize_no_submission";
+        }
       }
     } finally {
       // Audit capture is strictly post-decision: the PiRunResult below (and
@@ -1528,8 +1843,8 @@ export class PiBaseAgentRunner implements PiRunner {
       //     session manager that owns the file path) and the run-dir removal
       //     in (3). A session that never reached disk leaves no transcript,
       //     which capture treats as a silent skip, not an outage.
-      // The file-backed session is the run session, or the survey stage of a
-      // staged run - never whichever session happens to be live at teardown.
+      // The file-backed session is the run session, or the first stage of a
+      // staged run—not whichever session happens to be live at teardown.
       const sessionFile =
         runSessionFile ?? session?.sessionManager.getSessionFile() ?? undefined;
       let uploaded = false;
@@ -1600,6 +1915,9 @@ export class PiBaseAgentRunner implements PiRunner {
       //     override root, and a failed upload has already parked its copy
       //     outside this tree.
       rmSync(cwd, { recursive: true, force: true });
+      if (advisorAgentDir) {
+        rmSync(advisorAgentDir, { recursive: true, force: true });
+      }
       // (4) The sandbox pod goes last: destroy after the workspace is gone.
       await handle?.destroy();
     }

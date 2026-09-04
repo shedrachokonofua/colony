@@ -9,6 +9,7 @@ import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 import {
   buildArchitectPacket,
+  buildPlanReviewPacket,
   buildImplementPacket,
   buildReviewPacket,
   projectContextSection,
@@ -130,6 +131,61 @@ describe("project context packets", () => {
     });
     // The builder never mints credentials; architect.ts attaches the token.
     expect("credentials" in packet.repo).toBe(false);
+  });
+
+  it("carries durable directives into every planning role packet", async () => {
+    const { store, app } = appWithStore();
+    const created = await createScope(app, {
+      goal: "show delivery stages",
+      title: "show delivery stages",
+      repo: { path: "so/demo" },
+    });
+    const plan = {
+      kind: "architect_decomposition" as const,
+      summary: "Show stages and repair failed CI.",
+      requirements: [{ id: "R1", text: "Repair failed CI.", tasks: [0] }],
+      journey: [{ after_task: 0, working_state: "Failed CI is repaired." }],
+      acceptance: [{ description: "observable", command: "true" }],
+      tasks: [
+        {
+          title: "Repair CI",
+          spec: "Dispatch an evidence-backed repair.",
+          depends_on: [],
+          files: ["apps/colonyd/src/tick.ts"],
+          evidence: ["true"],
+        },
+      ],
+    };
+    store.requestOperatorReplan(
+      created.id,
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    store.setScopePlan(created.id, JSON.stringify(plan));
+    store.requestReviewReplan(created.id, "Keep dispatch idempotent.");
+    const scope = store.getScope(created.id)!;
+    const architect = buildArchitectPacket(
+      scope,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "abc123",
+    );
+    expect(architect.plan_directives).toContain(
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    expect(architect.body).toContain(
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    expect(architect.body).toContain("Keep dispatch idempotent.");
+
+    const review = buildPlanReviewPacket(scope, null, [], "abc123", plan, 2);
+    expect(review.plan_directives).toBe(architect.plan_directives);
+    expect(review.body).toContain(
+      "Also dispatch one automatic repair for failed CI.",
+    );
+    expect(review.body).toContain(
+      "Return request_changes if the plan omits or contradicts",
+    );
   });
 
   it("gives a scope with no project a null project field and no background section", async () => {
@@ -427,8 +483,14 @@ describe("project reference files in packets", () => {
       "colony/x",
       "base",
     );
-    expect(fresh.body).toContain("git rebase origin/");
-    expect(fresh.body).not.toContain("LAND IT");
+    expect(fresh.execution_context.mode).toBe("fresh");
+    expect(fresh.execution_context.remote_head).toEqual({
+      status: "not_requested",
+    });
+    expect(fresh.body).not.toContain(
+      "Start repair work from the remote task branch",
+    );
+    expect(fresh.body).toContain("Durable task requirements");
 
     const landing = buildImplementPacket(
       task,
@@ -445,6 +507,99 @@ describe("project reference files in packets", () => {
     );
     expect(landing.body).toContain("MR !7 is open on branch `colony/x`.");
     expect(landing.body).toContain("Do NOT start over or open a new MR.");
+
+    const repair = buildImplementPacket(
+      task,
+      s,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      "base",
+      {
+        reviewFindings: "- **high**: broken",
+        rejectedHeadSha: "a".repeat(40),
+      },
+    );
+    expect(repair.body).toContain(
+      `The reviewer rejected historical head \`${"a".repeat(40)}\``,
+    );
+  });
+
+  it("separates current repair evidence from dated historical revisions", async () => {
+    const { store, app } = appWithStore();
+    const scopeResult = await createScope(app, {
+      goal: "repair evidence",
+      title: "repair evidence",
+      repo: { path: "so/demo" },
+    });
+    store.setScopeStatus(scopeResult.id, "planning", "human:op-1");
+    store.materializePlan(
+      scopeResult.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        requirements: [{ id: "R1", text: "goal", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "goal" }],
+        acceptance: [{ description: "goal", command: "true" }],
+        tasks: [
+          {
+            title: "repair",
+            spec: "Preserve the existing change.",
+            depends_on: [],
+            files: ["src/repair.ts"],
+            evidence: ["true"],
+          },
+        ],
+      },
+      "human:op-1",
+    );
+    const task = store.listTasks(scopeResult.id)[0]!;
+    const packet = buildImplementPacket(
+      task,
+      store.getScope(scopeResult.id)!,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/repair",
+      "base",
+      {
+        executionContext: {
+          mode: "repair",
+          branch: "colony/repair",
+          target_branch: "main",
+          target_head_sha: "base",
+          remote_head: { status: "known", value: "current" },
+          pipeline: {
+            status: "known",
+            value: { status: "success", commit_sha: "current" },
+          },
+          current_objective: "Repair only verified current findings.",
+        },
+        currentReviewFindings: "- **high** `src/repair.ts`: current defect",
+        currentRejectedHeadSha: "current",
+        historicalEvidence: [
+          {
+            kind: "review",
+            at: "2026-09-01T00:00:00.000Z",
+            head_sha: "old",
+            text: "- **high** old defect",
+          },
+        ],
+      },
+    );
+    expect(packet.execution_context.pipeline).toEqual({
+      status: "known",
+      value: { status: "success", commit_sha: "current" },
+    });
+    expect(packet.body).toContain("## Current review findings");
+    expect(packet.body).toContain("current defect");
+    expect(packet.body).toContain(
+      "## Historical evidence (dated and revision-scoped)",
+    );
+    expect(packet.body).toContain("head `old`");
+    expect(packet.body).toContain("old defect");
+    expect(packet.body).toContain("Do not blindly repeat an old CI fix");
   });
 
   it("materializes real file bytes from a builder-produced packet into the workspace", async () => {

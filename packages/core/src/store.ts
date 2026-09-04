@@ -126,6 +126,7 @@ export interface Scope {
   readonly project_name: string | null;
   readonly approvals: ScopeApprovals;
   readonly plan_feedback: string | null;
+  readonly plan_directives: string;
   readonly status: ScopeStatus;
   readonly provider_repo_id: string;
   readonly provider_repo_path: string;
@@ -187,6 +188,10 @@ export interface Run {
   /** Run root span's trace id; links spans recorded elsewhere to this run. */
   readonly trace_id: string | null;
   readonly error: string | null;
+  readonly last_progress_at: string | null;
+  readonly active_tool: string | null;
+  readonly active_tool_detail: string | null;
+  readonly active_tool_started_at: string | null;
   /** Structured fault JSON; set at finish time or by the v13 backfill. */
   readonly fault_json: string | null;
   readonly started_at: string;
@@ -1046,7 +1051,7 @@ export class Store {
     return scope;
   }
 
-  /** Store the architect's proposed plan; consumes any pending feedback. */
+  /** Store the architect's proposed plan; consumes reviewer findings only. */
   setScopePlan(id: ScopeId | string, planJson: string): void {
     this.db
       .prepare(
@@ -1056,17 +1061,45 @@ export class Store {
   }
 
   /**
-   * Reject the proposed plan with feedback: the plan is cleared and the
-   * next tick re-dispatches the architect with the feedback in its packet.
+   * Append an authoritative operator directive and reject the current plan.
+   * The append and invalidation are one statement so no accepted plan can
+   * omit a directive that was successfully recorded.
    */
-  requestReplan(id: ScopeId | string, feedback: string): Scope {
+  requestOperatorReplan(id: ScopeId | string, feedback: string): Scope {
+    const now = nowIso();
+    const directive = `## Operator planning directive (${now})\n${feedback.trim()}`;
+    this.db
+      .prepare(
+        `UPDATE scopes
+         SET plan_json = NULL,
+             plan_feedback = NULL,
+             plan_directives = CASE
+               WHEN plan_directives = '' THEN ?
+               ELSE plan_directives || char(10) || char(10) || ?
+             END,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(directive, directive, now, id);
+    const scope = this.getScope(id);
+    if (!scope)
+      throw new Error(`scope lost after operator replan request: ${id}`);
+    return scope;
+  }
+
+  /**
+   * Reject the proposed plan with reviewer findings. Durable operator
+   * directives remain untouched for every later architect and reviewer.
+   */
+  requestReviewReplan(id: ScopeId | string, feedback: string): Scope {
     this.db
       .prepare(
         `UPDATE scopes SET plan_json = NULL, plan_feedback = ?, updated_at = ? WHERE id = ?`,
       )
       .run(feedback, nowIso(), id);
     const scope = this.getScope(id);
-    if (!scope) throw new Error(`scope lost after replan request: ${id}`);
+    if (!scope)
+      throw new Error(`scope lost after review replan request: ${id}`);
     return scope;
   }
 
@@ -1510,8 +1543,8 @@ export class Store {
     const lease = new Date(Date.now() + input.lease_ttl_ms).toISOString();
     this.db
       .prepare(
-        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id, trace_id)
-         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id, @trace_id)`,
+        `INSERT INTO runs (id, scope_id, task_id, kind, status, lease_expires_at, base_sha, workspace_path, model_id, trace_id, last_progress_at)
+         VALUES (@id, @scope_id, @task_id, @kind, 'running', @lease, @base_sha, @workspace_path, @model_id, @trace_id, @last_progress_at)`,
       )
       .run(
         named({
@@ -1524,6 +1557,7 @@ export class Store {
           workspace_path: input.workspace_path ?? null,
           model_id: input.model_id ?? null,
           trace_id: input.trace_id ?? null,
+          last_progress_at: new Date().toISOString(),
         }),
       );
     const run = this.getRun(id);
@@ -1569,6 +1603,38 @@ export class Store {
         `UPDATE runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'`,
       )
       .run(lease, runId);
+  }
+  setRunActiveTool(
+    runId: string,
+    tool: string,
+    detail: string | null,
+    startedAt: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE runs
+         SET active_tool = ?, active_tool_detail = ?, active_tool_started_at = ?, last_progress_at = ?
+         WHERE id = ? AND status = 'running'`,
+      )
+      .run(tool, detail, startedAt, startedAt, runId);
+  }
+
+  clearRunActiveTool(runId: string, progressAt: string): void {
+    this.db
+      .prepare(
+        `UPDATE runs
+         SET active_tool = NULL, active_tool_detail = NULL, active_tool_started_at = NULL, last_progress_at = ?
+         WHERE id = ? AND status = 'running'`,
+      )
+      .run(progressAt, runId);
+  }
+
+  touchRunProgress(runId: string, progressAt: string): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET last_progress_at = ? WHERE id = ? AND status = 'running'`,
+      )
+      .run(progressAt, runId);
   }
 
   /** Record the live sandbox a run is executing in (set at sandbox creation). */
@@ -1628,7 +1694,9 @@ export class Store {
       .prepare(
         `UPDATE runs SET status = @status, head_sha = @head_sha,
          envelope_json = @envelope_json, evidence_json = @evidence_json,
-         error = @error, fault_json = @fault_json, finished_at = @now
+         error = @error, fault_json = @fault_json, finished_at = @now,
+         last_progress_at = @now, active_tool = NULL,
+         active_tool_detail = NULL, active_tool_started_at = NULL
          WHERE id = @id AND status = 'running'`,
       )
       .run(

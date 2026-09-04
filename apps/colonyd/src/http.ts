@@ -796,8 +796,8 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }
   });
 
-  // Reject the proposed plan with feedback; the architect re-plans with the
-  // feedback in its packet.
+  // Reject the proposed plan with a durable operator directive. Reviewer
+  // findings use a separate ephemeral channel.
   app.post("/scopes/:id/replan", async (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
     if (!scope) return notFound(c, "scope");
@@ -814,7 +814,10 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }
     const parsed = feedbackBody.safeParse(await parseBody(c));
     if (!parsed.success) return badBody(c, parsed.error.message);
-    const updated = ctx.store.requestReplan(scope.id, parsed.data.feedback);
+    const updated = ctx.store.requestOperatorReplan(
+      scope.id,
+      parsed.data.feedback,
+    );
     ctx.store.audit(c.get("actor"), "plan.replan_requested", {
       scope_id: scope.id,
       detail: { feedback: parsed.data.feedback },
