@@ -16,6 +16,8 @@ variables:
   STORAGE_DRIVER: "vfs"
   BUILDAH_FORMAT: "docker"
 
+# Jobs only validate or publish replaceable images. Cancel superseded pipelines
+# before they compete for runners and the shared registry-backed layer cache.
 workflow:
   auto_cancel:
     on_new_commit: interruptible
