@@ -73,6 +73,12 @@ export type ExecResult = z.infer<typeof ExecResultSchema>;
  * workspace. Paths escaping the workspace (`../`) must be rejected.
  */
 export interface SandboxHandle {
+  /**
+   * Identity {@link SandboxEngine.connect} re-attaches by. A reconnect must
+   * land on the SAME sandbox, so the id is part of the handle rather than a
+   * value the caller tracks alongside it.
+   */
+  readonly sandboxId: string;
   exec(
     request: ExecRequest,
     onEvent: (event: ExecEvent) => void,
@@ -92,6 +98,8 @@ export interface SandboxEngine {
     profile: SandboxLaunchProfile,
     workspace: string,
   ): Promise<SandboxHandle>;
+  /** Re-attach to an existing sandbox by id; rejects if it is gone. Never provisions or cleans up. */
+  connect(sandboxId: string): Promise<SandboxHandle>;
 }
 
 /**

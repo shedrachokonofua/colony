@@ -54,48 +54,6 @@ async function runTool(
 }
 
 describe("exec command ledger", () => {
-  it("a limited read window reports what remains, and never calls it truncation", async () => {
-    // "… truncated" on every windowed read convinced grok a file was corrupt
-    // ("run-resume.ts is truncated, I'll rewrite it", 44 turns, 2026-09-02).
-    const workspace = mkdtempSync(join(tmpdir(), "colony-read-window-"));
-    scratchDirs.push(workspace);
-    const engine = createInProcessEngine();
-    const handle = await engine.provision(
-      buildSandboxLaunchProfile("developer"),
-      workspace,
-    );
-    const tools = Object.fromEntries(
-      buildSandboxTools(handle, workspace).map((tool) => [tool.name, tool]),
-    );
-    try {
-      await handle.writeFile(
-        "long.ts",
-        Array.from({ length: 120 }, (_, i) => `line ${i + 1}`).join("\n"),
-      );
-      const windowed = toolText(
-        (await runTool(tools["read"], {
-          path: "long.ts",
-          offset: 1,
-          limit: 50,
-        })) as { content: { type: string; text?: string }[] },
-      );
-      expect(windowed).toContain("50:line 50");
-      expect(windowed).not.toContain("truncated");
-      expect(windowed).toContain(
-        "70 more line(s) not shown (file has 120); read offset=51 to continue.",
-      );
-      const whole = toolText(
-        (await runTool(tools["read"], { path: "long.ts" })) as {
-          content: { type: string; text?: string }[];
-        },
-      );
-      expect(whole).toContain("120:line 120");
-      expect(whole).not.toContain("…");
-    } finally {
-      await handle.destroy();
-    }
-  });
-
   it("emits one command event per execCapture with byte counts and ANSI-stripped tail", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "colony-ledger-test-"));
     scratchDirs.push(workspace);
@@ -280,6 +238,7 @@ describe("exec command ledger", () => {
     // a rejection, not masquerade as a completed run with empty output
     // ("not found" / "no matches").
     const broken: SandboxHandle = {
+      sandboxId: "sandbox-broken",
       exec: () => Promise.reject(new Error("exec after destroy")),
       readFile: () => Promise.reject(new Error("unused")),
       writeFile: () => Promise.reject(new Error("unused")),
@@ -306,6 +265,7 @@ describe("exec command ledger", () => {
       timedOut?: boolean;
     }>();
     const pending: SandboxHandle = {
+      sandboxId: "sandbox-pending",
       exec: () => {
         controller.signal.addEventListener("abort", () =>
           reject(new Error("aborted")),

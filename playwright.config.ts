@@ -55,7 +55,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npx tsx apps/colonyd/e2e/fake-colonyd.ts",
+    command: "bun run apps/colonyd/e2e/fake-colonyd.ts",
     url: "http://127.0.0.1:4477/health",
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,

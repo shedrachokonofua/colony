@@ -2,8 +2,10 @@ import {
   beginAgentRun,
   type AgentMetricAttributes,
 } from "@colony/observability";
+import type { Context } from "@opentelemetry/api";
 import type {
   AgentRunEnvironment,
+  AgentRunResumeEnvironment,
   AgentRuntimeAdapter,
   AgentRuntimePacket,
   AgentRunMetadata,
@@ -20,6 +22,9 @@ import {
   resolvePacketCloneUrl,
   sanitizeSecret,
 } from "./pi-runner-common.js";
+import { resumeRun, type ResumeSpan } from "./run-resume.js";
+import type { SandboxHandle } from "@colony/sandbox";
+import type { SessionManager } from "@oh-my-pi/pi-coding-agent";
 
 export interface PiRunRequest {
   readonly runId: string;
@@ -34,6 +39,19 @@ export interface PiRunResult {
   readonly reason?: string;
 }
 
+export interface PiRunResumeRequest extends PiRunRequest {
+  /** The surviving sandbox, already re-attached by the caller. */
+  readonly handle: SandboxHandle;
+  /** The run's reloaded session journal. */
+  readonly sessionManager: SessionManager;
+  /** The fixed steer that opens the resumed segment. */
+  readonly steerPrompt: string;
+  /** Reports the resumed loop live, once its first prompt is driving. */
+  readonly onRunning?: () => void;
+  /** The segment's FRESH root span context; never the pre-restart trace. */
+  readonly traceContext?: Context;
+}
+
 export interface PiRunner {
   readonly kind:
     | "pi-coding-agent"
@@ -42,11 +60,34 @@ export interface PiRunner {
     | "pi-plan-reviewer";
   run(request: PiRunRequest): Promise<PiRunResult>;
   cancel?(runId: string): Promise<void>;
+  /**
+   * Continues a reloaded session on a re-attached sandbox. Optional: a
+   * runner without it cannot adopt a run, and the adapter reports that
+   * rather than pretending the continuation happened.
+   */
+  resume?(request: PiRunResumeRequest): Promise<PiRunResult>;
 }
 
 export interface PiAdapterTelemetry {
   readonly provider: string;
   readonly model: string;
+}
+
+/**
+ * Observability seam for the resume path: run events and the fresh root span.
+ * Injected, not imported, so the adapter stays testable without tracing.
+ */
+export interface PiResumeTelemetry {
+  readonly onRunEvent?: (
+    runId: string,
+    event: "run_resumed" | "run_resume_failed",
+    detail: Record<string, unknown>,
+  ) => void;
+  /** Supplies a `startColonyRunSpan`-shaped FRESH root span for the segment. */
+  readonly startSpan?: (run: {
+    runId: string;
+    role: string;
+  }) => ResumeSpan | undefined;
 }
 
 export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
@@ -62,6 +103,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
       provider: "unknown",
       model: "unknown",
     },
+    private readonly resumeTelemetry: PiResumeTelemetry = {},
   ) {}
 
   async startRun(
@@ -163,6 +205,131 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
 
   getRunOutput(runId: string): Promise<AgentRunOutput | null> {
     return Promise.resolve(this.runs.get(runId)?.output ?? null);
+  }
+
+  /**
+   * Continues a checkpointed run on the sandbox that survived the restart.
+   *
+   * Failures are reported, not thrown: colonyd fails and requeues the run on
+   * a rejected adoption, so the metadata carries the reason and the caller
+   * decides. A resumed run is never left without a driver - either the
+   * runner took the session over, or this run is marked failed and requeued.
+   */
+  async resumeRun(
+    packet: AgentRuntimePacket,
+    runEnvironment: AgentRunResumeEnvironment,
+  ): Promise<AgentRunMetadata> {
+    const runId =
+      runEnvironment.runId ?? `${this.runner.kind}-${this.nextId++}`;
+    const finishMetrics = beginAgentRun({
+      role: runEnvironment.role,
+      provider: this.telemetry.provider,
+      model: this.telemetry.model,
+    } satisfies AgentMetricAttributes);
+
+    const record = (
+      status: AgentRunMetadata["status"],
+      reason?: string,
+      output?: AgentRunOutput,
+    ) => {
+      const metadata: AgentRunMetadata = {
+        runId,
+        sandboxId: runEnvironment.sandboxId,
+        role: runEnvironment.role,
+        status,
+        packetHash: hashPacket(packet),
+        ...(reason === undefined
+          ? {}
+          : {
+              rejectionReason: truncate(
+                redactPacketSecret(reason, packet),
+                800,
+              ),
+            }),
+        ...(output === undefined
+          ? {}
+          : { outputEnvelopeHash: output.envelopeHash }),
+      };
+      // The resumed envelope must be stored, not just counted: without it
+      // getRunOutput stays null for every adopted run.
+      this.runs.set(
+        runId,
+        output === undefined ? metadata : { ...metadata, output },
+      );
+      finishMetrics(status, metadata.rejectionReason);
+      return metadata;
+    };
+
+    const emitEvent = (
+      event: "run_resumed" | "run_resume_failed",
+      detail: Record<string, unknown>,
+    ): void => {
+      this.resumeTelemetry.onRunEvent?.(runId, event, detail);
+    };
+
+    try {
+      return await resumeRun({
+        runId,
+        sandboxId: runEnvironment.sandboxId,
+        sessionsDir: runEnvironment.sessionsDir,
+        packet,
+        connect: runEnvironment.connect,
+        emitEvent,
+        // A FRESH root span: the pre-restart trace belongs to a process
+        // that no longer exists.
+        startSpan: () =>
+          this.resumeTelemetry.startSpan?.({
+            runId,
+            role: runEnvironment.role,
+          }),
+        drive: async (session) => {
+          if (this.runner.resume === undefined) {
+            throw new Error(
+              `${this.runner.kind} runner cannot resume a run (no durable session support)`,
+            );
+          }
+          const runResult = await this.runner.resume({
+            runId,
+            packet,
+            environment: runEnvironment,
+            handle: session.handle,
+            sessionManager: session.sessionManager,
+            steerPrompt: session.steerPrompt,
+            onRunning: session.onRunning,
+            ...(session.traceContext
+              ? { traceContext: session.traceContext }
+              : {}),
+          });
+          // An unfinished segment is one the agent never submitted, whatever
+          // its reason: `startRun` classifies the same shape as a failure and
+          // a resumed run must not be scored more generously than a fresh one.
+          const unfinished =
+            typeof runResult.envelope === "object" &&
+            runResult.envelope !== null &&
+            "__unfinished" in runResult.envelope;
+          if (unfinished || runResult.reason !== undefined) {
+            return record("failed", runResult.reason ?? "resume_no_submission");
+          }
+          const parsed = parseEnvelope(
+            runEnvironment.role,
+            runResult.envelope,
+            packet,
+          );
+          if (!parsed.ok) {
+            return record(
+              "envelope_rejected",
+              describeRejection(runResult.envelope, parsed.reason),
+            );
+          }
+          return record("succeeded", undefined, {
+            envelope: parsed.envelope,
+            envelopeHash: hashEnvelope(parsed.envelope),
+          });
+        },
+      });
+    } catch (err) {
+      return record("failed", err instanceof Error ? err.message : String(err));
+    }
   }
 
   async cancelRun(runId: string): Promise<AgentRunMetadata | null> {

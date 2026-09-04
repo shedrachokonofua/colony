@@ -240,10 +240,14 @@ export class PiBaseAgentRunner implements PiRunner {
     }
 
     const runId = request.runId;
-    const sandboxId = createSandboxId(this.profile.sandboxPrefix);
-    // Runs-table write-back: report the sandbox id the moment the sandbox is
-    // created, so a crash after this point still leaves an adoptable row.
-    this.options.onSandboxId?.(runId, sandboxId);
+    /**
+     * The id the run is known by everywhere it is persisted. `connect()`
+     * re-attaches by exactly this string, so it must be the sandbox's OWN
+     * id: a runner-minted parallel identity would leave every adopted run
+     * unresumable. A run that provisions no sandbox has no handle to take
+     * an id from, so the minted fallback stands for it.
+     */
+    let sandboxId = createSandboxId(this.profile.sandboxPrefix);
     const broker = runnerBroker(this.options);
     // The run's own provider token; redaction secrets for persisted evidence.
     const runToken = packetRepo(request.packet)?.credentials?.token;
@@ -452,6 +456,7 @@ export class PiBaseAgentRunner implements PiRunner {
           buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
           cwd,
         );
+        sandboxId = handle.sandboxId;
         sandboxTools = buildSandboxTools(handle, cwd, {
           ...(this.options.auditSink
             ? { auditSink: this.options.auditSink }
@@ -475,6 +480,11 @@ export class PiBaseAgentRunner implements PiRunner {
             void abortRun();
           },
         });
+        // Runs-table write-back, deliberately AFTER provision: a minted id
+        // reported before the sandbox exists would persist an identity no
+        // engine re-attaches by, leaving the run adoptable only on paper.
+        // Crash safety still holds - it precedes the first agent prompt.
+        this.options.onSandboxId?.(runId, sandboxId);
       }
       const deadline =
         Date.now() + (this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);
