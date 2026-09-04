@@ -136,6 +136,11 @@ export interface PiSessionInput {
   readonly sandboxTools: readonly ToolDefinition[];
   /** Prepended to the harness blocks; the resume path varies it. */
   readonly systemPrompt: string;
+  /**
+   * Whether this session owns the durable journal. A staged role's run
+   * session is never prompted; its first stage owns the transcript path.
+   */
+  readonly journal: "run" | "transient";
 }
 
 /** Runner-level knobs the builder reads but does not decide. */
@@ -145,11 +150,33 @@ export interface PiSessionOptions {
   readonly defaultThinkingLevel: ColonyThinkingLevel;
   readonly maxTurns: number;
   readonly runTimeoutMs?: number;
+  /** Bounds the SDK's own same-model retry budget inside one prompt. */
+  readonly retryMaxRetries?: number;
   readonly logger?: PiRunnerLogger;
   readonly auditSink?: RunAuditSink;
   readonly logToolArgs?: boolean;
   /** The packet's repo token: a live secret for the evidence redactor. */
   readonly runToken?: string;
+}
+
+/**
+ * Reviewer-repair gating: a repair that re-submits the head the reviewer
+ * already rejected changed nothing. Two such submissions fall over to the
+ * next model candidate; exhausting them ends the run rather than scoring a
+ * repair that never happened.
+ */
+export interface RepairRejectionPolicy {
+  /** The head the reviewer rejected; undefined when this is not a repair. */
+  readonly rejectedHead?: string;
+  /**
+   * Verdict for one submission of the unchanged rejected head. `failover`
+   * names the candidate the builder must switch to; `exhausted` means no
+   * candidate remains and the run must end.
+   */
+  readonly onUnchanged: () =>
+    | { action: "reject" }
+    | { action: "failover"; model: Model }
+    | { action: "exhausted" };
 }
 
 /** Callbacks routing the built session into the caller's run-scoped decisions. */
@@ -166,6 +193,9 @@ export interface PiSessionHooks {
   readonly submissionCaptured?: () => boolean;
   /** Names the tool the deadline nudge points at (a stage's, not the run's). */
   readonly submitNameOf?: () => string;
+  /** Names the live stage in tool logs; the run session has none. */
+  readonly stageNameOf?: () => string | undefined;
+  readonly repairRejection?: RepairRejectionPolicy;
 }
 
 /** The live session plus the wiring its caller drives the loop with. */
@@ -185,7 +215,11 @@ export interface PiSession {
    * deadline/drift nudges. The run session and every stage session get the
    * same protection; only the submit tool name varies.
    */
-  readonly armSession: (target: AgentSession, submitName: string) => () => void;
+  readonly armSession: (
+    target: AgentSession,
+    submitName: string,
+    observeInspection?: (toolName: string, args: unknown) => void,
+  ) => () => void;
   readonly takeSubmitDeadlineNudge: (force?: boolean) => string | null;
   /**
    * The quota verdict of the CURRENT model on `target`, for the jiggle
@@ -268,7 +302,7 @@ export async function buildPiSession(
       // with exponential backoff, defaulting to 10 attempts. On a dead
       // leg that spends the whole run wall inside one prompt, so bound
       // the budget the leg may burn before the runner sees an error.
-      "retry.maxRetries": 4,
+      "retry.maxRetries": options.retryMaxRetries ?? 4,
       "todo.enabled": true,
       "todo.reminders": true,
       "goal.enabled": true,
@@ -440,9 +474,7 @@ export async function buildPiSession(
         subagentTool.name,
       ],
       prewalk: true,
-      // Staged roles bring their own file-backed session (the survey); this
-      // one is never prompted and must not own the transcript path.
-      journal: "run",
+      journal: input.journal,
     }),
   );
   session = result.session;
@@ -488,6 +520,7 @@ export async function buildPiSession(
   const armSession = (
     target: AgentSession,
     submitName: string,
+    observeInspection?: (toolName: string, args: unknown) => void,
   ): (() => void) => {
     const unsubscribeGuards = installRunGuards(target.agent, runId, {
       maxTurns: options.maxTurns,
@@ -533,6 +566,23 @@ export async function buildPiSession(
           reason:
             "Inspect the repository first: read or search real source/test files (read, grep, glob, bash, or a task subagent) before submitting.",
         };
+      }
+      const repair = hooks.repairRejection?.rejectedHead;
+      if (context.toolCall.name === submitName && repair !== undefined) {
+        const args = context.args as { status?: unknown; head_sha?: unknown };
+        if (args.status === "complete" && args.head_sha === repair) {
+          const verdict = hooks.repairRejection!.onUnchanged();
+          if (verdict.action === "failover") {
+            await target.setModel(verdict.model);
+          } else if (verdict.action === "exhausted") {
+            state.failureReason = "repair_no_change";
+            abortDeliberate();
+          }
+          return {
+            block: true,
+            reason: `Submission rejected: reviewer repair did not change rejected head ${repair}. Commit and push a fix, then submit the new remote head SHA.`,
+          };
+        }
       }
       if (
         context.toolCall.name === submitName &&
@@ -580,6 +630,9 @@ export async function buildPiSession(
       ) {
         state.repositoryInspected = true;
       }
+      if (!context.isError) {
+        observeInspection?.(context.toolCall.name, context.args);
+      }
       // Any real progress proves the leg is alive: a jiggle budget and a
       // connection budget are only spent by consecutive failures.
       state.jigglesUsed = 0;
@@ -611,7 +664,7 @@ export async function buildPiSession(
       // Fold the reminder in ahead of the tool's own output, the way the omp
       // harness delivers non-interrupting rule reminders.
       options.logger?.warn?.(
-        { runId, sandboxId, stage: submitName },
+        { runId, sandboxId, stage: hooks.stageNameOf?.() },
         deadlineNudge
           ? "pi_submit_deadline_nudge"
           : repeatNudge
@@ -629,23 +682,20 @@ export async function buildPiSession(
     return unsubscribeGuards;
   };
 
-  // Submit-deadline enforcement: re-steering only fires when a model
-  // STOPS without submitting, so a model that investigates forever never
-  // hears it (grok-4.6 spent 44 of 45 minutes probing a diff with zero
-  // submit attempts, twice, 2026-09-01). When the wall is near and
-  // nothing is submitted, every tool result carries the clock.
+  // A near-deadline reminder also reaches models that keep investigating,
+  // but does not advertise a time allowance: models given a number tend to
+  // spend it.
   const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
-  let lastDeadlineNudgeAt = 0;
+  let lastDeadlineNudgeAt = Number.NEGATIVE_INFINITY;
   const takeSubmitDeadlineNudge = (force = false): string | null => {
     if (hooks.submissionCaptured?.()) return null;
     const remainingMs = deadline - Date.now();
     if (remainingMs > SUBMIT_DEADLINE_NUDGE_MS) return null;
     if (!force && performance.now() - lastDeadlineNudgeAt < 60_000) return null;
     lastDeadlineNudgeAt = performance.now();
-    const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
     return [
       "<system-reminder>",
-      `~${remainingMin} minute(s) of wall clock remain and nothing has been submitted. Stop investigating NOW and call ${hooks.submitNameOf?.() ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
+      `The submission window is closing. Stop investigating NOW and call ${hooks.submitNameOf?.() ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
       "</system-reminder>",
     ].join("\n");
   };
