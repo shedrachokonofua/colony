@@ -67,7 +67,7 @@ export function createRunEventSink(store: Store): RunEventSink {
           typeof detail.detail === "string" ? detail.detail : null,
           detail.startedAt,
         );
-      } else if (event === "pi_tool_observation") {
+      } else if (event === "pi_tool_end") {
         store.clearRunActiveTool(runId, new Date().toISOString());
       } else if (event === "pi_turn_usage") {
         store.touchRunProgress(runId, new Date().toISOString());

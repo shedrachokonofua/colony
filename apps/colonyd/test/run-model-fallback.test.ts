@@ -223,8 +223,7 @@ describe("run event sink persists pi_model_fallback", () => {
       active_tool_detail: "bun run test:unit",
       active_tool_started_at: "2026-09-04T18:00:00.000Z",
     });
-
-    sink(run.id, "pi_tool_observation", { tool: "bash", isError: false });
+    sink(run.id, "pi_tool_end", { tool: "bash", isError: false });
     expect(store.getRun(run.id)).toMatchObject({
       active_tool: null,
       active_tool_detail: null,

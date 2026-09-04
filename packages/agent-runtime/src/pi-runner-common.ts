@@ -838,6 +838,12 @@ export function installRunGuards(
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
       if (inFlightTools === 0) toolFlightStartedAt = undefined;
+      if (inFlightTools === 0) {
+        options.logger?.info?.(
+          { runId, endedAt: new Date().toISOString() },
+          "pi_tool_end",
+        );
+      }
       // The end event is the sole carrier of the result; the collector is
       // keyed by toolCallId, so firing here (and only here) yields exactly
       // one tool_call row per call.
