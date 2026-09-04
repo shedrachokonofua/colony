@@ -823,6 +823,18 @@ export class PiBaseAgentRunner implements PiRunner {
        * the same protection; only the submit tool name varies.
        */
       let activeStage: { name: string; submitName: string } | null = null;
+      // Active model index survives past the prompt loop so submit-gate
+      // failures and stall recovery share one fallback chain.
+      let index = 0;
+      let unchangedRepairSubmissions = 0;
+      const packetRepair = request.packet.repair;
+      const rejectedRepairHead =
+        packetRepair &&
+        typeof packetRepair === "object" &&
+        "rejected_head_sha" in packetRepair &&
+        typeof packetRepair.rejected_head_sha === "string"
+          ? packetRepair.rejected_head_sha
+          : undefined;
       const armSession = (
         target: AgentSession,
         submitName: string,
@@ -832,6 +844,7 @@ export class PiBaseAgentRunner implements PiRunner {
             this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
           logger: this.options.logger,
           evidence,
+          redactSecrets: runToken ? [runToken] : [],
           rejectionToolName: submitName,
           onFailure: (reason) => {
             failureReason ??= reason;
@@ -872,6 +885,47 @@ export class PiBaseAgentRunner implements PiRunner {
               reason:
                 "Inspect the repository first: read or search real source/test files (read, grep, glob, bash, or a task subagent) before submitting.",
             };
+          }
+          if (
+            context.toolCall.name === submitName &&
+            rejectedRepairHead !== undefined
+          ) {
+            const args = context.args as {
+              status?: unknown;
+              head_sha?: unknown;
+            };
+            if (
+              args.status === "complete" &&
+              args.head_sha === rejectedRepairHead
+            ) {
+              unchangedRepairSubmissions += 1;
+              if (unchangedRepairSubmissions >= 2) {
+                const nextIndex = nextCandidateIndex(index);
+                if (nextIndex === null) {
+                  failureReason = "repair_no_change";
+                  void abortRun();
+                } else {
+                  const from = resolvedModels[index]?.id;
+                  index = nextIndex;
+                  const next = resolvedModels[index]!;
+                  unchangedRepairSubmissions = 0;
+                  await target.setModel(next);
+                  this.options.logger?.warn?.(
+                    {
+                      runId,
+                      from,
+                      to: next.id,
+                      error: "repair_no_change",
+                    },
+                    "pi_model_fallback",
+                  );
+                }
+              }
+              return {
+                block: true,
+                reason: `Submission rejected: reviewer repair did not change rejected head ${rejectedRepairHead}. Commit and push a fix, then submit the new remote head SHA.`,
+              };
+            }
           }
           if (
             context.toolCall.name === submitName &&
@@ -971,9 +1025,6 @@ export class PiBaseAgentRunner implements PiRunner {
       };
       const unsubscribeGuards = armSession(session, submitTool.name);
 
-      // Active model index survives past the prompt loop so the continuation
-      // loop can keep falling over to remaining candidates on stalls.
-      let index = 0;
       try {
         const MODEL_FAILED_PROMPT =
           "The previous model failed. Continue the same task from the current conversation and workspace state, then submit the required envelope.";

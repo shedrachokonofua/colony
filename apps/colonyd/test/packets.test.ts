@@ -501,6 +501,24 @@ describe("project reference files in packets", () => {
     );
     expect(landing.body).toContain("MR !7 is open on branch `colony/x`.");
     expect(landing.body).toContain("Do NOT start over or open a new MR.");
+
+    const repair = buildImplementPacket(
+      task,
+      s,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      "base",
+      {
+        reviewFindings: "- **high**: broken",
+        rejectedHeadSha: "a".repeat(40),
+      },
+    );
+    expect(repair.repair).toEqual({ rejected_head_sha: "a".repeat(40) });
+    expect(repair.body).toContain(
+      `The reviewer rejected head \`${"a".repeat(40)}\``,
+    );
   });
 
   it("materializes real file bytes from a builder-produced packet into the workspace", async () => {

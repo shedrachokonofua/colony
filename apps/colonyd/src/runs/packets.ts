@@ -85,6 +85,9 @@ export interface ImplementPacket {
   body: string;
   project: PacketProject | null;
   repo: AgentPacketRepo;
+  repair?: {
+    rejected_head_sha: string;
+  };
 }
 
 export interface ReviewPacket {
@@ -305,6 +308,7 @@ export interface ImplementContinuity {
   openMr?: string;
   gateFailure?: string;
   reviewFindings?: string;
+  rejectedHeadSha?: string;
 }
 
 export function buildImplementPacket(
@@ -335,6 +339,9 @@ export function buildImplementPacket(
       branch,
       base_commit: baseSha,
     },
+    ...(continuity.rejectedHeadSha
+      ? { repair: { rejected_head_sha: continuity.rejectedHeadSha } }
+      : {}),
   };
 }
 
@@ -454,6 +461,11 @@ function buildImplementBody(
   }
   if (continuity.reviewFindings) {
     sections.push("", "## Previous review findings", continuity.reviewFindings);
+    if (continuity.rejectedHeadSha) {
+      sections.push(
+        `The reviewer rejected head \`${continuity.rejectedHeadSha}\`. A repair completion MUST push and submit a different head SHA.`,
+      );
+    }
   }
   if (task.human_feedback) {
     sections.push("", "## Operator feedback", task.human_feedback);

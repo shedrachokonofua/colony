@@ -1011,6 +1011,41 @@ describe("colonyd fake end-to-end loop", () => {
     expect(audit.filter((action) => action === "mr.reused")).toHaveLength(1);
   }, 30_000);
 
+  it("review repair cannot return to mr_open at the rejected head", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(
+      join(dir, `review-no-change-${Date.now()}.db`),
+      {
+        reviewRequired: true,
+      },
+    );
+    script.singleTask = true;
+    script.reviewerRejectFirst = true;
+    script.distinctShas = false;
+
+    const scopeId = await createScope("review repair no change");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // implement -> mr_open
+    const task = handle.ctx.store.listTasks(scopeId)[0]!;
+    await tickAndSettle(); // review rejects SHA_A -> queued
+    handle.ctx.store.clearRetryDelay(task.id);
+    await tickAndSettle(); // fake repair submits SHA_A again
+
+    const current = handle.ctx.store.getTask(task.id)!;
+    expect(current.state).not.toBe("mr_open");
+    const implementRuns = handle.ctx.store
+      .runsForTask(task.id)
+      .filter((run) => run.kind === "implement");
+    expect(implementRuns.at(-1)).toMatchObject({
+      status: "failed",
+      error: "repair_no_change",
+    });
+    const reused = handle.ctx.store
+      .listAudit({ task_id: task.id, limit: 1000 })
+      .events.filter((row) => row.action === "mr.reused");
+    expect(reused).toHaveLength(0);
+  }, 30_000);
+
   it("no review starts on a provider MR head that lags the implementer's push", async () => {
     // col-66b8a6c8.6, 2026-09-02: GitLab reported the previous head for a
     // tick after the push; the review ran on it and its verdict was dead

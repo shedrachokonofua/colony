@@ -159,6 +159,7 @@ async function executeImplement(
     const files = scope.project_name
       ? ctx.store.listProjectFiles(scope.project_name)
       : [];
+    const reviewRepair = latestReviewRepair(ctx, task);
     const { repo: repoWithCredentials, ...packet } = buildImplementPacket(
       task,
       scope,
@@ -174,7 +175,8 @@ async function executeImplement(
             ? `MR !${task.mr_iid} is open on branch \`${branch}\`.`
             : undefined,
         gateFailure: latestGateFailure(ctx, task),
-        reviewFindings: latestReviewFindings(ctx, task),
+        reviewFindings: reviewRepair?.findings,
+        rejectedHeadSha: reviewRepair?.rejectedHeadSha,
       },
     );
     const full = {
@@ -253,6 +255,27 @@ async function executeImplement(
         envelope_json: JSON.stringify(envelope),
       });
       runSpan?.end("failed", "envelope has no command evidence");
+      return;
+    }
+    if (
+      reviewRepair?.rejectedHeadSha &&
+      envelope.head_sha === reviewRepair.rejectedHeadSha
+    ) {
+      const reason = "repair_no_change";
+      ctx.store.finishRun(runId, "failed", {
+        error: reason,
+        envelope_json: JSON.stringify(envelope),
+      });
+      runSpan?.end("failed", reason);
+      ctx.store.audit(SERVICE_ACTOR, "run.failed", {
+        scope_id: scope.id,
+        task_id: task.id,
+        run_id: runId,
+        detail: {
+          reason,
+          rejected_head_sha: reviewRepair.rejectedHeadSha,
+        },
+      });
       return;
     }
 
@@ -471,10 +494,10 @@ function interruptedAttempt(
   ].join("\n");
 }
 
-function latestReviewFindings(
+function latestReviewRepair(
   ctx: ColonydContext,
   task: Task,
-): string | undefined {
+): { findings: string; rejectedHeadSha?: string } | undefined {
   const runs = ctx.store
     .runsForTask(task.id)
     .filter((r) => r.kind === "review" && r.status === "succeeded");
@@ -495,17 +518,25 @@ function latestReviewFindings(
     }
     if (evidence.verdict !== "request_changes") continue;
     const findings = evidence.findings ?? [];
-    if (findings.length === 0) {
-      return run.evidence_json;
-    }
-    return findings
-      .map((f) => {
-        const loc = f.file ? " `" + f.file + "`" : "";
-        return (
-          "- **" + (f.severity ?? "note") + "**" + loc + ": " + (f.note ?? "")
-        );
-      })
-      .join("\n");
+    return {
+      findings:
+        findings.length === 0
+          ? run.evidence_json
+          : findings
+              .map((f) => {
+                const loc = f.file ? " `" + f.file + "`" : "";
+                return (
+                  "- **" +
+                  (f.severity ?? "note") +
+                  "**" +
+                  loc +
+                  ": " +
+                  (f.note ?? "")
+                );
+              })
+              .join("\n"),
+      ...(run.head_sha ? { rejectedHeadSha: run.head_sha } : {}),
+    };
   }
   return undefined;
 }
