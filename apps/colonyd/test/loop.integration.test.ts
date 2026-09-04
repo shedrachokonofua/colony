@@ -572,38 +572,55 @@ describe("colonyd fake end-to-end loop", () => {
     // Let's test non-cap block precondition:
     const uncapScopeId = await createScope("uncap scope");
     store.setScopeStatus(uncapScopeId, "planning", ACTOR);
-    store.setScopeStatus(uncapScopeId, "blocked", ACTOR, { blocked_reason: "architect retries exhausted: boom" });
-    const failCap1 = await app.request(`/scopes/${uncapScopeId}/plan-review-continue`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR },
+    store.setScopeStatus(uncapScopeId, "blocked", ACTOR, {
+      blocked_reason: "architect retries exhausted: boom",
     });
+    const failCap1 = await app.request(
+      `/scopes/${uncapScopeId}/plan-review-continue`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      },
+    );
     expect(failCap1.status).toBe(409);
-    const failCap2 = await app.request(`/scopes/${uncapScopeId}/plan-review-approve`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR },
-    });
+    const failCap2 = await app.request(
+      `/scopes/${uncapScopeId}/plan-review-approve`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      },
+    );
     expect(failCap2.status).toBe(409);
-    const failCap3 = await app.request(`/scopes/${uncapScopeId}/plan-review-replan`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR, "Content-Type": "application/json" },
-      body: JSON.stringify({ feedback: "fix it" }),
-    });
+    const failCap3 = await app.request(
+      `/scopes/${uncapScopeId}/plan-review-replan`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR, "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: "fix it" }),
+      },
+    );
     expect(failCap3.status).toBe(409);
 
     // Calling continue on an unblocked scope fails
     const notBlockedScopeId = await createScope("not blocked scope");
-    const failNotBlocked = await app.request(`/scopes/${notBlockedScopeId}/plan-review-continue`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR },
-    });
+    const failNotBlocked = await app.request(
+      `/scopes/${notBlockedScopeId}/plan-review-continue`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      },
+    );
     expect(failNotBlocked.status).toBe(409);
 
     // Generic unblock still routes planning/active/validating for non-cap blocks:
     // (uncapScopeId has no tasks, so it routes to planning)
-    const genericUnblock = await app.request(`/scopes/${uncapScopeId}/unblock`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR },
-    });
+    const genericUnblock = await app.request(
+      `/scopes/${uncapScopeId}/unblock`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      },
+    );
     expect(genericUnblock.status).toBe(200);
     expect(store.getScope(uncapScopeId)!.status).toBe("planning");
 
@@ -614,13 +631,19 @@ describe("colonyd fake end-to-end loop", () => {
     store.setScopeStatus(legacyScopeId, "blocked", ACTOR, {
       blocked_reason: "plan review rejected 5 consecutive times",
     });
-    const legacyRes = await app.request(`/scopes/${legacyScopeId}/plan-review-continue`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR },
-    });
+    const legacyRes = await app.request(
+      `/scopes/${legacyScopeId}/plan-review-continue`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      },
+    );
     expect(legacyRes.status).toBe(200);
     expect(store.getScope(legacyScopeId)!.status).toBe("planning");
-    const legacyAudits = store.listAudit({ scope_id: legacyScopeId, limit: 10 }).events;
+    const legacyAudits = store.listAudit({
+      scope_id: legacyScopeId,
+      limit: 10,
+    }).events;
     expect(
       legacyAudits.some((a) => {
         const d = JSON.parse(a.detail_json) as { rounds?: number } | null;
@@ -630,10 +653,13 @@ describe("colonyd fake end-to-end loop", () => {
 
     // Test Escape Action (1): plan-review-continue
     // scopeId is currently blocked at 10.
-    const continueRes = await app.request(`/scopes/${scopeId}/plan-review-continue`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR },
-    });
+    const continueRes = await app.request(
+      `/scopes/${scopeId}/plan-review-continue`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      },
+    );
     expect(continueRes.status).toBe(200);
     expect(store.getScope(scopeId)!.status).toBe("planning");
     // plan_json retained so tick can review
@@ -651,27 +677,39 @@ describe("colonyd fake end-to-end loop", () => {
       plan_json: scope.plan_json,
     });
     // Feedback empty -> 400
-    const replanEmpty = await app.request(`/scopes/${scopeId}/plan-review-replan`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR, "Content-Type": "application/json" },
-      body: JSON.stringify({ feedback: "" }),
-    });
+    const replanEmpty = await app.request(
+      `/scopes/${scopeId}/plan-review-replan`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR, "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: "" }),
+      },
+    );
     expect(replanEmpty.status).toBe(400);
 
-    const replanRes = await app.request(`/scopes/${scopeId}/plan-review-replan`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR, "Content-Type": "application/json" },
-      body: JSON.stringify({ feedback: "replan please" }),
-    });
+    const replanRes = await app.request(
+      `/scopes/${scopeId}/plan-review-replan`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR, "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: "replan please" }),
+      },
+    );
     expect(replanRes.status).toBe(200);
     expect(store.getScope(scopeId)!.status).toBe("planning");
     // plan_json cleared by requestReplan
     expect(store.getScope(scopeId)!.plan_json).toBeNull();
-    const replanAudits = store.listAudit({ scope_id: scopeId, limit: 10 }).events;
+    const replanAudits = store.listAudit({
+      scope_id: scopeId,
+      limit: 10,
+    }).events;
     expect(
       replanAudits.some((a) => {
         const d = JSON.parse(a.detail_json) as { feedback?: string } | null;
-        return a.action === "plan.replan_requested" && d?.feedback === "replan please";
+        return (
+          a.action === "plan.replan_requested" &&
+          d?.feedback === "replan please"
+        );
       }),
     ).toBe(true);
     expect(
@@ -686,14 +724,20 @@ describe("colonyd fake end-to-end loop", () => {
     store.setScopeStatus(scopeId, "blocked", ACTOR, {
       blocked_reason: "plan review rejected 10 consecutive times",
     });
-    const approveRes = await app.request(`/scopes/${scopeId}/plan-review-approve`, {
-      method: "POST",
-      headers: { "X-Actor-Id": ACTOR },
-    });
+    const approveRes = await app.request(
+      `/scopes/${scopeId}/plan-review-approve`,
+      {
+        method: "POST",
+        headers: { "X-Actor-Id": ACTOR },
+      },
+    );
     expect(approveRes.status).toBe(200);
     expect(store.getScope(scopeId)!.status).toBe("active");
     expect(store.listTasks(scopeId).length).toBeGreaterThan(0);
-    const approveAudits = store.listAudit({ scope_id: scopeId, limit: 10 }).events;
+    const approveAudits = store.listAudit({
+      scope_id: scopeId,
+      limit: 10,
+    }).events;
     expect(
       approveAudits.some((a) => {
         const d = JSON.parse(a.detail_json) as { rounds?: number } | null;
