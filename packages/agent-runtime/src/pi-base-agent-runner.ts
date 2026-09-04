@@ -121,8 +121,11 @@ export function shouldEnableColonyAdvisor(
   return hasAdvisorModel && role !== "architect" && journal === "run";
 }
 
-function provisionAdvisorAgentDir(model: PiModelSpec): string {
-  const dir = mkdtempSync(join(tmpdir(), "colony-advisor-"));
+function provisionAdvisorAgentDir(
+  model: PiModelSpec,
+  parentDir = tmpdir(),
+): string {
+  const dir = mkdtempSync(join(parentDir, "colony-advisor-"));
   try {
     const instructions = COLONY_ADVISOR_INSTRUCTIONS.replaceAll("\n", " ");
     writeFileSync(
@@ -568,7 +571,10 @@ export class PiBaseAgentRunner implements PiRunner {
       const advisorConfigured =
         resolvedAdvisorModel !== undefined && this.profile.role !== "architect";
       if (advisorConfigured) {
-        advisorAgentDir = provisionAdvisorAgentDir(this.options.advisorModel!);
+        advisorAgentDir = provisionAdvisorAgentDir(
+          this.options.advisorModel!,
+          this.options.scratchDir,
+        );
       }
       const advisorContextFiles = advisorConfigured
         ? discoverContextFiles(cwd)

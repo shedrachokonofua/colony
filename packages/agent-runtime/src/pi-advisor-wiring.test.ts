@@ -1,10 +1,5 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
@@ -104,13 +99,13 @@ function modelSpec(
   };
 }
 
-function privateAdvisorDirs(): string[] {
-  return readdirSync(tmpdir(), { withFileTypes: true })
+function privateAdvisorDirs(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true })
     .filter(
       (entry) =>
         entry.isDirectory() && entry.name.startsWith("colony-advisor-"),
     )
-    .map((entry) => join(tmpdir(), entry.name));
+    .map((entry) => join(root, entry.name));
 }
 
 afterEach(async () => {
@@ -139,7 +134,7 @@ describe("Pi advisor wiring", () => {
 
   it("keeps a Contributor-only advisor failure outside the primary fallback chain", async () => {
     const requests: Array<{ model: string; tools: string[] }> = [];
-    const advisorDirsBefore = new Set(privateAdvisorDirs());
+    let advisorDirsBefore = new Set<string>();
     const advisorDirsSeen = new Set<string>();
     const headSha = "a".repeat(40);
     const envelope = {
@@ -171,7 +166,7 @@ describe("Pi advisor wiring", () => {
             tool.function?.name ? [tool.function.name] : [],
           ),
         });
-        for (const dir of privateAdvisorDirs()) {
+        for (const dir of privateAdvisorDirs(scratchDir)) {
           if (advisorDirsBefore.has(dir)) continue;
           advisorDirsSeen.add(dir);
           expect(existsSync(join(dir, "WATCHDOG.yml"))).toBe(true);
@@ -206,6 +201,7 @@ describe("Pi advisor wiring", () => {
     const baseUrl = `http://127.0.0.1:${address.port}/v1`;
     const scratchDir = mkdtempSync(join(tmpdir(), "colony-advisor-test-"));
     scratchDirs.push(scratchDir);
+    advisorDirsBefore = new Set(privateAdvisorDirs(scratchDir));
     const runner = new PiBaseAgentRunner(
       {
         ...REVIEWER_ROLE_PROFILE,
@@ -294,10 +290,7 @@ describe("Pi advisor wiring", () => {
       {
         model: modelSpec(baseUrl, "primary", "primary_provider"),
         fallbackModels: [],
-        advisorModel: modelSpec(
-          baseUrl,
-          "router/muse-spark-1.3-contributor",
-        ),
+        advisorModel: modelSpec(baseUrl, "router/muse-spark-1.3-contributor"),
         scratchDir,
         broker: {
           resolve: ({ provider }) =>
