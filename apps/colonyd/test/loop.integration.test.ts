@@ -664,11 +664,20 @@ describe("colonyd fake end-to-end loop", () => {
     expect(store.getScope(scopeId)!.status).toBe("planning");
     // plan_json retained so tick can review
     expect(store.getScope(scopeId)!.plan_json).not.toBeNull();
-    // Epoch reset: no immediate re-block from historical 10 rejections
+    // Epoch reset: the historical 10 rejections no longer count, so the
+    // tick reviews the retained plan instead of re-blocking on arrival.
+    const reviewsBeforeContinue = store
+      .runsForScope(scopeId)
+      .filter((r) => r.kind === "plan_review").length;
     script.planReviewCalls = 0;
-    script.planReviewRejectFirst = false; // allow tick to approve or make progress
+    script.planReviewRejectFirst = false;
     await tickAndSettle();
-    expect(store.getScope(scopeId)!.status).not.toBe("blocked");
+    const afterContinue = store.getScope(scopeId)!;
+    expect(afterContinue.status).not.toBe("blocked");
+    expect(
+      store.runsForScope(scopeId).filter((r) => r.kind === "plan_review")
+        .length,
+    ).toBeGreaterThan(reviewsBeforeContinue);
 
     // Test Escape Action (3): plan-review-replan
     // First let's put scopeId back into blocked state at 10
@@ -718,6 +727,15 @@ describe("colonyd fake end-to-end loop", () => {
         return a.action === "scope.plan_review_replanned" && d?.rounds === 10;
       }),
     ).toBe(true);
+    // Epoch reset: the cleared plan goes back to the architect carrying the
+    // operator's feedback and the historical rejections do not re-block.
+    script.planReviewCalls = 0;
+    script.planReviewRejectFirst = false;
+    await tickAndSettle();
+    const afterReplan = store.getScope(scopeId)!;
+    expect(afterReplan.status).toBe("planning");
+    expect(afterReplan.blocked_reason).toBeNull();
+    expect(afterReplan.plan_feedback).toBe("replan please");
 
     // Test Escape Action (2): plan-review-approve
     store.setScopePlan(scopeId, scope.plan_json!);
@@ -745,8 +763,11 @@ describe("colonyd fake end-to-end loop", () => {
       }),
     ).toBe(true);
 
-    // Test Abandon on blocked scope
+    // Test Abandon on blocked scope. Drain the replan tick first: an
+    // architect run still in flight would race the synthetic block below.
+    await settle();
     const abandonScopeId = await createScope("abandon cap scope");
+    store.setScopeStatus(abandonScopeId, "planning", ACTOR);
     store.setScopeStatus(abandonScopeId, "blocked", ACTOR, {
       blocked_reason: "plan review rejected 10 consecutive times",
       plan_json: scope.plan_json,
