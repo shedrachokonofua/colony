@@ -100,13 +100,15 @@ The e2e suites verify the full stack against a fake boundary and an isolated SQL
 ```bash
 # Browser suite (Playwright desktop + mobile)
 bun install --frozen-lockfile && npx playwright install chromium && npm run test:e2e
-# API e2e + unit (includes *.integration.test.ts)
-npm test
+# API integration suite (only *.integration.test.ts)
+bun run test:integration
+# Unit suite
+bun run test:unit
 ```
 
 Environment overrides:
 
-- `COLONY_TEST_CHROMIUM_PATH` — path to a Chromium binary for Playwright. Locally omit it (Playwright uses its bundled Chromium); in CI set it to the `chromium` binary provided by `nix develop` (`command -v chromium`).
+- `COLONY_TEST_CHROMIUM_PATH` — optional path to a system Chromium binary. Locally and in CI omit it to use Playwright's bundled version-matched browser.
 - `COLONY_E2E_PORT` (default `4477`) and `COLONY_E2E_CONTROL_PORT` (default `4478`) — ports for the fake colonyd and its control server.
 
 All suites use only the fake boundary plus a temp SQLite DB and temp dirs under `COLONY_E2E_TMP_DIR`. No real GitLab instance or production credential is required or consumed.

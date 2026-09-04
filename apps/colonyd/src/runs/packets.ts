@@ -32,6 +32,15 @@ export interface PacketProject {
   files: readonly PacketProjectFile[];
 }
 
+export interface ArchitectRevisionContext {
+  rejected_plan: ArchitectDecompositionV2;
+  review_run_id: string;
+  review_base_sha: string | null;
+  plan_hash: string;
+  planning_epoch: string;
+  feedback: string;
+}
+
 export interface ArchitectPacket {
   kind: "architect_scope";
   scope_id: string;
@@ -39,8 +48,12 @@ export interface ArchitectPacket {
   body: string;
   project: PacketProject | null;
   repo: AgentPacketRepo;
-  /** Findings from the previous plan's review (reviewer or operator). */
+  /** Durable operator-authored amendments to the original scope goal. */
+  plan_directives?: string;
+  /** Findings from the latest rejected plan review. */
   plan_feedback?: string;
+  /** Exact rejected plan and the revision identity it belongs to. */
+  revision_context?: ArchitectRevisionContext;
 }
 
 export interface PlanReviewPacket {
@@ -51,6 +64,8 @@ export interface PlanReviewPacket {
   project: PacketProject | null;
   repo: AgentPacketRepo;
   plan: ArchitectDecompositionV2;
+  /** Durable operator-authored amendments the reviewer must enforce. */
+  plan_directives?: string;
   /** Which review round this is (1-based). */
   round: number;
 }
@@ -73,6 +88,28 @@ export interface ArchitectExtensionPacket {
   }[];
 }
 
+export type ImplementFact<T> =
+  | { status: "known"; value: T }
+  | { status: "unknown"; reason: string }
+  | { status: "not_requested" };
+
+export interface ImplementExecutionContext {
+  mode: "fresh" | "repair";
+  branch: string;
+  target_branch: string;
+  target_head_sha: string;
+  remote_head: ImplementFact<string>;
+  pipeline: ImplementFact<{ status: string; commit_sha?: string }>;
+  current_objective: string;
+}
+
+export interface ImplementHistoricalEvidence {
+  kind: "interrupted" | "review" | "gate";
+  at: string;
+  head_sha?: string;
+  text: string;
+}
+
 export interface ImplementPacket {
   kind: "implement_task";
   task_id: string;
@@ -81,6 +118,10 @@ export interface ImplementPacket {
   body: string;
   project: PacketProject | null;
   repo: AgentPacketRepo;
+  execution_context: ImplementExecutionContext;
+  repair?: {
+    rejected_head_sha: string;
+  };
 }
 
 export interface ReviewPacket {
@@ -156,19 +197,30 @@ function projectFilesSection(files: readonly ProjectFile[]): string {
   return `## Project reference files (read on demand)\n${lines.join("\n")}\n`;
 }
 
+function operatorPlanDirectivesSection(scope: Scope): string {
+  if (!scope.plan_directives.trim()) return "";
+  return [
+    "## Authoritative operator planning directives",
+    scope.plan_directives,
+    "",
+    "These directives are durable scope requirements. Later directives supersede earlier directives only where they explicitly conflict.",
+  ].join("\n");
+}
+
 export function buildArchitectPacket(
   scope: Scope,
   project: Project | null,
   files: readonly ProjectFile[],
   _repo: ProviderRepoRef,
   baseSha: string,
+  revisionContext?: ArchitectRevisionContext,
 ): ArchitectPacket {
   return {
     kind: "architect_scope",
     scope_id: scope.id,
     goal: scope.goal,
     body: [
-      buildArchitectBody(scope),
+      buildArchitectBody(scope, revisionContext),
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -181,6 +233,10 @@ export function buildArchitectPacket(
       base_commit: baseSha,
     },
     ...(scope.plan_feedback ? { plan_feedback: scope.plan_feedback } : {}),
+    ...(scope.plan_directives
+      ? { plan_directives: scope.plan_directives }
+      : {}),
+    ...(revisionContext ? { revision_context: revisionContext } : {}),
   };
 }
 
@@ -199,7 +255,9 @@ export function buildPlanReviewPacket(
     body: [
       `Scope goal: ${scope.goal}`,
       "",
+      operatorPlanDirectivesSection(scope),
       `Plan review round ${round}. Judge the proposed plan against this repository and submit plan_review_verdict.`,
+      "Return request_changes if the plan omits or contradicts any non-superseded operator directive.",
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -212,6 +270,9 @@ export function buildPlanReviewPacket(
       base_commit: baseSha,
     },
     plan,
+    ...(scope.plan_directives
+      ? { plan_directives: scope.plan_directives }
+      : {}),
     round,
   };
 }
@@ -275,14 +336,20 @@ export function buildArchitectExtensionPacket(
     existing_tasks: input.existingTasks,
   };
 }
-
 /** Run-history sections only the dispatching caller can collect from the store. */
 export interface ImplementContinuity {
+  executionContext?: ImplementExecutionContext;
+  historicalEvidence?: readonly ImplementHistoricalEvidence[];
+  operatorFeedback?: string;
+  currentGateFailure?: string;
+  currentReviewFindings?: string;
+  currentRejectedHeadSha?: string;
+  /** Legacy fields are retained as input compatibility for direct callers. */
   interrupted?: string;
-  /** Set when the task already has an open MR: land it, do not restart. */
   openMr?: string;
   gateFailure?: string;
   reviewFindings?: string;
+  rejectedHeadSha?: string;
 }
 
 export function buildImplementPacket(
@@ -295,13 +362,49 @@ export function buildImplementPacket(
   baseSha: string,
   continuity: ImplementContinuity = {},
 ): ImplementPacket {
+  const legacyRepair =
+    continuity.openMr !== undefined ||
+    continuity.gateFailure !== undefined ||
+    continuity.reviewFindings !== undefined ||
+    continuity.rejectedHeadSha !== undefined ||
+    continuity.interrupted !== undefined;
+  const executionContext =
+    continuity.executionContext ??
+    (legacyRepair
+      ? {
+          ...freshImplementExecutionContext(
+            branch,
+            scope.default_branch,
+            baseSha,
+          ),
+          mode: "repair" as const,
+          current_objective:
+            "Inspect the existing task branch and make only the incremental changes needed to complete the task.",
+        }
+      : freshImplementExecutionContext(branch, scope.default_branch, baseSha));
+  const historical = [
+    ...(continuity.historicalEvidence ?? []),
+    ...legacyHistoricalEvidence(continuity),
+  ];
+  const operatorFeedback = continuity.operatorFeedback ?? task.human_feedback;
   return {
     kind: "implement_task",
     task_id: task.id,
     scope_id: scope.id,
     goal: task.title,
     body: [
-      buildImplementBody(task, continuity),
+      buildImplementBody(task, executionContext, historical, operatorFeedback, {
+        openMr: continuity.openMr,
+        gateFailure: continuity.currentGateFailure ?? continuity.gateFailure,
+        reviewFindings:
+          continuity.currentReviewFindings ?? continuity.reviewFindings,
+        rejectedHeadSha:
+          continuity.currentRejectedHeadSha ?? continuity.rejectedHeadSha,
+        legacy:
+          continuity.currentGateFailure === undefined &&
+          continuity.currentReviewFindings === undefined &&
+          continuity.currentRejectedHeadSha === undefined,
+      }),
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -313,7 +416,47 @@ export function buildImplementPacket(
       branch,
       base_commit: baseSha,
     },
+    execution_context: executionContext,
+    ...((continuity.currentRejectedHeadSha ?? continuity.rejectedHeadSha)
+      ? {
+          repair: {
+            rejected_head_sha:
+              continuity.currentRejectedHeadSha ?? continuity.rejectedHeadSha!,
+          },
+        }
+      : {}),
   };
+}
+
+function freshImplementExecutionContext(
+  branch: string,
+  targetBranch: string,
+  targetHeadSha: string,
+): ImplementExecutionContext {
+  return {
+    mode: "fresh",
+    branch,
+    target_branch: targetBranch,
+    target_head_sha: targetHeadSha,
+    remote_head: { status: "not_requested" },
+    pipeline: { status: "not_requested" },
+    current_objective:
+      "Implement the durable task requirements on the new task branch.",
+  };
+}
+
+function legacyHistoricalEvidence(
+  continuity: ImplementContinuity,
+): ImplementHistoricalEvidence[] {
+  const entries: ImplementHistoricalEvidence[] = [];
+  if (continuity.interrupted) {
+    entries.push({
+      kind: "interrupted",
+      at: "timestamp unavailable",
+      text: continuity.interrupted,
+    });
+  }
+  return entries;
 }
 
 export function buildReviewPacket(
@@ -348,7 +491,10 @@ export function buildReviewPacket(
   };
 }
 
-function buildArchitectBody(scope: Scope): string {
+function buildArchitectBody(
+  scope: Scope,
+  revisionContext?: ArchitectRevisionContext,
+): string {
   const lines = [
     `Scope goal: ${scope.goal}`,
     "",
@@ -364,13 +510,23 @@ function buildArchitectBody(scope: Scope): string {
     "Pure verify/QA tasks with no diff cannot pass a merge gate — fold verification into the task that produces the change, as required evidence.",
     "Tasks creating shared contracts (schemas, wire protocols, exported test suites) must say so in their spec: contract changes are permanent and get the strictest review.",
   ];
+  const directives = operatorPlanDirectivesSection(scope);
+  if (directives) lines.push("", directives);
   if (scope.plan_feedback) {
     lines.push(
       "",
-      "## Operator feedback on your previous plan",
+      "## Findings from the latest rejected plan review",
       scope.plan_feedback,
       "",
-      "The previous decomposition was rejected. Revise it to address this feedback.",
+      "Revise the decomposition to address these findings without dropping the scope goal or any non-superseded operator directive.",
+    );
+  }
+  if (revisionContext) {
+    lines.push(
+      "",
+      "## Exact prior rejected plan — revision context",
+      `Reviewed plan hash: \`${revisionContext.plan_hash}\`; review run: \`${revisionContext.review_run_id}\`; reviewed base HEAD: \`${revisionContext.review_base_sha}\`; planning epoch: \`${revisionContext.planning_epoch}\`.`,
+      "Use this exact rejected plan as an amendment starting point, not as permission to cold-regenerate or resurrect unrelated work. Re-ground repository facts at the current HEAD and preserve every durable requirement and directive.",
     );
   }
   return lines.join("\n");
@@ -378,63 +534,134 @@ function buildArchitectBody(scope: Scope): string {
 
 function buildImplementBody(
   task: Task,
-  continuity: ImplementContinuity,
+  execution: ImplementExecutionContext,
+  historical: readonly ImplementHistoricalEvidence[],
+  operatorFeedback: string | null | undefined,
+  current: {
+    openMr?: string;
+    gateFailure?: string;
+    reviewFindings?: string;
+    rejectedHeadSha?: string;
+    legacy?: boolean;
+  },
 ): string {
   const sections = [
+    "## Current execution brief",
+    execution.current_objective,
+    `Mode: ${execution.mode}. Inspect current repository and provider facts before editing.`,
+    "Do not re-derive or reimplement a completed feature. Do not blindly repeat an old CI fix; verify the current failure and the current diff first.",
+    "Resolve and verify every unresolved review finding that applies to the current head.",
+    "",
+    "## Current provider facts",
+    `Task branch: \`${execution.branch}\`; target branch: \`${execution.target_branch}\`; target/base HEAD: \`${execution.target_head_sha}\`.`,
+    formatFact(
+      "Remote task-branch HEAD",
+      execution.remote_head,
+      (sha) => `\`${sha}\``,
+    ),
+    formatFact(
+      "Current pipeline",
+      execution.pipeline,
+      (pipeline) =>
+        `status \`${pipeline.status}\`${pipeline.commit_sha ? ` at \`${pipeline.commit_sha}\`` : ""}`,
+    ),
+    ...(current.gateFailure && !current.legacy
+      ? [
+          "",
+          "## Current gate failure — verify and repair only this outcome",
+          current.gateFailure,
+        ]
+      : []),
+    ...(current.reviewFindings && !current.legacy
+      ? [
+          "",
+          "## Current review findings — verify each unresolved finding",
+          current.reviewFindings,
+          current.rejectedHeadSha
+            ? `This applies to current head \`${current.rejectedHeadSha}\`; a repair completion MUST submit a different pushed head SHA.`
+            : "",
+        ]
+      : []),
+    "",
+    "## Durable task requirements (original specification)",
     task.spec,
+  ];
+  sections.push(
     "",
     "## Invariants",
+    ...(execution.mode === "repair"
+      ? [
+          "- Start repair work from the remote task branch (`git fetch origin <task branch>` and inspect `origin/<task branch>`); preserve the existing implementation.",
+        ]
+      : []),
     "- Work on the branch provided in packet.repo; commit there and push.",
     "- colonyd opens the merge request after your run — do NOT open an MR yourself.",
     "- Never commit PACKET.json or credentials; keep the diff limited to this task.",
-    "- Iterate with targeted tests (bun test <paths you touched>) plus typecheck. For cross-package changes, verify breadth with `bun run test:unit` (integration tests excluded). Avoid the full `npm test`: its integration tests exceed the sandbox's 15-minute exec deadline and return nothing — CI and review run the full suite for you.",
-    "- Push your work early and after every green test run; unpushed work does not survive this sandbox.",
-    "- Before submitting: git fetch origin && git rebase origin/<target branch>. Resolve conflicts now - you have the context; a later run does not. If the rebase touched your files, rerun your targeted tests.",
+    "- Use incremental compiling checkpoints; run targeted tests (`bun test <paths you touched>`) plus typecheck. For cross-package changes, verify breadth with `bun run test:unit` (integration tests excluded). Avoid the full `npm test`: its integration tests exceed the sandbox deadline and CI/review run the full suite.",
+    "- Push your work early after a green checkpoint; unpushed work does not survive this sandbox.",
+    "- If push reports non-fast-forward, resolve it before unrelated edits using the repository's existing conventions; do not squash or rewrite remote history gratuitously.",
+    "- Before submitting, fetch the target branch and reconcile it using the repository's existing conventions. If reconciliation touched your files, rerun targeted checks.",
+    "- Before submitting: verify the exact pushed head and include command evidence.",
     "- Submit implementer_completion with the exact branch and head SHA you pushed.",
-  ];
-  if (continuity.interrupted) {
+  );
+  if (current.legacy && current.openMr) {
     sections.push(
       "",
-      "## Previous attempt was interrupted — RESUME MODE",
-      continuity.interrupted,
+      "## An MR for this task already exists — LAND IT (legacy evidence; verify current facts)",
+      current.openMr,
+      "Do NOT start over or open a new MR.",
     );
   }
-  if (continuity.openMr) {
+  if (current.legacy && current.gateFailure) {
     sections.push(
       "",
-      "## An MR for this task already exists — LAND IT",
-      continuity.openMr,
-      "Rebase the existing branch onto the target branch, resolve conflicts,",
-      "and push to the same branch. Do NOT start over or open a new MR.",
+      "## Historical gate evidence (legacy input; verify before acting)",
+      current.gateFailure,
     );
   }
-  if (continuity.gateFailure) {
+  if (current.legacy && current.reviewFindings) {
     sections.push(
       "",
-      "## Previous gate failure — LANDING MODE",
-      continuity.gateFailure,
-      "",
-      "The task's implementation was already written and reviewed. Your job",
-      "now is to LAND it, not to re-derive or redesign it:",
-      "- Rebase the existing branch onto the latest target branch and resolve",
-      "  merge conflicts minimally, preserving the reviewed change.",
-      "- Fix failing tests/lint/typecheck with the smallest change that makes",
-      "  the suite green — if a test broke because main moved underneath you,",
-      "  reconcile with main's behavior rather than reverting main's changes.",
-      "- Keep the final diff against the target branch as close as possible",
-      "  to the previously reviewed diff. Review re-runs at your new head;",
-      "  gratuitous changes cost another full cycle.",
-      "- Run the full gate-relevant checks (install, typecheck, lint, tests)",
-      "  before submitting and include them as command evidence.",
+      "## Historical review evidence (legacy input; verify against current head)",
+      current.reviewFindings,
     );
+    if (current.rejectedHeadSha) {
+      sections.push(
+        `The reviewer rejected historical head \`${current.rejectedHeadSha}\`; do not assume that rejection applies to the current head.`,
+      );
+    }
   }
-  if (continuity.reviewFindings) {
-    sections.push("", "## Previous review findings", continuity.reviewFindings);
+  if (historical.length > 0) {
+    sections.push("", "## Historical evidence (dated and revision-scoped)");
+    for (const evidence of historical) {
+      const revision = evidence.head_sha
+        ? ` at head \`${evidence.head_sha}\``
+        : "";
+      sections.push(
+        `### ${evidence.kind} — ${evidence.at}${revision}`,
+        evidence.text,
+      );
+    }
   }
-  if (task.human_feedback) {
-    sections.push("", "## Operator feedback", task.human_feedback);
+  if (operatorFeedback?.trim()) {
+    sections.push(
+      "",
+      "## Current operator feedback",
+      operatorFeedback,
+      "Treat this as operator guidance, retain it, and reconcile it with the durable task requirements without silently dropping either.",
+    );
   }
   return sections.join("\n");
+}
+
+function formatFact<T>(
+  label: string,
+  fact: ImplementFact<T>,
+  format: (value: T) => string,
+): string {
+  if (fact.status === "known") return `${label}: ${format(fact.value)}.`;
+  if (fact.status === "unknown") return `${label}: UNKNOWN (${fact.reason}).`;
+  return `${label}: not requested for this fresh task.`;
 }
 
 function buildReviewBody(task: Task, defaultBranch: string): string {

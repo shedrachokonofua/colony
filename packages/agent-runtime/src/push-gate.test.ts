@@ -197,4 +197,177 @@ describe("implementer submit gate: pushed head", () => {
     }).trim();
     expect(remote).toBe(baseSha);
   }, 60_000);
+
+  it("rejects the reviewed head, then falls back and accepts a changed head", async () => {
+    const rejectedHead = "a".repeat(40);
+    const changedHead = "b".repeat(40);
+    const branch = "colony/repair-gate";
+    const submitted = (head_sha: string) => ({
+      kind: "implementer_completion",
+      status: "complete",
+      summary: "Repair complete.",
+      branch,
+      head_sha,
+      commands: [{ cmd: "bun test", exit_code: 0 }],
+    });
+    let turns = 0;
+    const requestedModels: string[] = [];
+    const seen: string[] = [];
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        turns += 1;
+        const parsed = JSON.parse(body) as {
+          model: string;
+          messages: { role: string; content?: unknown }[];
+        };
+        requestedModels.push(parsed.model);
+        const lastTool = [...parsed.messages]
+          .reverse()
+          .find((m) => m.role === "tool");
+        if (lastTool) seen.push(JSON.stringify(lastTool.content));
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          connection: "keep-alive",
+          "cache-control": "no-cache",
+        });
+        response.end(
+          sseToolCall(
+            "submit_implementer_completion",
+            submitted(turns < 3 ? rejectedHead : changedHead),
+          ),
+        );
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing port");
+    const model = (id: string): PiModelSpec => ({
+      id,
+      name: id,
+      api: "openai-completions",
+      provider: "test-gateway",
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 8_192,
+    });
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-repair-gate-"));
+    dirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...DEVELOPER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        verifyPushedHead: false,
+        defaultTools: [],
+        skipPromptWithoutWorkTools: false,
+      },
+      {
+        model: model("primary"),
+        fallbackModels: [model("fallback")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        maxTurns: 6,
+        runTimeoutMs: 10_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: `repair-gate-${Date.now()}`,
+      packet: {
+        goal: "Repair the rejected change",
+        body: "Fix the review finding.",
+        repair: { rejected_head_sha: rejectedHead },
+      },
+      environment: { role: "developer" },
+    });
+
+    expect(requestedModels).toEqual(["primary", "primary", "fallback"]);
+    expect(result.envelope).toEqual(submitted(changedHead));
+    expect(result.reason).toBeUndefined();
+  }, 20_000);
+
+  it("fails with repair_no_change when every model candidate is exhausted", async () => {
+    const rejectedHead = "c".repeat(40);
+    const envelope = {
+      kind: "implementer_completion",
+      status: "complete",
+      summary: "No change.",
+      branch: "colony/repair-exhausted",
+      head_sha: rejectedHead,
+      commands: [{ cmd: "bun test", exit_code: 0 }],
+    };
+    let turns = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        turns += 1;
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          connection: "keep-alive",
+          "cache-control": "no-cache",
+        });
+        response.end(sseToolCall("submit_implementer_completion", envelope));
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing port");
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-repair-exhausted-"));
+    dirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...DEVELOPER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        verifyPushedHead: false,
+        defaultTools: [],
+        skipPromptWithoutWorkTools: false,
+      },
+      {
+        model: {
+          id: "only",
+          name: "only",
+          api: "openai-completions",
+          provider: "test-gateway",
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 8_192,
+        },
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        maxTurns: 4,
+        runTimeoutMs: 10_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: `repair-exhausted-${Date.now()}`,
+      packet: {
+        goal: "Repair the rejected change",
+        body: "Fix the review finding.",
+        repair: { rejected_head_sha: rejectedHead },
+      },
+      environment: { role: "developer" },
+    });
+
+    expect(turns).toBe(2);
+    expect(result.reason).toBe("repair_no_change");
+  }, 20_000);
 });

@@ -407,9 +407,10 @@ describe("operator console", () => {
     expect(replan.status).toBe(200);
     const updated = store.getScope(scope.id)!;
     expect(updated.plan_json).toBeNull();
-    expect(updated.plan_feedback).toBe("split task t into two");
+    expect(updated.plan_feedback).toBeNull();
+    expect(updated.plan_directives).toContain("split task t into two");
 
-    // A fresh plan consumes the feedback.
+    // A fresh plan consumes reviewer feedback, not operator directives.
     store.setScopePlan(
       scope.id,
       JSON.stringify({
@@ -430,6 +431,9 @@ describe("operator console", () => {
       }),
     );
     expect(store.getScope(scope.id)!.plan_feedback).toBeNull();
+    expect(store.getScope(scope.id)!.plan_directives).toContain(
+      "split task t into two",
+    );
 
     const [task] = store.materializePlan(
       scope.id,

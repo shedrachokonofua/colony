@@ -46,7 +46,6 @@ export type { DecompositionValidationError } from "./envelope-validation.js";
 export {
   ARCHITECT_STAGES,
   architectDecompositionEnvelopeTypeBox,
-  architectSurveyNotesTypeBox,
   buildArchitectStages,
   createArchitectSubmitTool,
   createPlanReviewSubmitTool,
@@ -57,5 +56,6 @@ export {
 export type {
   ArchitectStage,
   ArchitectStageName,
+  InspectionManifest,
   StageArtifacts,
 } from "./architect-stages.js";

@@ -82,6 +82,31 @@ describe("run-line", () => {
     expect(duration.textContent).toContain("2m 05s");
   });
 
+  it("shows the active tool and its live elapsed duration", async () => {
+    const el = makeLine({
+      status: "running",
+      finished_at: null,
+      active_tool: "bash",
+      active_tool_detail: "npm run test:unit",
+      active_tool_started_at: new Date(Date.now() - 65_000).toISOString(),
+    });
+    await el.updateComplete;
+    const active = el.querySelector(".active-operation");
+    expect(active?.textContent.replace(/\s+/g, " ").trim()).toContain(
+      "running bash: npm run test:unit",
+    );
+    expect(active?.querySelector("run-duration")?.textContent).toContain(
+      "1m 05s",
+    );
+    el.run = {
+      ...el.run,
+      status: "succeeded",
+      finished_at: new Date().toISOString(),
+    };
+    await el.updateComplete;
+    expect(el.querySelector(".active-operation")).toBeNull();
+  });
+
   it("renders the trace link only when config and trace_id exist", async () => {
     const el = makeLine();
     await el.updateComplete;
