@@ -52,6 +52,7 @@ import {
   installWorkspaceProbe,
   WORKSPACE_LOST_REASON,
   packetRepo,
+  sanitizeSecret,
   provisionRepoWorkspace,
   provisionScratchDir,
   resolvePiModel,
@@ -345,6 +346,7 @@ export class PiBaseAgentRunner implements PiRunner {
     let clearTimeoutGuard: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
+    let submissionRejectionReason: string | undefined;
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
       resolveCapturedEnvelope = resolve;
     });
@@ -444,6 +446,7 @@ export class PiBaseAgentRunner implements PiRunner {
             api: candidate.api,
             baseUrl: candidate.baseUrl,
             reasoning: candidate.reasoning,
+            thinking: candidate.thinking,
             input: [...candidate.input],
             cost: { ...candidate.cost },
             // Every Colony route is an OpenAI-compatible gateway that speaks
@@ -453,7 +456,11 @@ export class PiBaseAgentRunner implements PiRunner {
             // catalog as prompt text and sends no `tools` array, and the model
             // answers with literal `<tool_call>` text that nothing parses
             // (qwen3.8-max as reviewer, 0/4 with zero tool calls, 2026-09-03).
-            supportsTools: true,
+            supportsTools: candidate.supportsTools ?? true,
+            // Preserve route-level compatibility policy across registry
+            // resolution and runtime fallback (e.g. disabling reasoning when
+            // a named tool choice is forced on a thinking-incompatible relay).
+            compat: candidate.compat,
             // Colony's config leaves these nullable; the registry wants numbers.
             contextWindow: candidate.contextWindow ?? 128_000,
             maxTokens: candidate.maxTokens ?? 16_384,
@@ -972,8 +979,10 @@ export class PiBaseAgentRunner implements PiRunner {
         observeInspection?: (toolName: string, args: unknown) => void,
       ): (() => void) => {
         // Recovery belongs to one session/model leg. Staged sessions and a
-        // fresh guard installation must never inherit a prior leg's stall.
+        // fresh guard installation must never inherit a prior leg's stall or
+        // submission rejection.
         zeroOutputStalled = false;
+        submissionRejectionReason = undefined;
         const unsubscribeGuards = installRunGuards(target.agent, runId, {
           maxTurns:
             this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
@@ -981,6 +990,14 @@ export class PiBaseAgentRunner implements PiRunner {
           evidence,
           redactSecrets: runToken ? [runToken] : [],
           rejectionToolName: submitName,
+          onSubmissionRejected: (reason) => {
+            const detail = sanitizeSecret(
+              reason.replace(/\s+/g, " ").trim(),
+              runToken,
+            ).slice(0, 400);
+            submissionRejectionReason =
+              detail || "terminal submission was rejected";
+          },
           onFailure: (reason) => {
             failureReason ??= reason;
           },
@@ -1221,6 +1238,10 @@ export class PiBaseAgentRunner implements PiRunner {
             // ends the run immediately.
             if (cancellationTriggered) throw err;
             if (timeoutTriggered) return true;
+            // A guard/runtime failure is already the decisive cause. The
+            // session abort rejects the prompt with an opaque SDK error;
+            // never relabel that error as a provider failure.
+            if (failureReason !== undefined) return true;
             // The candidate loop advances by one; steer it onto the next
             // candidate WITH capacity (see nextCandidateIndex).
             const nextIndex = nextCandidateIndex(index);
@@ -1257,8 +1278,12 @@ export class PiBaseAgentRunner implements PiRunner {
               );
               return advance();
             }
-            if (!next || failureReason !== undefined) {
-              throw err;
+            if (!next) {
+              failureReason = `provider_protocol_failure: ${sanitizeSecret(
+                errText.replace(/\s+/g, " ").trim(),
+                runToken,
+              ).slice(0, 160)}`;
+              return false;
             }
             this.options.logger?.warn?.(
               { runId, from: candidate.id, to: next.id, error: errText },
@@ -1407,7 +1432,41 @@ export class PiBaseAgentRunner implements PiRunner {
             // it actually spends.
             let assistantTurns = 0;
             let capped = false;
+            const sameCandidate = (
+              left: { provider: string; id: string } | undefined,
+              right: { provider: string; id: string },
+            ): boolean =>
+              left?.provider === right.provider && left.id === right.id;
+            const activateStageCandidate = async (
+              candidate: (typeof resolvedModels)[number],
+            ): Promise<void> => {
+              if (sameCandidate(stageSession.model, candidate)) return;
+              // A failed forced call is requeued by the SDK. It was built from
+              // the previous model; discard it before switching and let the
+              // finalizer arm a fresh directive for the active candidate.
+              stageSession.toolChoiceQueue.removeByLabel("user-force");
+              await stageSession.setModel(candidate);
+              zeroOutputStalled = false;
+              jigglesUsed = 0;
+              connectionErrors = 0;
+              quotaScanFloor = stageSession.agent.state.messages.length;
+            };
             const forceStageSubmit = (turn: number): void => {
+              // Never carry a forced directive across a model switch.
+              stageSession.toolChoiceQueue.removeByLabel("user-force");
+              const compat = stageSession.model?.compat;
+              if (
+                compat !== undefined &&
+                typeof compat === "object" &&
+                "supportsForcedToolChoice" in compat &&
+                compat.supportsForcedToolChoice === false
+              ) {
+                this.options.logger?.info?.(
+                  { runId, sandboxId, stage: stage.name, turn },
+                  "architect_stage_submit_force_unsupported",
+                );
+                return;
+              }
               try {
                 stageSession.setForcedToolChoice(stageSubmit.name);
                 this.options.logger?.info?.(
@@ -1471,16 +1530,18 @@ export class PiBaseAgentRunner implements PiRunner {
                 packet: request.packet,
                 ...artifacts,
               });
+              let firstCandidate = true;
               for (; index < resolvedModels.length; index += 1) {
                 const candidate = resolvedModels[index]!;
-                if (stageSession.model?.id !== candidate.id) {
-                  await stageSession.setModel(candidate);
-                  zeroOutputStalled = false;
-                  jigglesUsed = 0;
-                  connectionErrors = 0;
-                  quotaScanFloor = stageSession.agent.state.messages.length;
-                  prompt = MODEL_FAILED_PROMPT;
+                if (!sameCandidate(stageSession.model, candidate)) {
+                  await activateStageCandidate(candidate);
+                  // A fresh stage session is created on primaryModel even
+                  // when the prior stage fell back. Preserve this stage's
+                  // complete prompt for that active candidate; only later
+                  // same-stage fallbacks need the abbreviated continuation.
+                  if (!firstCandidate) prompt = MODEL_FAILED_PROMPT;
                 }
+                firstCandidate = false;
                 if (
                   await driveSession(
                     stageSession,
@@ -1506,15 +1567,27 @@ export class PiBaseAgentRunner implements PiRunner {
                 await stageSession
                   .setActiveToolsByName([stageSubmit.name])
                   .catch(() => undefined);
+                const candidate =
+                  resolvedModels[Math.min(index, resolvedModels.length - 1)]!;
+                await activateStageCandidate(candidate);
                 forceStageSubmit(assistantTurns);
-                const candidate = resolvedModels[index] ?? resolvedModels[0]!;
-                await driveSession(
+                const stopped = await driveSession(
                   stageSession,
                   `This stage ends only when you call ${stageSubmit.name}. Call it now with what you have; nothing else you write counts.`,
                   candidate,
                   landed,
                   stagePromise,
                 );
+                // driveSession uses index=next-1 for its candidate-loop
+                // caller. This loop has no increment expression, so advance
+                // explicitly or the same failed model is forced forever.
+                if (
+                  !stopped &&
+                  failureReason === undefined &&
+                  index + 1 < resolvedModels.length
+                ) {
+                  index += 1;
+                }
               }
             } finally {
               unsubscribeTurns();
@@ -1540,7 +1613,10 @@ export class PiBaseAgentRunner implements PiRunner {
                 !timeoutTriggered &&
                 !cancellationTriggered
               ) {
-                failureReason = `architect_stage_${stage.name}_no_submission`;
+                failureReason =
+                  submissionRejectionReason !== undefined
+                    ? `submission_rejected: ${submissionRejectionReason}`
+                    : `architect_stage_${stage.name}_no_submission`;
               }
               return;
             }
@@ -1740,18 +1816,19 @@ export class PiBaseAgentRunner implements PiRunner {
         unsubscribeGuards();
       }
 
-      if (
-        capturedEnvelope === undefined &&
-        this.profile.requireRepositoryInspection &&
-        !repositoryInspected
-      ) {
-        failureReason ??= "repository_inspection_required";
-      } else if (capturedEnvelope === undefined) {
-        // No separate finalizer pass: a rejected submission surfaces as a tool
-        // error and keeps the session open, the SDK retries transport failures,
-        // and the continuation steer re-prompts a model that stopped early. If
-        // the run still produced no envelope, colonyd retries the attempt.
-        failureReason ??= "finalize_no_submission";
+      if (capturedEnvelope === undefined && failureReason === undefined) {
+        if (submissionRejectionReason !== undefined) {
+          failureReason = `submission_rejected: ${submissionRejectionReason}`;
+        } else if (
+          this.profile.requireRepositoryInspection &&
+          !repositoryInspected
+        ) {
+          failureReason = "repository_inspection_required";
+        } else {
+          // A clean run that never invoked the terminal tool is distinct from
+          // a provider/protocol failure or a rejected submission.
+          failureReason = "finalize_no_submission";
+        }
       }
     } finally {
       // Audit capture is strictly post-decision: the PiRunResult below (and

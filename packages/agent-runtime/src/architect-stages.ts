@@ -308,6 +308,65 @@ function reviewFeedbackOf(packet: AgentRuntimePacket): string | null {
   return typeof feedback === "string" && feedback.trim() ? feedback : null;
 }
 
+interface RevisionContextPrompt {
+  readonly rejected_plan: ArchitectDecompositionV2;
+  readonly review_run_id: string;
+  readonly review_base_sha: string | null;
+  readonly plan_hash: string;
+  readonly planning_epoch: string;
+  readonly feedback: string;
+}
+
+/**
+ * The packet is structurally open because colonyd owns its assembly. Keep the
+ * revision shape local so a malformed packet cannot put an untrusted object in
+ * the prompt.
+ */
+function revisionContextOf(
+  packet: AgentRuntimePacket,
+): RevisionContextPrompt | null {
+  const raw = packet.revision_context;
+  if (!raw || typeof raw !== "object") return null;
+  const context = raw as Partial<RevisionContextPrompt>;
+  const reviewBase = context.review_base_sha;
+  const plan = ArchitectDecompositionV2.safeParse(context.rejected_plan);
+  if (
+    !plan.success ||
+    typeof context.review_run_id !== "string" ||
+    (typeof reviewBase !== "string" && reviewBase !== null) ||
+    typeof context.plan_hash !== "string" ||
+    typeof context.planning_epoch !== "string" ||
+    typeof context.feedback !== "string" ||
+    !context.feedback.trim()
+  ) {
+    return null;
+  }
+  return {
+    rejected_plan: plan.data,
+    review_run_id: context.review_run_id,
+    review_base_sha: reviewBase,
+    plan_hash: context.plan_hash,
+    planning_epoch: context.planning_epoch,
+    feedback: context.feedback,
+  };
+}
+
+function revisionBlock(packet: AgentRuntimePacket): string[] {
+  const revision = revisionContextOf(packet);
+  if (!revision) return [];
+  return [
+    "",
+    "## Exact rejected plan to amend",
+    "This is the exact plan that the latest review rejected. Amend it; do not start from a blank plan.",
+    `Origin review run: ${revision.review_run_id}`,
+    `Origin review base: ${revision.review_base_sha}`,
+    `Planning epoch: ${revision.planning_epoch}`,
+    `Reviewed plan content hash: ${revision.plan_hash}`,
+    "",
+    "Preserve requirements, tasks, and repository grounding that remain valid. Inspect the current repository and changed facts before retaining paths, symbols, commands, or migration numbers. Make any structural correction needed to address the findings; do not blindly preserve stale details. The authoritative operator directives still apply.",
+  ];
+}
+
 const ENVIRONMENT_BLOCK = [
   "# Environment",
   "Your working directory is a read-only clone of the target repository at its default branch. Project reference files listed in the packet are available read-only at `.colony/project/<filename>`; never modify anything under `.colony/project/`.",
@@ -422,6 +481,7 @@ export function buildArchitectStages(): readonly ArchitectStage[] {
         [
           buildPacketPrompt(packet),
           ...feedbackBlock(packet),
+          ...revisionBlock(packet),
           "",
           "## Discover and plan",
           "Inspect the repository until the plan is grounded, then submit the draft.",

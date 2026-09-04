@@ -5,9 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+  ARCHITECT_ROLE_PROFILE,
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,
 } from "./pi-base-agent-runner.js";
+import {
+  createArchitectSubmitTool,
+  createPlanDraftSubmitTool,
+} from "./architect-stages.js";
 
 const servers: Server[] = [];
 const scratchDirs: string[] = [];
@@ -35,7 +40,11 @@ const FAST_RETRY = {
 
 /** A gateway whose answer depends only on the requested model. */
 const startGateway = async (
-  respond: (model: string, response: ServerResponse) => void,
+  respond: (
+    model: string,
+    response: ServerResponse,
+    requestBody: unknown,
+  ) => void,
 ): Promise<{ baseUrl: string; requestedModels: string[] }> => {
   const requestedModels: string[] = [];
   const server = createServer((request, response) => {
@@ -51,7 +60,7 @@ const startGateway = async (
           ? String(parsed.model)
           : "";
       requestedModels.push(model);
-      respond(model, response);
+      respond(model, response, parsed);
     });
   });
   servers.push(server);
@@ -120,14 +129,18 @@ const respondMeaningfulText = (
       finish_reason: null,
     },
   ]);
-  sseChunk(response, model, [
-    {
-      index: 0,
-      delta: {},
-      finish_reason: "stop",
-      usage: { completion_tokens: 3, prompt_tokens: 1 },
-    },
-  ]);
+  sseChunk(
+    response,
+    model,
+    [
+      {
+        index: 0,
+        delta: {},
+        finish_reason: "stop",
+      },
+    ],
+    { completion_tokens: 3, prompt_tokens: 1 },
+  );
   response.end("data: [DONE]\n\n");
 };
 
@@ -170,11 +183,68 @@ const respondVerdictToolCall = (
       finish_reason: null,
     },
   ]);
-  sseChunk(response, model, [
-    { index: 0, delta: {}, finish_reason: "tool_calls" },
-  ]);
+  sseChunk(
+    response,
+    model,
+    [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+    { completion_tokens: 4, prompt_tokens: 1 },
+  );
   response.end("data: [DONE]\n\n");
 };
+
+const respondToolCall = (
+  response: ServerResponse,
+  model: string,
+  name: string,
+  envelope: unknown,
+): void => {
+  response.writeHead(200, sseHeaders);
+  sseChunk(response, model, [
+    {
+      index: 0,
+      delta: {
+        role: "assistant",
+        tool_calls: [
+          {
+            index: 0,
+            id: `call-${model}-${name}`,
+            type: "function",
+            function: { name, arguments: JSON.stringify(envelope) },
+          },
+        ],
+      },
+      finish_reason: null,
+    },
+  ]);
+  sseChunk(
+    response,
+    model,
+    [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+    { completion_tokens: 4, prompt_tokens: 1 },
+  );
+  response.end("data: [DONE]\n\n");
+};
+
+const stageEnvelope = () => ({
+  kind: "architect_decomposition",
+  summary: "A minimal verified implementation plan.",
+  requirements: [
+    { id: "R1", text: "Deliver the requested change.", tasks: [0] },
+  ],
+  journey: [{ after_task: 0, working_state: "The change is delivered." }],
+  acceptance: [
+    { description: "The focused scenario passes.", command: "true" },
+  ],
+  tasks: [
+    {
+      title: "Implement the change",
+      spec: "Implement the requested behavior.",
+      depends_on: [],
+      files: ["src/main.ts"],
+      evidence: ["true"],
+    },
+  ],
+});
 
 /** A healthy turn that deliberately does NOT submit. */
 const respondHealthyText = (response: ServerResponse, model: string): void => {
@@ -186,11 +256,20 @@ const respondHealthyText = (response: ServerResponse, model: string): void => {
       finish_reason: null,
     },
   ]);
-  sseChunk(response, model, [{ index: 0, delta: {}, finish_reason: "stop" }]);
+  sseChunk(response, model, [{ index: 0, delta: {}, finish_reason: "stop" }], {
+    completion_tokens: 3,
+    prompt_tokens: 1,
+  });
   response.end("data: [DONE]\n\n");
 };
 
-const modelSpec = (baseUrl: string, id: string): PiModelSpec => ({
+const modelSpec = (
+  baseUrl: string,
+  id: string,
+  extra: Partial<
+    Pick<PiModelSpec, "reasoning" | "thinking" | "supportsTools" | "compat">
+  > = {},
+): PiModelSpec => ({
   id,
   name: id,
   api: "openai-completions",
@@ -201,6 +280,7 @@ const modelSpec = (baseUrl: string, id: string): PiModelSpec => ({
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 128_000,
   maxTokens: 8_192,
+  ...extra,
 });
 
 describe("Pi model fallback", () => {
@@ -999,10 +1079,122 @@ describe("Pi model fallback", () => {
     );
     // The second leg got its own full budget: a counter shared across legs
     // would have failed it over with fewer requests than the primary spent.
+
     expect(countOf(requestedModels, "second")).toBe(
       countOf(requestedModels, "primary"),
     );
   }, 700_000);
+  it("preserves a guard-classified failure when the last model aborts", async () => {
+    const { baseUrl } = await startGateway((_model, response) =>
+      respondHealthyText(response, "primary"),
+    );
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-guard-cause-test-"));
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        maxTurns: 1,
+        runTimeoutMs: 120_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "guard-cause-contract",
+      packet: { goal: "Review the change", head_sha: "f".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toBe("max_turns_exhausted_without_envelope");
+  });
+
+  it("does not carry a plan rejection into a later verify no-submission", async () => {
+    let requests = 0;
+    const rejectedDraft = {
+      ...stageEnvelope(),
+      tasks: [{ ...stageEnvelope().tasks[0], depends_on: [3] }],
+    };
+    const { baseUrl } = await startGateway((_model, response) => {
+      requests += 1;
+      if (requests === 1) {
+        respondToolCall(
+          response,
+          "primary",
+          "submit_plan_draft",
+          rejectedDraft,
+        );
+      } else if (requests === 2) {
+        respondToolCall(
+          response,
+          "primary",
+          "submit_plan_draft",
+          stageEnvelope(),
+        );
+      } else {
+        respondHealthyText(response, "primary");
+      }
+    });
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-stage-rejection-reset-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...ARCHITECT_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+        stages: () => [
+          {
+            name: "plan" as const,
+            systemPrompt: "Plan the change.",
+            prompt: () => "PLAN_STAGE_KEY",
+            tools: "read_only" as const,
+            subagents: false,
+            turnCap: 2,
+            submitTool: (capture: (value: unknown) => void) =>
+              createPlanDraftSubmitTool(capture),
+          },
+          {
+            name: "verify" as const,
+            systemPrompt: "Verify the change.",
+            prompt: () => "VERIFY_STAGE_KEY",
+            tools: "read_only" as const,
+            subagents: false,
+            turnCap: 1,
+            submitTool: (capture: (value: unknown) => void) =>
+              createArchitectSubmitTool(capture),
+          },
+        ],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        runTimeoutMs: 120_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "stage-rejection-reset-contract",
+      packet: { goal: "Plan the change", head_sha: "f".repeat(40) },
+      environment: { role: "architect" },
+    });
+
+    expect(requests).toBeGreaterThanOrEqual(3);
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toBe("architect_stage_verify_no_submission");
+  });
 
   it("a single-model configuration never logs a model fallback on repeated connection errors", async () => {
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];
@@ -1048,5 +1240,352 @@ describe("Pi model fallback", () => {
     expect(result.reason).toMatch(
       /^provider_connection_failure:.*(503|fetch failed|ECONNRESET|service unavailable)/i,
     );
+  }, 120_000);
+  it("reports a rejected terminal submission instead of no submission", async () => {
+    let requests = 0;
+    const { baseUrl } = await startGateway((_model, response) => {
+      requests += 1;
+      if (requests === 1) {
+        respondVerdictToolCall(response, "primary", {
+          kind: "reviewer_verdict",
+          verdict: "approve",
+          summary: "too short",
+          findings: [],
+          inspected: [],
+          head_sha: "f".repeat(40),
+        });
+        return;
+      }
+      respondHealthyText(response, "primary");
+    });
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-rejection-cause-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        maxTurns: 8,
+        runTimeoutMs: 120_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "rejection-cause-contract",
+      packet: { goal: "Review the change", head_sha: "f".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toMatch(/^submission_rejected:/);
+    expect(result.reason).not.toBe("finalize_no_submission");
+  }, 120_000);
+  it("preserves the full next-stage prompt after a prior stage falls back", async () => {
+    const requestBodies: unknown[] = [];
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response, requestBody) => {
+        requestBodies.push(requestBody);
+        if (model === "primary") {
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              error: { message: "primary stage protocol failure" },
+            }),
+          );
+          return;
+        }
+        if (requestBodies.length === 2) {
+          respondToolCall(
+            response,
+            model,
+            "submit_plan_draft",
+            stageEnvelope(),
+          );
+          return;
+        }
+        respondToolCall(
+          response,
+          model,
+          "submit_architect_decomposition",
+          stageEnvelope(),
+        );
+      },
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-stage-prompt-fallback-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...ARCHITECT_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+        stages: () => [
+          {
+            name: "plan" as const,
+            systemPrompt: "Plan stage system prompt.",
+            prompt: () => "PLAN_STAGE_PROMPT_KEY",
+            tools: "read_only" as const,
+            subagents: false,
+            turnCap: 1,
+            submitTool: (capture: (value: unknown) => void) =>
+              createPlanDraftSubmitTool(capture),
+          },
+          {
+            name: "verify" as const,
+            systemPrompt: "Verify stage system prompt.",
+            prompt: () => "VERIFY_STAGE_PROMPT_KEY",
+            tools: "read_only" as const,
+            subagents: false,
+            turnCap: 1,
+            submitTool: (capture: (value: unknown) => void) =>
+              createArchitectSubmitTool(capture),
+          },
+        ],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "fallback")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        runTimeoutMs: 120_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "stage-prompt-fallback-contract",
+      packet: { goal: "Plan the change", head_sha: "f".repeat(40) },
+      environment: { role: "architect" },
+    });
+
+    expect(requestedModels).toEqual(["primary", "fallback", "fallback"]);
+    expect(JSON.stringify(requestBodies[2])).toContain(
+      "VERIFY_STAGE_PROMPT_KEY",
+    );
+    expect(JSON.stringify(requestBodies[2])).toContain(
+      "Verify stage system prompt.",
+    );
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(stageEnvelope());
+  }, 120_000);
+  it("reports a terminal provider protocol failure distinctly from no submission", async () => {
+    const { baseUrl } = await startGateway((_model, response) => {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: { message: "invalid forced tool protocol" },
+        }),
+      );
+    });
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-provider-cause-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        maxTurns: 4,
+        runTimeoutMs: 120_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "provider-cause-contract",
+      packet: { goal: "Review the change", head_sha: "f".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toMatch(/^provider_protocol_failure:/);
+    expect(result.reason).not.toBe("finalize_no_submission");
+  }, 120_000);
+  it("reports a clean terminal with no submit as genuine no submission", async () => {
+    const { baseUrl } = await startGateway((_model, response) =>
+      respondHealthyText(response, "primary"),
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-no-submit-cause-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        maxTurns: 20,
+        runTimeoutMs: 120_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "no-submit-cause-contract",
+      packet: { goal: "Review the change", head_sha: "f".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toBe("finalize_no_submission");
+  }, 120_000);
+  it("switches the staged finalizer to the active fallback and honors its tool-choice capability", async () => {
+    const requestedModels: string[] = [];
+    const forcedBodies: Record<string, unknown>[] = [];
+    const envelope = {
+      kind: "architect_decomposition",
+      summary: "A minimal verified implementation plan.",
+      requirements: [
+        { id: "R1", text: "Deliver the requested change.", tasks: [0] },
+      ],
+      journey: [{ after_task: 0, working_state: "The change is delivered." }],
+      acceptance: [
+        { description: "The focused scenario passes.", command: "true" },
+      ],
+      tasks: [
+        {
+          title: "Implement the change",
+          spec: "Implement the requested behavior.",
+          depends_on: [],
+          files: ["src/main.ts"],
+          evidence: ["true"],
+        },
+      ],
+    };
+    const { baseUrl, requestedModels: observedModels } = await startGateway(
+      (model, response, requestBody) => {
+        requestedModels.push(model);
+        const body =
+          requestBody && typeof requestBody === "object"
+            ? (requestBody as Record<string, unknown>)
+            : {};
+        if (body.tool_choice !== undefined) forcedBodies.push(body);
+        if (model === "primary" && body.tool_choice !== undefined) {
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              error: {
+                message:
+                  "tool_choice specified is incompatible with thinking enabled",
+              },
+            }),
+          );
+          return;
+        }
+        if (model === "primary") {
+          respondHealthyText(response, model);
+          return;
+        }
+        response.writeHead(200, sseHeaders);
+        sseChunk(response, model, [
+          {
+            index: 0,
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-architect-fallback",
+                  type: "function",
+                  function: {
+                    name: "submit_architect_decomposition",
+                    arguments: JSON.stringify(envelope),
+                  },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ]);
+        sseChunk(
+          response,
+          model,
+          [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+          { completion_tokens: 4, prompt_tokens: 1 },
+        );
+        response.end("data: [DONE]\n\n");
+      },
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-staged-finalizer-fallback-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...ARCHITECT_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+        stages: () => [
+          {
+            name: "verify" as const,
+            systemPrompt: "Submit the verified architect decomposition.",
+            prompt: ({ packet }) => JSON.stringify(packet),
+            tools: "read_only" as const,
+            subagents: false,
+            turnCap: 1,
+            submitTool: (capture: (value: unknown) => void) =>
+              createArchitectSubmitTool(capture),
+          },
+        ],
+      },
+      {
+        model: modelSpec(baseUrl, "primary", { reasoning: true }),
+        fallbackModels: [
+          modelSpec(baseUrl, "fallback", {
+            reasoning: true,
+            compat: {
+              disableReasoningOnForcedToolChoice: true,
+              supportsForcedToolChoice: true,
+            },
+          }),
+        ],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        runTimeoutMs: 120_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "staged-finalizer-fallback-contract",
+      packet: { goal: "Plan the change", head_sha: "f".repeat(40) },
+      environment: { role: "architect" },
+    });
+
+    expect(requestedModels).toEqual(["primary", "primary", "fallback"]);
+    expect(observedModels).toEqual(requestedModels);
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(envelope);
+    const fallbackForced = forcedBodies.find(
+      (body) => body.model === "fallback",
+    );
+    expect(fallbackForced?.tool_choice).toBeDefined();
+    expect(fallbackForced?.reasoning_effort).toBeUndefined();
+    expect(fallbackForced?.reasoning).toBeUndefined();
   }, 120_000);
 });

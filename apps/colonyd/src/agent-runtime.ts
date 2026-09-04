@@ -377,6 +377,7 @@ export function modelFromConfig(config: ResolvedAgentConfig): PiModelSpec {
     provider,
     baseUrl,
     reasoning: config.model.reasoning ?? false,
+    compat: config.model.compat,
     input: ["text"],
     cost: {
       input: config.model.cost?.input ?? 0,

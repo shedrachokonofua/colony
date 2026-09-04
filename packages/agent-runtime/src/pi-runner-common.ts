@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { COLONY_SKILLS, playbookPrompt } from "./colony-skills.js";
 import type { Agent, AgentTool, StreamFn } from "@oh-my-pi/pi-agent-core";
-import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { Api, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { Type } from "@oh-my-pi/omptype/typebox";
 import type { Static } from "@oh-my-pi/omptype/typebox";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
@@ -53,6 +53,14 @@ export interface PiModelSpec {
   readonly provider: string;
   readonly baseUrl: string;
   readonly reasoning: boolean;
+  readonly thinking?: Model["thinking"];
+  readonly supportsTools?: boolean;
+  /**
+   * Sparse provider compatibility overrides. Keeping this with the runtime
+   * spec lets a fallback preserve the registry's capability policy (notably
+   * reasoning/tool-choice compatibility) instead of rediscovering by id.
+   */
+  readonly compat?: ModelSpec["compat"];
   readonly input: ReadonlyArray<"text" | "image">;
   readonly cost: {
     readonly input: number;
@@ -108,6 +116,8 @@ export type PiModelResolver = (
 ) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
+  /** Receives bounded, result-only text when the terminal submit tool rejects. */
+  readonly onSubmissionRejected?: (reason: string) => void;
   /**
    * How the guard stops the run. MUST be a deliberate abort - the session's
    * `abort()`, which sets the SDK's abort-in-progress latch. A bare
@@ -869,6 +879,9 @@ export function installRunGuards(
         (isErrorText || event.isError === true)
       ) {
         options.evidence?.completionRejected(text, event.toolName);
+        options.onSubmissionRejected?.(
+          text.trim() || "terminal submission was rejected",
+        );
       }
     }
     armWatchdog();

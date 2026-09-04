@@ -128,6 +128,7 @@ async function executePlanReview(
 
     const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
       .sha;
+    ctx.store.setRunBaseSha(runId, baseSha);
     const project = scope.project_name
       ? (ctx.store.getProject(scope.project_name) ?? null)
       : null;
