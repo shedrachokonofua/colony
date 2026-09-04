@@ -63,7 +63,7 @@ e2e-tests:
     COLONY_SHELL: ".#default"
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
   script:
-    - nix develop "$COLONY_SHELL" --command bash -c 'export COLONY_TEST_CHROMIUM_PATH="$(command -v chromium)"; timeout -k 15 1800 npm test && timeout -k 15 1800 npm run test:e2e'
+    - nix develop "$COLONY_SHELL" --command bash -c 'export COLONY_TEST_CHROMIUM_PATH="$(command -v chromium)"; timeout -k 15 1800 bun run test:integration && timeout -k 15 1800 bun run test:e2e'
 
 build:colonyd:
   stage: build

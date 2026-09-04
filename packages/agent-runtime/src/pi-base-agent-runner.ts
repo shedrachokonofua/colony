@@ -488,7 +488,7 @@ export class PiBaseAgentRunner implements PiRunner {
           // with exponential backoff, defaulting to 10 attempts. On a dead
           // leg that spends the whole run wall inside one prompt, so bound
           // the budget the leg may burn before the runner sees an error.
-          "retry.maxRetries": 4,
+          "retry.maxRetries": this.options.retryMaxRetries ?? 4,
           "todo.enabled": true,
           "todo.reminders": true,
           "goal.enabled": true,
@@ -721,7 +721,7 @@ export class PiBaseAgentRunner implements PiRunner {
       // increasing backoff before abandoning it; any real progress (a tool
       // call) resets the budget.
       const ZERO_OUTPUT_JIGGLES = 2;
-      const JIGGLE_BACKOFF_MS = 15_000;
+      const jiggleBackoffMs = this.options.jiggleBackoffMs ?? 15_000;
       // Quota exhaustion (weekly caps, frequency limits with a distant reset)
       // never recovers inside a jiggle window: fail over immediately instead
       // of burning wake cycles against a benched provider. "No deployments
@@ -1416,11 +1416,11 @@ export class PiBaseAgentRunner implements PiRunner {
                   runId,
                   model: resolvedModels[index]?.id,
                   jiggle: jigglesUsed,
-                  backoffMs: JIGGLE_BACKOFF_MS * jigglesUsed,
+                  backoffMs: jiggleBackoffMs * jigglesUsed,
                 },
                 "pi_zero_output_jiggle",
               );
-              await sleep(JIGGLE_BACKOFF_MS * jigglesUsed);
+              await sleep(jiggleBackoffMs * jigglesUsed);
             } else if (nextCandidateIndex(index) !== null) {
               const from = resolvedModels[index]?.id;
               index = nextCandidateIndex(index)!;

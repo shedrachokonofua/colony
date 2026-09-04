@@ -79,6 +79,10 @@ export interface PiRunnerBaseOptions {
     | "xhigh";
   readonly maxTurns?: number;
   readonly runTimeoutMs?: number;
+  /** Zero-output recovery backoff base. Tests shrink it; production defaults to 15s. */
+  readonly jiggleBackoffMs?: number;
+  /** Pi SDK retries per failed request. Tests isolate runner failover with zero SDK retries. */
+  readonly retryMaxRetries?: number;
   readonly scratchDir?: string;
   readonly engine?: SandboxEngine;
   /**

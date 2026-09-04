@@ -28,6 +28,10 @@ afterEach(async () => {
 
 const countOf = (values: string[], target: string): number =>
   values.filter((value) => value === target).length;
+const FAST_RETRY = {
+  jiggleBackoffMs: 1,
+  retryMaxRetries: 0,
+} as const;
 
 /** A gateway whose answer depends only on the requested model. */
 const startGateway = async (
@@ -79,12 +83,15 @@ const sseChunk = (
   );
 };
 
-/** Every connection-failure fixture in these tests: a dead upstream leg. */
+/** A settled transport-class error; status 400 avoids testing pi-ai's own retry loop. */
 const respondServiceUnavailable = (response: ServerResponse): void => {
-  response.writeHead(503, { "content-type": "application/json" });
+  response.writeHead(400, { "content-type": "application/json" });
   response.end(
     JSON.stringify({
-      error: { message: "503 Service Unavailable", type: "server_error" },
+      error: {
+        message: "ECONNRESET: upstream connection reset",
+        type: "server_error",
+      },
     }),
   );
 };
@@ -262,6 +269,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [model("fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
         maxTurns: 3,
         runTimeoutMs: 10_000,
         logger: {
@@ -379,6 +387,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [model("second"), model("third")],
         scratchDir,
         broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
         maxTurns: 8,
         // The wall must be long enough for three empty turns + the first
         // 15s jiggle even on a slow CI box (9s starved the stall entirely
@@ -443,6 +452,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
         maxTurns: 60,
         runTimeoutMs: 300_000,
         logger: {
@@ -515,6 +525,7 @@ describe("Pi model fallback", () => {
         modelHasCapacity: (modelId) => modelId !== "capped",
         scratchDir,
         broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
         maxTurns: 60,
         runTimeoutMs: 300_000,
         logger: {
@@ -570,6 +581,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
         maxTurns: 8,
         runTimeoutMs: 20_000,
         logger: {
@@ -633,6 +645,7 @@ describe("Pi model fallback", () => {
         ],
         scratchDir,
         broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
         // Both dead legs must settle five errors each before "third" is
         // reached: six settled turns per leg, at ~16s apiece while the SDK
         // retries one dead upstream, so the wall has to cover ~200s (plus
@@ -704,6 +717,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
         maxTurns: 8,
         runTimeoutMs: 120_000,
         logger: {
