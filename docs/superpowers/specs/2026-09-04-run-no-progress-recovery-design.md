@@ -1,117 +1,91 @@
-# Run No-Progress Recovery Design
+# Run Visibility, Repair Integrity, and Pipeline Speed
 
-## Goal
+## Incident (2026-09-04)
 
-Prevent an agent run from remaining indefinitely `running` while its lease renews but its model/session loop makes no progress, and prevent reviewer-requested repair runs from returning a task to `mr_open` without advancing beyond the rejected head.
+Two implement runs for `col-c8f58a57.3` appeared hung for ~10 minutes each: no run events, lease still renewing. Investigation showed neither run was stuck. Each was waiting on a sandbox `bash` call (`bun test packages/agent-runtime`, 476 s; `npm run test:unit`, 590 s). Only tool *end* is recorded in `run_events` (`tool_call`/`command` rows), so a long-running command is indistinguishable from a dead run in the API and console.
 
-## Observed failures
+Two real defects surfaced alongside:
 
-On 2026-09-04, implement runs for `col-c8f58a57.3` twice emitted a successful assistant turn after a tool result and then produced no run events for roughly ten minutes. The one-minute lease heartbeat continued, so dead-lease recovery could not distinguish the silent run from a healthy run.
+1. The repair run dispatched after a reviewer `request_changes` submitted `complete` with the **same head SHA the reviewer rejected** (`c14c7589…`). Colonyd accepted it and moved the task back to `mr_open` with the blocker unresolved.
+2. `npm run test:unit` takes 500–590 s. 449 s of that is one file, `packages/agent-runtime/src/pi-model-fallback.test.ts`, which waits out real backoff sleeps. In the sandbox this landed 10 s short of the 600 s exec timeout; in CI the unit suite runs twice (unit stage, then again inside `npm test` in the e2e stage), and every job spends ~4–5 min realising a nix dev shell from an empty store.
 
-The subsequent repair run submitted `complete` with the same head SHA (`c14c7589…`) rejected by the preceding reviewer. Colonyd accepted the envelope and transitioned the task to `mr_open`, despite the reviewer finding remaining unresolved.
+The runtime already has a liveness watchdog (`installRunGuards`: 12 min silence with tool-in-flight exemption, 20 min tool-wedge cap). No new watchdog is added.
 
-## Scope
+## Slice 1: test speed
 
-This change covers Pi-backed architect, plan-review, implement, and review runs. Deterministic merge-gate and validation executors retain their existing command timeouts.
+### Runtime seams
 
-The change adds:
+`PiRunnerBaseOptions` gains two optional fields, defaults identical to today:
 
-- runtime progress and active-operation signals;
-- a colonyd no-progress watchdog;
-- in-session model fallback after a stalled model turn;
-- structured no-progress events and fault attribution;
-- an implementer submit guard requiring reviewer-requested repairs to advance the rejected head;
-- API fields needed to diagnose an active run.
+- `jiggleBackoffMs?: number` — replaces the `JIGGLE_BACKOFF_MS = 15_000` constant in `pi-base-agent-runner.ts`. Sleep is `jiggleBackoffMs * jigglesUsed`.
+- `retryBaseDelayMs?: number` — forwarded to the SDK settings block beside `retry.maxRetries` as `retry.baseDelayMs` (SDK default 500).
 
-It does not add a new task state, retry queue, agent role, or general workflow engine.
+Production config never sets them.
 
-## Progress contract
+### Tests
 
-`AgentRuntimeAdapter.run` accepts an optional progress callback. Pi runners report these transitions:
+`pi-model-fallback.test.ts` passes `jiggleBackoffMs: 1` and `retryBaseDelayMs: 1` and shrinks `runTimeoutMs` walls accordingly. Assertions are unchanged: same models requested, same `pi_model_fallback` / `pi_zero_output_jiggle` / stall events, same envelopes. Target: file under 10 s.
 
-- model request started;
-- model response activity received;
-- tool execution started;
-- tool execution finished;
-- submission accepted or rejected;
-- model fallback started.
+Any remaining fixed waits in unit tests that do not involve a live socket use `jest.useFakeTimers()` per the repo rule.
 
-Each signal includes an operation kind and timestamp. Tool-start remains active until the matching tool-finish signal. Model-start remains active until response completion, failure, cancellation, or fallback.
+### CI dedupe
 
-Colonyd stores ephemeral watchdog state for locally executing runs and persists diagnostic fields on `runs`:
+`package.json` gains `test:integration`: the `git ls-files` pipeline with `grep '\.integration\.test\.ts$'`. The `e2e-tests` job runs `bun run test:integration && bun run test:e2e` instead of `npm test`. `unit-tests` is unchanged. `npm test` (full suite) remains for local use.
 
-- `last_progress_at TEXT`;
-- `active_operation TEXT` (`model`, `tool`, `submission`, or null);
-- `active_operation_started_at TEXT`;
-- `recovery_count INTEGER NOT NULL DEFAULT 0`.
+## Slice 2: active-operation visibility
 
-A migration updates existing running rows with `last_progress_at = started_at`; completed rows may leave it null. `GET /runs/:id` and existing scope/task run payloads expose these fields through the shared existing run representation.
+### Store
 
-The normal lease heartbeat remains unchanged. Lease means process ownership; `last_progress_at` means useful execution movement.
+`runs` gains, via migration 14 `runs-active-operation`:
 
-## Watchdog
+- `last_progress_at TEXT`
+- `active_tool TEXT` — tool name while a tool call is in flight, else NULL
+- `active_tool_detail TEXT` — redacted, bounded (200 chars) summary: the bash command, or the path for file tools
+- `active_tool_started_at TEXT`
 
-A shared `RunProgressWatchdog` owned by each Pi run wrapper receives progress signals and evaluates silence using an injected clock/timer seam.
+`Store.setRunActiveTool(runId, tool, detail, startedAt)` and `Store.clearRunActiveTool(runId, progressAt)` update only rows with `status = 'running'`. Both also set `last_progress_at`. `Store.touchRunProgress(runId, at)` sets `last_progress_at` alone.
 
-Configuration:
+### Runtime → colonyd
 
-- `COLONY_RUN_NO_PROGRESS_TIMEOUT_MS`, default 600000 (10 minutes), minimum 60000;
-- one watchdog check per existing 60-second heartbeat interval.
+The runner already observes `tool_execution_start` / `tool_execution_end` in `installRunGuards` and emits `pi_tool_observation` at end. It additionally logs `pi_tool_start` `{tool, detail}` at start. colonyd's `createRunEventSink` maps:
 
-A run is stalled only when:
+- `pi_tool_start` → `setRunActiveTool`
+- `pi_tool_observation` → `clearRunActiveTool`
+- `pi_turn_usage` → `touchRunProgress`
 
-- its status is still `running`;
-- `now - last_progress_at` exceeds the timeout;
-- no tool operation is active.
+The sink already persists every event to `run_events`; no second path is introduced.
 
-A long-running tool is never interrupted by this watchdog. Existing tool-specific timeouts remain authoritative.
+### Read surface
 
-When model or submission silence crosses the deadline, the watchdog asks the runtime adapter to recover the run rather than finishing the database run. Recovery aborts only the active model turn, preserves the sandbox/workspace/session/transcript, and advances to the next configured model candidate inside the same run. The runtime emits `pi_no_progress_detected`, then the existing `pi_model_fallback` event with reason `agent_no_progress`. Colonyd increments `recovery_count` and refreshes progress state.
+The `Run` row type and every existing run payload (`GET /runs/:id`, `runs` in scope/task reads, `listProjectRunning`) carry the four fields automatically because they select `*`. The console run line shows `active_tool` + `active_tool_detail` with a live duration from `active_tool_started_at` when present, reusing `run-duration`.
 
-If no model candidate remains, the runtime returns a failed result with structured fault `{layer:"agent_runtime", code:"agent_no_progress"}`. Existing run-finalization and task retry policy then applies. Recovery does not increment `tasks.attempt`; only terminal run failure can do so.
+## Slice 3: unchanged rejected head
 
-Cancellation and daemon shutdown win races with watchdog recovery. Exactly one terminal path may finish a run.
+### Packet
 
-## Unchanged rejected-head guard
+`buildImplementPacket` continuity already carries `reviewFindings`. It additionally carries `rejectedHeadSha: string | undefined` — the `head_sha` of the latest `review` run whose verdict was `request_changes` for this task. The packet exposes it as `repair.rejected_head_sha`.
 
-The implement packet identifies whether the run is repairing a reviewer rejection and carries the rejected review head SHA already available from the latest review run.
+### Submit-tool guard (runtime)
 
-For such runs, `submit_implementer_completion` rejects `status: complete` when `head_sha` equals the rejected review head. The tool returns a corrective message containing the unchanged SHA and the existing bounded reviewer findings. The session remains active so the same agent can edit, commit, push, and resubmit.
+In the implementer submit tool, when `packet.repair?.rejected_head_sha` is set and the envelope has `status: "complete"` with `head_sha === rejected_head_sha`, the tool rejects with:
 
-A repeated unchanged-head submission from the same model marks that model leg ineffective and invokes the same in-run fallback mechanism. It does not finish the run and does not consume a task attempt. Exhausting all candidates returns structured fault `{layer:"agent_runtime", code:"repair_no_change"}`.
+> Your submission names `<sha>`, the head the reviewer already rejected. Nothing was changed. Address the findings below, commit, push, then submit the new SHA. `<findings>`
 
-This guard applies only when the current implement run was dispatched because of a reviewer `request_changes`. Initial implementation, interrupted-run recovery, merge-gate repair, and tasks already satisfied on the default branch retain their existing semantics.
+The session stays open; the rejection is recorded as `completion_rejected` like any other. A second unchanged-head rejection on the same model leg advances to the next configured model on the same session (the existing `pi_model_fallback` path, reason `repair_no_change`). Exhausting candidates ends the run with failure reason `repair_no_change`.
 
-Colonyd also performs a final defensive check before transitioning the task to `mr_open`: a reviewer-repair envelope whose verified branch head equals the rejected head is failed as `repair_no_change`. This protects non-Pi adapters and future runtime implementations.
+### Defensive check (colonyd)
 
-## Failure and restart behavior
+In `implement.ts`, after fact-checking the envelope and before `running -> mr_open`: if the run carried `rejectedHeadSha` and the verified branch head equals it, finish the run `failed` with error `repair_no_change`, fault `{layer:"colonyd", code:"repair_no_change"}`, audit `run.repair_no_change`, and let the existing rejected-review requeue policy handle the retry. This covers non-Pi adapters.
 
-Progress fields are persisted on every progress transition, but recovery execution is local to the owning daemon. If colonyd restarts, the existing adopt-and-resume work reconnects the sandbox and session. The resumed run initializes its watchdog from persisted `last_progress_at`; successful adoption records fresh progress before model execution.
+Not affected: first implementation, interrupted-run continuity, merge-gate landing mode, the "already satisfied on main" branch (`head_sha === baseSha` with no MR).
 
-A watchdog recovery event is auditable. Errors and reviewer findings use existing redaction and bounded evidence rules.
+## Slice 4: CI without nix
+
+`validate` and `unit-tests` run on `oven/bun:<colony-versions.json bun>` with git installed. `e2e-tests` runs on the Playwright image matching `@playwright/test` with bun installed on top; `COLONY_TEST_CHROMIUM_PATH` points at the bundled chromium. `flake.nix` stays for local development. Image tags are derived from `colony-versions.json` so the existing single-source pin holds.
 
 ## Tests
 
-### Agent runtime
-
-A scripted streaming gateway and fake clock reproduce a completed tool turn followed by a model request that never completes. Tests assert:
-
-- timeout aborts the hung turn;
-- workspace/session identity is unchanged;
-- next model receives the continued session;
-- fallback completion succeeds in the same run;
-- exhausted candidates return `agent_no_progress`;
-- an active long-running tool suppresses the watchdog;
-- cancellation wins the recovery race.
-
-Submit-gate tests assert a reviewer-repair completion at the rejected SHA is rejected, a changed pushed SHA is accepted, a second no-change attempt falls back, and exhaustion returns `repair_no_change`.
-
-### Colonyd
-
-Fake-clock run-wrapper tests assert progress persistence, watchdog timing, recovery count, and structured events. Implement orchestration tests assert the final defensive unchanged-head check prevents `running -> mr_open` and records `repair_no_change` for a non-Pi adapter.
-
-Store migration/parity tests cover new columns. HTTP tests prove the diagnostic fields appear on run, task, and scope responses.
-
-## Operational acceptance
-
-A production-like smoke run that deliberately hangs a model turn must emit `pi_no_progress_detected`, retain the same run and sandbox, switch models, and finish without increasing the task attempt. A reviewer-repair run that submits the rejected SHA must remain in the implementation loop and must never transition the task to `mr_open` until its verified branch head changes.
+- Slice 1: `pi-model-fallback.test.ts` green under 10 s; full `test:unit` under 90 s locally.
+- Slice 2: store tests for set/clear/touch and migration parity; sink test mapping the three events; console run-line test rendering the active tool.
+- Slice 3: runtime test — reviewer-repair packet, model submits rejected SHA → `completion_rejected`, then pushes a new commit and is accepted; second no-change → fallback model; exhaustion → `repair_no_change`. colonyd integration test — fake adapter returns rejected SHA → run fails `repair_no_change`, task never enters `mr_open`.
+- Slice 4: verified by the pipeline on the MR.
