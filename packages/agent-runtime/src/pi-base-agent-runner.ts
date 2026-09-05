@@ -1,4 +1,3 @@
-import type { Fault } from "@colony/core";
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
