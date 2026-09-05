@@ -16,6 +16,12 @@ import type { TaskCostModelV1 } from "@colony/schemas";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { RunAuditSink } from "@colony/agent-runtime";
 
+/** Construction options forwarded to the k8s sandbox engine. */
+export interface EngineOptions {
+  /** Sandbox ids the k8s startup orphan cleanup must never reap. */
+  readonly adoptedSandboxIds?: ReadonlySet<string>;
+}
+
 /**
  * Per-session architect size gate source: colonyd rebuilds the offline cost
  * model from its runs table for each architect session and pairs it with the
@@ -86,17 +92,23 @@ export function createRunEventSink(store: Store): RunEventSink {
  */
 export const ENGINE_REGISTRY: Record<
   SandboxEngineName,
-  (config: ColonyConfig) => Promise<() => SandboxEngine>
+  (
+    config: ColonyConfig,
+    options?: EngineOptions,
+  ) => Promise<() => SandboxEngine>
 > = {
   "in-process": () =>
     import("@colony/sandbox-in-process").then((m) => m.createInProcessEngine),
-  kubernetes: (config) =>
+  kubernetes: (config, options) =>
     import("@colony/sandbox-k8s").then(
       (m) => () =>
         m.createKubernetesEngine({
           namespace: config.sandbox.kubernetes.namespace,
           image: config.sandbox.kubernetes.image,
           apiVersionOverride: config.sandbox.kubernetes.api_version_override,
+          ...(options?.adoptedSandboxIds
+            ? { adoptedSandboxIds: options.adoptedSandboxIds }
+            : {}),
         }),
     ),
 };
@@ -105,12 +117,13 @@ export const ENGINE_REGISTRY: Record<
 export async function createEngine(
   name: string,
   config: ColonyConfig,
+  options?: EngineOptions,
 ): Promise<SandboxEngine> {
   const factory = ENGINE_REGISTRY[name as SandboxEngineName];
   if (!factory) {
     throw new Error(`unknown sandbox engine: ${name}`);
   }
-  const engineFactory = await factory(config);
+  const engineFactory = await factory(config, options);
   return engineFactory();
 }
 
@@ -129,6 +142,7 @@ export async function createAgentWiring(
   taskCost?: AgentTaskCostSource,
   auditSink?: RunAuditSink,
   store?: Store,
+  adoptedSandboxIds?: ReadonlySet<string>,
 ): Promise<AgentWiring> {
   if (config.agentRuntime === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
@@ -174,7 +188,9 @@ export async function createAgentWiring(
         fallbackModels: [],
       })
     : undefined;
-  const engine = await createEngine(config.sandbox.engine, config);
+  const engine = await createEngine(config.sandbox.engine, config, {
+    adoptedSandboxIds,
+  });
   const webTools = resolveWebToolsConfig(env().COLONY_SEARXNG_URL);
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");

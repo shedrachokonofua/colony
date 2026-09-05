@@ -19,6 +19,11 @@ import {
   createRunEventSink,
 } from "./agent-runtime.js";
 import type { ColonydContext } from "./context.js";
+import type {
+  AgentRuntimeAdapter,
+  AgentRuntimePacket,
+  AgentRuntimeRole,
+} from "@colony/agent-runtime";
 import {
   createDrainController,
   type DrainController,
@@ -34,9 +39,14 @@ import {
   abortRuns,
   activeTrackedRunIds,
   awaitPendingRuns,
+  detachRun,
 } from "./runs/registry.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
-import { revokeTokensForRuns } from "./runs/tokens.js";
+import {
+  expectedRunTokenName,
+  mintRunToken,
+  revokeTokensForRuns,
+} from "./runs/tokens.js";
 import { adoptOrExpireRuns } from "./runs/adoption.js";
 import { tick } from "./tick.js";
 
@@ -259,10 +269,33 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     // is a no-op that would stall shutdown until the cap. The registry is the
     // source of truth for work this process can still abort and await.
     activeRunIds: activeTrackedRunIds,
-    // In-flight run handlers record their own canceled/failed results from
-    // the abort; the controller only needs to stop them.
+    // At the drain cap the controller aborts exactly once, here. Partition
+    // first: architect/implement/review runs with a session journal and a
+    // sandbox are handed to the next boot — lease pushed out, never aborted,
+    // never finished, never token-revoked, `adopted` stays 0 so the boot-time
+    // adoptRun claim wins. Everything else (validate, merge_gate, unqualified)
+    // takes today's abort path; handlers record their own canceled result.
     abortAll: async (ids) => {
-      await abortRuns(ids);
+      for (const id of ids) {
+        const run = store.getRun(id);
+        const resumable =
+          run !== undefined &&
+          run.status === "running" &&
+          (run.kind === "architect" ||
+            run.kind === "implement" ||
+            run.kind === "review") &&
+          run.sandbox_id !== null &&
+          readSessionHeader(config.sessionsDir, run.id).ok;
+        if (resumable) {
+          // heartbeatRun only — NEVER adoptRun: the next boot's claim must be
+          // the one that flips `adopted` and writes the run.adopted audit row.
+          store.heartbeatRun(run.id, environment.COLONY_RESUME_LEASE_TTL_MS);
+          // Dropped from the registry, not aborted: the SDK loop dies with
+          // the process, and the row stays `running` for the next boot.
+          detachRun(run.id);
+        }
+      }
+      await abortRuns(activeTrackedRunIds());
     },
     awaitSettled: awaitPendingRuns,
   };
@@ -285,6 +318,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       singleToken: environment.COLONYD_SINGLE_TOKEN,
       maxConcurrent: environment.COLONYD_MAX_CONCURRENT,
       maxAttempts: environment.COLONYD_MAX_ATTEMPTS,
+      resumeLeaseTtlMs: environment.COLONY_RESUME_LEASE_TTL_MS,
       oidcIssuer: environment.COLONY_OIDC_ISSUER,
       oidcClientId: environment.COLONY_OIDC_CLIENT_ID,
       oidcRequiredRole: environment.COLONY_OIDC_REQUIRED_ROLE,
@@ -344,12 +378,68 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       server.close(() => resolve());
       await promise;
     }
-    await drain.wait();
+    const drainOutcome = await drain.wait();
+    if (drainOutcome === "aborted") {
+      // Resumable survivors were partitioned inside drainDeps.abortAll; the
+      // remaining work settled through awaitSettled above.
+    }
     store.close();
     await shutdownTelemetry();
   };
 
   return { ctx, tick: runTick, notifier, shutdown, drain };
+}
+
+/** Map a run kind to the adapter role its resume speaks. */
+function resumeRole(kind: Run["kind"]): AgentRuntimeRole {
+  if (kind === "architect") return "architect";
+  if (kind === "review") return "reviewer";
+  return "developer";
+}
+
+/** Pick the wired adapter whose resumeRun continues this kind. */
+function resumeAdapter(
+  agents: ColonydContext["agents"],
+  kind: Run["kind"],
+): AgentRuntimeAdapter {
+  if (kind === "architect") return agents.architect;
+  if (kind === "review") return agents.reviewer ?? agents.architect;
+  return agents.developer;
+}
+
+/**
+ * Rebuild the packet a resumed segment speaks from. Continuity context
+ * (review findings, gate failures, execution mode) is durably persisted in
+ * the session journal the agent re-reads; the fresh packet re-anchors repo
+ * and task identity so the steer turn has the same fields a fresh run had.
+ */
+function resumePacket(store: Store, run: Run): AgentRuntimePacket {
+  const scope = store.getScope(run.scope_id);
+  const task = run.task_id ? (store.getTask(run.task_id) ?? null) : null;
+  const repo = {
+    url: scope?.provider_repo_path ?? "",
+    branch: task?.branch ?? `colony/${run.task_id ?? run.scope_id}`,
+    base_commit: run.base_sha ?? "",
+  } as const;
+  if (run.kind === "architect") {
+    return {
+      kind: "architect_scope",
+      scope_id: run.scope_id,
+      goal: scope?.goal ?? "",
+      body: `Scope goal: ${scope?.goal ?? ""}`,
+      repo,
+    };
+  }
+  return {
+    kind: "implement_task",
+    task_id: run.task_id,
+    scope_id: run.scope_id,
+    goal: task?.title ?? scope?.goal ?? "",
+    body:
+      task?.spec ??
+      `Task: ${task?.title ?? scope?.goal ?? ""} — continue the interrupted attempt.`,
+    repo,
+  };
 }
 
 const isDirectRun =
