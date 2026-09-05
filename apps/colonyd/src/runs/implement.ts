@@ -1,6 +1,7 @@
 import {
   type ImplementerCompletionV2,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
+  type RepairIntentV1,
 } from "@colony/schemas";
 import type { Scope, Task } from "@colony/core";
 import { context } from "@opentelemetry/api";
@@ -43,6 +44,10 @@ function inRunSpanContext<T>(
 export interface ImplementRunOptions {
   readonly leaseTtlMs?: number;
   readonly startModelId?: string;
+  /** Fingerprint of the repair intent this run was dispatched for. When set,
+   *  the packet carries the intent, run.start audits it, and a pushed head
+   *  resolves it. */
+  readonly repairIntentFingerprint?: string;
 }
 
 /**
@@ -66,6 +71,12 @@ export async function runImplement(
   const modelId = options.startModelId ?? developer.model.id;
   const leaseTtlMs =
     options.leaseTtlMs ?? developer.ceilings.timeoutMs + 5 * 60_000;
+  const repairIntent = options.repairIntentFingerprint
+    ? (repairIntentFromRow(
+        ctx.store.getRepairIntent(options.repairIntentFingerprint),
+        options.repairIntentFingerprint,
+      ))
+    : undefined;
 
   // The span must exist first so its trace id can ride on the run row:
   // mint the run id before either exists and hand it to both, so the span's
@@ -87,10 +98,25 @@ export async function runImplement(
     model_id: modelId,
     trace_id: runSpan?.traceId ?? null,
   });
+  if (repairIntent) {
+    // Bind before dispatch side-effects so a crash cannot double-dispatch.
+    ctx.store.setRepairIntentRunId(repairIntent.fingerprint, runId);
+  }
   ctx.store.audit(SERVICE_ACTOR, "run.start", {
     scope_id: scope.id,
     task_id: task.id,
     run_id: runId,
+    detail: repairIntent
+      ? {
+          repair_intent: {
+            fingerprint: repairIntent.fingerprint,
+            kind: repairIntent.kind,
+            source_head_sha: repairIntent.source_head_sha,
+            provider: repairIntent.provider ?? null,
+            evidence: repairIntent.evidence,
+          },
+        }
+      : undefined,
   });
 
   const abortController = new AbortController();
@@ -109,6 +135,7 @@ export async function runImplement(
     abortController,
     runSpan,
     options.startModelId,
+    repairIntent,
   );
   trackRun(runId, execution, () => {
     abortController.abort();
@@ -134,6 +161,7 @@ async function executeImplement(
   abortController: AbortController,
   runSpan: ColonyRunSpan | undefined,
   startModelId: string | undefined,
+  repairIntent: RepairIntentV1 & { readonly fingerprint: string } | undefined,
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {
@@ -204,6 +232,7 @@ async function executeImplement(
         currentGateFailure: gate.active,
         currentReviewFindings: reviewRepair.active?.findings,
         currentRejectedHeadSha: reviewRepair.rejectedHeadSha,
+        repairIntent,
       },
     );
     const full = {
@@ -285,10 +314,14 @@ async function executeImplement(
       return;
     }
 
-    if (
-      reviewRepair.rejectedHeadSha &&
-      envelope.head_sha === reviewRepair.rejectedHeadSha
-    ) {
+    // A repair claiming success without moving the head would re-enter the
+    // identical fingerprint (CI) or re-read the same rejection (review)
+    // forever; make the stall observable instead.
+    const repairNoChange =
+      envelope.head_sha === reviewRepair.rejectedHeadSha ||
+      (repairIntent !== undefined &&
+        envelope.head_sha === repairIntent.source_head_sha);
+    if (repairNoChange) {
       const reason = "repair_no_change";
       ctx.store.finishRun(runId, "failed", {
         error: reason,
@@ -302,8 +335,23 @@ async function executeImplement(
         detail: {
           reason,
           rejected_head_sha: reviewRepair.rejectedHeadSha,
+          source_head_sha: repairIntent?.source_head_sha,
         },
       });
+      if (repairIntent) {
+        const current = ctx.store.getTask(task.id);
+        if (current) {
+          ctx.store.transitionTask(
+            current.id,
+            current.state_version,
+            "blocked",
+            SERVICE_ACTOR,
+            {
+              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} pushed no new head (repair_no_change)`,
+            },
+          );
+        }
+      }
       return;
     }
 
@@ -459,6 +507,12 @@ async function executeImplement(
       run_id: runId,
       detail: { mr_iid: mrIid, head_sha: finalHeadSha },
     });
+    if (repairIntent && finalHeadSha !== repairIntent.source_head_sha) {
+      // The repair moved the head: the intent closes and the task returns to
+      // mr_open, where the new head gets a fresh pipeline evaluation under a
+      // new fingerprint.
+      ctx.store.resolveRepairIntent(repairIntent.fingerprint, finalHeadSha);
+    }
     const current = ctx.store.getTask(task.id)!;
     ctx.store.transitionTask(
       current.id,
@@ -594,6 +648,32 @@ interface ReviewRepair {
   /** The latest rejection that has not been superseded by a later approval. */
   rejectedHeadSha?: string;
   historical: ImplementHistoricalEvidence[];
+}
+
+/** The stored trigger_json is authoritative; a missing or unparseable row is
+ *  a caller bug (the tick claimed it moments ago), so it throws. */
+function repairIntentFromRow(
+  row:
+    | {
+        readonly fingerprint: string;
+        readonly trigger_kind: RepairIntentV1["kind"];
+        readonly trigger_json: string;
+      }
+    | undefined,
+  fingerprint: string,
+): RepairIntentV1 & { readonly fingerprint: string } {
+  if (!row) {
+    throw new Error(`repair intent ${fingerprint} vanished before dispatch`);
+  }
+  let parsed: RepairIntentV1;
+  try {
+    parsed = JSON.parse(row.trigger_json) as RepairIntentV1;
+  } catch {
+    throw new Error(
+      `repair intent ${fingerprint} has unparseable trigger_json`,
+    );
+  }
+  return { ...parsed, fingerprint };
 }
 
 function interruptedAttempt(

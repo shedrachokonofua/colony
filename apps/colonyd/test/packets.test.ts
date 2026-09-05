@@ -558,7 +558,7 @@ describe("project reference files in packets", () => {
     const s = store.getScope(scope.id)!;
     const sha40 = "a".repeat(40);
     const intent = {
-      kind: "ci_failure",
+      kind: "ci_failure" as const,
       source_head_sha: sha40,
       provider: {
         pipeline_id: "77",
@@ -568,7 +568,7 @@ describe("project reference files in packets", () => {
         job_urls: ["https://gitlab.test/p/-/jobs/901"],
       },
       evidence: ["unit: FAIL src/a.test.ts"],
-    } as const;
+    };
 
     const packet = buildImplementPacket(
       task,
