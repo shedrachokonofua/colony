@@ -382,16 +382,11 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
       // fault (resume plumbing, a runner without resume support) is
       // unclassified, never re-derived from its text.
       console.error("[fault] unknown classification", excerpt);
-      return record(
-        "failed",
-        excerpt,
-        undefined,
-        {
-          layer: "unknown",
-          code: "unknown",
-          detail: truncate(excerpt, 240),
-        },
-      );
+      return record("failed", excerpt, undefined, {
+        layer: "unknown",
+        code: "unknown",
+        detail: truncate(excerpt, 240),
+      });
     }
   }
 

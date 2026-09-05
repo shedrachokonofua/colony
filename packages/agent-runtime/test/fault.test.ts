@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import type { Fault } from "@colony/core";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type ServerResponse } from "node:http";
@@ -270,6 +270,107 @@ describe("fault emission", () => {
       expect(spy).toHaveBeenCalledWith(
         "[fault] unknown classification",
         "completely unexpected crash",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("resumeRun copies the segment fault onto resumed metadata", async () => {
+    const runner: PiRunner = {
+      kind: "pi-coding-agent",
+      run: async (): Promise<PiRunResult> => {
+        throw new Error("not used");
+      },
+      resume: async (req): Promise<PiRunResult> => {
+        req.onRunning?.();
+        return {
+          sandboxId: "sb-resumed",
+          envelope: { __unfinished: true },
+          reason: "timeout_without_envelope",
+          fault: {
+            layer: "model",
+            code: "wall_timeout",
+            detail: "run timeout exceeded",
+          },
+        };
+      },
+    };
+    const adapter = new PiAgentRuntimeAdapter(runner);
+    const sessionsDir = mkdtempSync(join(tmpdir(), "colony-fault-resume-"));
+    mkdirSync(join(sessionsDir, "sessions", "run-resume-fault"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(sessionsDir, "sessions", "run-resume-fault", "session.jsonl"),
+      [
+        JSON.stringify({ type: "title", v: 1, title: "", updatedAt: "x" }),
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "01a05b1d-2073-7109-9bbd-66085c1611e1",
+          timestamp: "2026-09-01T00:00:00.000Z",
+          cwd: "/workspace",
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const meta = await adapter.resumeRun(
+      { goal: "test" },
+      {
+        role: "developer",
+        runId: "run-resume-fault",
+        sandboxId: "sb-resumed",
+        sessionsDir,
+        connect: () =>
+          Promise.resolve({
+            sandboxId: "sb-resumed",
+            exec: () => Promise.resolve({ exitCode: 0, timedOut: false }),
+            readFile: () => Promise.resolve(""),
+            writeFile: () => Promise.resolve(),
+            destroy: () => Promise.resolve(),
+          } as never),
+      },
+    );
+    rmSync(sessionsDir, { recursive: true, force: true });
+    expect(meta.status).toBe("failed");
+    expect(meta.fault).toEqual({
+      layer: "model",
+      code: "wall_timeout",
+      detail: "run timeout exceeded",
+    });
+  });
+
+  it("resumeRun maps a throw with no structured fault to {unknown, unknown}", async () => {
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const runner: PiRunner = {
+        kind: "pi-coding-agent",
+        run: async (): Promise<PiRunResult> => {
+          throw new Error("not used");
+        },
+      };
+      const adapter = new PiAgentRuntimeAdapter(runner);
+      const sessionsDir = mkdtempSync(join(tmpdir(), "colony-fault-noresume-"));
+      writeFileSync(
+        join(sessionsDir, "PACKET.json"),
+        JSON.stringify({ goal: "test" }),
+        "utf8",
+      );
+      const meta = await adapter.resumeRun({ goal: "test" }, {
+        role: "developer",
+        runId: "run-resume-throw",
+        sandboxId: "sb-gone",
+        sessionsDir,
+        connect: () => Promise.resolve(undefined as never),
+      } as never);
+      rmSync(sessionsDir, { recursive: true, force: true });
+      expect(meta.status).toBe("failed");
+      expect(meta.fault?.layer).toBe("unknown");
+      expect(meta.fault?.code).toBe("unknown");
+      expect(spy).toHaveBeenCalledWith(
+        "[fault] unknown classification",
+        expect.anything(),
       );
     } finally {
       spy.mockRestore();
