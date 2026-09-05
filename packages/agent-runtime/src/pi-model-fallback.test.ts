@@ -895,7 +895,7 @@ describe("Pi model fallback", () => {
     );
     expect(fallback).toHaveLength(1);
     expect(fallback[0].fields.to).toBe("fallback");
-    expect(fallback[0].fields.error).toBe("continuation_exhausted");
+    expect(fallback[0].fields.error).toBe("finalize_no_submission");
     expect(
       warnings.filter((warning) => warning.message === "pi_run_continuation"),
     ).toHaveLength(4);
@@ -947,6 +947,10 @@ describe("Pi model fallback", () => {
       "primary",
       "primary",
       "primary",
+      "primary",
+      "primary",
+      "fallback",
+      "fallback",
       "fallback",
       "fallback",
       "fallback",
@@ -960,7 +964,7 @@ describe("Pi model fallback", () => {
         warning.fields.from === "primary",
     );
     expect(fallback).toHaveLength(1);
-    expect(fallback[0].fields.error).toBe("continuation_exhausted");
+    expect(fallback[0].fields.error).toBe("finalize_no_submission");
   }, 120_000);
 
   it("lets the next model recover from empty replies without inheriting prior quota exhaustion", async () => {
