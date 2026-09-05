@@ -140,3 +140,18 @@ CREATE TABLE IF NOT EXISTS project_files (
   UNIQUE (project_name, filename)
 );
 CREATE INDEX IF NOT EXISTS idx_project_files_project ON project_files(project_name, filename);
+
+-- One CI-repair intent per (task, ci_failure, source head). The fingerprint
+-- is the primary key so a duplicate claim is a no-op insert (exactly-once
+-- dispatch); run_id records the repair run before dispatch side-effects.
+CREATE TABLE IF NOT EXISTS repair_intents (
+  fingerprint TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('ci_failure','merge_conflict','merge_gate_failure')),
+  trigger_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  claimed_at TEXT,
+  run_id TEXT REFERENCES runs(id),
+  resolved_head_sha TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repair_intents_task ON repair_intents(task_id, created_at);

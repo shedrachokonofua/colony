@@ -1300,7 +1300,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(15);
+        expect(LATEST_SCHEMA_VERSION).toBe(16);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -1436,6 +1436,62 @@ describe("versioned migrations", () => {
     }
   });
 
+  it("migration 16 adds repair_intents to a database stamped at 15", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig16-"));
+    try {
+      // A version-15 database: created fresh, then downgraded by dropping
+      // the migration-16 table and stamping user_version=15.
+      const v15Path = join(dir, "v15.db");
+      const v15 = new Store(v15Path);
+      v15.close();
+      const downgrade = new Database(v15Path);
+      downgrade.exec(
+        `DROP INDEX IF EXISTS idx_repair_intents_task;
+         DROP TABLE repair_intents;
+         PRAGMA user_version = 15;`,
+      );
+      downgrade.close();
+
+      const migrated = new Store(v15Path);
+      const fresh = new Store(join(dir, "fresh.db"));
+      try {
+        expect(userVersion(migrated.db)).toBe(16);
+        expect(tableColumns(migrated.db, "repair_intents")).toEqual(
+          tableColumns(fresh.db, "repair_intents"),
+        );
+        expect(tableColumns(migrated.db, "repair_intents")).toEqual([
+          "claimed_at",
+          "created_at",
+          "fingerprint",
+          "resolved_head_sha",
+          "run_id",
+          "task_id",
+          "trigger_json",
+          "trigger_kind",
+        ]);
+        // Parity: schema.sql and the migration agree on indexes too.
+        const freshIndexes = fresh.db
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='repair_intents'`,
+          )
+          .all() as { name: string }[];
+        const migratedIndexes = migrated.db
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='repair_intents'`,
+          )
+          .all() as { name: string }[];
+        expect(migratedIndexes.map((r) => r.name).sort()).toEqual(
+          freshIndexes.map((r) => r.name).sort(),
+        );
+      } finally {
+        migrated.close();
+        fresh.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("migration 6 creates the append-only run_artifacts table on legacy databases", () => {
     const dir = mkdtempSync(join(tmpdir(), "colony-mig6-"));
     try {
@@ -1519,6 +1575,146 @@ describe("versioned migrations", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("repair intents", () => {
+  function seedMrOpenTask(): { taskId: string; runId: string } {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const [task] = store.materializePlan(scopeId, plan(), "svc:colonyd");
+    store.transitionTask(task!.id, 0, "running", "svc:colonyd");
+    store.transitionTask(
+      task!.id,
+      store.getTask(task!.id)!.state_version,
+      "mr_open",
+      "svc:colonyd",
+    );
+    const run = store.startRun({
+      scope_id: scopeId,
+      task_id: task!.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    return { taskId: String(task!.id), runId: run.id };
+  }
+
+  it("fresh database stamps at 16 with repair_intents present", () => {
+    const version = (
+      store.db.prepare("PRAGMA user_version").get() as { user_version: number }
+    ).user_version;
+    expect(version).toBe(16);
+    const columns = (
+      store.db.prepare("PRAGMA table_info(repair_intents)").all() as {
+        name: string;
+      }[]
+    ).map((c) => c.name);
+    expect(columns).toContain("fingerprint");
+    expect(columns).toContain("claimed_at");
+    expect(columns).toContain("run_id");
+  });
+
+  it("claimRepairIntent wins exactly once per fingerprint and persists the claim first", () => {
+    const { taskId, runId } = seedMrOpenTask();
+    const trigger = JSON.stringify({
+      kind: "ci_failure",
+      source_head_sha: "a".repeat(40),
+    });
+    const fingerprint = `fp-${taskId}`;
+    const won = store.claimRepairIntent({
+      fingerprint,
+      task_id: taskId,
+      trigger_kind: "ci_failure",
+      trigger_json: trigger,
+    });
+    expect(won).not.toBeNull();
+    expect(won!.claimed_at).not.toBeNull();
+    expect(won!.run_id).toBeNull();
+
+    const lost = store.claimRepairIntent({
+      fingerprint,
+      task_id: taskId,
+      trigger_kind: "ci_failure",
+      trigger_json: trigger,
+    });
+    expect(lost).toBeNull();
+    // Still exactly one row: the loser did not overwrite the claim.
+    const rows = store.listRepairIntents(taskId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.trigger_json).toBe(trigger);
+
+    store.setRepairIntentRunId(fingerprint, runId);
+    const bound = store.getRepairIntent(fingerprint)!;
+    expect(bound.run_id).toBe(runId);
+
+    store.resolveRepairIntent(fingerprint, "b".repeat(40));
+    expect(store.getRepairIntent(fingerprint)!.resolved_head_sha).toBe(
+      "b".repeat(40),
+    );
+  });
+
+  it("listRepairIntents filters by task and orders by creation", () => {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const tasks = store.materializePlan(scopeId, plan(), "svc:colonyd");
+    const first = String(tasks[0]!.id);
+    const second = String(tasks[1]!.id);
+    for (const [fp, id] of [
+      ["fp-a", first],
+      ["fp-b", first],
+      ["fp-c", second],
+    ] as const) {
+      store.claimRepairIntent({
+        fingerprint: fp,
+        task_id: id,
+        trigger_kind: "ci_failure",
+        trigger_json: "{}",
+      });
+    }
+    expect(store.listRepairIntents(first).map((r) => r.fingerprint)).toEqual([
+      "fp-a",
+      "fp-b",
+    ]);
+    expect(store.listRepairIntents(second).map((r) => r.fingerprint)).toEqual([
+      "fp-c",
+    ]);
+  });
+
+  it("setRepairIntentRunId binds exactly once and never overwrites an existing run", () => {
+    const { taskId, runId } = seedMrOpenTask();
+    store.claimRepairIntent({
+      fingerprint: "fp-bind",
+      task_id: taskId,
+      trigger_kind: "ci_failure",
+      trigger_json: "{}",
+    });
+    store.setRepairIntentRunId("fp-bind", runId);
+    // A second bind attempt (restart, duplicate dispatch) must not move the
+    // intent onto a different run.
+    store.setRepairIntentRunId("fp-bind", "other-run");
+    expect(store.getRepairIntent("fp-bind")!.run_id).toBe(runId);
+  });
+
+  it("rejects unknown trigger kinds and task ids at the schema level", () => {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const [task] = store.materializePlan(scopeId, plan(), "svc:colonyd");
+    expect(() =>
+      store.claimRepairIntent({
+        fingerprint: "fp-bad-kind",
+        task_id: String(task!.id),
+        trigger_kind: "pipeline_stalled" as "ci_failure",
+        trigger_json: "{}",
+      }),
+    ).toThrow();
+    expect(() =>
+      store.claimRepairIntent({
+        fingerprint: "fp-bad-task",
+        task_id: "no-such-task",
+        trigger_kind: "ci_failure",
+        trigger_json: "{}",
+      }),
+    ).toThrow();
   });
 });
 

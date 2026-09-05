@@ -198,6 +198,23 @@ export interface Run {
   readonly finished_at: string | null;
 }
 
+/** One CI-repair claim. `fingerprint` is sha256(task|trigger_kind|head) and
+ *  the primary key, so duplicate claims collapse to the first insert. */
+export interface RepairIntentRow {
+  readonly fingerprint: string;
+  readonly task_id: string;
+  readonly trigger_kind:
+    | "ci_failure"
+    | "merge_conflict"
+    | "merge_gate_failure";
+  /** Sanitized trigger, source head, provider metadata, bounded evidence. */
+  readonly trigger_json: string;
+  readonly created_at: string;
+  readonly claimed_at: string | null;
+  readonly run_id: string | null;
+  readonly resolved_head_sha: string | null;
+}
+
 export interface AuditRow {
   readonly id: number;
   readonly at: string;
@@ -1569,6 +1586,68 @@ export class Store {
     return this.db.prepare(`SELECT * FROM runs WHERE id = ?`).get(id) as
       | Run
       | undefined;
+  }
+
+  /** Claim exactly-once dispatch rights for a repair intent. Returns the
+   *  fresh row when this call won the race, null when the fingerprint was
+   *  already claimed. The claim persists before any dispatch side-effect, so
+   *  crash recovery cannot duplicate the repair. */
+  claimRepairIntent(input: {
+    fingerprint: string;
+    task_id: TaskId | string;
+    trigger_kind: RepairIntentRow["trigger_kind"];
+    trigger_json: string;
+  }): RepairIntentRow | null {
+    const claim = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `INSERT INTO repair_intents (fingerprint, task_id, trigger_kind, trigger_json, claimed_at)
+         VALUES (@fingerprint, @task_id, @trigger_kind, @trigger_json, @claimed_at)
+         ON CONFLICT(fingerprint) DO NOTHING
+         RETURNING *`,
+      )
+      .get(
+        named({
+          fingerprint: input.fingerprint,
+          task_id: input.task_id,
+          trigger_kind: input.trigger_kind,
+          trigger_json: input.trigger_json,
+          claimed_at: claim,
+        }),
+      ) as RepairIntentRow | undefined;
+    return result ?? null;
+  }
+
+  listRepairIntents(taskId: TaskId | string): readonly RepairIntentRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM repair_intents WHERE task_id = ? ORDER BY created_at, fingerprint`,
+      )
+      .all(taskId) as RepairIntentRow[];
+  }
+
+  getRepairIntent(fingerprint: string): RepairIntentRow | undefined {
+    return this.db
+      .prepare(`SELECT * FROM repair_intents WHERE fingerprint = ?`)
+      .get(fingerprint) as RepairIntentRow | undefined;
+  }
+
+  /** Bind the repair run before dispatching it so a crash between run
+   *  creation and dispatch stays exactly-once. */
+  setRepairIntentRunId(fingerprint: string, run_id: string): void {
+    this.db
+      .prepare(
+        `UPDATE repair_intents SET run_id = ? WHERE fingerprint = ? AND run_id IS NULL`,
+      )
+      .run(run_id, fingerprint);
+  }
+
+  resolveRepairIntent(fingerprint: string, resolved_head_sha: string): void {
+    this.db
+      .prepare(
+        `UPDATE repair_intents SET resolved_head_sha = ? WHERE fingerprint = ?`,
+      )
+      .run(resolved_head_sha, fingerprint);
   }
 
   /** Persist the minted provider token id so crash-reap can revoke it. */
