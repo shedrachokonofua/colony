@@ -761,6 +761,11 @@ export async function buildPiSession(
             state.zeroOutputStalled = false;
           } else if (verdict.action === "exhausted") {
             state.failureReason = "repair_no_change";
+            state.failureFault ??= {
+              layer: "model",
+              code: "envelope_rejected",
+              detail: "repair resubmitted the rejected head with no change",
+            };
             abortDeliberate();
           }
           return {

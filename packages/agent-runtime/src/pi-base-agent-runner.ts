@@ -1266,6 +1266,18 @@ export class PiBaseAgentRunner implements PiRunner {
                   state.submissionRejectionReason !== undefined
                     ? `submission_rejected: ${state.submissionRejectionReason}`
                     : `architect_stage_${stage.name}_no_submission`;
+                // A max_turns guard fault already on state is more precise
+                // than a stage-shaped no-submission: keep it.
+                state.failureFault ??= {
+                  layer: "model",
+                  code:
+                    state.lastSubmissionFailure?.kind === "invalid"
+                      ? "envelope_invalid"
+                      : state.submissionRejectionReason !== undefined
+                        ? "envelope_rejected"
+                        : "max_turns",
+                  detail: state.failureReason.slice(0, 240),
+                };
               }
               return;
             }
