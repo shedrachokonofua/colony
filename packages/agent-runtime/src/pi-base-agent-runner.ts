@@ -391,7 +391,15 @@ export class PiBaseAgentRunner implements PiRunner {
       await session?.abort();
     };
 
-    let lastRejectedMessage: string | undefined;
+    /**
+     * The last terminal-submission failure and whether the envelope was
+     * refused for its shape (`invalid`) or refused after arriving schema-shaped
+     * (`rejected`). Both are model-layer outcomes; the split is the contract
+     * budgeting reads.
+     */
+    let lastSubmissionFailure: { kind: "invalid" | "rejected"; message: string } | undefined;
+    /** Last work tool whose arguments the harness refused before running it. */
+    let lastToolArgInvalid: string | undefined;
     const stages = this.profile.stages?.(request.packet) ?? [];
     const sizeGate = this.options.architectSizeGate?.();
     const submitTool = this.profile.submitTool(
@@ -842,61 +850,49 @@ export class PiBaseAgentRunner implements PiRunner {
         "- The task tool runs subagents in this same workspace with your work tools (but no submit authority). Delegate independent, self-contained subtasks - research, scoped edits, running checks - and parallelize by issuing several task calls in one turn.",
       ].join("\n");
 
-      let sessionInitReplaced = false;
-      let sessionResult: { session: AgentSession };
       try {
-        sessionResult = await createAgentSession(
-          await buildSessionOptions({
-            systemPrompt: `${this.profile.systemPrompt(request.packet)}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
-            customTools: [
-              ...customTools,
-              ...sandboxTools,
-              goalTool,
-              subagentTool,
-            ],
-            toolNames: [
-              ...toolNames,
-              ...sandboxTools.map((tool) => tool.name),
-              goalTool.name,
-              subagentTool.name,
-            ],
-            prewalk: true,
-            // Staged roles bring their own file-backed first session; this one
-            // is never prompted and must not own the transcript path.
-            journal: stages.length > 0 ? "transient" : "run",
-          }),
-        );
+        session = (
+          await createAgentSession(
+            await buildSessionOptions({
+              systemPrompt: `${this.profile.systemPrompt(request.packet)}\n\n${steering.budgetBlock()}\n\n${harnessBlock}`,
+              customTools: [
+                ...customTools,
+                ...sandboxTools,
+                goalTool,
+                subagentTool,
+              ],
+              toolNames: [
+                ...toolNames,
+                ...sandboxTools.map((tool) => tool.name),
+                goalTool.name,
+                subagentTool.name,
+              ],
+              prewalk: true,
+              // Staged roles bring their own file-backed first session; this one
+              // is never prompted and must not own the transcript path.
+              journal: stages.length > 0 ? "transient" : "run",
+            }),
+          )
+        ).session;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (
+        const code =
           /session initialization/i.test(msg) ||
           /replaced during session/i.test(msg)
-        ) {
-          sessionInitReplaced = true;
-          failureReason = "session_init_replaced";
-          failureFault = {
-            layer: "harness",
-            code: "session_init_replaced",
-            detail: msg.slice(0, 240),
-          };
-        } else if (/lifecycle/i.test(msg)) {
-          failureReason = "sdk_lifecycle";
-          failureFault = {
-            layer: "harness",
-            code: "sdk_lifecycle",
-            detail: msg.slice(0, 240),
-          };
-        } else {
-          failureReason = "plumbing_error";
-          failureFault = {
-            layer: "harness",
-            code: "plumbing_error",
-            detail: msg.slice(0, 240),
-          };
-        }
-        throw err;
+            ? "session_init_replaced"
+            : /lifecycle/i.test(msg)
+              ? "sdk_lifecycle"
+              : "plumbing_error";
+        // Returned, never rethrown: run() has no catch, so a throw here would
+        // reach the adapter's finish wrapper and come back as {unknown,unknown},
+        // losing the harness classification the run was actually decided on.
+        return {
+          sandboxId,
+          envelope: { __unfinished: true },
+          reason: code,
+          fault: { layer: "harness", code, detail: msg.slice(0, 240) },
+        };
       }
-      session = sessionResult.session;
       if (stages.length === 0) {
         runSessionFile = session.sessionManager.getSessionFile() ?? undefined;
       }
@@ -1062,8 +1058,12 @@ export class PiBaseAgentRunner implements PiRunner {
             submissionRejectionReason =
               detail || "terminal submission was rejected";
           },
-          onRejection: (text) => {
-            lastRejectedMessage = text;
+          onRejection: (text, kind) => {
+            lastSubmissionFailure = { kind, message: text };
+          },
+          onArgumentInvalid: (toolName, message) => {
+            if (toolName === submitName) return;
+            lastToolArgInvalid = message.slice(0, 240);
           },
           onFailure: (reason, fault) => {
             failureReason ??= reason;
@@ -1928,16 +1928,35 @@ export class PiBaseAgentRunner implements PiRunner {
         unsubscribeGuards();
       }
 
+      if (capturedEnvelope === undefined) {
+        // The wall timer arms {model, wall_timeout} as the default because it
+        // fires without evidence; this is the only place that can see whether
+        // the model worked before the wall closed.
+        if (
+          timeoutTriggered &&
+          failureFault?.code === "wall_timeout" &&
+          evidence.summary().tool_calls > 0
+        ) {
+          failureFault = {
+            layer: "model",
+            code: "timeout_no_envelope",
+            detail: "run timed out after tool activity without submitting an envelope",
+          };
+        }
+      }
+
       if (capturedEnvelope === undefined && failureReason === undefined) {
         if (submissionRejectionReason !== undefined) {
           failureReason = `submission_rejected: ${submissionRejectionReason}`;
           failureFault ??= {
             layer: "model",
-            code: "envelope_rejected",
-            detail: (lastRejectedMessage ?? submissionRejectionReason).slice(
-              0,
-              240,
-            ),
+            code:
+              lastSubmissionFailure?.kind === "invalid"
+                ? "envelope_invalid"
+                : "envelope_rejected",
+            detail: (
+              lastSubmissionFailure?.message ?? submissionRejectionReason
+            ).slice(0, 240),
           };
         } else if (
           this.profile.requireRepositoryInspection &&
@@ -1954,18 +1973,23 @@ export class PiBaseAgentRunner implements PiRunner {
           // a provider/protocol failure or a rejected submission.
           failureReason = "finalize_no_submission";
           if (failureFault === undefined) {
-            if (timeoutTriggered) {
-              const toolCalls = evidence.summary().tool_calls;
+            if (lastSubmissionFailure !== undefined) {
+              // The model's last attempt at the envelope decided the run: an
+              // envelope the harness refused for its shape is invalid, one it
+              // accepted and the submit tool turned down is rejected.
               failureFault = {
                 layer: "model",
-                code: toolCalls > 0 ? "timeout_no_envelope" : "wall_timeout",
-                detail: "run timed out before submitting envelope",
+                code:
+                  lastSubmissionFailure.kind === "invalid"
+                    ? "envelope_invalid"
+                    : "envelope_rejected",
+                detail: lastSubmissionFailure.message.slice(0, 240),
               };
-            } else if (lastRejectedMessage !== undefined) {
+            } else if (lastToolArgInvalid !== undefined) {
               failureFault = {
-                layer: "model",
-                code: "envelope_rejected",
-                detail: lastRejectedMessage.slice(0, 240),
+                layer: "harness",
+                code: "tool_arg_invalid",
+                detail: lastToolArgInvalid,
               };
             } else {
               failureFault = {

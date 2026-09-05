@@ -33,7 +33,11 @@ import type { RunAuditSink } from "./audit-sink.js";
 import type { PiRunRequest } from "./pi-adapter.js";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { WebToolsConfig } from "./web-tools.js";
-import { RunEvidenceCollector, toolResultText } from "./run-evidence.js";
+import {
+  RunEvidenceCollector,
+  toolArgValidationError,
+  toolResultText,
+} from "./run-evidence.js";
 import { redactValue } from "./redact.js";
 
 export interface PiRunnerLogger {
@@ -132,8 +136,18 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly redactSecrets?: readonly string[];
   /** Evidence collector fed by the guard subscription; noop when unset. */
   readonly evidence?: RunEvidenceCollector;
-  /** Callback on submit tool rejection. */
-  readonly onRejection?: (text: string) => void;
+  /**
+   * Callback on submit tool rejection: `kind` says whether the harness
+   * refused the call's arguments or the tool refused a schema-shaped
+   * envelope it actually received.
+   */
+  readonly onRejection?: (text: string, kind: "invalid" | "rejected") => void;
+  /**
+   * Fired when the harness refuses a tool call before the tool runs: the
+   * arguments failed the tool's own schema. Reported for every tool, submit
+   * tool included (its arguments are the run's envelope).
+   */
+  readonly onArgumentInvalid?: (toolName: string, message: string) => void;
   /**
    * Submit tool whose failed calls emit `completion_rejected`. Undefined on
    * guard install sites without an evidence collector (subagents, critics).
@@ -895,6 +909,10 @@ export function installRunGuards(
         endedAtMs: Date.now(),
         resultText: text,
       });
+      const argInvalid = toolArgValidationError(event.result);
+      if (argInvalid !== undefined) {
+        options.onArgumentInvalid?.(event.toolName, argInvalid);
+      }
       // Rejected submission evidence: submit-tool executes that threw (the
       // schema/mechanical validators throw deliberately) and upstream argument
       // validation failures (the loop emits the TypeBox message as the end
@@ -906,7 +924,7 @@ export function installRunGuards(
         (isErrorText || event.isError === true)
       ) {
         options.evidence?.completionRejected(text, event.toolName);
-        options.onRejection?.(text);
+        options.onRejection?.(text, argInvalid === undefined ? "rejected" : "invalid");
         options.onSubmissionRejected?.(
           text.trim() || "terminal submission was rejected",
         );

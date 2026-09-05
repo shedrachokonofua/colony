@@ -137,20 +137,20 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         fault: result.fault,
       };
       let finalMetadata: AgentRunMetadata = metadata;
-      if (metadata.status === "envelope_rejected") {
-        if (!metadata.fault) {
-          finalMetadata = {
-            ...metadata,
-            fault: {
-              layer: "model",
-              code: "envelope_rejected",
-              detail: truncate(
-                metadata.rejectionReason ?? "envelope rejected",
-                240,
-              ),
-            },
-          };
-        }
+      if (metadata.status === "envelope_rejected" && !metadata.fault) {
+        // Only a schema-parse failure can reach the adapter: a submit tool
+        // that refuses an envelope does so before capturing it.
+        finalMetadata = {
+          ...metadata,
+          fault: {
+            layer: "model",
+            code: "envelope_invalid",
+            detail: truncate(
+              metadata.rejectionReason ?? "envelope failed schema parse",
+              240,
+            ),
+          },
+        };
       }
       this.runs.set(runId, { ...finalMetadata, output });
       finishMetrics(finalMetadata.status, finalMetadata.rejectionReason);
@@ -158,23 +158,26 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     } catch (err) {
       const current = this.runs.get(runId);
       const excerpt = err instanceof Error ? err.message : String(err);
-      console.error("[fault] unknown classification", excerpt);
+      // A throw racing a cancel is the cancel, not an unclassified fault: the
+      // operator asked for this run to stop.
+      const canceled = current?.status === "canceled";
+      if (!canceled) {
+        console.error("[fault] unknown classification", excerpt);
+      }
       const metadata: AgentRunMetadata = {
         ...running,
         sandboxId: current?.sandboxId ?? running.sandboxId,
-        status: current?.status === "canceled" ? "canceled" : "failed",
-        rejectionReason:
-          current?.status === "canceled"
-            ? undefined
-            : redactPacketSecret(excerpt, packet),
-        fault:
-          current?.status === "canceled"
-            ? undefined
-            : {
-                layer: "unknown",
-                code: "unknown",
-                detail: truncate(excerpt, 240),
-              },
+        status: canceled ? "canceled" : "failed",
+        rejectionReason: canceled
+          ? undefined
+          : redactPacketSecret(excerpt, packet),
+        fault: canceled
+          ? undefined
+          : {
+              layer: "unknown",
+              code: "unknown",
+              detail: truncate(excerpt, 240),
+            },
       };
       this.runs.set(runId, metadata);
       finishMetrics(metadata.status, metadata.rejectionReason);
