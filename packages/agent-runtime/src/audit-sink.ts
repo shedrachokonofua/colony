@@ -9,8 +9,6 @@ import type { ArtifactStore, Store } from "@colony/core";
  * `putArtifact` is THE single path that records a `run_artifacts` row for any
  * stored blob: it stores the bytes via the artifact store, then records the
  * row, so the row and the bytes can never disagree about `sha256`/`bytes`.
- * `recordArtifactRef` records a row for content that was NOT stored here
- * (e.g. a git ref the run created) and takes its metadata on faith.
  */
 export interface RunAuditSink {
   /** Best-effort activity feed append. Never throws. */
@@ -31,22 +29,11 @@ export interface RunAuditSink {
     data: Uint8Array,
     contentType: string,
   ): Promise<{ ref: string; bytes: number; sha256: string } | undefined>;
-  /** Record a row for a non-blob artifact (a git ref). Never throws. */
-  recordArtifactRef(
-    runId: string,
-    kind: string,
-    key: string,
-    ref: string,
-    sha256?: string,
-    bytes?: number,
-    contentType?: string,
-  ): void;
 }
 
 export const noopRunAuditSink: RunAuditSink = {
   appendEvent: () => {},
   putArtifact: () => Promise.resolve(undefined),
-  recordArtifactRef: () => {},
 };
 
 /**
@@ -116,28 +103,6 @@ export function createRunAuditSink(
           "audit_sink_put_artifact_failed",
         );
         return undefined;
-      }
-    },
-    recordArtifactRef(runId, kind, key, ref, sha256, bytes, contentType) {
-      try {
-        store.recordRunArtifact(runId, {
-          kind,
-          key,
-          ref,
-          sha256,
-          bytes,
-          contentType,
-        });
-      } catch (err) {
-        logger?.warn?.(
-          {
-            runId,
-            kind,
-            key,
-            error: err instanceof Error ? err.message : String(err),
-          },
-          "audit_sink_record_artifact_ref_failed",
-        );
       }
     },
   };

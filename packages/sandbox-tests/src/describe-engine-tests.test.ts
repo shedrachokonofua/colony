@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type {
   ExecEvent,
@@ -23,12 +24,16 @@ import {
  * visibility checks are exercised against genuine filesystem state.
  */
 class CorrectFakeHandle implements SandboxHandle {
+  readonly sandboxId: string;
   private destroyed = false;
 
   constructor(
+    sandboxId: string,
     private readonly env: Readonly<Record<string, string>>,
     private readonly workspaceDir: string,
-  ) {}
+  ) {
+    this.sandboxId = sandboxId;
+  }
 
   async exec(
     request: ExecRequest,
@@ -117,6 +122,8 @@ class CorrectFakeHandle implements SandboxHandle {
 }
 
 class CorrectFakeEngine implements SandboxEngine {
+  private readonly handles = new Map<string, CorrectFakeHandle>();
+
   async provision(
     profile: SandboxLaunchProfile,
     workspace: string,
@@ -126,7 +133,21 @@ class CorrectFakeEngine implements SandboxEngine {
       const value = process.env[name];
       if (value !== undefined) env[name] = value;
     }
-    return new CorrectFakeHandle(env, workspace);
+    const handle = new CorrectFakeHandle(
+      `fake-${randomUUID()}`,
+      env,
+      workspace,
+    );
+    this.handles.set(handle.sandboxId, handle);
+    return handle;
+  }
+
+  async connect(sandboxId: string): Promise<SandboxHandle> {
+    const handle = this.handles.get(sandboxId);
+    if (handle === undefined) {
+      throw new Error(`sandbox not found: ${sandboxId}`);
+    }
+    return handle;
   }
 }
 
@@ -144,7 +165,11 @@ class LeakingFakeEngine implements SandboxEngine {
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined) env[name] = value;
     }
-    return new CorrectFakeHandle(env, workspace);
+    return new CorrectFakeHandle("fake-leaking", env, workspace);
+  }
+
+  async connect(sandboxId: string): Promise<SandboxHandle> {
+    throw new Error(`sandbox not found: ${sandboxId}`);
   }
 }
 

@@ -123,11 +123,38 @@ const REVIEWER_REQUESTS: SandboxResourceRequests = {
   memory: "1Gi",
 };
 
-const VALIDATE_ENV_ALLOWLIST: readonly string[] = [
+export const VALIDATE_ENV_ALLOWLIST: readonly string[] = [
   "CI",
   "NO_COLOR",
   "FORCE_COLOR",
 ];
+
+/**
+ * Keep daemon settings and credentials out of command environments.
+ * PATH is execution substrate; HOME/TMPDIR belong to per-run scratch outside
+ * the repository. Only allowlisted data and request overrides are propagated.
+ */
+export function buildIsolatedCommandEnv(
+  allowlist: readonly string[],
+  scratchDir: string,
+  parent: Readonly<Record<string, string | undefined>>,
+  overrides?: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of allowlist) {
+    const value = parent[name];
+    if (value !== undefined) env[name] = value;
+  }
+  if (overrides) {
+    for (const [name, value] of Object.entries(overrides)) {
+      if (allowlist.includes(name)) env[name] = value;
+    }
+  }
+  if (parent.PATH !== undefined) env.PATH = parent.PATH;
+  env.HOME = scratchDir;
+  env.TMPDIR = scratchDir;
+  return env;
+}
 
 const COMMON_ENV_ALLOWLIST: readonly string[] = [
   "COLONY_RUN_ID",

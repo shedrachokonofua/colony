@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import {
+  buildIsolatedCommandEnv,
   DEFAULT_EXEC_TIMEOUT_MS,
   type ExecEvent,
   ExecRequestSchema,
@@ -32,6 +34,7 @@ class InProcessSandboxHandle implements SandboxHandle {
   private destroyed = false;
 
   constructor(
+    readonly sandboxId: string,
     private readonly workspaceDir: string,
     private readonly scratchDir: string,
     private readonly envAllowlist: readonly string[],
@@ -62,35 +65,8 @@ class InProcessSandboxHandle implements SandboxHandle {
   async destroy(): Promise<void> {
     if (this.destroyed) return;
     this.destroyed = true;
+    sandboxRegistry.delete(this.sandboxId);
     await rm(this.scratchDir, { recursive: true, force: true });
-  }
-
-  /**
-   * Builds the child env from allowlisted keys plus substrate variables.
-   *
-   * Rule: `envAllowlist` governs data/credential env vars only. The execution
-   * substrate must always be functional, so PATH is provided unconditionally
-   * from `process.env.PATH` and HOME/TMPDIR are set to the handle's scratch
-   * directory — these are substrate, not data, and must not be allowlisted.
-   *
-   * Only allowlisted keys from process.env and allowlisted request overrides
-   * are propagated as data — any process.env key absent from the allowlist is
-   * invisible to the child.
-   */
-  private buildEnv(request: ExecRequest): NodeJS.ProcessEnv {
-    const env: Record<string, string> = {};
-    for (const name of this.envAllowlist) {
-      const value = process.env[name];
-      if (value !== undefined) env[name] = value;
-    }
-    const overrides = request.env ?? {};
-    for (const [name, value] of Object.entries(overrides)) {
-      if (this.envAllowlist.includes(name)) env[name] = value;
-    }
-    if (process.env.PATH !== undefined) env.PATH = process.env.PATH;
-    env.HOME = this.scratchDir;
-    env.TMPDIR = this.scratchDir;
-    return env;
   }
 
   /** Resolves a relative path under the workspace, rejecting escapes. */
@@ -123,7 +99,12 @@ class InProcessSandboxHandle implements SandboxHandle {
     // shell, via `process.kill(-child.pid, ...)`.
     const child = spawn(request.command, {
       cwd,
-      env: this.buildEnv(request),
+      env: buildIsolatedCommandEnv(
+        this.envAllowlist,
+        this.scratchDir,
+        process.env,
+        request.env,
+      ),
       shell: true,
       detached: true,
     }) as ChildProcessWithoutNullStreams;
@@ -175,6 +156,15 @@ function isAbsoluteWindowsPath(path: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(path);
 }
 
+/**
+ * Module-level registry of live handles, keyed by the sandbox id each handle
+ * carries. It is deliberately shared across every engine instance this module
+ * creates: a daemon that rebuilds its object graph (fresh engine, same
+ * process) must still be able to `connect` to a sandbox an earlier instance
+ * provisioned — that is exactly the restart-adoption path.
+ */
+const sandboxRegistry = new Map<string, InProcessSandboxHandle>();
+
 /** Creates a fresh in-process sandbox engine. */
 export function createInProcessEngine(): SandboxEngine {
   return {
@@ -183,11 +173,21 @@ export function createInProcessEngine(): SandboxEngine {
       workspace: string,
     ): Promise<SandboxHandle> {
       const scratchDir = await mkdtemp(join(tmpdir(), "colony-sandbox-"));
-      return new InProcessSandboxHandle(
+      const handle = new InProcessSandboxHandle(
+        `in-process-${randomUUID()}`,
         workspace,
         scratchDir,
         profile.envAllowlist,
       );
+      sandboxRegistry.set(handle.sandboxId, handle);
+      return handle;
+    },
+    async connect(sandboxId: string): Promise<SandboxHandle> {
+      const handle = sandboxRegistry.get(sandboxId);
+      if (handle === undefined) {
+        throw new Error(`sandbox not found: ${sandboxId}`);
+      }
+      return handle;
     },
   };
 }

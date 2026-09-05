@@ -10,6 +10,7 @@ import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
 import { buildReviewPacket } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
+import { getCurrentMrTask } from "./mr-admission.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 // 2026-09-02: three rounds was too few - reviewer findings are the loop's
@@ -48,6 +49,7 @@ export async function runReview(
   headSha: string,
   options: ReviewRunOptions = {},
 ): Promise<void> {
+  if (!getCurrentMrTask(ctx, scope, task)) return;
   const reviewer = ctx.agents.reviewer;
   if (!reviewer) {
     throw new Error(

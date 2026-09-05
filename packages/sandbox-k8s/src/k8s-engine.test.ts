@@ -279,6 +279,13 @@ interface FakeClientConfig {
   /** Response for any non-transfer exec command without an explicit scenario. */
   fallback?: ExecScenario;
   startupSandboxes?: readonly string[];
+  /** Pods present at startup. If undefined, falls back to the ready-state pod. */
+  startupPods?: readonly {
+    name: string;
+    phase: string;
+    containerReady: boolean;
+    labels?: Record<string, string>;
+  }[];
 }
 
 function createFakeClient(
@@ -331,6 +338,9 @@ function createFakeClient(
       startupSandboxes.delete(name);
     },
     async listPods() {
+      if (config.startupPods !== undefined) {
+        return config.startupPods;
+      }
       return state.ready
         ? [{ name: "sandbox-pod", phase: "Running", containerReady: true }]
         : [];
@@ -660,6 +670,133 @@ describe("createKubernetesEngine", () => {
     } finally {
       await rm(parentDir, { recursive: true, force: true });
     }
+  });
+
+  it("an exclusionless engine that provisions first cannot reap a later engine's adopted CRs", async () => {
+    // The cleanup memo is per namespace, but the exclusions decide what the
+    // pass may delete. Keying the memo on the namespace alone froze the first
+    // engine's exclusion set for the whole process: a boot-time probe engine
+    // built with no exclusions reaped the CRs the runtime engine was about to
+    // adopt (and vice versa).
+    const parentDir = await mkdtemp(join(tmpdir(), "k8s-exclusion-memo-"));
+    const workspace = join(parentDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    try {
+      const state = { ready: false };
+      const client = createFakeClient(state, {
+        startupSandboxes: ["adopted-1", "orphan-1"],
+        startupPods: [
+          {
+            name: "adopted-pod",
+            phase: "Running",
+            containerReady: true,
+            labels: { [SANDBOX_ID_LABEL]: "adopted-1" },
+          },
+        ],
+      });
+      const probe = createKubernetesEngine({
+        client,
+        provisionTimeoutMs: 2000,
+        pollIntervalMs: 5,
+      });
+      const runtime = createKubernetesEngine({
+        client,
+        adoptedSandboxIds: new Set(["adopted-1"]),
+        provisionTimeoutMs: 2000,
+        pollIntervalMs: 5,
+      });
+      const profile = buildSandboxLaunchProfile("developer");
+
+      // The exclusionless engine runs the only pass there will be, and it
+      // still must not touch adopted-1: exclusions are process-wide, not
+      // properties of the engine that happens to provision first.
+      const probeHandle = await probe.provision(profile, workspace);
+      expect(client.deleted).toEqual(["orphan-1"]);
+
+      const adoptedHandle = await runtime.provision(profile, workspace);
+      expect(client.deleted).toEqual(["orphan-1"]);
+
+      await Promise.all([probeHandle.destroy(), adoptedHandle.destroy()]);
+    } finally {
+      await rm(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("CRs in adoptedSandboxIds survive provision() while non-excluded CRs are deleted", async () => {
+    const parentDir = await mkdtemp(join(tmpdir(), "k8s-adopted-"));
+    const workspace = join(parentDir, "workspace");
+    await mkdir(workspace, { recursive: true });
+    try {
+      const state = { ready: false };
+      const client = createFakeClient(state, {
+        startupSandboxes: ["adopted-1", "orphan-1"],
+        startupPods: [
+          {
+            name: "pod-custom-name",
+            phase: "Running",
+            containerReady: true,
+            labels: { [SANDBOX_ID_LABEL]: "adopted-1" },
+          },
+        ],
+      });
+      const engine = createKubernetesEngine({
+        client,
+        adoptedSandboxIds: new Set(["adopted-1"]),
+        provisionTimeoutMs: 2000,
+        pollIntervalMs: 5,
+      });
+      const profile = buildSandboxLaunchProfile("developer");
+      const handle = await engine.provision(profile, workspace);
+
+      expect(client.deleted).toEqual(["orphan-1"]);
+      const remainingSandboxes = await client.listSandboxes(
+        "colony-sandboxes",
+        "",
+      );
+      expect(remainingSandboxes).toContain("adopted-1");
+
+      await handle.destroy();
+    } finally {
+      await rm(parentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("connect resolves a handle for a listed CR and rejects when CR or pod is missing", async () => {
+    const state = { ready: true };
+    const client = createFakeClient(state, {
+      startupSandboxes: ["sb-live"],
+    });
+    const engine = createKubernetesEngine({
+      client,
+    });
+
+    const handle = await engine.connect("sb-live");
+    expect(handle.sandboxId).toBe("sb-live");
+
+    // Missing CR
+    await expect(engine.connect("sb-missing")).rejects.toThrow(
+      /sandbox sb-missing gone: no Sandbox CR/,
+    );
+
+    // Missing/not ready pod
+    state.ready = false;
+    await expect(engine.connect("sb-live")).rejects.toThrow(
+      /sandbox sb-live gone: no Running and ready backing pod/,
+    );
+  });
+
+  it("connect alone (no provision) performs no deletes and does not trigger startup orphan cleanup", async () => {
+    const state = { ready: true };
+    const client = createFakeClient(state, {
+      startupSandboxes: ["sb-1", "orphan-x"],
+    });
+    const engine = createKubernetesEngine({
+      client,
+    });
+
+    const handle = await engine.connect("sb-1");
+    expect(handle.sandboxId).toBe("sb-1");
+    expect(client.deleted).toHaveLength(0);
   });
 
   it("fails closed into a SandboxRbacError on a 403", async () => {

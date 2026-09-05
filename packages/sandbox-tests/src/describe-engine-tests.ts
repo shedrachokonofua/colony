@@ -30,10 +30,13 @@ const PROFILE: SandboxLaunchProfile = buildSandboxLaunchProfile("reviewer");
 
 interface ProvisionedContext {
   handle: SandboxHandle;
+  engine: SandboxEngine;
   workspace: string;
   parentDir: string;
   canaryName: string;
 }
+
+const UNKNOWN_SANDBOX_ID = "colony-no-such-sandbox";
 
 /** Provisions a fresh per-test workspace under os.tmpdir() and destroys it on teardown. */
 async function withProvisionedHandle<T>(
@@ -53,7 +56,7 @@ async function withProvisionedHandle<T>(
   const engine = await makeEngine();
   const handle = await engine.provision(PROFILE, workspace);
   try {
-    return await run({ handle, workspace, parentDir, canaryName });
+    return await run({ handle, engine, workspace, parentDir, canaryName });
   } finally {
     await handle.destroy();
     await rm(parentDir, { recursive: true, force: true });
@@ -247,6 +250,40 @@ async function checkExecAfterDestroy(makeEngine: MakeEngine): Promise<void> {
   });
 }
 
+/**
+ * `connect(sandboxId)` re-attaches to the sandbox `provision` created. It
+ * provisions nothing and deletes nothing: the re-attached handle sees the
+ * provisioned sandbox's own state, and the original handle is still live.
+ */
+async function checkConnectReattaches(makeEngine: MakeEngine): Promise<void> {
+  await withProvisionedHandle(makeEngine, async ({ handle, engine }) => {
+    const sandboxId = handle.sandboxId;
+    expect(sandboxId).toBeString();
+    const marker = `connect-${randomUUID()}.txt`;
+    const content = `reattached-${randomUUID()}`;
+    await handle.writeFile(marker, content);
+
+    const attached = await engine.connect(sandboxId);
+    try {
+      // Same sandbox: what the first handle wrote is readable through the
+      // re-attached one, so connect neither provisioned a new sandbox nor
+      // wiped this one.
+      expect(String(await attached.readFile(marker))).toBe(content);
+      // connect() never cleans up: the original handle is untouched.
+      expect(String(await handle.readFile(marker))).toBe(content);
+    } finally {
+      await attached.destroy();
+    }
+  });
+}
+
+async function checkConnectUnknownRejects(
+  makeEngine: MakeEngine,
+): Promise<void> {
+  const engine = await makeEngine();
+  await expect(engine.connect(UNKNOWN_SANDBOX_ID)).rejects.toThrow();
+}
+
 function restoreEnv(name: string, previous: string | undefined): void {
   if (previous === undefined) {
     delete process.env[name];
@@ -275,6 +312,8 @@ export async function runSandboxEngineChecks(
   await checkEnvFiltering(makeEngine);
   await checkDestroyIdempotent(makeEngine);
   await checkExecAfterDestroy(makeEngine);
+  await checkConnectReattaches(makeEngine);
+  await checkConnectUnknownRejects(makeEngine);
 }
 
 /**
@@ -329,6 +368,16 @@ export function describeEngineTests(
     it(
       "exec() rejects after destroy()",
       () => checkExecAfterDestroy(makeEngine),
+      timeout,
+    );
+    it(
+      "connect() re-attaches to the provisioned sandbox from another engine instance",
+      () => checkConnectReattaches(makeEngine),
+      timeout,
+    );
+    it(
+      "connect() rejects an unknown sandbox id",
+      () => checkConnectUnknownRejects(makeEngine),
       timeout,
     );
   });

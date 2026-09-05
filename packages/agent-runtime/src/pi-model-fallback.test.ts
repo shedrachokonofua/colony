@@ -683,6 +683,162 @@ describe("Pi model fallback", () => {
     ).toHaveLength(3);
   }, 90_000);
 
+  it("falls back after exhausted continuations while retaining tool context", async () => {
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const requestBodies: { model: string; body: unknown }[] = [];
+    const headSha = "b".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary:
+        "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
+      findings: [],
+      inspected: [{ file: "src/main.ts", note: "checked" }],
+      head_sha: headSha,
+    };
+    let fallbackRequests = 0;
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response, body) => {
+        requestBodies.push({ model, body });
+        if (model === "primary") {
+          // Useful tool activity interleaved with clean non-submitting stops
+          // must not reset the stop-steer allowance forever or hide fallback.
+          if (requestedModels.filter((value) => value === "primary").length % 2)
+            return respondToolCall(response, model, "web_fetch", {
+              url: "https://example.com/evidence",
+            });
+          return respondHealthyText(response, model);
+        }
+        fallbackRequests += 1;
+        if (fallbackRequests === 1) return respondHealthyText(response, model);
+        respondVerdictToolCall(response, model, envelope);
+      },
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-continuation-fallback-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [
+          modelSpec(baseUrl, "capped"),
+          modelSpec(baseUrl, "fallback"),
+        ],
+        modelHasCapacity: (modelId) => modelId !== "capped",
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        webTools: {
+          searxngUrl: "https://searx.example.test",
+          transport: async () => ({
+            status: 200,
+            headers: { "content-type": "text/plain" },
+            body: "repository evidence",
+            truncated: false,
+          }),
+        } as never,
+        ...FAST_RETRY,
+        maxTurns: 20,
+        runTimeoutMs: 120_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
+      },
+    );
+
+    const result = await runner.run({
+      runId: "continuation-fallback-contract",
+      packet: { goal: "Review the change", head_sha: headSha },
+      environment: { role: "reviewer" },
+    });
+
+    expect(requestedModels).not.toContain("capped");
+    expect(requestedModels).toContain("fallback");
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(envelope);
+    const fallback = warnings.filter(
+      (warning) =>
+        warning.message === "pi_model_fallback" &&
+        warning.fields.from === "primary",
+    );
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0].fields.to).toBe("fallback");
+    expect(fallback[0].fields.error).toBe("continuation_exhausted");
+    expect(
+      warnings.filter((warning) => warning.message === "pi_run_continuation"),
+    ).toHaveLength(4);
+    const fallbackBody = requestBodies.find(
+      (request) => request.model === "fallback",
+    )?.body;
+    expect(JSON.stringify(fallbackBody)).toContain("repository evidence");
+  }, 120_000);
+  it("keeps a genuinely exhausted final candidate as no submission", async () => {
+    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    const { baseUrl, requestedModels } = await startGateway((model, response) =>
+      respondHealthyText(response, model),
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-final-continuation-exhaustion-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "fallback")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RETRY,
+        maxTurns: 20,
+        runTimeoutMs: 120_000,
+        logger: {
+          warn: (fields: Record<string, unknown>, message: string) => {
+            warnings.push({ fields, message });
+          },
+        },
+      },
+    );
+
+    const result = await runner.run({
+      runId: "final-continuation-exhaustion-contract",
+      packet: { goal: "Review the change", head_sha: "c".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(requestedModels).toEqual([
+      "primary",
+      "primary",
+      "primary",
+      "primary",
+      "fallback",
+      "fallback",
+      "fallback",
+      "fallback",
+    ]);
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toBe("finalize_no_submission");
+    const fallback = warnings.filter(
+      (warning) =>
+        warning.message === "pi_model_fallback" &&
+        warning.fields.from === "primary",
+    );
+    expect(fallback).toHaveLength(1);
+    expect(fallback[0].fields.error).toBe("continuation_exhausted");
+  }, 120_000);
+
   it("a prior model's quota error never short-circuits the current model's stall handling", async () => {
     const requestedModels: string[] = [];
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];

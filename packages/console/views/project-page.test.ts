@@ -372,4 +372,55 @@ describe("project-page tabs", () => {
       ),
     ).toBe(true);
   });
+
+  it("renders failure census counts and grouped failure items", async () => {
+    const el = makePage(pageOf({ scopes: [scope("col-a")] }), {
+      failures: {
+        items: [
+          {
+            runId: "run-1111-2222",
+            taskId: "col-a.0",
+            layer: "provider",
+            code: "rate_limit",
+            at: "2026-09-01T12:00:00.000Z",
+          },
+          {
+            runId: "run-3333-4444",
+            taskId: "col-a.1",
+            layer: "model",
+            code: "context_overflow",
+            at: "2026-09-01T12:05:00.000Z",
+          },
+        ],
+        total: 2,
+        limit: 25,
+        offset: 0,
+        counts: {
+          model: 1,
+          harness: 0,
+          sandbox: 0,
+          provider: 1,
+          colonyd: 0,
+          unknown: 0,
+        },
+      },
+    });
+    await el.updateComplete;
+    const census = el.querySelector(".project-census");
+    expect(census).toBeTruthy();
+    expect(census.querySelectorAll(".census-count").length).toBe(6);
+    expect(
+      census.querySelector('.census-count[data-layer="provider"] .census-val')
+        ?.textContent,
+    ).toBe("1");
+    expect(
+      census.querySelector('.census-count[data-layer="sandbox"] .census-val')
+        ?.textContent,
+    ).toBe("0");
+
+    const groups = census.querySelectorAll(".census-group");
+    expect(groups.length).toBe(2);
+    expect(census.textContent).toContain("rate_limit");
+    expect(census.textContent).toContain("context_overflow");
+  });
 });
