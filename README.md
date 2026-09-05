@@ -16,7 +16,8 @@ runs as a single process backed by SQLite and your Git host.
 
 ## A scope, start to finish
 
-An operator opened a scope against an empty GitLab project with this goal:
+Scope `col-d4bed30a`, 2026-08-16, target: an empty GitLab project. Input,
+as written by the operator:
 
 > Build a self-hostable Reddit clone as a production-ready Docker image.
 > Posts, up/down votes, nested comments, ranked front page. Auth with
@@ -25,38 +26,39 @@ An operator opened a scope against an empty GitLab project with this goal:
 > 8080, compose file, README with exact commands, and a `colony.gate.yaml`
 > that `docker build`s the image so the merge gate proves it packages.
 
-Four minutes later the architect proposed nine tasks. It put the whole
-schema in task 2 so no two feature tasks would write competing migrations,
-and left voting and comments to run in parallel. The operator approved
-the plan; the console showed it fill in from left to right:
+**Plan.** Nine tasks. Task 2 owns the entire schema so no feature task
+writes a migration; 6 (voting) and 7 (comments) depend only on 5 and run
+in parallel:
+
+```
+1 skeleton ─ 2 schema ─ 3 auth ─ 4 communities ─ 5 posts ─┬─ 6 voting ───┬─ 8 docker ─ 9 gate+README+smoke
+                                                           └─ 7 comments ─┘
+```
+
+**Result.** 9 merge requests merged; acceptance run on a fresh clone of
+`main` built the image and passed the smoke test. 39 runs: 1 architect,
+14 implement, 11 review, 13 gate. 174 audit events, 2 human:
+`scope.created`, and one `unblock` after GitLab returned `401` on the
+first merge three times and the operator replaced the token.
 
 ![Scope sheet: the task graph across the top, with goal, plan, and activity cards beneath](docs/images/scope-sheet.png)
 
-This is the scope sheet after the fact: the task graph by dependency, each
-node in its final state; beneath it the goal as written, the architect's
-plan and its run, and the audit feed. Every operator action (approve a
-plan, unblock a task, request changes) is a button here and lands in the
-audit log with your actor id.
-
-Task 7, nested comments, is the one to click on:
+The scope sheet: task graph by dependency, each node in its terminal
+state; the goal, the architect's plan and run, and the audit feed. Every
+operator action is a button here and an audit row with your actor id.
 
 ![Task drawer: spec, merge request, and the run history including a reviewer's request_changes finding](docs/images/task-drawer.png)
 
-The drawer shows the spec the architect wrote, the branch and merge
-request, and every run against the task in order. The reviewer rejected
-the first implementation: the comment tree was assembled by iterating a Go
-map, so ordering was random despite the `ORDER BY`. The developer fixed
-it and the reviewer approved. Then the merge gate found a conflict with
-task 6, which had merged in parallel meanwhile; the task was requeued,
-re-implemented on the new `main`, approved again, and the gate merged the
-exact SHA it had tested.
+Task 7's drawer: spec, branch, MR `!7`, and its eight runs in order.
 
-Two hours and fifty-two minutes after the goal was written, nine merge
-requests were on `main` and the scope's acceptance run had built the image
-and passed the smoke test. Of 174 audit events, two were human: opening
-the scope, and one `unblock` after GitLab had answered the first merge
-with `401` three times and the operator fixed the token. The full timeline
-and plan are in [docs/examples/reddit-clone.md](docs/examples/reddit-clone.md).
+1. implement → review `request_changes`: the comment tree was built by
+   iterating a Go map, so ordering was random despite the `ORDER BY`.
+2. implement → review `approve` → gate **failed**: merge conflict with
+   task 6, which had merged in parallel.
+3. implement (on the new `main`) → review `approve` → gate passed → merged
+   at the gated SHA `caca2a5`.
+
+Full timeline in [docs/examples/reddit-clone.md](docs/examples/reddit-clone.md).
 
 ## Concepts
 
