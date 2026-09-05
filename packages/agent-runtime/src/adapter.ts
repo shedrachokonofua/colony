@@ -75,10 +75,6 @@ export interface AgentRunMetadata {
    * Populated when status is `envelope_rejected` or `failed` — short reason
    * suitable for audit evidence. Truncated to a few hundred characters.
    */
-  /**
-   * Populated when status is `envelope_rejected` or `failed` — short reason
-   * suitable for audit evidence. Truncated to a few hundred characters.
-   */
   readonly rejectionReason?: string;
   /** Structured failure classification when the run terminated in failure. */
   readonly fault?: Fault;
