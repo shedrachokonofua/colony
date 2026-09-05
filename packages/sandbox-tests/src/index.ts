@@ -7,6 +7,8 @@ export {
 export { describeSandboxConformance } from "./sandbox-conformance.js";
 export {
   createContractStubHandle,
+  createContractStubEngine,
+  type ContractStubEngine,
   type ContractStubHandle,
   type ContractStubOptions,
 } from "./contract-stub.js";

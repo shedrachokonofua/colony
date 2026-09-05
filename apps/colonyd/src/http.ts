@@ -14,6 +14,7 @@ import {
 } from "@colony/observability";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import { ArchitectExtensionEnvelope as architectExtensionEnvelopeSchema } from "@colony/agent-runtime";
+import { parseFault, type Fault, FAULT_LAYERS, type Run } from "@colony/core";
 import type { Store } from "@colony/core";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
@@ -113,6 +114,18 @@ const runArtifactsQuery = z.object({
   limit: z.coerce.number().int().positive().max(1000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
 });
+
+const failuresQuery = z.object({
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+
+function serializeRun(run: Run): Run & { fault: Fault | null } {
+  return {
+    ...run,
+    fault: parseFault(run.fault_json),
+  };
+}
 
 const scopesQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
@@ -470,7 +483,84 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.get("/projects/:name/running", (c) => {
     const project = ctx.store.getProject(c.req.param("name"));
     if (!project) return notFound(c, "project");
-    return c.json(ctx.store.listProjectRunning(project.name));
+    const rows = ctx.store.listProjectRunning(project.name);
+    return c.json(
+      rows.map((row) => {
+        if (!row.run) return row;
+        const runRow = ctx.store.getRun(row.run.id);
+        return {
+          ...row,
+          run: {
+            ...row.run,
+            fault: runRow ? parseFault(runRow.fault_json) : null,
+          },
+        };
+      }),
+    );
+  });
+
+  app.get("/projects/:name/failures", (c) => {
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+
+    const parsed = failuresQuery.safeParse(c.req.query());
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const limit = parsed.data.limit ?? 25;
+    const offset = parsed.data.offset ?? 0;
+
+    const scopes = ctx.store.pageScopes(1000, 0, project.name).scopes;
+    const allRuns: Run[] = [];
+    for (const s of scopes) {
+      allRuns.push(...ctx.store.runsForScope(s.id));
+    }
+
+    const counts: Record<string, number> = {
+      model: 0,
+      harness: 0,
+      sandbox: 0,
+      provider: 0,
+      colonyd: 0,
+      unknown: 0,
+    };
+
+    const failedItems: Array<{
+      runId: string;
+      taskId: string | null;
+      layer: string;
+      code: string;
+      at: string;
+    }> = [];
+
+    for (const run of allRuns) {
+      const fault = parseFault(run.fault_json);
+      if (!fault) continue;
+      if (fault.layer in counts) {
+        counts[fault.layer] = (counts[fault.layer] ?? 0) + 1;
+      } else {
+        counts.unknown = (counts.unknown ?? 0) + 1;
+      }
+      failedItems.push({
+        runId: run.id,
+        taskId: run.task_id ?? null,
+        layer: fault.layer,
+        code: fault.code,
+        at: run.finished_at ?? run.started_at,
+      });
+    }
+
+    // Sort newest failure first
+    failedItems.sort((a, b) => b.at.localeCompare(a.at));
+
+    const total = failedItems.length;
+    const items = failedItems.slice(offset, offset + limit);
+
+    return c.json({
+      items,
+      total,
+      limit,
+      offset,
+      counts,
+    });
   });
 
   app.get("/projects/:name/context", (c) => {
@@ -647,7 +737,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         : null,
       tasks: ctx.store.listTasks(scope.id),
       deps: ctx.store.scopeDeps(scope.id),
-      runs: ctx.store.runsForScope(scope.id),
+      runs: ctx.store.runsForScope(scope.id).map(serializeRun),
     });
   });
 
@@ -705,8 +795,8 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }
   });
 
-  // Reject the proposed plan with feedback; the architect re-plans with the
-  // feedback in its packet.
+  // Reject the proposed plan with a durable operator directive. Reviewer
+  // findings use a separate ephemeral channel.
   app.post("/scopes/:id/replan", async (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
     if (!scope) return notFound(c, "scope");
@@ -723,13 +813,141 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }
     const parsed = feedbackBody.safeParse(await parseBody(c));
     if (!parsed.success) return badBody(c, parsed.error.message);
-    const updated = ctx.store.requestReplan(scope.id, parsed.data.feedback);
+    const updated = ctx.store.requestOperatorReplan(
+      scope.id,
+      parsed.data.feedback,
+    );
     ctx.store.audit(c.get("actor"), "plan.replan_requested", {
       scope_id: scope.id,
       detail: { feedback: parsed.data.feedback },
     });
     ctx.requestTick();
     return c.json(updated);
+  });
+
+  const PLAN_REVIEW_CAP_REASON =
+    /^plan review rejected (\d+) consecutive times$/;
+
+  function parsePlanReviewCap(scope: {
+    status: string;
+    plan_json: string | null;
+    blocked_reason: string | null;
+  }): { rounds: number } | null {
+    if (scope.status !== "blocked" || !scope.plan_json) return null;
+    const match = scope.blocked_reason?.match(PLAN_REVIEW_CAP_REASON);
+    if (!match) return null;
+    return { rounds: Number(match[1]) };
+  }
+
+  // Escape endpoint (1): continue plan review under a fresh epoch.
+  app.post("/scopes/:id/plan-review-continue", (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    const cap = parsePlanReviewCap(scope);
+    if (!cap) {
+      return conflict(
+        c,
+        new Error(
+          "scope is not blocked at the plan-review cap with plan_json retained",
+        ),
+      );
+    }
+    const actor = c.get("actor");
+    ctx.store.audit(actor, "scope.plan_review_continued", {
+      scope_id: scope.id,
+      detail: { rounds: cap.rounds },
+    });
+    ctx.store.setScopeStatus(scope.id, "planning", actor);
+    ctx.requestTick();
+    return c.json(ctx.store.getScope(scope.id));
+  });
+
+  // Escape endpoint (2): human override approving the plan.
+  app.post("/scopes/:id/plan-review-approve", (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    const cap = parsePlanReviewCap(scope);
+    if (!cap) {
+      return conflict(
+        c,
+        new Error(
+          "scope is not blocked at the plan-review cap with plan_json retained",
+        ),
+      );
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(scope.plan_json!);
+    } catch (err) {
+      return c.json(
+        {
+          error: {
+            code: "INVALID_PLAN",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        },
+        409,
+      );
+    }
+    const actor = c.get("actor");
+    try {
+      let tasks;
+      if (
+        raw &&
+        typeof raw === "object" &&
+        (raw as { kind?: unknown }).kind === "extend"
+      ) {
+        const extension = architectExtensionEnvelopeSchema.parse(raw);
+        if (extension.kind !== "extend") throw new Error("not an extension");
+        tasks = ctx.store.appendTasks(
+          scope.id,
+          extension.tasks,
+          actor,
+          extension.acceptance,
+        );
+      } else {
+        const plan = architectDecompositionV2Schema.parse(raw);
+        tasks = ctx.store.materializePlan(scope.id, plan, actor);
+      }
+      ctx.store.audit(actor, "scope.plan_review_approved", {
+        scope_id: scope.id,
+        detail: { rounds: cap.rounds },
+      });
+      ctx.requestTick();
+      return c.json({ scope: ctx.store.getScope(scope.id), tasks }, 200);
+    } catch (err) {
+      return conflict(c, err);
+    }
+  });
+
+  // Escape endpoint (3): request replan with feedback under a fresh epoch.
+  app.post("/scopes/:id/plan-review-replan", async (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    const cap = parsePlanReviewCap(scope);
+    if (!cap) {
+      return conflict(
+        c,
+        new Error(
+          "scope is not blocked at the plan-review cap with plan_json retained",
+        ),
+      );
+    }
+    const parsed = feedbackBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const actor = c.get("actor");
+    ctx.store.requestOperatorReplan(scope.id, parsed.data.feedback);
+    ctx.store.audit(actor, "plan.replan_requested", {
+      scope_id: scope.id,
+      detail: { feedback: parsed.data.feedback },
+    });
+    ctx.store.audit(actor, "scope.plan_review_replanned", {
+      scope_id: scope.id,
+      detail: { rounds: cap.rounds },
+    });
+    ctx.store.setScopeStatus(scope.id, "planning", actor);
+    ctx.requestTick();
+    return c.json(ctx.store.getScope(scope.id));
   });
 
   // Operator unblock for a scope parked by exhausted architect attempts:
@@ -840,13 +1058,23 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         runIds.push(run.id);
       }
     }
+    // Fence new dispatch before yielding to cancellation. Otherwise a tick
+    // waiting on provider I/O can start work outside this captured run set.
+    try {
+      ctx.store.setScopeStatus(scope.id, "paused", c.get("actor"), {
+        run_ids: runIds,
+      });
+    } catch (err) {
+      return conflict(c, err);
+    }
     const stopped = await abortRunsAndWait(runIds);
     if (!stopped.every(Boolean)) {
       return c.json(
         {
           error: {
             code: "RUN_NOT_LOCAL",
-            message: "a live run is not owned by this colonyd process",
+            message:
+              "scope is paused, but a live run is not owned by this colonyd process",
           },
         },
         409,
@@ -868,13 +1096,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
           },
         );
       }
-      const updated = ctx.store.setScopeStatus(
-        scope.id,
-        "paused",
-        c.get("actor"),
-        { run_ids: runIds },
-      );
-      return c.json(updated);
+      return c.json(ctx.store.getScope(scope.id));
     } catch (err) {
       return conflict(c, err);
     }
@@ -889,6 +1111,23 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
           error: {
             code: "NOT_PAUSED",
             message: "only a paused scope can be resumed",
+          },
+        },
+        409,
+      );
+    }
+    if (
+      ctx.store
+        .runsForScope(scope.id)
+        .some((run) => run.status === "running") ||
+      ctx.store.listTasks(scope.id).some((task) => task.state === "running")
+    ) {
+      return c.json(
+        {
+          error: {
+            code: "SCOPE_NOT_QUIESCENT",
+            message:
+              "scope still has running work; wait for cancellation to finish",
           },
         },
         409,
@@ -974,7 +1213,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!task) return notFound(c, "task");
     return c.json({
       task,
-      runs: ctx.store.runsForTask(task.id),
+      runs: ctx.store.runsForTask(task.id).map(serializeRun),
       deps: ctx.store.taskDeps(task.id),
     });
   });
@@ -1403,7 +1642,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.get("/runs/:id", (c) => {
     const run = ctx.store.getRun(c.req.param("id"));
     if (!run) return notFound(c, "run");
-    return c.json(run);
+    return c.json(serializeRun(run));
   });
 
   /**

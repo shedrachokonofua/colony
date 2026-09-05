@@ -77,6 +77,7 @@ export class ColonyApp extends ColonyElement {
     pendingSelectTaskId: { state: true },
     projectsPage: { state: true },
     filesPage: { state: true },
+    projectFailures: { state: true },
     projectFiles: { state: true },
     confirm: { state: true },
     confirmFile: { state: true },
@@ -133,6 +134,8 @@ export class ColonyApp extends ColonyElement {
     this.filesPage = null;
     /** @type {any[] | null} */
     this.projectFiles = null;
+    /** @type {import("./shell-data.js").ShellState["projectFailures"]} */
+    this.projectFailures = null;
     /** @type {string | null} */
     this.confirm = null;
     /** @type {string | null} */

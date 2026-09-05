@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS scopes (
   provider_repo_path TEXT NOT NULL,
   default_branch TEXT NOT NULL DEFAULT 'main',
   plan_json TEXT,                            -- architect proposal awaiting approval
-  plan_feedback TEXT,                        -- operator replan feedback for the next architect run
+  plan_feedback TEXT,                        -- latest plan-review findings for the next architect run
+  plan_directives TEXT NOT NULL DEFAULT '',  -- durable operator-authored plan amendments
   acceptance_json TEXT,                      -- operator acceptance criteria for scope validation
   extension_rounds INTEGER NOT NULL DEFAULT 0, -- architect validation-repair rounds used (cap 2)
   blocked_reason TEXT,
@@ -79,6 +80,10 @@ CREATE TABLE IF NOT EXISTS runs (
   error TEXT,
   fault_json TEXT,                           -- structured Fault at finish; backfilled for legacy failed runs
   adopted INTEGER NOT NULL DEFAULT 0,
+  last_progress_at TEXT,
+  active_tool TEXT,
+  active_tool_detail TEXT,
+  active_tool_started_at TEXT,
   started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT
 );

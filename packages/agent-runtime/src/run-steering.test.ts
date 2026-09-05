@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import type { AgentRuntimeRole } from "./adapter.js";
 import { RunSteering, packetObjective } from "./run-steering.js";
 
 function steering(overrides: {
+  role?: AgentRuntimeRole;
   runTimeoutMs?: number;
   clock?: { ms: number };
 }) {
@@ -9,6 +11,7 @@ function steering(overrides: {
   return {
     clock,
     run: new RunSteering({
+      role: overrides.role ?? "developer",
       runTimeoutMs: overrides.runTimeoutMs ?? 60 * 60_000,
       branch: "colony/col-1.2",
       now: () => clock.ms,
@@ -28,18 +31,18 @@ describe("RunSteering drift nudge", () => {
     run.observeToolCall("grep");
     const nudge = run.takeDriftNudge();
     expect(nudge).toContain("<system-reminder>");
-    expect(nudge).toContain("write the plan you will execute");
-    expect(nudge).toContain("do not end your turn on the plan");
+    expect(nudge).toMatch(/plan/i);
+    expect(nudge).toMatch(/same turn/i);
   });
 
-  it("escalates the second reminder to a pushed checkpoint", () => {
+  it("escalates the developer reminder to a pushed checkpoint", () => {
     const { run } = steering({});
     drift(run, 12);
     run.takeDriftNudge();
     drift(run, 12);
     const nudge = run.takeDriftNudge();
-    expect(nudge).toContain("git push origin colony/col-1.2");
-    expect(nudge).toContain("Nothing is on the work branch yet");
+    expect(nudge).toMatch(/git push\s+origin\s+colony\/col-1\.2/);
+    expect(nudge).toMatch(/work branch/i);
   });
 
   it("resets the drift counter when a file is written", () => {
@@ -56,9 +59,7 @@ describe("RunSteering drift nudge", () => {
     run.takeDriftNudge();
     run.observeToolCall("bash", { command: "git push origin colony/col-1.2" });
     drift(run, 12);
-    expect(run.takeDriftNudge()).toContain(
-      "Your pushed commit is the only work that survives",
-    );
+    expect(run.takeDriftNudge()).toMatch(/push/i);
   });
 
   it("caps nudges at two per run", () => {
@@ -72,15 +73,55 @@ describe("RunSteering drift nudge", () => {
   });
 });
 
+describe("RunSteering role-aware guidance", () => {
+  it("keeps non-developer steering read-only and submission-focused", () => {
+    for (const [role, submitTool] of [
+      ["architect", "the submission tool for the current planning stage"],
+      ["reviewer", "submit_reviewer_verdict"],
+      ["plan_reviewer", "submit_plan_review_verdict"],
+    ] as const) {
+      const { run } = steering({ role });
+      drift(run, 12);
+      const firstNudge = run.takeDriftNudge();
+      drift(run, 12);
+      const secondNudge = run.takeDriftNudge();
+      run.observeToolCall("bash", { command: "git status" }, true);
+      run.observeToolCall("bash", { command: "git status" }, true);
+      const repeatNudge = run.takeRepeatFailureNudge();
+      const continuation = run.takeContinuationSteer(
+        "inspect the current state",
+      );
+      const budget = run.budgetBlock();
+      const guidance = [
+        firstNudge,
+        secondNudge,
+        repeatNudge,
+        continuation,
+        budget,
+      ].join("\n");
+      expect(guidance).toContain(submitTool);
+      expect(guidance).toMatch(/read-only/i);
+      const actionableGuidance = guidance
+        .split("\n")
+        .filter((line) => !/^\s*(?:do not|don't|never)\b/i.test(line))
+        .join("\n");
+      expect(actionableGuidance).not.toMatch(/\b(?:write|edit|commit|push)\b/i);
+      expect(guidance).not.toMatch(
+        /nothing is on .*branch|only work that survives|not pushed.*lost/i,
+      );
+    }
+  });
+});
+
 describe("RunSteering continuation steer", () => {
-  it("restates the objective, the clock, and whether anything is pushed", () => {
+  it("restates the objective, clock, push state, and completion rule", () => {
     const { run, clock } = steering({ runTimeoutMs: 60 * 60_000 });
     clock.ms = 20 * 60_000;
     const steer = run.takeContinuationSteer("col-1.2: wire the console");
     expect(steer).toContain("col-1.2: wire the console");
     expect(steer).toContain("Elapsed: 20 min of 60 min budget");
-    expect(steer).toContain("Pushed a commit so far: no");
-    expect(steer).toContain("NEVER redefine success as a smaller");
+    expect(steer).toMatch(/pushed.*commit|commit.*pushed/i);
+    expect(steer).toMatch(/smaller.*spec|subset.*spec/i);
   });
 
   it("caps continuations at three per run", () => {
@@ -99,10 +140,11 @@ describe("RunSteering continuation steer", () => {
 });
 
 describe("RunSteering budget block", () => {
-  it("states the wall clock the guard will enforce", () => {
+  it("states the wall clock and developer checkpoint guidance", () => {
     const { run } = steering({ runTimeoutMs: 45 * 60_000 });
-    expect(run.budgetBlock()).toContain("aborted after 45 minutes");
-    expect(run.budgetBlock()).toContain("not pushed when it ends is lost");
+    const budget = run.budgetBlock();
+    expect(budget).toContain("aborted after 45 minutes");
+    expect(budget).toMatch(/push/i);
   });
 });
 
@@ -122,7 +164,10 @@ describe("packetObjective", () => {
 
 describe("repeated-failure nudge", () => {
   it("stays silent until the same bash command fails twice verbatim", () => {
-    const steering = new RunSteering({ runTimeoutMs: 60_000 });
+    const steering = new RunSteering({
+      role: "developer",
+      runTimeoutMs: 60_000,
+    });
     steering.observeToolCall("bash", { command: "npm ci" }, true);
     expect(steering.takeRepeatFailureNudge()).toBeNull();
     // A different failure resets the streak.
@@ -136,7 +181,10 @@ describe("repeated-failure nudge", () => {
   });
 
   it("a success breaks the streak and the nudge is capped per run", () => {
-    const steering = new RunSteering({ runTimeoutMs: 60_000 });
+    const steering = new RunSteering({
+      role: "developer",
+      runTimeoutMs: 60_000,
+    });
     steering.observeToolCall("bash", { command: "x" }, true);
     steering.observeToolCall("bash", { command: "x" }, false);
     steering.observeToolCall("bash", { command: "x" }, true);

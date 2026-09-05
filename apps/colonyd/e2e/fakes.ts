@@ -163,11 +163,10 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
           ],
         };
       }
-      const body =
-        typeof packet.body === "string" ? (packet.body as string) : "";
-      const isReplan = body.includes(
-        "## Operator feedback on your previous plan",
-      );
+      const body = typeof packet.body === "string" ? packet.body : "";
+      const isReplan =
+        body.includes("## Authoritative operator planning directives") ||
+        body.includes("## Findings from the latest rejected plan review");
       if (isReplan) {
         return {
           kind: "architect_decomposition",

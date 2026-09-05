@@ -168,6 +168,7 @@ export function amendBranchWithTrailer(input: {
       "utf8",
     );
 
+    // Unsquelched, git prints a deprecation warning and sleeps 10s per call.
     git(
       [
         "filter-branch",
@@ -177,7 +178,10 @@ export function amendBranchWithTrailer(input: {
         `origin/${input.defaultBranch}..HEAD`,
       ],
       dir,
-      { COLONY_MODELS_TRAILER: input.trailer },
+      {
+        COLONY_MODELS_TRAILER: input.trailer,
+        FILTER_BRANCH_SQUELCH_WARNING: "1",
+      },
     );
     const newHead = git(["rev-parse", "HEAD"], dir).trim();
     git(

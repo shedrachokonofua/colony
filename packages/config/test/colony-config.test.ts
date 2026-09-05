@@ -264,6 +264,28 @@ agents:
     expect(cfg.forAgent("reviewer").model.id).toBe("model-a");
   });
 
+  it("rejects malformed model compatibility overrides", () => {
+    let thrown: unknown;
+    try {
+      loadColonyConfig({
+        path: tempConfig(
+          fixtureConfig(
+            "model-a",
+            "compat: { supportsForcedToolChoice: enabled }",
+          ),
+        ),
+        env: { ANTHROPIC_API_KEY: "x" },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ColonyConfigError);
+    const err = thrown as ColonyConfigError;
+    expect(err.code).toBe("VALIDATION");
+    const issues = err.details?.issues as { path: PropertyKey[] }[];
+    expect(issues.some((issue) => issue.path.includes("compat"))).toBe(true);
+  });
+
   it("rejects non-positive and non-integer max_parallel_runs", () => {
     for (const value of ["0", "-1", "1.5"]) {
       let thrown: unknown;

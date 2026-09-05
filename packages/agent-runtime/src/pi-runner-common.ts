@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { COLONY_SKILLS, playbookPrompt } from "./colony-skills.js";
 import type { Agent, AgentTool, StreamFn } from "@oh-my-pi/pi-agent-core";
-import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { Api, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { Type } from "@oh-my-pi/omptype/typebox";
 import type { Static } from "@oh-my-pi/omptype/typebox";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
@@ -33,6 +33,7 @@ import type { PiRunRequest } from "./pi-adapter.js";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { WebToolsConfig } from "./web-tools.js";
 import { RunEvidenceCollector, toolResultText } from "./run-evidence.js";
+import { redactValue } from "./redact.js";
 
 export interface PiRunnerLogger {
   info?(fields: Record<string, unknown>, message: string): void;
@@ -52,6 +53,14 @@ export interface PiModelSpec {
   readonly provider: string;
   readonly baseUrl: string;
   readonly reasoning: boolean;
+  readonly thinking?: Model["thinking"];
+  readonly supportsTools?: boolean;
+  /**
+   * Sparse provider compatibility overrides. Keeping this with the runtime
+   * spec lets a fallback preserve the registry's capability policy (notably
+   * reasoning/tool-choice compatibility) instead of rediscovering by id.
+   */
+  readonly compat?: ModelSpec["compat"];
   readonly input: ReadonlyArray<"text" | "image">;
   readonly cost: {
     readonly input: number;
@@ -70,6 +79,8 @@ export interface PiRunnerBaseOptions {
   readonly model?: PiModelSpec | PiModelResolver;
   readonly webTools?: WebToolsConfig;
   readonly fallbackModels?: readonly PiModelSpec[];
+  /** Dedicated OMP advisor model. It is registered but never joins the primary fallback chain. */
+  readonly advisorModel?: PiModelSpec;
   readonly thinkingLevel?:
     | "off"
     | "minimal"
@@ -79,6 +90,10 @@ export interface PiRunnerBaseOptions {
     | "xhigh";
   readonly maxTurns?: number;
   readonly runTimeoutMs?: number;
+  /** Zero-output recovery backoff base. Tests shrink it; production defaults to 15s. */
+  readonly jiggleBackoffMs?: number;
+  /** Pi SDK retries per failed request. Tests isolate runner failover with zero SDK retries. */
+  readonly retryMaxRetries?: number;
   readonly scratchDir?: string;
   readonly engine?: SandboxEngine;
   /**
@@ -101,6 +116,8 @@ export type PiModelResolver = (
 ) => Promise<PiModelSpec> | PiModelSpec;
 export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onFailure?: (reason: string) => void;
+  /** Receives bounded, result-only text when the terminal submit tool rejects. */
+  readonly onSubmissionRejected?: (reason: string) => void;
   /**
    * How the guard stops the run. MUST be a deliberate abort - the session's
    * `abort()`, which sets the SDK's abort-in-progress latch. A bare
@@ -110,6 +127,8 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
    * live, pinned its parent reviewer 30 minutes past the wall (2026-09-01).
    */
   readonly abort: () => void;
+  /** Exact secrets to remove from active-operation details before logging. */
+  readonly redactSecrets?: readonly string[];
   /** Evidence collector fed by the guard subscription; noop when unset. */
   readonly evidence?: RunEvidenceCollector;
   /**
@@ -135,6 +154,7 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
   readonly onAssistantMessage?: (message: {
     readonly stopReason: string;
     readonly errorMessage: string | undefined;
+    readonly outputTokens: number;
   }) => void;
   readonly zeroOutputStallTurns?: number;
   /**
@@ -797,6 +817,19 @@ export function installRunGuards(
   // triggers and continuation steers retry the mute model until the wall.
   // N consecutive empty assistant messages with no tool activity = stall.
   const zeroOutputStallTurns = options.zeroOutputStallTurns ?? 3;
+  function activeToolDetail(
+    args: unknown,
+    secrets: readonly string[] = [],
+  ): string | null {
+    const redacted = redactValue(args, secrets);
+    if (!redacted || typeof redacted !== "object" || Array.isArray(redacted))
+      return null;
+    const record = redacted as Record<string, unknown>;
+    const detail = record.command ?? record.path ?? record.pattern;
+    if (typeof detail !== "string" || !detail.trim()) return null;
+    return detail.length <= 200 ? detail : `${detail.slice(0, 199)}…`;
+  }
+
   let zeroOutputTurns = 0;
 
   const unsubscribe = agent.subscribe((event) => {
@@ -805,10 +838,25 @@ export function installRunGuards(
       inFlightTools += 1;
       zeroOutputTurns = 0;
       options.evidence?.toolStart(event.toolCallId, event.args, event.intent);
+      options.logger?.info?.(
+        {
+          runId,
+          tool: event.toolName,
+          detail: activeToolDetail(event.args, options.redactSecrets),
+          startedAt: new Date().toISOString(),
+        },
+        "pi_tool_start",
+      );
     }
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
       if (inFlightTools === 0) toolFlightStartedAt = undefined;
+      if (inFlightTools === 0) {
+        options.logger?.info?.(
+          { runId, endedAt: new Date().toISOString() },
+          "pi_tool_end",
+        );
+      }
       // The end event is the sole carrier of the result; the collector is
       // keyed by toolCallId, so firing here (and only here) yields exactly
       // one tool_call row per call.
@@ -831,6 +879,9 @@ export function installRunGuards(
         (isErrorText || event.isError === true)
       ) {
         options.evidence?.completionRejected(text, event.toolName);
+        options.onSubmissionRejected?.(
+          text.trim() || "terminal submission was rejected",
+        );
       }
     }
     armWatchdog();
@@ -876,6 +927,7 @@ export function installRunGuards(
       options.onAssistantMessage?.({
         stopReason: event.message.stopReason,
         errorMessage: event.message.errorMessage,
+        outputTokens: usage?.output ?? 0,
       });
       if ((usage?.output ?? 0) === 0) {
         zeroOutputTurns += 1;

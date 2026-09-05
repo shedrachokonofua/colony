@@ -43,6 +43,7 @@ export class ProjectPage extends ColonyElement {
     saveStatus: { type: String },
     confirm: { type: String },
     config: { type: Object },
+    failures: { type: Object },
     error: { type: String },
   };
 
@@ -76,6 +77,8 @@ export class ProjectPage extends ColonyElement {
     this.confirm = null;
     /** @type {{ gitlab_base_url?: string } | null} */
     this.config = null;
+    /** @type {{ items: any[], total: number, limit: number, offset: number, counts: Record<string, number> } | null} */
+    this.failures = null;
     this.error = "";
   }
 
@@ -281,6 +284,75 @@ export class ProjectPage extends ColonyElement {
     </div>`;
   }
 
+  /**
+   * Render the failure census: a counts row by layer plus failure items
+   * grouped by layer.
+   */
+  #failureCensus() {
+    const failures = this.failures;
+    if (!failures || failures.total === 0) {
+      return html`<section class="project-census">
+        <p class="rack-empty">No failures recorded for this project.</p>
+      </section>`;
+    }
+    const counts = failures.counts ?? {};
+    const layers = [
+      "model",
+      "harness",
+      "sandbox",
+      "provider",
+      "colonyd",
+      "unknown",
+    ];
+    const items = failures.items ?? [];
+
+    const grouped = new Map();
+    for (const layer of layers) {
+      grouped.set(layer, []);
+    }
+    for (const item of items) {
+      const layer = grouped.has(item.layer) ? item.layer : "unknown";
+      grouped.get(layer).push(item);
+    }
+
+    return html`<section class="project-census">
+      <div class="census-counts">
+        ${layers.map(
+          (layer) =>
+            html`<span class="census-count" data-layer=${layer}>
+              <span class="census-layer">${layer}</span>
+              <span class="census-val">${counts[layer] ?? 0}</span>
+            </span>`,
+        )}
+      </div>
+      <div class="census-groups">
+        ${layers.map((layer) => {
+          const list = grouped.get(layer) ?? [];
+          if (list.length === 0) return nothing;
+          return html`<div class="census-group" data-layer=${layer}>
+            <h3 class="census-group-title">${layer} (${list.length})</h3>
+            <ul class="census-list">
+              ${list.map(
+                /** @param {{ code: string, taskId?: string | null, runId: string, at: string }} item */
+                (item) =>
+                  html`<li class="census-item">
+                    <span class="census-code">${item.code}</span>
+                    <span class="census-meta mono">
+                      ${item.taskId
+                        ? html`<span class="task-id">${item.taskId}</span> · `
+                        : nothing}
+                      <span class="run-id">${item.runId.slice(0, 8)}</span> ·
+                      <span class="census-at">${rel(item.at)}</span>
+                    </span>
+                  </li>`,
+              )}
+            </ul>
+          </div>`;
+        })}
+      </div>
+    </section>`;
+  }
+
   render() {
     const page = this.projectPage;
     if (!page?.name) return nothing;
@@ -384,6 +456,7 @@ export class ProjectPage extends ColonyElement {
                   items: scopes.length,
                   label: "Project scope pages",
                 })}`}
+        ${this.#failureCensus()}
       </div>`;
   }
 }

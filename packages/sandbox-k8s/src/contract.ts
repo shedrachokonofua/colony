@@ -175,6 +175,7 @@ export interface KubernetesSandboxClient {
       containerReady: boolean;
       /** Set once the pod is being deleted; the kubelet owns what remains. */
       terminating?: boolean;
+      labels?: Record<string, string>;
     }[]
   >;
   /**
@@ -238,6 +239,12 @@ export interface KubernetesSandboxEngineOptions {
   readonly client?: KubernetesSandboxClient;
   readonly provisionTimeoutMs?: number;
   readonly pollIntervalMs?: number;
+  /**
+   * Sandbox ids the startup orphan cleanup must never reap: CRs carrying one
+   * of these `SANDBOX_ID_LABEL` values belong to runs this process is about
+   * to adopt. Construction-time only — the engine stays lazy.
+   */
+  readonly adoptedSandboxIds?: ReadonlySet<string>;
 }
 
 export interface BuildSandboxCustomResourceInput {

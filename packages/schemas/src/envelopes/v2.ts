@@ -1,45 +1,5 @@
 import { z } from "zod";
 
-/**
- * The architect's survey: the spec read against the repository. Produced by
- * the survey stage, consumed by the plan and verify stages, never by colonyd.
- */
-export const ArchitectSurveyNotesV1 = z
-  .object({
-    kind: z.literal("architect_survey_notes"),
-    /** The goal split into atomic, individually checkable requirements. */
-    requirements: z
-      .array(
-        z.object({
-          id: z.string().regex(/^R\d+$/),
-          text: z.string().min(1),
-        }),
-      )
-      .min(1)
-      .max(40),
-    /** Files and seams that matter for the goal, each confirmed to exist. */
-    findings: z
-      .array(z.object({ path: z.string().min(1), note: z.string().min(1) }))
-      .min(1)
-      .max(60),
-    /** Real commands as the manifests define them; absent means none found. */
-    commands: z
-      .object({
-        install: z.string().min(1).optional(),
-        build: z.string().min(1).optional(),
-        typecheck: z.string().min(1).optional(),
-        lint: z.string().min(1).optional(),
-        test: z.string().min(1).optional(),
-      })
-      .strict(),
-    conventions: z.array(z.string().min(1)).max(30).default([]),
-    /** What the goal needs that the repository does not have yet. */
-    gaps: z.array(z.string().min(1)).max(30).default([]),
-  })
-  .strict();
-
-export type ArchitectSurveyNotesV1 = z.infer<typeof ArchitectSurveyNotesV1>;
-
 const architectTask = z.object({
   title: z.string().min(1),
   /** Outcome-oriented markdown: goal, user-observable behavior, invariants. */

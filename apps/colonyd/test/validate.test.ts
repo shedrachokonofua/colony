@@ -262,12 +262,14 @@ describe("defaultValidateExecutor", () => {
     const execRequests: ExecRequest[] = [];
     let destroyed = false;
 
+    const provisioned = new Map<string, SandboxHandle>();
     const recordingEngine: SandboxEngine = {
       async provision(profile, workspace) {
         expect(profile.role).toBe("validate");
         provisionCalls.push({ profile, workspace });
         const inner = await innerEngine.provision(profile, workspace);
-        return {
+        const handle = {
+          sandboxId: inner.sandboxId,
           exec(request, onEvent) {
             execRequests.push(request);
             return inner.exec(request, onEvent);
@@ -279,6 +281,15 @@ describe("defaultValidateExecutor", () => {
             await inner.destroy();
           },
         } satisfies SandboxHandle;
+        provisioned.set(handle.sandboxId, handle);
+        return handle;
+      },
+      connect(sandboxId) {
+        const handle = provisioned.get(sandboxId);
+        if (handle === undefined) {
+          return Promise.reject(new Error(`sandbox not found: ${sandboxId}`));
+        }
+        return Promise.resolve(handle);
       },
     };
 

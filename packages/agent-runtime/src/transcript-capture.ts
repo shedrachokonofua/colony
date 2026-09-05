@@ -96,8 +96,7 @@ export async function captureTranscript(input: {
   let stored: { ref: string; bytes: number; sha256: string } | undefined;
   try {
     // putArtifact stores the blob AND records the run_artifacts row; never
-    // rejects, resolves undefined on failure. recordArtifactRef must NOT be
-    // called — the row already exists at this point.
+    // rejects, resolves undefined on failure.
     stored = await input.sink.putArtifact(
       input.runId,
       "transcript",

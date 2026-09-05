@@ -32,6 +32,7 @@ export function renderView(app) {
       return html`<project-page
         .projectPage=${app.projectPage}
         .projectRunning=${app.projectRunning ?? []}
+        .failures=${app.projectFailures ?? null}
         .tab=${app.projectTab}
         .ticker=${app.ticker}
         .contextDoc=${app.projectContext?.doc ??
