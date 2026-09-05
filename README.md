@@ -6,11 +6,12 @@ repositories, unattended: an architect agent decomposes the goal into a
 dependency graph of tasks; developer agents implement the tasks in
 parallel, each on its own branch and merge request; reviewer agents and a
 deterministic merge gate decide what lands on `main`; an acceptance run on
-the merged result decides whether the goal is met. You approve plans and
-handle what blocks.
+the merged result decides whether the goal is met. You approve plans,
+unblock tasks, and answer when the architect cannot.
 
-One process, one SQLite database, your Git host. Operated from a web
-console, a terminal UI, a CLI, or the HTTP API.
+`colonyd` is one process; its state is one SQLite database plus your Git
+host. It is operated from a web console, a terminal UI, a CLI, or the HTTP
+API.
 
 [![status](https://img.shields.io/badge/status-early%20access-orange)](#status)
 [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
@@ -30,21 +31,21 @@ status: `draft`, `planning`, `active`, `validating`, `blocked`, `paused`,
 `done`, `abandoned`. A scope belongs to a project or stands alone.
 
 **Task.** One node of the plan: a spec, its dependencies on other tasks, and
-one branch and merge request. Task ids are `scope.N`. A task is `queued`
-until its dependencies merge, then `running`, `mr_open`, `merged`, or
-`blocked` if it needs you. Tasks record retry attempts, reviewer findings,
-and any feedback you gave them.
+one branch and merge request. Task ids are `scope.N`. States: `queued`
+until its dependencies merge, `running`, `mr_open`, `merged`, `blocked`
+(needs you), `canceled`. A task whose work is already on the default
+branch goes straight to `merged` with no merge request. Tasks record retry
+attempts, reviewer findings, and any feedback you gave them.
 
 **Run.** One execution attempt, attached to a scope and usually a task.
 Kinds: `architect`, `plan_review`, `implement`, `review`, `merge_gate`,
 `validate`. A run keeps its lease, base and head SHAs, the model that
-actually ran it, its event stream, its evidence, and its artifacts. Runs
-are what you read when something goes wrong.
+actually ran it, its event stream, its evidence, and its artifacts.
 
 ## A scope, start to finish
 
-Scope `col-d4bed30a`, 2026-08-16, target: an empty GitLab project. Input,
-as written by the operator:
+Scope `col-d4bed30a`, 2026-08-16, target: an empty GitLab project. The
+goal, condensed from the operator's text:
 
 > Build a self-hostable Reddit clone as a production-ready Docker image.
 > Posts, up/down votes, nested comments, ranked front page. Auth with
@@ -62,11 +63,12 @@ in parallel:
                                                            └─ 7 comments ─┘
 ```
 
-**Result.** 9 merge requests merged; acceptance run on a fresh clone of
-`main` built the image and passed the smoke test. 39 runs: 1 architect,
-14 implement, 11 review, 13 gate. 174 audit events, 2 human:
-`scope.created`, and one `unblock` after GitLab returned `401` on the
-first merge three times and the operator replaced the token.
+**Result.** 9 merge requests merged. 39 runs: 1 architect, 14 implement,
+11 review, 13 gate. Task 9's gate ran `docker build` and the smoke test
+against the merged tree (scope-level acceptance runs did not exist yet).
+174 audit events, 2 human: `scope.created`, and one `unblock` after
+GitLab returned `401` on the first merge three times and the operator
+replaced the token.
 
 ![Scope sheet: the task graph across the top, with goal, plan, and activity cards beneath](docs/images/scope-sheet.png)
 
@@ -118,7 +120,8 @@ flowchart LR
    back with findings; the architect revises. After ten rejections the
    scope blocks and asks you.
 3. **Approve.** With `hitl.mode: gated` you read the plan in the console and
-   approve it or send it back with feedback. `yolo` skips this step.
+   approve it or send it back with feedback. With `hitl.mode: yolo` the
+   plan is applied automatically, unless the scope was opened `--manual`.
 4. **Implement in parallel.** Every task whose dependencies have merged gets
    a developer run on its own branch, up to `COLONYD_MAX_CONCURRENT` at
    once and within per-model limits. The developer pushes, runs the spec's
@@ -129,14 +132,18 @@ flowchart LR
    exact merge request head and approves or requests changes with findings.
    Changes requested requeue the developer with the findings; approvals are
    tied to the SHA, so a new push is re-reviewed.
-6. **Gate and merge.** The merge gate clones the target branch fresh, merges
-   the candidate head into it, scans the diff for secrets and stray
-   credential files, runs the commands in the repository's
-   `colony.gate.yaml`, re-checks that the merge request head has not moved,
-   and merges that exact commit. If GitLab refuses because the head's
-   pipeline is still running, the gate holds and retries on the next tick.
-   A conflict or failing command requeues the task. Gates serialize per
-   scope so parallel tasks land one at a time.
+6. **Gate and merge.** If the merge request head has a CI pipeline, it must
+   have succeeded. The merge gate then clones the target branch fresh,
+   merges the candidate head into it, scans the incoming diff for
+   credential patterns (GitLab and AWS tokens, private keys) and refuses
+   `.env` or `PACKET.json`, runs the commands in the repository's
+   `colony.gate.yaml` (each under `timeout_seconds`, default 600; no file
+   or no commands means no checks), re-checks that the merge request head
+   has not moved, and merges that exact commit. A conflict or failing
+   command requeues the task; three consecutive gate failures at one head
+   block it. If GitLab refuses the merge while a pipeline is still
+   registering, the gate waits 60 s and retries; three refusals block.
+   Gates serialize per scope so parallel tasks land one at a time.
 7. **Validate.** When every task is terminal and at least one merged, Colony
    clones the default branch fresh and runs the acceptance commands with no
    credentials. Pass: `done`. Fail: the architect gets the failure evidence
@@ -144,11 +151,13 @@ flowchart LR
    repair tasks to the graph); then the scope blocks and asks you.
 
 Retries are bounded (`COLONYD_MAX_ATTEMPTS`, default 3) with exponential
-backoff. Failures caused by infrastructure (a `401` from the Git host, a
-provider outage) do not consume attempts; failures caused by the agent do.
-Every state change is reconciled by a single-flight tick that reads facts
-back from the Git host, so a restarted `colonyd` resumes where it stopped:
-expired leases are reaped, their tokens revoked, and their tasks requeued.
+backoff. Failures classified as infrastructure (the daemon restarting
+mid-run, the model gateway returning `429`/`5xx`, a sandbox that failed to
+provision) do not consume attempts; failures the agent could have
+prevented do. Every state change is reconciled by a single-flight tick
+that reads facts back from the Git host. A restarted `colonyd` does not
+resume in-flight runs: it marks them failed with `process_restart`,
+revokes their tokens, and requeues their tasks at no attempt cost.
 
 ## Agents
 
@@ -174,9 +183,9 @@ Agents run on [Pi](https://github.com/can1357/oh-my-pi) as the agent
 runtime. Each agent receives a packet: its role's instructions, the project
 brief and reference files, the scope goal, the task spec, and any prior
 findings. Agents can be given web access (`COLONY_SEARXNG_URL`: search plus
-an SSRF-filtered fetch). A fake runtime (`AGENT_RUNTIME=fake`) exercises
-the whole control plane without a model or a Git host and is what the test
-suite runs against.
+an SSRF-filtered fetch). `AGENT_RUNTIME=fake` substitutes a deterministic
+runtime that emits valid envelopes without calling a model; the test suite
+pairs it with fake Git-host, gate, and validation adapters.
 
 ## Models and fallbacks
 
@@ -220,12 +229,14 @@ Fallbacks work at two points:
   run starts on the first fallback with a free slot instead of waiting.
 - **During a run.** If the model errors or the provider is unavailable
   mid-session, the runtime fails over to the next model in
-  `fallback_models` inside the same session and attempt, with the same
-  capacity check.
+  `fallback_models` inside the same session and attempt. It prefers a
+  fallback with a free slot; if every remaining fallback is capped it takes
+  the next one anyway and logs `pi_model_fallback_all_capped`.
 
 The run records the model that actually finished it, the fallback event is
-in the run's event stream, and every model that contributed to a merged
-task is written into the merge provenance. Fallbacks are same-provider and
+in the run's event stream, and the architect, developer, and reviewer
+models behind a merged task are written into the merge provenance.
+Fallbacks are same-provider and
 ordered. `plan_reviewer` inherits the `reviewer` entry if omitted.
 Per-role `thinking_level`, `timeout_ms`, and `max_turns` bound cost;
 per-model `cost` lets the console estimate spend per task.
@@ -270,14 +281,14 @@ flowchart TB
 | ------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `colonyd`     | `apps/colonyd`                                          | The daemon. Boots config, store, provider, runtime, sandbox engine; serves HTTP; runs the tick every `COLONYD_TICK_MS` (15 s); drains on shutdown |
 | Tick          | `apps/colonyd/src/tick.ts`                              | One deterministic pass: expire leases, poll the Git host, advance review/gate/merge, plan, dispatch developers, close scopes, validate            |
-| Run handlers  | `apps/colonyd/src/runs/`                                | One module per run kind: `architect`, `plan-review`, `implement`, `review`, `merge-gate`, `validate`, `extend`                                    |
+| Run handlers  | `apps/colonyd/src/runs/`                                | One module per run kind (`architect`, `plan-review`, `implement`, `review`, `merge-gate`, `validate`) plus `extend` for architect repair rounds   |
 | Store         | `packages/core`                                         | SQLite schema, state machine (allowed transitions, backoff), audit log, plan materialization                                                      |
 | Schemas       | `packages/schemas`                                      | Zod contracts for every agent envelope: plan, completion, verdicts. Agents that do not conform fail the run                                       |
 | Agent runtime | `packages/agent-runtime`                                | `AgentRuntimeAdapter`: Pi runners per role, packet building, model failover, fake runtime                                                         |
 | Sandboxes     | `packages/sandbox`, `sandbox-in-process`, `sandbox-k8s` | `SandboxEngine` protocol (provision, exec, read, write, destroy) and its two engines                                                              |
 | Git host      | `packages/provider`, `packages/provider-gitlab`         | `ProviderAdapter`: repos, branches, merge requests, pipelines, webhooks; GitLab implementation and a fake                                         |
 | Console       | `packages/console`                                      | Web UI: Lit web components served by `colonyd` at `/`, no build step, no CDN. `?demo` runs it offline on fixture data                             |
-| CLI and TUI   | `apps/cli`                                              | `colony` binary: every operator action as a subcommand with `--json`; a live TUI with no arguments                                                |
+| CLI and TUI   | `apps/cli`                                              | `colony` binary: scope, task, run, and project operations as subcommands with `--json`; a live TUI with no arguments                              |
 | Config        | `packages/config`                                       | `colony.yaml` schema (providers, agents, review, HITL, sandbox, notifications, artifacts) and the environment contract                            |
 | Observability | `packages/observability`                                | OpenTelemetry traces per run, Prometheus metrics on `COLONY_METRICS_PORT`; the console links each run to its trace                                |
 
@@ -290,17 +301,17 @@ run ends.
 
 ## Sandboxes
 
-Where agents and acceptance commands execute is `sandbox.engine`. The merge
-gate is not sandboxed by either engine: it clones and runs
-`colony.gate.yaml` commands in `colonyd`'s own `/tmp`, so the daemon's
-environment needs whatever your gate commands need.
+`sandbox.engine` chooses where agent runs and scope validation execute.
+The merge gate is not sandboxed by either engine: it clones and runs
+`colony.gate.yaml` commands as a child of `colonyd`, with the daemon's
+environment and credentials.
 
-**`in-process`** (default). Agent shells are child processes of `colonyd`
-with the run's workspace as their root, a private `HOME`/`TMPDIR`, and an
-allow-listed environment. This is workspace confinement, not isolation: an
-agent runs as the `colonyd` user on the same kernel. Use it on a repository
-you are willing to let an agent modify, or run `colonyd` itself in a
-container.
+**`in-process`** (default). Agent commands are shell children of `colonyd`
+with the run's workspace as working directory, a private `HOME`/`TMPDIR`,
+and an allow-listed environment. Nothing prevents a command from reading
+or writing outside the workspace: an agent has whatever the `colonyd` user
+has. Use this engine only where you would give the agent that access, or
+run `colonyd` in a container that has nothing else in it.
 
 **`kubernetes`**. Each run gets a `Sandbox` custom resource handled by the
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) controller
@@ -319,8 +330,16 @@ to it and set `sandbox.kubernetes.image`.
 
 ## Install
 
-Requirements: [Bun](https://bun.sh) 1.3.14, Git, a GitLab project token
-with `api` scope, one model endpoint with an API key.
+Requirements: [Bun](https://bun.sh) 1.3.14, Git, a GitLab **personal**
+access token with `api` scope, one model endpoint with an API key.
+
+The token type matters: by default Colony mints a short-lived project
+access token per run (Developer role, 2-day expiry, scoped to that run's
+repository) and revokes it when the run ends. GitLab only lets personal
+access tokens create project tokens. To use `GITLAB_TOKEN` directly for
+every run instead, set `COLONYD_SINGLE_TOKEN=1`; that token then also
+needs whatever your branch protection requires to merge into the default
+branch.
 
 ```sh
 git clone <repo-url> colony && cd colony
@@ -363,14 +382,20 @@ bun run dev # console and API on http://localhost:4400
 ```
 
 Then in the console: **New project**, paste the brief, add reference files,
-**New scope**, write the goal for an engineer who cannot ask questions,
-and wait for the plan to appear. [`config/colony.example.yaml`](config/colony.example.yaml)
-documents every setting.
+**New scope**, write the goal, and wait for the plan to appear.
+[`config/colony.example.yaml`](config/colony.example.yaml) is the annotated
+reference config; [`packages/config/src/colony-config.ts`](packages/config/src/colony-config.ts)
+is the schema.
 
-Without OIDC, the API trusts the `X-Actor-Id` header the console sends; bind
-to localhost or put it behind your own authentication. Set
-`COLONY_OIDC_ISSUER`, `COLONY_OIDC_CLIENT_ID`, and `COLONY_OIDC_REQUIRED_ROLE`
-to require a bearer token from your identity provider instead.
+`colonyd` listens on all interfaces on `COLONYD_PORT` (4400). Without OIDC
+it trusts the `X-Actor-Id` header as the operator's identity, so keep it
+off networks you do not control: a firewall, an SSH tunnel, or the
+loopback-only port mapping in the Compose file below. With
+`COLONY_OIDC_ISSUER`, `COLONY_OIDC_CLIENT_ID`, and optionally
+`COLONY_OIDC_REQUIRED_ROLE` set, every operator request needs an RS256
+bearer token from that issuer and the console signs in through it. The
+console's login flow uses Keycloak's `protocol/openid-connect` endpoints;
+other issuers work for API clients that bring their own token.
 
 ## Deploy
 
@@ -395,6 +420,7 @@ services:
       - ./config/colony.yaml:/workspace/config/colony.yaml:ro
       - ./data:/workspace/data
     restart: unless-stopped
+    stop_grace_period: 11m # >= COLONY_DRAIN_TIMEOUT_MS (10 min) + 60 s
 ```
 
 ```sh
@@ -412,9 +438,15 @@ execution to Kubernetes sandboxes below.
 
 Two independent pieces: the daemon, and optionally a sandbox per agent run.
 
-**The daemon.** A Deployment of the same image with:
+**The daemon.** Exactly one replica. On startup `colonyd` marks every run
+the database shows as running failed (`process_restart`) and, with the
+Kubernetes engine, deletes every Colony-labelled sandbox in its namespace;
+two overlapping instances would destroy each other's work. Use
+`strategy: Recreate`, one replica, and a namespace per instance. Give it:
 
-- a PersistentVolumeClaim mounted at `/workspace/data`;
+- a PersistentVolumeClaim for the database, artifacts, and transcripts,
+  mounted where `COLONYD_DB_PATH`, `artifacts.local.dir`, and
+  `sessions_dir` point;
 - `colony.yaml` from a ConfigMap, credentials from a Secret;
 - liveness on `/health`, readiness on `/ready` (503 once draining starts);
 - `terminationGracePeriodSeconds` of at least `COLONY_DRAIN_TIMEOUT_MS`
@@ -431,26 +463,31 @@ per [`packages/sandbox-k8s/README.md`](packages/sandbox-k8s/README.md):
 - RBAC for `colonyd` to `get`/`list`/`create`/`delete` sandboxes and
   `list` pods and use `pods/exec` in that namespace;
 - your sandbox image built from `docker/sandbox/Dockerfile`, set as
-  `sandbox.kubernetes.image`.
+  `sandbox.kubernetes.image`;
+- a default StorageClass that provisions `ReadWriteOnce` volumes: each
+  sandbox requests a generic ephemeral PVC, 16 GiB for developer runs and
+  8 GiB for review and validation.
 
 The engine uses in-cluster credentials when present and the default
 kubeconfig otherwise. Colony ships no manifests or chart.
-[`config/colony.deploy.yaml`](config/colony.deploy.yaml) is the config of
-the cluster that builds Colony itself and shows a complete
-Kubernetes-engine setup.
+[`config/colony.deploy.yaml`](config/colony.deploy.yaml) is the `colony.yaml`
+of the cluster that builds Colony itself: Kubernetes engine, storage under
+`/var/lib/colonyd`, review required, `hitl: yolo`. Its registry and model
+endpoints are private; read it for the shape, not the values.
 
 ### Operations
 
 **Back up** `COLONYD_DB_PATH` (with `sqlite3 .backup`, or stop `colonyd`
 first), `artifacts.local.dir`, and `sessions_dir`.
 
-**Observe** with OpenTelemetry traces (`OTEL_EXPORTER_OTLP_*`; every run
-is a trace the console links to) and Prometheus metrics on
-`COLONY_METRICS_PORT`.
+**Observe** with OpenTelemetry traces (`OTEL_EXPORTER_OTLP_*`; each run is
+one trace, and with `COLONY_TRACE_UI_BASE_URL` set the console links to
+it) and Prometheus metrics on `COLONY_METRICS_PORT`.
 
 **Get paged** through `notifications.sinks` (ntfy) when a plan awaits
-approval, a task blocks, or a merge lands; severity thresholds, per-class
-cooldowns, and a digest window keep it quiet.
+approval, a task blocks, or a merge lands. Each sink has a severity
+threshold; each event class has a cooldown; lower-severity events batch
+into a digest window.
 
 ## Interfaces
 
@@ -458,15 +495,17 @@ Everything below is the same HTTP API; the console, TUI, and CLI are
 clients of it.
 
 **Web console** at `/`. Projects list; project page with scopes, running
-tasks, brief and reference files, settings; scope sheet with the task graph,
-plan, acceptance results, activity, and a task drawer with the spec, merge
-request, every run with its findings, a live event feed for the running
-one, and the action buttons: unblock, stop and retry, run now, request
-changes, amend spec, cancel, restore, approve merge.
+tasks, brief and reference files, settings; scope sheet with the task
+graph, plan, acceptance results, and activity. Clicking a task opens its
+spec, merge request, and run history with reviewer findings and a live
+event feed, plus the task actions: unblock, stop and retry, run now,
+request changes, amend spec, cancel, restore, approve merge.
 
 **TUI.** `colony` with no arguments: live scopes and tasks in the terminal.
 
-**CLI.** One subcommand per action, `--json` for scripts:
+**CLI.** Scope, task, run, and project operations as subcommands, `--json`
+for scripts. Not every route is covered: scope unblock, run abort,
+project-file upload, and plan-review recovery are API-only.
 
 ```sh
 colony context my-project --set brief.md
@@ -474,7 +513,8 @@ colony open goal.md --title "Reddit clone" --repo group/reddit-clone --project m
 colony scope col-d4bed30a
 colony approve col-d4bed30a            # or: colony replan col-d4bed30a --feedback notes.md
 colony logs <run-id> -f
-colony artifacts <run-id>              # then: get <artifact-id> -o FILE
+colony artifacts <run-id>
+colony artifacts <run-id> get <artifact-id> -o out.bin
 colony task col-d4bed30a.7 unblock
 colony task col-d4bed30a.7 request-changes --feedback f.md
 colony task col-d4bed30a.7 amend --spec s.md
@@ -495,27 +535,29 @@ artifacts), `/audit`, `/health`, `/ready`, and the GitLab webhook. Send
 
 ## Integrations
 
-| Boundary          | Interface                                                           | Shipped                           | Where to add one                                                |
-| ----------------- | ------------------------------------------------------------------- | --------------------------------- | --------------------------------------------------------------- |
-| Git host          | [`ProviderAdapter`](packages/provider/src/index.ts)                 | GitLab                            | `packages/provider-<host>`, wired in `apps/colonyd/src/main.ts` |
-| Agent runtime     | [`AgentRuntimeAdapter`](packages/agent-runtime/src/adapter.ts)      | Pi; fake for tests                | `packages/agent-runtime`, selected by `agent_runtime:`          |
-| Sandbox engine    | [`SandboxEngine`](packages/sandbox/src/exec-protocol.ts)            | in-process, Kubernetes (Kata)     | `packages/sandbox-<engine>`, selected by `sandbox.engine:`      |
-| Model provider    | `providers:` in `colony.yaml`                                       | OpenAI-compatible, Anthropic APIs | Config only                                                     |
-| Notification sink | [`notifications/sinks.ts`](apps/colonyd/src/notifications/sinks.ts) | ntfy                              | Add a sender and a `kind`                                       |
-| Artifact store    | `artifacts.kind` in `colony.yaml`                                   | local disk, S3                    | Config only                                                     |
-| Operator auth     | `COLONY_OIDC_*`                                                     | Any OIDC issuer, or `X-Actor-Id`  | Config only                                                     |
-| Telemetry         | `OTEL_EXPORTER_OTLP_*`, `COLONY_METRICS_PORT`                       | OTLP traces, Prometheus metrics   | Config only                                                     |
+| Boundary          | Interface                                                           | Shipped                                   | Where to add one                                                |
+| ----------------- | ------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------- |
+| Git host          | [`ProviderAdapter`](packages/provider/src/index.ts)                 | GitLab                                    | `packages/provider-<host>`, wired in `apps/colonyd/src/main.ts` |
+| Agent runtime     | [`AgentRuntimeAdapter`](packages/agent-runtime/src/adapter.ts)      | Pi; fake for tests                        | `packages/agent-runtime`, selected by `agent_runtime:`          |
+| Sandbox engine    | [`SandboxEngine`](packages/sandbox/src/exec-protocol.ts)            | in-process, Kubernetes (Kata)             | `packages/sandbox-<engine>`, selected by `sandbox.engine:`      |
+| Model provider    | `providers:` in `colony.yaml`                                       | OpenAI-compatible, Anthropic APIs         | Config only                                                     |
+| Notification sink | [`notifications/sinks.ts`](apps/colonyd/src/notifications/sinks.ts) | ntfy                                      | Add a sender and a `kind`                                       |
+| Artifact store    | `artifacts.kind` in `colony.yaml`                                   | local disk, S3                            | Config only                                                     |
+| Operator auth     | `COLONY_OIDC_*`                                                     | Keycloak (console + API), or `X-Actor-Id` | RS256 tokens from any issuer for API clients                    |
+| Telemetry         | `OTEL_EXPORTER_OTLP_*`, `COLONY_METRICS_PORT`                       | OTLP traces, Prometheus metrics           | Config only                                                     |
 
-Each code boundary has one production implementation and a fake the test
-suite runs against; a new implementation registers where the existing one
-is constructed.
+Each code boundary is a TypeScript interface with a fake the test suite
+runs against; a new implementation registers where the existing one is
+constructed.
 
 ## Status
 
 Early access. Colony has planned, implemented, reviewed, gated, and merged
-its own merge requests since August 2026. Interfaces and the SQLite schema
-still change without a migration path. GitLab is the supported Git host;
-model providers authenticate with API keys.
+its own merge requests since August 2026. The SQLite schema is migrated
+forward automatically on boot; there is no downgrade, so back up
+`COLONYD_DB_PATH` before upgrading. Interfaces between packages still
+change without notice. GitLab is the supported Git host; model providers
+authenticate with API keys.
 
 ## Documentation
 
