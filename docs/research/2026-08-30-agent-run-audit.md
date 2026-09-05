@@ -32,6 +32,12 @@ Storage/API defects compounding it: `/runs/:id/events` always returns the newest
 
 For workspace capture specifically, Colony has a cheaper native option than filesystem machinery: **the pod already has git and push credentials**. A run-scoped shadow ref (`refs/colony/runs/<run_id>`) pushed at phase boundaries + run end captures tracked tree states with dedup for free, queryable by `git log/diff`. Reflogs don't count (local, expirable). A final `git bundle`/tar of untracked-but-relevant files to S3 covers the rest.
 
+**Implementation correction (2026-09-05):** reviewer tokens are read-only, so
+the push-credential assumption above does not hold for every captured role.
+Workspace capture now stores parent-relative Git bundles and recovery manifests
+through the artifact store for developers and reviewers alike; it does not push
+audit refs or widen agent credentials.
+
 ## 3. Recommended design — four layers, in order of value per effort
 
 **Layer 0 — stop dropping what you already hold (colonyd + agent-runtime only).**

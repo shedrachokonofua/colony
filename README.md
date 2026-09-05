@@ -136,7 +136,9 @@ flowchart LR
    Changes requested requeue the developer with the findings; approvals are
    tied to the SHA, so a new push is re-reviewed.
 6. **Gate and merge.** If the merge request head has a CI pipeline, it must
-   have succeeded. The merge gate then clones the target branch fresh,
+   have succeeded. Failed CI at the current head schedules bounded developer
+   repair with feedback and backoff; exhausted attempts block the task.
+   Pending or unknown CI does not consume attempts. The merge gate clones the target branch fresh,
    merges the candidate head into it, scans the incoming diff for
    credential patterns (GitLab and AWS tokens, private keys) and refuses
    `.env` or `PACKET.json`, validates the prospective tree with every command
@@ -163,6 +165,8 @@ prevented do. Every state change is reconciled by a single-flight tick
 that reads facts back from the Git host. A restarted `colonyd` does not
 resume in-flight runs: it marks them failed with `process_restart`,
 revokes their tokens, and requeues their tasks at no attempt cost.
+Resuming a paused planning scope also restarts a canceled architect, without
+charging the cancellation as an agent failure or resetting prior failures.
 
 ## Agents
 
@@ -303,6 +307,12 @@ merges: an agent's claim is verified against it before any state changes.
 Run artifacts go to local disk or S3; session transcripts to
 `sessions_dir`. Agents get per-run scoped tokens that are revoked when the
 run ends.
+
+Developer and reviewer workspace snapshots are parent-relative Git bundles
+and manifests in the artifact store, not pushes using agent credentials.
+To recover one, use a checkout containing the manifest's `parent_sha`, fetch
+the bundle's advertised `git_ref`, and check out its `sha`. Capture preserves
+the original checkout and excludes ignored files and dependency/build trees.
 
 ## Sandboxes
 

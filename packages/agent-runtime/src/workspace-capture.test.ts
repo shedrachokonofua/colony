@@ -1,85 +1,75 @@
 import { describe, expect, it } from "bun:test";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import type { SandboxHandle } from "@colony/sandbox";
 import type { RunAuditSink } from "./audit-sink.js";
 import { captureWorkspace } from "./workspace-capture.js";
-import type { SandboxHandle } from "@colony/sandbox";
 
-/** In-memory audit sink for assertions */
-function createRecordingSink(): {
+type EventRecord = {
+  runId: string;
+  event: string;
+  detail: Record<string, unknown>;
+};
+
+type ArtifactRecord = {
+  runId: string;
+  kind: string;
+  key: string;
+  data: Uint8Array;
+  contentType: string;
+};
+
+/** In-memory audit sink that keeps the stored bytes available for recovery. */
+function createRecordingSink(failingKind?: string): {
   sink: RunAuditSink;
-  events: { runId: string; event: string; detail: Record<string, unknown> }[];
-  artifacts: {
-    runId: string;
-    kind: string;
-    key: string;
-    data: Uint8Array;
-    contentType: string;
-  }[];
-  artifactRefs: {
-    runId: string;
-    kind: string;
-    key: string;
-    ref: string;
-    sha256?: string;
-    bytes?: number;
-    contentType?: string;
-  }[];
+  events: EventRecord[];
+  artifacts: ArtifactRecord[];
 } {
-  const events: {
-    runId: string;
-    event: string;
-    detail: Record<string, unknown>;
-  }[] = [];
-  const artifacts: {
-    runId: string;
-    kind: string;
-    key: string;
-    data: Uint8Array;
-    contentType: string;
-  }[] = [];
-  const artifactRefs: {
-    runId: string;
-    kind: string;
-    key: string;
-    ref: string;
-    sha256?: string;
-    bytes?: number;
-    contentType?: string;
-  }[] = [];
+  const events: EventRecord[] = [];
+  const artifacts: ArtifactRecord[] = [];
 
   const sink: RunAuditSink = {
     appendEvent(runId, event, detail) {
       events.push({ runId, event, detail });
     },
     async putArtifact(runId, kind, key, data, contentType) {
-      artifacts.push({ runId, kind, key, data, contentType });
-      const sha256 = createHash("sha256").update(data).digest("hex");
+      if (kind === failingKind) return undefined;
+      const stored = new Uint8Array(data);
+      artifacts.push({ runId, kind, key, data: stored, contentType });
       return {
         ref: `blob://${key}`,
-        bytes: data.byteLength,
-        sha256,
+        bytes: stored.byteLength,
+        sha256: createHash("sha256").update(stored).digest("hex"),
       };
-    },
-    recordArtifactRef(runId, kind, key, ref, sha256, bytes, contentType) {
-      artifactRefs.push({ runId, kind, key, ref, sha256, bytes, contentType });
     },
   };
 
-  return { sink, events, artifacts, artifactRefs };
+  return { sink, events, artifacts };
 }
 
-/** Stub SandboxHandle that runs commands directly on local workspace directory */
+/** SandboxHandle fixture backed by a real local checkout, including binary reads. */
 function createWorkspaceSandboxHandle(workspaceDir: string): SandboxHandle {
   let seq = 0;
+  const root = resolve(workspaceDir);
+
   return {
     sandboxId: "sandbox-ws-test",
     async exec(request, onData) {
       try {
-        const stdout = execSync(request.command, {
+        const stdout = execFileSync("sh", ["-c", request.command], {
           cwd: workspaceDir,
           env: { ...process.env, ...request.env },
           stdio: ["ignore", "pipe", "pipe"],
@@ -88,399 +78,379 @@ function createWorkspaceSandboxHandle(workspaceDir: string): SandboxHandle {
         onData?.({ kind: "stdout", seq: ++seq, data: stdout.toString("utf8") });
         return { exitCode: 0, durationMs: 10 };
       } catch (err: unknown) {
-        if (err && typeof err === "object") {
-          const e = err as {
-            stdout?: Buffer | string;
-            stderr?: Buffer | string;
-            status?: number;
-          };
-          if (e.stdout) {
-            onData?.({
-              kind: "stdout",
-              seq: ++seq,
-              data: Buffer.isBuffer(e.stdout)
-                ? e.stdout.toString("utf8")
-                : String(e.stdout),
-            });
-          }
-          if (e.stderr) {
-            onData?.({
-              kind: "stderr",
-              seq: ++seq,
-              data: Buffer.isBuffer(e.stderr)
-                ? e.stderr.toString("utf8")
-                : String(e.stderr),
-            });
-          }
-          return {
-            exitCode: typeof e.status === "number" ? e.status : 1,
-            durationMs: 10,
-          };
+        const e = err as {
+          stdout?: Buffer | string;
+          stderr?: Buffer | string;
+          status?: number;
+        };
+        if (e.stdout) {
+          onData?.({
+            kind: "stdout",
+            seq: ++seq,
+            data: Buffer.isBuffer(e.stdout)
+              ? e.stdout.toString("utf8")
+              : String(e.stdout),
+          });
         }
-        return { exitCode: 1, durationMs: 10 };
+        if (e.stderr) {
+          onData?.({
+            kind: "stderr",
+            seq: ++seq,
+            data: Buffer.isBuffer(e.stderr)
+              ? e.stderr.toString("utf8")
+              : String(e.stderr),
+          });
+        }
+        return {
+          exitCode: typeof e.status === "number" ? e.status : 1,
+          durationMs: 10,
+        };
       }
     },
-    async readFile() {
-      throw new Error("not implemented in stub");
+    async readFile(path) {
+      const resolved = resolve(workspaceDir, path);
+      if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+        throw new Error("path escapes workspace");
+      }
+      return readFileSync(resolved);
     },
-    async writeFile() {
-      throw new Error("not implemented in stub");
+    async writeFile(path, content) {
+      const resolved = resolve(workspaceDir, path);
+      if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+        throw new Error("path escapes workspace");
+      }
+      mkdirSync(join(resolved, ".."), { recursive: true });
+      writeFileSync(resolved, content);
     },
     async destroy() {},
   };
 }
 
+function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
+  return execFileSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  }).trim();
+}
+
+function gitIn(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  }).trim();
+}
+
+function createRepository(
+  tempRoot: string,
+  rejectPushes: boolean,
+): {
+  seedDir: string;
+  workspaceDir: string;
+  parentSha: string;
+  pushAttemptMarker: string;
+} {
+  const remoteDir = join(tempRoot, "remote.git");
+  const seedDir = join(tempRoot, "seed");
+  const workspaceDir = join(tempRoot, "workspace");
+  const pushAttemptMarker = join(tempRoot, "push-attempted");
+
+  gitIn(tempRoot, ["init", "--bare", "--initial-branch=main", remoteDir]);
+  gitIn(tempRoot, ["init", "--initial-branch=main", seedDir]);
+  git(seedDir, ["config", "user.name", "Test Runner"]);
+  git(seedDir, ["config", "user.email", "test@example.com"]);
+  writeFileSync(join(seedDir, "keep.txt"), "keep from parent\n");
+  writeFileSync(join(seedDir, "tracked.txt"), "tracked from parent\n");
+  writeFileSync(join(seedDir, "delete.txt"), "delete from parent\n");
+  writeFileSync(join(seedDir, "staged.txt"), "staged from parent\n");
+  writeFileSync(
+    join(seedDir, ".gitignore"),
+    "node_modules/\n**/node_modules/\n.bun-cache/\n**/.bun-cache/\ndist/\n**/dist/\n",
+  );
+  git(seedDir, ["add", "-A"]);
+  git(seedDir, ["commit", "-m", "initial"]);
+  writeFileSync(join(seedDir, "history.txt"), "parent history\n");
+  git(seedDir, ["add", "history.txt"]);
+  git(seedDir, ["commit", "-m", "parent"]);
+  const parentSha = git(seedDir, ["rev-parse", "HEAD"]);
+  git(seedDir, ["remote", "add", "origin", remoteDir]);
+  git(seedDir, ["push", "origin", "main"]);
+
+  if (rejectPushes) {
+    const hook = join(remoteDir, "hooks", "pre-receive");
+    writeFileSync(
+      hook,
+      `#!/bin/sh\nprintf attempted > ${JSON.stringify(pushAttemptMarker)}\nprintf 'pushes are forbidden in this fixture\\n' >&2\nexit 1\n`,
+    );
+    chmodSync(hook, 0o755);
+  }
+
+  // This clone proves the configured remote remains readable even when pushes are forbidden.
+  gitIn(tempRoot, ["clone", remoteDir, workspaceDir]);
+  git(workspaceDir, ["config", "user.name", "Agent Dev"]);
+  git(workspaceDir, ["config", "user.email", "agent@example.com"]);
+
+  return { seedDir, workspaceDir, parentSha, pushAttemptMarker };
+}
+
+function addGeneratedFiles(workspaceDir: string): void {
+  const targetDir = join(workspaceDir, "..", "generated-target");
+  mkdirSync(targetDir, { recursive: true });
+  writeFileSync(join(targetDir, "ignored.txt"), "generated\n");
+
+  mkdirSync(join(workspaceDir, "packages", "app"), { recursive: true });
+  symlinkSync(targetDir, join(workspaceDir, "node_modules"));
+  symlinkSync(targetDir, join(workspaceDir, "packages", "app", "node_modules"));
+  symlinkSync(targetDir, join(workspaceDir, ".bun-cache"));
+  symlinkSync(targetDir, join(workspaceDir, "packages", "app", "dist"));
+}
+
+function recoverBundle(
+  seedDir: string,
+  tempRoot: string,
+  bundle: Uint8Array,
+  ref: string,
+): string {
+  const recoveryDir = join(tempRoot, "recovery");
+  const bundlePath = join(tempRoot, "workspace.bundle");
+  writeFileSync(bundlePath, bundle);
+  gitIn(tempRoot, ["clone", seedDir, recoveryDir]);
+  git(recoveryDir, ["fetch", bundlePath, `${ref}:refs/heads/recovered`]);
+  git(recoveryDir, ["checkout", "--detach", "refs/heads/recovered"]);
+  return recoveryDir;
+}
+
+function hasRef(repoDir: string, ref: string): boolean {
+  try {
+    git(repoDir, ["show-ref", "--verify", "--quiet", ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("captureWorkspace", () => {
-  it("captures shadow commit, pushes ref, writes manifest, and leaves workspace clean", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-test-"));
-    const bareDir = join(tempRoot, "remote.git");
-    const wsDir = join(tempRoot, "workspace");
-
+  it("stores a recoverable delta bundle while preserving the reviewer checkout", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-bundle-test-"));
     try {
-      // 1. Setup bare git repo with initial branch main
-      execSync(`git init --bare --initial-branch=main "${bareDir}"`);
-
-      // 2. Setup initial commit in a temp repo and push to bare
-      const initDir = join(tempRoot, "init");
-      execSync(`git init --initial-branch=main "${initDir}"`);
-      execSync(`git -C "${initDir}" config user.name "Test Runner"`);
-      execSync(`git -C "${initDir}" config user.email "test@example.com"`);
-      writeFileSync(join(initDir, "initial.txt"), "hello initial\n");
-      execSync(`git -C "${initDir}" add initial.txt`);
-      execSync(`git -C "${initDir}" commit -m "initial commit"`);
-      const baseSha = execSync(`git -C "${initDir}" rev-parse HEAD`, {
-        encoding: "utf8",
-      }).trim();
-      execSync(`git -C "${initDir}" remote add origin "${bareDir}"`);
-      execSync(`git -C "${initDir}" push origin main`);
-
-      // 3. Clone workspace from bare repo
-      execSync(`git clone "${bareDir}" "${wsDir}"`);
-      execSync(`git -C "${wsDir}" config user.name "Agent Dev"`);
-      execSync(`git -C "${wsDir}" config user.email "agent@example.com"`);
-
-      // 4. Modify workspace: add untracked file, modify tracked, create excluded directories/files
+      const repo = createRepository(tempRoot, true);
+      addGeneratedFiles(repo.workspaceDir);
       writeFileSync(
-        join(wsDir, "touched.txt"),
-        "touched content with secret-token-xyz\n",
+        join(repo.workspaceDir, "tracked.txt"),
+        "updated tracked\n",
       );
-      writeFileSync(join(wsDir, "initial.txt"), "modified initial\n");
-      // Add excluded directories
-      execSync(
-        `mkdir -p "${join(wsDir, "node_modules")}" "${join(wsDir, ".bun-cache")}" "${join(wsDir, "dist")}"`,
-      );
-      writeFileSync(join(wsDir, "node_modules", "pkg.json"), "{}");
-      writeFileSync(join(wsDir, ".bun-cache", "cache.bin"), "000");
-      writeFileSync(join(wsDir, "dist", "bundle.js"), "console.log(1)");
+      unlinkSync(join(repo.workspaceDir, "delete.txt"));
+      writeFileSync(join(repo.workspaceDir, "staged.txt"), "updated staged\n");
+      git(repo.workspaceDir, ["add", "staged.txt"]);
+      writeFileSync(join(repo.workspaceDir, "new.txt"), "new content\n");
 
-      const headBefore = execSync(`git -C "${wsDir}" rev-parse HEAD`, {
-        encoding: "utf8",
-      }).trim();
-      const statusBefore = execSync(`git -C "${wsDir}" status --porcelain`, {
-        encoding: "utf8",
-      }).trim();
+      const headBefore = git(repo.workspaceDir, ["rev-parse", "HEAD"]);
+      const indexBefore = git(repo.workspaceDir, ["rev-parse", ":staged.txt"]);
+      const statusBefore = git(repo.workspaceDir, ["status", "--porcelain"]);
+      const stagedDiffBefore = git(repo.workspaceDir, [
+        "diff",
+        "--cached",
+        "--binary",
+      ]);
+      const worktreeDiffBefore = git(repo.workspaceDir, ["diff", "--binary"]);
 
-      const handle = createWorkspaceSandboxHandle(wsDir);
-      const { sink, events, artifacts, artifactRefs } = createRecordingSink();
-      const runId = "run-test-123";
+      const handle = createWorkspaceSandboxHandle(repo.workspaceDir);
+      const { sink, events, artifacts } = createRecordingSink();
+      const runId = "run-bundle-123";
+      const localGitRef = `refs/colony/runs/${runId}`;
 
-      const res = await captureWorkspace({
+      const result = await captureWorkspace({
         runId,
         handle,
-        repo: {
-          url: bareDir,
-          branch: "main",
-          base_commit: baseSha,
-        },
-        parentSha: baseSha,
-        secrets: ["secret-token-xyz"],
-        sink,
-      });
-
-      expect(res).toBeDefined();
-      expect(res!.ref).toBe(`refs/colony/runs/${runId}`);
-
-      // Check bare repo ref
-      const pushedSha = execSync(
-        `git --git-dir="${bareDir}" rev-parse refs/colony/runs/${runId}`,
-        {
-          encoding: "utf8",
-        },
-      ).trim();
-      expect(pushedSha).toBe(res!.sha);
-
-      // Check shadow commit parent and message
-      const commitParent = execSync(
-        `git --git-dir="${bareDir}" rev-parse ${pushedSha}^`,
-        {
-          encoding: "utf8",
-        },
-      ).trim();
-      expect(commitParent).toBe(baseSha);
-      const commitMsg = execSync(
-        `git --git-dir="${bareDir}" log -1 --format=%B ${pushedSha}`,
-        {
-          encoding: "utf8",
-        },
-      ).trim();
-      expect(commitMsg).toBe(`colony audit: run ${runId}`);
-
-      // Check shadow commit does NOT contain excluded directories
-      const lsTreeOutput = execSync(
-        `git --git-dir="${bareDir}" ls-tree --name-only -r ${pushedSha}`,
-        {
-          encoding: "utf8",
-        },
-      ).toString();
-      expect(lsTreeOutput).toContain("touched.txt");
-      expect(lsTreeOutput).toContain("initial.txt");
-      expect(lsTreeOutput).not.toContain("node_modules");
-      expect(lsTreeOutput).not.toContain(".bun-cache");
-      expect(lsTreeOutput).not.toContain("dist");
-
-      // Check workspace index, branch and HEAD are unchanged
-      const headAfter = execSync(`git -C "${wsDir}" rev-parse HEAD`, {
-        encoding: "utf8",
-      }).trim();
-      const statusAfter = execSync(`git -C "${wsDir}" status --porcelain`, {
-        encoding: "utf8",
-      }).trim();
-      expect(headAfter).toBe(headBefore);
-      expect(statusAfter).toBe(statusBefore);
-
-      // Check events and artifact records
-      const wsRefEvent = events.find((e) => e.event === "workspace_ref");
-      expect(wsRefEvent).toBeDefined();
-      expect(wsRefEvent?.detail).toEqual({
-        ref: `refs/colony/runs/${runId}`,
-        sha: res!.sha,
-      });
-
-      const wsRefRow = artifactRefs.find((r) => r.kind === "workspace_ref");
-      expect(wsRefRow).toBeDefined();
-      expect(wsRefRow?.key).toBe(`runs/${runId}/workspace_ref`);
-      expect(wsRefRow?.ref).toBe(`refs/colony/runs/${runId}@${res!.sha}`);
-
-      const wsManifestRow = artifacts.find(
-        (r) => r.kind === "workspace_manifest",
-      );
-      expect(wsManifestRow).toBeDefined();
-      expect(wsManifestRow?.key).toBe(`runs/${runId}/workspace-manifest.json`);
-
-      const manifestContent = JSON.parse(
-        Buffer.from(wsManifestRow!.data).toString("utf8"),
-      );
-      expect(manifestContent.files).toBeDefined();
-      expect(manifestContent.deleted).toEqual([]);
-      expect(manifestContent.generated_at).toBeDefined();
-
-      const touchedEntry = manifestContent.files.find(
-        (f: { path: string }) => f.path === "touched.txt",
-      );
-      expect(touchedEntry).toBeDefined();
-      expect(touchedEntry.sha256).toBeDefined();
-      expect(touchedEntry.sha256.length).toBe(64);
-
-      // Ensure secret redaction happened on the manifest JSON
-      const rawManifestString = Buffer.from(wsManifestRow!.data).toString(
-        "utf8",
-      );
-      expect(rawManifestString).not.toContain("secret-token-xyz");
-    } finally {
-      rmSync(tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("handles failed push by appending workspace_capture_failed event without throwing", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-fail-test-"));
-    const wsDir = join(tempRoot, "workspace");
-
-    try {
-      execSync(`git init "${wsDir}"`);
-      execSync(`git -C "${wsDir}" config user.name "Test Runner"`);
-      execSync(`git -C "${wsDir}" config user.email "test@example.com"`);
-      writeFileSync(join(wsDir, "initial.txt"), "hello\n");
-      execSync(`git -C "${wsDir}" add initial.txt`);
-      execSync(`git -C "${wsDir}" commit -m "initial"`);
-      const baseSha = execSync(`git -C "${wsDir}" rev-parse HEAD`, {
-        encoding: "utf8",
-      }).trim();
-
-      // Point origin to a nonexistent path
-      execSync(`git -C "${wsDir}" remote add origin "/nonexistent/repo.git"`);
-
-      const handle = createWorkspaceSandboxHandle(wsDir);
-      const { sink, events } = createRecordingSink();
-      const runId = "run-fail-123";
-
-      const res = await captureWorkspace({
-        runId,
-        handle,
-        repo: {
-          url: "/nonexistent/repo.git",
-          branch: "main",
-          base_commit: baseSha,
-        },
-        parentSha: baseSha,
+        parentSha: repo.parentSha,
         secrets: [],
         sink,
       });
 
-      expect(res).toBeUndefined();
+      expect(result).toBeDefined();
+      expect(result!.ref).toBe(`blob://runs/${runId}/workspace.bundle`);
+      expect(result!.sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(hasRef(repo.workspaceDir, localGitRef)).toBe(false);
+      expect(existsSync(repo.pushAttemptMarker)).toBe(false);
 
-      const failEvent = events.find(
-        (e) => e.event === "workspace_capture_failed",
+      const bundleArtifact = artifacts.find(
+        (a) => a.kind === "workspace_bundle",
       );
-      expect(failEvent).toBeDefined();
-      expect(failEvent?.detail.error).toBeDefined();
-    } finally {
-      rmSync(tempRoot, { recursive: true, force: true });
-    }
-  });
+      expect(bundleArtifact).toBeDefined();
+      expect(bundleArtifact!.key).toBe(`runs/${runId}/workspace.bundle`);
+      expect(bundleArtifact!.contentType).toBe("application/x-git-bundle");
 
-  it("captures shadow commit even when git user.name and user.email are not configured", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-no-config-test-"));
-    const bareDir = join(tempRoot, "remote.git");
-    const wsDir = join(tempRoot, "workspace");
+      const recoveryDir = recoverBundle(
+        repo.seedDir,
+        tempRoot,
+        bundleArtifact!.data,
+        localGitRef,
+      );
+      expect(
+        gitIn(recoveryDir, [
+          "bundle",
+          "verify",
+          join(tempRoot, "workspace.bundle"),
+        ]),
+      ).toContain(repo.parentSha);
+      expect(git(recoveryDir, ["rev-parse", "HEAD"])).toBe(result!.sha);
+      expect(readFileSync(join(recoveryDir, "tracked.txt"), "utf8")).toBe(
+        "updated tracked\n",
+      );
+      expect(readFileSync(join(recoveryDir, "staged.txt"), "utf8")).toBe(
+        "updated staged\n",
+      );
+      expect(readFileSync(join(recoveryDir, "new.txt"), "utf8")).toBe(
+        "new content\n",
+      );
+      expect(existsSync(join(recoveryDir, "delete.txt"))).toBe(false);
+      const recoveredPaths = git(recoveryDir, [
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "HEAD",
+      ]).split("\n");
+      expect(
+        recoveredPaths.some((path) =>
+          path
+            .split("/")
+            .some((part) =>
+              ["node_modules", ".bun-cache", "dist"].includes(part),
+            ),
+        ),
+      ).toBe(false);
 
-    try {
-      execSync(`git init --bare --initial-branch=main "${bareDir}"`);
-
-      const initDir = join(tempRoot, "init");
-      execSync(`git init --initial-branch=main "${initDir}"`);
-      execSync(`git -C "${initDir}" config user.name "Test Runner"`);
-      execSync(`git -C "${initDir}" config user.email "test@example.com"`);
-      writeFileSync(join(initDir, "initial.txt"), "hello initial\n");
-      execSync(`git -C "${initDir}" add initial.txt`);
-      execSync(`git -C "${initDir}" commit -m "initial commit"`);
-      const baseSha = execSync(`git -C "${initDir}" rev-parse HEAD`, {
-        encoding: "utf8",
-      }).trim();
-      execSync(`git -C "${initDir}" remote add origin "${bareDir}"`);
-      execSync(`git -C "${initDir}" push origin main`);
-
-      execSync(`git clone "${bareDir}" "${wsDir}"`);
-      writeFileSync(join(wsDir, "touched.txt"), "new file\n");
-
-      // Custom exec handle that forces isolated env with no user identity configured
-      let seq = 0;
-      const handle: SandboxHandle = {
-        sandboxId: "sandbox-ws-no-config",
-        async exec(request, onData) {
-          try {
-            const stdout = execSync(request.command, {
-              cwd: wsDir,
-              env: {
-                PATH: process.env.PATH,
-                HOME: tempRoot,
-                GIT_CONFIG_NOSYSTEM: "1",
-                GIT_CONFIG_GLOBAL: "/dev/null",
-                ...request.env,
-              },
-              stdio: ["ignore", "pipe", "pipe"],
-              timeout: request.timeoutMs ?? 60_000,
-            });
-            onData?.({
-              kind: "stdout",
-              seq: ++seq,
-              data: stdout.toString("utf8"),
-            });
-            return { exitCode: 0, durationMs: 10 };
-          } catch (err: unknown) {
-            const e = err as {
-              stdout?: Buffer | string;
-              stderr?: Buffer | string;
-              status?: number;
-            };
-            return {
-              exitCode: typeof e.status === "number" ? e.status : 1,
-              durationMs: 10,
-            };
-          }
-        },
-        async readFile() {
-          throw new Error("not implemented");
-        },
-        async writeFile() {
-          throw new Error("not implemented");
-        },
-        async destroy() {},
+      const manifestArtifact = artifacts.find(
+        (a) => a.kind === "workspace_manifest",
+      );
+      expect(manifestArtifact).toBeDefined();
+      expect(manifestArtifact!.contentType).toBe("application/json");
+      expect(manifestArtifact!.key).toBe(
+        `runs/${runId}/workspace-manifest.json`,
+      );
+      const manifest = JSON.parse(
+        Buffer.from(manifestArtifact!.data).toString("utf8"),
+      ) as {
+        files: { path: string; sha256: string }[];
+        deleted: string[];
+        generated_at: string;
+        parent_sha: string;
+        sha: string;
+        git_ref: string;
       };
+      expect(manifest.parent_sha).toBe(repo.parentSha);
+      expect(manifest.sha).toBe(result!.sha);
+      expect(manifest.git_ref).toBe(localGitRef);
+      expect(manifest.deleted).toEqual(["delete.txt"]);
+      expect(manifest.files.map((file) => file.path).sort()).toEqual([
+        "new.txt",
+        "staged.txt",
+        "tracked.txt",
+      ]);
+      expect(manifest.generated_at).toEqual(expect.any(String));
 
-      const { sink, events } = createRecordingSink();
-      const runId = "run-no-config-123";
-
-      const res = await captureWorkspace({
-        runId,
-        handle,
-        repo: { url: bareDir, branch: "main", base_commit: baseSha },
-        parentSha: baseSha,
-        secrets: [],
-        sink,
+      expect(
+        events.find((event) => event.event === "workspace_snapshot")?.detail,
+      ).toEqual({
+        ref: result!.ref,
+        sha: result!.sha,
+        parent_sha: repo.parentSha,
+        git_ref: localGitRef,
       });
-
-      expect(res).toBeDefined();
-      expect(res!.ref).toBe(`refs/colony/runs/${runId}`);
-      const failEvent = events.find(
-        (e) => e.event === "workspace_capture_failed",
+      expect(events.some((event) => event.event === "workspace_ref")).toBe(
+        false,
       );
-      expect(failEvent).toBeUndefined();
+
+      expect(git(repo.workspaceDir, ["rev-parse", "HEAD"])).toBe(headBefore);
+      expect(git(repo.workspaceDir, ["rev-parse", ":staged.txt"])).toBe(
+        indexBefore,
+      );
+      expect(git(repo.workspaceDir, ["status", "--porcelain"])).toBe(
+        statusBefore,
+      );
+      expect(git(repo.workspaceDir, ["diff", "--cached", "--binary"])).toBe(
+        stagedDiffBefore,
+      );
+      expect(git(repo.workspaceDir, ["diff", "--binary"])).toBe(
+        worktreeDiffBefore,
+      );
+      expect(readFileSync(join(repo.workspaceDir, "new.txt"), "utf8")).toBe(
+        "new content\n",
+      );
+      expect(existsSync(join(repo.workspaceDir, "delete.txt"))).toBe(false);
+      expect(
+        existsSync(join(repo.workspaceDir, "node_modules", "ignored.txt")),
+      ).toBe(true);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
-  it("handles putArtifact failure by appending workspace_capture_failed without recording workspace_ref", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-put-fail-test-"));
-    const bareDir = join(tempRoot, "remote.git");
-    const wsDir = join(tempRoot, "workspace");
-
+  it("captures a clean reviewer workspace after an interrupted capture without remote writes", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-reviewer-test-"));
     try {
-      execSync(`git init --bare --initial-branch=main "${bareDir}"`);
-      const initDir = join(tempRoot, "init");
-      execSync(`git init --initial-branch=main "${initDir}"`);
-      execSync(`git -C "${initDir}" config user.name "Test Runner"`);
-      execSync(`git -C "${initDir}" config user.email "test@example.com"`);
-      writeFileSync(join(initDir, "initial.txt"), "hello initial\n");
-      execSync(`git -C "${initDir}" add initial.txt`);
-      execSync(`git -C "${initDir}" commit -m "initial commit"`);
-      const baseSha = execSync(`git -C "${initDir}" rev-parse HEAD`, {
-        encoding: "utf8",
-      }).trim();
-      execSync(`git -C "${initDir}" remote add origin "${bareDir}"`);
-      execSync(`git -C "${initDir}" push origin main`);
+      const repo = createRepository(tempRoot, true);
+      const statusBefore = git(repo.workspaceDir, ["status", "--porcelain"]);
+      const { sink, events } = createRecordingSink();
+      const runId = "run-reviewer-123";
+      git(repo.workspaceDir, [
+        "update-ref",
+        `refs/colony/runs/${runId}`,
+        repo.parentSha,
+      ]);
 
-      execSync(`git clone "${bareDir}" "${wsDir}"`);
-      writeFileSync(join(wsDir, "touched.txt"), "touched\n");
-
-      const handle = createWorkspaceSandboxHandle(wsDir);
-      const { sink, events, artifactRefs } = createRecordingSink();
-      // Override putArtifact to return undefined (failure)
-      sink.putArtifact = async () => undefined;
-
-      const runId = "run-artifact-fail-123";
-      const res = await captureWorkspace({
+      const result = await captureWorkspace({
         runId,
-        handle,
-        repo: { url: bareDir, branch: "main", base_commit: baseSha },
-        parentSha: baseSha,
+        handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+        parentSha: repo.parentSha,
         secrets: [],
         sink,
       });
 
-      expect(res).toBeUndefined();
-      const failEvent = events.find(
-        (e) => e.event === "workspace_capture_failed",
+      expect(result).toBeDefined();
+      expect(existsSync(repo.pushAttemptMarker)).toBe(false);
+      expect(
+        git(repo.workspaceDir, ["rev-parse", `refs/colony/runs/${runId}`]),
+      ).toBe(repo.parentSha);
+      expect(git(repo.workspaceDir, ["status", "--porcelain"])).toBe(
+        statusBefore,
       );
-      expect(failEvent).toBeDefined();
-      expect(failEvent?.detail.error).toContain(
-        "putArtifact did not store the workspace manifest",
+      expect(events.some((event) => event.event === "workspace_snapshot")).toBe(
+        true,
       );
-      // Must not have recorded workspace_ref event or artifact row
-      const wsRefEvent = events.find((e) => e.event === "workspace_ref");
-      expect(wsRefEvent).toBeUndefined();
-      const wsRefRow = artifactRefs.find((r) => r.kind === "workspace_ref");
-      expect(wsRefRow).toBeUndefined();
+      expect(
+        events.some((event) => event.event === "workspace_capture_failed"),
+      ).toBe(false);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not emit a success marker when artifact storage fails", async () => {
+    const tempRoot = mkdtempSync(
+      join(tmpdir(), "colony-ws-artifact-fail-test-"),
+    );
+    try {
+      const repo = createRepository(tempRoot, true);
+      writeFileSync(join(repo.workspaceDir, "new.txt"), "new content\n");
+      const { sink, events } = createRecordingSink("workspace_manifest");
+
+      const result = await captureWorkspace({
+        runId: "run-artifact-fail-123",
+        handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+        parentSha: repo.parentSha,
+        secrets: [],
+        sink,
+      });
+
+      expect(result).toBeUndefined();
+      expect(events.some((event) => event.event === "workspace_snapshot")).toBe(
+        false,
+      );
+      expect(
+        events.some((event) => event.event === "workspace_capture_failed"),
+      ).toBe(true);
+      expect(existsSync(repo.pushAttemptMarker)).toBe(false);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

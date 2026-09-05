@@ -783,6 +783,91 @@ describe("colonyd fake end-to-end loop", () => {
     expect(store.getScope(abandonScopeId)!.status).toBe("abandoned");
   }, 60_000);
 
+  it("resumes planning after a canceled architect without spending retry budget", async () => {
+    const scopeId = await createScope("resume canceled architect");
+    const store = handle.ctx.store;
+    store.setScopeStatus(scopeId, "planning", ACTOR);
+    const failedCount = handle.ctx.env.maxAttempts - 1;
+    for (let i = 0; i < failedCount; i++) {
+      const failed = store.startRun({
+        scope_id: scopeId,
+        task_id: null,
+        kind: "architect",
+        lease_ttl_ms: 60_000,
+      });
+      store.finishRun(failed.id, "failed", { error: "finalize_no_submission" });
+    }
+    const canceled = store.startRun({
+      scope_id: scopeId,
+      task_id: null,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+    });
+    store.finishRun(canceled.id, "canceled", { error: "paused" });
+
+    const app = buildApp(handle.ctx);
+    const paused = await app.request(`/scopes/${scopeId}/pause`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(paused.status).toBe(200);
+    expect(store.getScope(scopeId)!.status).toBe("paused");
+    const architectsBeforePause = store
+      .runsForScope(scopeId)
+      .filter((run) => run.kind === "architect").length;
+
+    await tickAndSettle();
+    expect(store.getScope(scopeId)!.status).toBe("paused");
+    expect(
+      store.runsForScope(scopeId).filter((run) => run.kind === "architect"),
+    ).toHaveLength(architectsBeforePause);
+
+    const resumed = await app.request(`/scopes/${scopeId}/resume`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(resumed.status).toBe(200);
+    await settle();
+    await tickAndSettle();
+
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("active");
+    expect(store.listTasks(scopeId).length).toBeGreaterThan(0);
+    const architects = store
+      .runsForScope(scopeId)
+      .filter((run) => run.kind === "architect");
+    expect(architects).toHaveLength(failedCount + 2);
+    expect(architects.at(-2)?.status).toBe("canceled");
+    expect(architects.at(-1)?.status).toBe("succeeded");
+  }, 30_000);
+
+  it("keeps exhausted planning blocked after a canceled architect", async () => {
+    const scopeId = await createScope("exhausted canceled architect");
+    const store = handle.ctx.store;
+    store.setScopeStatus(scopeId, "planning", ACTOR);
+    for (let i = 0; i < handle.ctx.env.maxAttempts; i++) {
+      const failed = store.startRun({
+        scope_id: scopeId,
+        task_id: null,
+        kind: "architect",
+        lease_ttl_ms: 60_000,
+      });
+      store.finishRun(failed.id, "failed", { error: "finalize_no_submission" });
+    }
+    const canceled = store.startRun({
+      scope_id: scopeId,
+      task_id: null,
+      kind: "architect",
+      lease_ttl_ms: 60_000,
+    });
+    store.finishRun(canceled.id, "canceled", { error: "paused" });
+    await tickAndSettle();
+    expect(store.getScope(scopeId)!.status).toBe("blocked");
+    expect(
+      store.runsForScope(scopeId).filter((run) => run.kind === "architect"),
+    ).toHaveLength(handle.ctx.env.maxAttempts + 1);
+  }, 30_000);
+
   it("happy path: scope draft->planning->active->done; A merges before B dispatches", async () => {
     const scopeId = await createScope("fake happy path");
 

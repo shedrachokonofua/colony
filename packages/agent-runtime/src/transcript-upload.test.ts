@@ -101,9 +101,6 @@ function recordingSink(
         });
         return { ref: `blob://${key}`, bytes: data.byteLength, sha256 };
       },
-      recordArtifactRef: () => {
-        throw new Error("recordArtifactRef must not be used for transcripts");
-      },
     },
   };
 }
