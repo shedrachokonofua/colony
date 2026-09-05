@@ -846,7 +846,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const parsed = feedbackBody.safeParse(await parseBody(c));
     if (!parsed.success) return badBody(c, parsed.error.message);
     const actor = c.get("actor");
-    ctx.store.requestReplan(scope.id, parsed.data.feedback);
+    ctx.store.requestOperatorReplan(scope.id, parsed.data.feedback);
     ctx.store.audit(actor, "plan.replan_requested", {
       scope_id: scope.id,
       detail: { feedback: parsed.data.feedback },

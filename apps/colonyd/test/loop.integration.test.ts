@@ -708,7 +708,7 @@ describe("colonyd fake end-to-end loop", () => {
     );
     expect(replanRes.status).toBe(200);
     expect(store.getScope(scopeId)!.status).toBe("planning");
-    // plan_json cleared by requestReplan
+    // The operator's feedback is durable across every later planning epoch.
     expect(store.getScope(scopeId)!.plan_json).toBeNull();
     const replanAudits = store.listAudit({
       scope_id: scopeId,
@@ -737,7 +737,8 @@ describe("colonyd fake end-to-end loop", () => {
     const afterReplan = store.getScope(scopeId)!;
     expect(afterReplan.status).toBe("planning");
     expect(afterReplan.blocked_reason).toBeNull();
-    expect(afterReplan.plan_feedback).toBe("replan please");
+    expect(afterReplan.plan_feedback).toBeNull();
+    expect(afterReplan.plan_directives).toContain("replan please");
 
     // Test Escape Action (2): plan-review-approve
     store.setScopePlan(scopeId, scope.plan_json!);
