@@ -1,5 +1,5 @@
 import type { AgentRole } from "@colony/config";
-import type { ProviderPipeline } from "@colony/provider";
+import { sanitizeTrace, type ProviderPipeline } from "@colony/provider";
 import { createHash } from "node:crypto";
 import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
 import type { Run, Scope, Task } from "@colony/core";
@@ -229,6 +229,15 @@ function retryOrFailTask(
   );
   const attempt = deferred ? task.attempt : task.attempt + 1;
   if (deferred) {
+    // If this task was running an unresolved repair intent, unbind its run_id
+    // so the retry can rebind and thread the repair traces.
+    const unresolvedRepair = ctx.store
+      .listRepairIntents(task.id)
+      .filter((r) => r.resolved_head_sha === null)
+      .at(-1);
+    if (unresolvedRepair) {
+      ctx.store.clearRepairIntentRunId(unresolvedRepair.fingerprint);
+    }
     ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
       scope_id: task.scope_id,
       task_id: task.id,
@@ -764,8 +773,27 @@ async function pipelineGate(
       return { ready: !youngHead };
     }
     // Transport/authorization errors do not establish that CI is absent.
+    ctx.store.audit(SERVICE_ACTOR, "provider.unreachable", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: {
+        stage: "pipeline_gate",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    });
     return { ready: false };
   }
+}
+
+function isMissingLog(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  if ("status" in error && (error as { status: unknown }).status === 404) {
+    return true;
+  }
+  if (error instanceof Error && /\b404\b|not found/i.test(error.message)) {
+    return true;
+  }
+  return false;
 }
 
 /** Exactly-once CI-failure repair dispatch, keyed on
@@ -826,10 +854,15 @@ async function repairAfterFailedPipeline(
         const trace = await ctx.provider.pipelines.getTrace(repo, job.id);
         if (trace.text.trim()) traces.push(`${job.name}: ${trace.text.trim()}`);
       } catch (err) {
-        // A missing trace must not cost the intent its evidence bundle.
-        traces.push(
-          `${job.name}: trace unavailable (${err instanceof Error ? err.message : String(err)})`,
-        );
+        if (isMissingLog(err)) {
+          traces.push(
+            sanitizeTrace(`${job.name}: trace unavailable (not found)`),
+          );
+        } else {
+          // Transport, 429, 5xx, or network errors: do not claim a permanent
+          // intent for a transient provider blip.
+          throw err;
+        }
       }
     }
     evidence = traces.length > 0 ? traces : [`pipeline ${pipeline.id} failed`];
@@ -1123,11 +1156,22 @@ async function dispatchImplementers(
       "running",
       SERVICE_ACTOR,
     );
-    // The newest unresolved CI-failure intent for this task, if any: its run
-    // id is bound inside runImplement BEFORE the run dispatches.
+    // The newest unresolved CI-failure intent for this task, if any:
+    // select unresolved intents whose bound run is not currently active so
+    // that infra retries (or cleared run_ids) can re-bind to the retried run.
+    const activeRunIds = new Set(
+      ctx.store
+        .runsForTask(current.id)
+        .filter((r) => r.status === "running")
+        .map((r) => r.id),
+    );
     const intent = ctx.store
       .listRepairIntents(current.id)
-      .filter((r) => r.run_id === null && r.resolved_head_sha === null)
+      .filter(
+        (r) =>
+          r.resolved_head_sha === null &&
+          (r.run_id === null || !activeRunIds.has(r.run_id)),
+      )
       .at(-1);
     dispatch(
       runImplement(ctx, scope, ctx.store.getTask(current.id)!, {

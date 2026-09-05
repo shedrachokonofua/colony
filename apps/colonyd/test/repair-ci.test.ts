@@ -59,6 +59,7 @@ interface Harness {
   readonly task: Task;
   readonly mr: ProviderMergeRequest;
   readonly dirs: string[];
+  readonly developer: FakeAgentRuntimeAdapter;
 }
 
 async function createHarness(
@@ -215,7 +216,7 @@ async function createHarness(
     requestTick() {},
   };
 
-  return { ctx, store, provider, scope, task, mr, dirs };
+  return { ctx, store, provider, scope, task, mr, dirs, developer };
 }
 
 describe("CI failure repair dispatch (E2E & lifecycle)", () => {
@@ -587,5 +588,142 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
     // Secrets redacted
     expect(sanitized).not.toContain("glpat-abcdef12345678901234");
     expect(sanitized).not.toContain("sk-abcdef12345678901234");
+  });
+
+  it("getTrace 429/timeout audits provider.unreachable and claims no intent", async () => {
+    const h = await createHarness();
+    h.provider.setPipelineStatusForSha(SHA_A, "failed");
+    // Override getTrace to throw a 429 / transport error
+    h.provider.pipelines.getTrace = async () => {
+      const err = new Error(
+        "GitLab GET /jobs/123/trace: 429 Too Many Requests",
+      );
+      (err as { status?: number }).status = 429;
+      throw err;
+    };
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    // No claim should be made for a transient provider blip
+    const intents = h.store.listRepairIntents(h.task.id);
+    expect(intents).toHaveLength(0);
+
+    // provider.unreachable audited with stage repair_evidence
+    const audits = h.store.listAudit({ task_id: h.task.id }).events;
+    const unreachable = audits.find((e) => e.action === "provider.unreachable");
+    expect(unreachable).toBeTruthy();
+    expect(unreachable!.detail_json).toContain("repair_evidence");
+    expect(unreachable!.detail_json).toContain("429");
+  });
+
+  it("getTrace 404 yields a claimed intent with sanitized placeholder evidence", async () => {
+    const h = await createHarness();
+    h.provider.setPipelineStatusForSha(SHA_A, "failed");
+    // Override getTrace to throw 404
+    h.provider.pipelines.getTrace = async () => {
+      const err = new Error("404 Not Found");
+      (err as { status?: number }).status = 404;
+      throw err;
+    };
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const intents = h.store.listRepairIntents(h.task.id);
+    expect(intents).toHaveLength(1);
+    const intentJson = JSON.parse(intents[0]!.trigger_json);
+    expect(intentJson.evidence[0]).toContain("trace unavailable (not found)");
+  });
+
+  it("pipelineGate getStatus error audits provider.unreachable", async () => {
+    const h = await createHarness();
+    h.provider.pipelines.getStatus = async () => {
+      const err = new Error("503 Service Unavailable");
+      (err as { status?: number }).status = 503;
+      throw err;
+    };
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const audits = h.store.listAudit({ task_id: h.task.id }).events;
+    const unreachable = audits.find((e) => e.action === "provider.unreachable");
+    expect(unreachable).toBeTruthy();
+    expect(unreachable!.detail_json).toContain("pipeline_gate");
+  });
+
+  it("infra failure (process_restart / 429) retries repair and threads repair traces", async () => {
+    let failFirstRun = true;
+    const h = await createHarness({
+      developerCompletion: {
+        head_sha: SHA_B,
+      },
+    });
+    h.provider.setPipelineStatusForSha(SHA_A, "failed");
+
+    // Start with a failed pipeline to dispatch repair
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const intents = h.store.listRepairIntents(h.task.id);
+    expect(intents).toHaveLength(1);
+    const fingerprint = intents[0]!.fingerprint;
+
+    // Fast-forward backoff to execute the repair implementer run
+    h.store.db
+      .prepare("UPDATE tasks SET next_retry_at = NULL WHERE id = ?")
+      .run(h.task.id);
+
+    // Configure envelopeForRun to throw an infra failure on the first run
+    const defaultEnv = {
+      kind: "implementer_completion" as const,
+      status: "complete" as const,
+      summary: "Repaired CI failure",
+      branch: "colony/repair-task",
+      head_sha: SHA_B,
+      commands: [{ cmd: "bun test", exit_code: 0 }],
+    };
+    (
+      h.developer as unknown as { options: { envelopeForRun?: () => unknown } }
+    ).options.envelopeForRun = () => {
+      if (failFirstRun) {
+        failFirstRun = false;
+        throw new Error("process_restart");
+      }
+      void h.provider.branches.create(
+        { id: h.scope.provider_repo_id, path: h.scope.provider_repo_path },
+        "colony/repair-task",
+        SHA_B,
+      );
+      return defaultEnv;
+    };
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    // The task should be requeued via task.infra_retry (or expireLeases reconciler)
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    // Verify task is queued or running, not blocked
+    const taskAfterInfra = h.store.getTask(h.task.id)!;
+    expect(taskAfterInfra.state).not.toBe("blocked");
+
+    // Repair intent should have run_id unbound
+    const intentAfterInfra = h.store.getRepairIntent(fingerprint)!;
+    expect(intentAfterInfra.resolved_head_sha).toBeNull();
+    expect(intentAfterInfra.run_id).toBeNull();
+
+    // Tick again to dispatch retry with repair intent re-bound
+    h.store.db
+      .prepare("UPDATE tasks SET next_retry_at = NULL WHERE id = ?")
+      .run(h.task.id);
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    // After successful retry pushing SHA_B, intent should be resolved
+    const finalIntent = h.store.getRepairIntent(fingerprint)!;
+    expect(finalIntent.resolved_head_sha).toBe(SHA_B);
   });
 });

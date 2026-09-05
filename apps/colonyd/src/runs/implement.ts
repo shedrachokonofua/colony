@@ -265,18 +265,23 @@ async function executeImplement(
         run_id: runId,
         detail: { reason },
       });
-      if (repairIntent && !isInfraError(reason)) {
-        const current = ctx.store.getTask(task.id);
-        if (current) {
-          ctx.store.transitionTask(
-            current.id,
-            current.state_version,
-            "blocked",
-            SERVICE_ACTOR,
-            {
-              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
-            },
-          );
+      if (repairIntent) {
+        if (!isInfraError(reason)) {
+          const current = ctx.store.getTask(task.id);
+          if (current) {
+            ctx.store.transitionTask(
+              current.id,
+              current.state_version,
+              "blocked",
+              SERVICE_ACTOR,
+              {
+                blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+              },
+            );
+          }
+        } else {
+          // On infra error, clear run_id so the intent can re-bind on retry.
+          ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
         }
       }
       return;
@@ -591,18 +596,23 @@ async function executeImplement(
       run_id: runId,
       detail: { reason },
     });
-    if (repairIntent && !isInfraError(reason)) {
-      const current = ctx.store.getTask(task.id);
-      if (current) {
-        ctx.store.transitionTask(
-          current.id,
-          current.state_version,
-          "blocked",
-          SERVICE_ACTOR,
-          {
-            blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
-          },
-        );
+    if (repairIntent) {
+      if (!isInfraError(reason)) {
+        const current = ctx.store.getTask(task.id);
+        if (current) {
+          ctx.store.transitionTask(
+            current.id,
+            current.state_version,
+            "blocked",
+            SERVICE_ACTOR,
+            {
+              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+            },
+          );
+        }
+      } else {
+        // On infra error, clear run_id so the intent can re-bind on retry.
+        ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
       }
     }
   } finally {

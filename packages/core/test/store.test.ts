@@ -1693,6 +1693,17 @@ describe("repair intents", () => {
     // intent onto a different run.
     store.setRepairIntentRunId("fp-bind", "other-run");
     expect(store.getRepairIntent("fp-bind")!.run_id).toBe(runId);
+
+    store.clearRepairIntentRunId("fp-bind");
+    expect(store.getRepairIntent("fp-bind")!.run_id).toBeNull();
+    const secondRun = store.startRun({
+      scope_id: store.getTask(taskId)!.scope_id,
+      task_id: taskId,
+      kind: "implement",
+      lease_ttl_ms: 10_000,
+    });
+    store.setRepairIntentRunId("fp-bind", secondRun.id);
+    expect(store.getRepairIntent("fp-bind")!.run_id).toBe(secondRun.id);
   });
 
   it("rejects unknown trigger kinds and task ids at the schema level", () => {

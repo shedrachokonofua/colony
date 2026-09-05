@@ -1639,6 +1639,15 @@ export class Store {
       .run(run_id, fingerprint);
   }
 
+  /** Unbind run_id on infra retry so the intent can be re-bound to the retried run. */
+  clearRepairIntentRunId(fingerprint: string): void {
+    this.db
+      .prepare(
+        `UPDATE repair_intents SET run_id = NULL WHERE fingerprint = ? AND resolved_head_sha IS NULL`,
+      )
+      .run(fingerprint);
+  }
+
   resolveRepairIntent(fingerprint: string, resolved_head_sha: string): void {
     this.db
       .prepare(
