@@ -636,6 +636,35 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
     expect(intentJson.evidence[0]).toContain("trace unavailable (not found)");
   });
 
+  it("empty trace from a real adapter still claims and dispatches (no mr_open stall)", async () => {
+    const h = await createHarness();
+    h.provider.setPipelineStatusForSha(SHA_A, "failed");
+    // A canceled job that never started answers 200 with an empty body; the
+    // adapter returns "" for it. It must not be mistaken for an unreachable
+    // provider, or the task stalls in mr_open emitting pipeline_blocked.
+    h.provider.pipelines.getTrace = async (_repo, jobId) => ({
+      job: {
+        id: jobId,
+        name: "build",
+        status: "canceled",
+        metadata: { provider: "fake", id: jobId },
+      },
+      text: "",
+    });
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const intents = h.store.listRepairIntents(h.task.id);
+    expect(intents).toHaveLength(1);
+    const task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("queued");
+    const unreachable = h.store
+      .listAudit({ task_id: h.task.id })
+      .events.find((e) => e.action === "provider.unreachable");
+    expect(unreachable).toBeUndefined();
+  });
+
   it("pipelineGate getStatus error audits provider.unreachable", async () => {
     const h = await createHarness();
     h.provider.pipelines.getStatus = async () => {
