@@ -9,6 +9,8 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
+import { createInProcessEngine } from "@colony/sandbox-in-process";
+import type { SandboxHandle } from "@colony/sandbox";
 import type { PiModelSpec } from "./pi-runner-common.js";
 import {
   PiBaseAgentRunner,
@@ -184,7 +186,10 @@ describe("createFileSessionManager", () => {
   });
 
   it("pi runner uses durable session dir and invokes onSandboxId once", async () => {
-    const customDataDir = "/var/lib/colonyd";
+    // The configured durable session root (`/var/lib/colonyd` in
+    // production, which is not writable here). The point of the assertions
+    // below is that the journal lands under it, not the run's tmp cwd.
+    const customDataDir = newDataDir();
     const sandboxIds: Array<{ runId: string; sandboxId: string }> = [];
 
     const model: PiModelSpec = {
@@ -200,13 +205,36 @@ describe("createFileSessionManager", () => {
       maxTokens: 8_192,
     };
 
-    const runner = new PiBaseAgentRunner(REVIEWER_ROLE_PROFILE, {
-      model,
-      sessionsDir: customDataDir,
-      onSandboxId: (runId, sandboxId) => {
-        sandboxIds.push({ runId, sandboxId });
+    // Captures the id the moment it is reported, while the sandbox is still
+    // live: the runner destroys its handle when the run ends, so a
+    // post-run `connect` could never prove the persisted id was resolvable.
+    let liveSandboxId: string | undefined;
+    let reattach: Promise<unknown> | undefined;
+    const engine = createInProcessEngine();
+    const runner = new PiBaseAgentRunner(
+      { ...REVIEWER_ROLE_PROFILE, workspaceMode: "scratch" },
+      {
+        model,
+        sessionsDir: customDataDir,
+        engine,
+        broker: { resolve: () => "test-key" },
+        // Nothing answers the model endpoint; the assertions below are all
+        // about the sandbox identity the run persists before it gets there.
+        runTimeoutMs: 1,
+        onSandboxId: (runId, sandboxId) => {
+          sandboxIds.push({ runId, sandboxId });
+          liveSandboxId = sandboxId;
+          // Resume re-attaches by exactly this string, from a DIFFERENT
+          // engine instance (the post-restart object graph). Must be checked
+          // while the sandbox is live: the runner destroys its handle when
+          // the run ends. Settled before the assertions below.
+          reattach = createInProcessEngine()
+            .connect(sandboxId)
+            .then((handle: SandboxHandle) => handle.sandboxId)
+            .catch((err: unknown) => `rejected: ${String(err)}`);
+        },
       },
-    });
+    );
 
     const result = await runner.run({
       runId: "run-agent-test",
@@ -229,9 +257,21 @@ describe("createFileSessionManager", () => {
       runId: "run-agent-test",
       sandboxId: result.sandboxId,
     });
+    // The persisted id must be the sandbox's OWN id: `connect` re-attaches
+    // by exactly this string, so a runner-minted parallel identity would
+    // make every adopted run unresumable.
+    expect(liveSandboxId).toBe(result.sandboxId);
+    // Not the runner-minted `pi-reviewer-*` identity: that id is what
+    // colonyd would persist and `connect` would then fail to resolve,
+    // making every adopted run unresumable.
+    expect(liveSandboxId?.startsWith("pi-reviewer-")).toBe(false);
+    expect(await reattach).toBe(result.sandboxId);
 
+    // The journal is durable: it lives under the configured dir, not the
+    // run's scratch cwd, which the runner deletes when the run ends.
     const expectedPath = sessionFilePath(customDataDir, "run-agent-test");
     expect(expectedPath.includes("sessions/")).toBe(true);
-    expect(expectedPath.startsWith(tmpdir())).toBe(false);
+    expect(expectedPath.startsWith(customDataDir)).toBe(true);
+    expect(existsSync(expectedPath)).toBe(true);
   });
 });

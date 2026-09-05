@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { createContractStubHandle } from "./contract-stub.js";
+import {
+  createContractStubEngine,
+  createContractStubHandle,
+} from "./contract-stub.js";
 
 describe("contract stub handle", () => {
   it("rejects absolute and escaping paths like a real engine", async () => {
@@ -32,5 +35,16 @@ describe("contract stub handle", () => {
     await expect(
       handle.exec({ command: "true" }, () => undefined),
     ).rejects.toThrow(/after destroy/);
+  });
+
+  it("createContractStubEngine provisions, connects, and rejects unknown ids", async () => {
+    const engine = createContractStubEngine({ execStdout: "stub" });
+    const handle = await engine.provision({} as never, "/tmp");
+    expect(handle.sandboxId).toBeString();
+    const attached = await engine.connect(handle.sandboxId);
+    expect(attached).toBe(handle);
+    await expect(engine.connect("non-existent-id")).rejects.toThrow(
+      /sandbox not found/,
+    );
   });
 });

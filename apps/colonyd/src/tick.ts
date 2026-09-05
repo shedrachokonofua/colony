@@ -11,6 +11,10 @@ import { runImplement } from "./runs/implement.js";
 import { runMergeGate } from "./runs/merge-gate.js";
 import { reconcileRejectedReview, runReview } from "./runs/review.js";
 import {
+  getCurrentMrTask,
+  hasActiveRepositoryMergeGate,
+} from "./runs/mr-admission.js";
+import {
   latestPlanReview,
   MAX_PLAN_REVIEW_ROUNDS,
   planReviewRounds,
@@ -375,8 +379,9 @@ async function advanceMrOpenTasks(
         .map((task) => ({ scope, task })),
     );
 
-  for (const { scope, task } of candidates) {
+  for (const { scope, task: capturedTask } of candidates) {
     if (ctx.draining.isDraining()) return;
+    let task = capturedTask;
     let mr;
     try {
       mr = await ctx.provider.mergeRequests.get(
@@ -391,6 +396,29 @@ async function advanceMrOpenTasks(
         detail: { error: err instanceof Error ? err.message : String(err) },
       });
       continue;
+    }
+
+    if (task.state === "mr_open") {
+      const current = getCurrentMrTask(ctx, scope, task);
+      if (!current) continue;
+      task = current;
+    } else {
+      // Merged observation can reconcile a queued/blocked task, but only
+      // when the captured task and scope are still authoritative.
+      const currentScope = ctx.store.getScope(scope.id);
+      const current = ctx.store.getTask(task.id);
+      if (
+        ctx.draining.isDraining() ||
+        !currentScope ||
+        currentScope.status !== "active" ||
+        !current ||
+        current.id !== task.id ||
+        current.scope_id !== scope.id ||
+        current.state_version !== task.state_version
+      ) {
+        continue;
+      }
+      task = current;
     }
 
     const headSha = mr.head_commit_sha;
@@ -481,8 +509,8 @@ async function advanceMrOpenTasks(
         const stopped = await abortRunsAndWait(liveReviews);
         if (!stopped.every(Boolean)) continue;
       }
-      const current = ctx.store.getTask(task.id);
-      if (!current || current.state !== "mr_open") continue;
+      const current = getCurrentMrTask(ctx, scope, task);
+      if (!current) continue;
       const attempt = current.attempt + 1;
       ctx.store.transitionTask(
         current.id,
@@ -506,16 +534,22 @@ async function advanceMrOpenTasks(
 
     // Pipeline requirement: if the MR head has a pipeline it must succeed
     // before the gate runs; unknown pipeline state fails closed this tick.
+    // Pipeline status is an awaited provider fact; do not dispatch from a
+    // task snapshot that was blocked, paused, or otherwise revised while it
+    // was in flight.
     const pipelineReady = await pipelineGate(
       ctx,
       scope,
       task,
       mr.head_commit_sha,
     );
+    const currentAfterPipeline = getCurrentMrTask(ctx, scope, task);
+    if (!currentAfterPipeline) continue;
+    task = currentAfterPipeline;
     if (!pipelineReady) continue;
 
     // Dispatch a gate when none succeeded at the current head SHA and no
-    // gate run is active for the scope (serialize merges per scope).
+    // gate run is active for the provider repository (serialize merges).
     if (!headSha) continue;
 
     if (ctx.config.reviewMode === "required") {
@@ -550,8 +584,10 @@ async function advanceMrOpenTasks(
         if (providerHeadLagging) continue;
         const slot = pickDispatchSlot(ctx, "reviewer");
         if (!slot.allowed) continue;
+        const admitted = getCurrentMrTask(ctx, scope, task);
+        if (!admitted) continue;
         dispatch(
-          runReview(ctx, scope, task, headSha, {
+          runReview(ctx, scope, admitted, headSha, {
             startModelId: slot.startModelId ?? undefined,
           }),
         );
@@ -584,12 +620,12 @@ async function advanceMrOpenTasks(
     ) {
       continue;
     }
-    if (
-      ctx.store.activeRuns("merge_gate").some((r) => r.scope_id === scope.id)
-    ) {
+    if (hasActiveRepositoryMergeGate(ctx, scope)) {
       continue;
     }
-    dispatch(runMergeGate(ctx, scope, task, headSha));
+    const admitted = getCurrentMrTask(ctx, scope, task);
+    if (!admitted) continue;
+    dispatch(runMergeGate(ctx, scope, admitted, headSha));
   }
 }
 

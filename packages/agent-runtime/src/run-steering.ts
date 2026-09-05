@@ -17,7 +17,7 @@ import type { AgentRuntimeRole } from "./adapter.js";
 const NUDGE_AFTER_CALLS = 12;
 /** Maximum drift nudges per run: a reminder that repeats becomes noise. */
 const MAX_NUDGES = 2;
-/** Maximum continuation steers per run before the run is finalized. */
+/** Maximum continuation steers per model candidate before trying a fallback. */
 const MAX_CONTINUATIONS = 3;
 
 const PROGRESS_TOOLS = new Set(["write", "edit", "apply_patch", "patch"]);
@@ -202,8 +202,8 @@ export class RunSteering {
 
   /**
    * Steer that re-prompts a model which stopped without submitting. Consumes
-   * one of the run's continuations; returns null once they are spent or the
-   * remaining budget is too small to act on.
+   * one of the current model leg's continuations; returns null once they are
+   * spent or the remaining budget is too small to act on.
    */
   takeContinuationSteer(objective: string): string | null {
     if (this.#continuations >= MAX_CONTINUATIONS) return null;
@@ -237,6 +237,18 @@ export class RunSteering {
       "NEVER redefine success as a smaller, easier, or already-completed subset of the spec.",
       ...roleGuidance,
     ].join("\n");
+  }
+  /**
+   * Give a newly selected model its own continuation allowance. Drift and
+   * repeat-failure nudges remain run-scoped; only the exhausted stop-steer
+   * budget is local to the model leg.
+   */
+  resetContinuationAllowance(): void {
+    this.#continuations = 0;
+  }
+  /** Whether the current model has spent its full stop-steer allowance. */
+  continuationAllowanceExhausted(): boolean {
+    return this.#continuations >= MAX_CONTINUATIONS;
   }
 
   /** System-prompt block telling the model what clock it is on. */

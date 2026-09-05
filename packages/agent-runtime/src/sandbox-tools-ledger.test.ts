@@ -280,6 +280,7 @@ describe("exec command ledger", () => {
     // a rejection, not masquerade as a completed run with empty output
     // ("not found" / "no matches").
     const broken: SandboxHandle = {
+      sandboxId: "sandbox-broken",
       exec: () => Promise.reject(new Error("exec after destroy")),
       readFile: () => Promise.reject(new Error("unused")),
       writeFile: () => Promise.reject(new Error("unused")),
@@ -306,6 +307,7 @@ describe("exec command ledger", () => {
       timedOut?: boolean;
     }>();
     const pending: SandboxHandle = {
+      sandboxId: "sandbox-pending",
       exec: () => {
         controller.signal.addEventListener("abort", () =>
           reject(new Error("aborted")),

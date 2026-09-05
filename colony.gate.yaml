@@ -1,0 +1,7 @@
+# Every merge must be validated from a locked install on the prospective tree.
+commands:
+  - bun install --frozen-lockfile
+  - bun run lint
+  - bun run typecheck
+  - bun run test:unit
+timeout_seconds: 1800

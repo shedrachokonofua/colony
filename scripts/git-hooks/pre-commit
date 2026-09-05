@@ -20,6 +20,12 @@ if git diff --cached --quiet; then
   exit 0
 fi
 
+# Git exports repository-local context to hooks. Tests create other repos;
+# inherited Git paths would redirect their commands back into this checkout.
+while IFS= read -r git_env; do
+  unset "$git_env"
+done < <(git rev-parse --local-env-vars)
+
 echo "→ lint"
 bun run --silent lint
 echo "→ typecheck"

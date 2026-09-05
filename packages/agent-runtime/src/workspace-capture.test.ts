@@ -76,6 +76,7 @@ function createRecordingSink(): {
 function createWorkspaceSandboxHandle(workspaceDir: string): SandboxHandle {
   let seq = 0;
   return {
+    sandboxId: "sandbox-ws-test",
     async exec(request, onData) {
       try {
         const stdout = execSync(request.command, {
@@ -364,6 +365,7 @@ describe("captureWorkspace", () => {
       // Custom exec handle that forces isolated env with no user identity configured
       let seq = 0;
       const handle: SandboxHandle = {
+        sandboxId: "sandbox-ws-no-config",
         async exec(request, onData) {
           try {
             const stdout = execSync(request.command, {
