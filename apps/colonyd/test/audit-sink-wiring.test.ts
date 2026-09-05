@@ -152,29 +152,6 @@ describe("createRunAuditSink", () => {
     ).not.toThrow();
   });
 
-  it("recordArtifactRef records non-blob rows and swallows failures", () => {
-    const { store, artifacts, runId } = wiredSink();
-    const sink = createRunAuditSink(store, artifacts);
-    sink.recordArtifactRef(
-      runId,
-      "git_ref",
-      "mr/head",
-      "refs/heads/colony/task",
-      undefined,
-      undefined,
-      undefined,
-    );
-    const { items, total } = store.listRunArtifacts(runId);
-    expect(total).toBe(1);
-    expect(items[0]!.kind).toBe("git_ref");
-    expect(items[0]!.ref).toBe("refs/heads/colony/task");
-    expect(items[0]!.sha256).toBeNull();
-
-    expect(() =>
-      sink.recordArtifactRef("missing-run", "git_ref", "k", "r"),
-    ).not.toThrow();
-  });
-
   it("noopRunAuditSink is inert", async () => {
     expect(() =>
       noopRunAuditSink.appendEvent("r", "command", {}),
@@ -188,8 +165,5 @@ describe("createRunAuditSink", () => {
         "text/plain",
       ),
     ).resolves.toBeUndefined();
-    expect(() =>
-      noopRunAuditSink.recordArtifactRef("r", "k", "k", "r"),
-    ).not.toThrow();
   });
 });

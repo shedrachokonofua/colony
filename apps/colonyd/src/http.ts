@@ -14,6 +14,7 @@ import {
 } from "@colony/observability";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import { ArchitectExtensionEnvelope as architectExtensionEnvelopeSchema } from "@colony/agent-runtime";
+import { parseFault, type Fault, FAULT_LAYERS, type Run } from "@colony/core";
 import type { Store } from "@colony/core";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
@@ -113,6 +114,18 @@ const runArtifactsQuery = z.object({
   limit: z.coerce.number().int().positive().max(1000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
 });
+
+const failuresQuery = z.object({
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+
+function serializeRun(run: Run): Run & { fault: Fault | null } {
+  return {
+    ...run,
+    fault: parseFault(run.fault_json),
+  };
+}
 
 const scopesQuery = z.object({
   limit: z.coerce.number().int().positive().max(100).optional(),
@@ -470,7 +483,84 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.get("/projects/:name/running", (c) => {
     const project = ctx.store.getProject(c.req.param("name"));
     if (!project) return notFound(c, "project");
-    return c.json(ctx.store.listProjectRunning(project.name));
+    const rows = ctx.store.listProjectRunning(project.name);
+    return c.json(
+      rows.map((row) => {
+        if (!row.run) return row;
+        const runRow = ctx.store.getRun(row.run.id);
+        return {
+          ...row,
+          run: {
+            ...row.run,
+            fault: runRow ? parseFault(runRow.fault_json) : null,
+          },
+        };
+      }),
+    );
+  });
+
+  app.get("/projects/:name/failures", (c) => {
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+
+    const parsed = failuresQuery.safeParse(c.req.query());
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const limit = parsed.data.limit ?? 25;
+    const offset = parsed.data.offset ?? 0;
+
+    const scopes = ctx.store.pageScopes(1000, 0, project.name).scopes;
+    const allRuns: Run[] = [];
+    for (const s of scopes) {
+      allRuns.push(...ctx.store.runsForScope(s.id));
+    }
+
+    const counts: Record<string, number> = {
+      model: 0,
+      harness: 0,
+      sandbox: 0,
+      provider: 0,
+      colonyd: 0,
+      unknown: 0,
+    };
+
+    const failedItems: Array<{
+      runId: string;
+      taskId: string | null;
+      layer: string;
+      code: string;
+      at: string;
+    }> = [];
+
+    for (const run of allRuns) {
+      const fault = parseFault(run.fault_json);
+      if (!fault) continue;
+      if (fault.layer in counts) {
+        counts[fault.layer] = (counts[fault.layer] ?? 0) + 1;
+      } else {
+        counts.unknown = (counts.unknown ?? 0) + 1;
+      }
+      failedItems.push({
+        runId: run.id,
+        taskId: run.task_id ?? null,
+        layer: fault.layer,
+        code: fault.code,
+        at: run.finished_at ?? run.started_at,
+      });
+    }
+
+    // Sort newest failure first
+    failedItems.sort((a, b) => b.at.localeCompare(a.at));
+
+    const total = failedItems.length;
+    const items = failedItems.slice(offset, offset + limit);
+
+    return c.json({
+      items,
+      total,
+      limit,
+      offset,
+      counts,
+    });
   });
 
   app.get("/projects/:name/context", (c) => {
@@ -647,7 +737,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         : null,
       tasks: ctx.store.listTasks(scope.id),
       deps: ctx.store.scopeDeps(scope.id),
-      runs: ctx.store.runsForScope(scope.id),
+      runs: ctx.store.runsForScope(scope.id).map(serializeRun),
     });
   });
 
@@ -1123,7 +1213,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     if (!task) return notFound(c, "task");
     return c.json({
       task,
-      runs: ctx.store.runsForTask(task.id),
+      runs: ctx.store.runsForTask(task.id).map(serializeRun),
       deps: ctx.store.taskDeps(task.id),
     });
   });
@@ -1552,7 +1642,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.get("/runs/:id", (c) => {
     const run = ctx.store.getRun(c.req.param("id"));
     if (!run) return notFound(c, "run");
-    return c.json(run);
+    return c.json(serializeRun(run));
   });
 
   /**

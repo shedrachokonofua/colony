@@ -69,9 +69,6 @@ function recordingSink(): {
         });
         return { ref: `blob://${key}`, bytes: data.byteLength, sha256 };
       },
-      recordArtifactRef: () => {
-        throw new Error("recordArtifactRef must not be used for transcripts");
-      },
     },
   };
 }
@@ -147,7 +144,6 @@ describe("captureTranscript", () => {
       putArtifact: () => {
         throw new Error("putArtifact must not be reached");
       },
-      recordArtifactRef: () => {},
     };
 
     // A run that dies before its first assistant message leaves the SDK's
@@ -176,7 +172,6 @@ describe("captureTranscript", () => {
         events.push({ event, detail });
       },
       putArtifact: () => Promise.resolve(undefined),
-      recordArtifactRef: () => {},
     };
 
     const result = await captureTranscript({
@@ -215,7 +210,6 @@ describe("captureTranscript", () => {
           bytes: 1,
           sha256: "deadbeef",
         }),
-      recordArtifactRef: () => {},
     };
 
     const result = await captureTranscript({

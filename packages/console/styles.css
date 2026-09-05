@@ -2107,10 +2107,100 @@ pre.runlog {
 }
 
 .badge[data-state="blocked"],
-.badge[data-state="failed"] {
+.badge[data-state="failed"],
+.badge.fault-unknown {
   background: var(--danger-soft);
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
   color: var(--danger);
+}
+
+.project-census {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.census-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.census-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: var(--r-chip);
+  font: 500 0.8rem var(--mono);
+}
+
+.census-count .census-layer {
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.census-count .census-val {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.census-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+
+.census-group {
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  padding: 1rem;
+}
+
+.census-group-title {
+  margin: 0 0 0.75rem;
+  font: 600 0.85rem var(--mono);
+  text-transform: uppercase;
+  color: var(--navy);
+}
+
+.census-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.census-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.82rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.4rem;
+}
+
+.census-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.census-code {
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.census-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
 }
 
 .running-attempt {

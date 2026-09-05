@@ -1,6 +1,7 @@
 import type { AgentRole } from "@colony/config";
-import type { Run, Scope, Store, Task } from "@colony/core";
+import type { ProviderPipeline } from "@colony/provider";
 import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
+import type { Run, Scope, Task } from "@colony/core";
 import { SANDBOX_QUOTA_EXHAUSTED } from "@colony/sandbox";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { startTickSpan } from "@colony/observability";
@@ -291,7 +292,7 @@ function architectAttempts(ctx: ColonydContext, scopeId: string): number {
     .filter(
       (r) =>
         r.kind === "architect" &&
-        r.status !== "running" &&
+        r.status === "failed" &&
         (!since || r.started_at > since) &&
         !isQuotaDeferred(r.error) &&
         !isInfraError(r.error),
@@ -534,10 +535,9 @@ async function advanceMrOpenTasks(
 
     // Pipeline requirement: if the MR head has a pipeline it must succeed
     // before the gate runs; unknown pipeline state fails closed this tick.
-    // Pipeline status is an awaited provider fact; do not dispatch from a
-    // task snapshot that was blocked, paused, or otherwise revised while it
-    // was in flight.
-    const pipelineReady = await pipelineGate(
+    // Pipeline status is an awaited provider fact. Revalidate the task after
+    // it settles, then perform any failed-CI mutation only on that authority.
+    const pipelineResult = await pipelineGate(
       ctx,
       scope,
       task,
@@ -546,8 +546,52 @@ async function advanceMrOpenTasks(
     const currentAfterPipeline = getCurrentMrTask(ctx, scope, task);
     if (!currentAfterPipeline) continue;
     task = currentAfterPipeline;
-    if (!pipelineReady) continue;
+    if (!headSha) continue;
 
+    const pipeline = pipelineResult.pipeline;
+    if (pipeline?.commit_sha && pipeline.commit_sha !== headSha) {
+      ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_stale", {
+        scope_id: scope.id,
+        task_id: task.id,
+        detail: {
+          pipeline_id: pipeline.id,
+          pipeline_status: pipeline.status,
+          pipeline_commit_sha: pipeline.commit_sha,
+          head_sha: headSha,
+          pipeline_url: pipeline.metadata.web_url,
+        },
+      });
+      continue;
+    }
+    if (pipeline?.status === "failed") {
+      if (providerHeadLagging) continue;
+      const activeTaskRun = ctx.store
+        .activeRuns()
+        .some(
+          (run) =>
+            run.task_id === task.id &&
+            (run.kind === "implement" ||
+              run.kind === "review" ||
+              run.kind === "merge_gate"),
+        );
+      if (activeTaskRun) continue;
+      repairAfterFailedPipeline(ctx, scope, task, headSha, pipeline);
+      continue;
+    }
+    if (pipeline?.status === "canceled") {
+      ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_blocked", {
+        scope_id: scope.id,
+        task_id: task.id,
+        detail: {
+          pipeline_id: pipeline.id,
+          pipeline_commit_sha: pipeline.commit_sha,
+          head_sha: headSha,
+          status: pipeline.status,
+          pipeline_url: pipeline.metadata.web_url,
+        },
+      });
+    }
+    if (!pipelineResult.ready) continue;
     // Dispatch a gate when none succeeded at the current head SHA and no
     // gate run is active for the provider repository (serialize merges).
     if (!headSha) continue;
@@ -635,7 +679,6 @@ interface RunEvidence {
   readonly reason?: string;
   readonly error?: string;
 }
-
 function parseEvidence(evidenceJson: string | null): RunEvidence | undefined {
   if (!evidenceJson) return undefined;
   try {
@@ -662,32 +705,32 @@ function isMergeRequestTimeout(error: string | undefined): boolean {
   );
 }
 
+interface PipelineGateResult {
+  readonly ready: boolean;
+  readonly pipeline?: ProviderPipeline;
+}
+
 /**
- * True when the gate may proceed. Pipelines are optional: repos without CI
- * pass. When a pipeline exists for the head SHA it must be `success`;
- * errors or pending states fail closed (no gate this tick).
+ * Read the provider pipeline for the MR head. This helper intentionally has
+ * no state mutation: the caller must revalidate the MR task after this
+ * awaited provider operation before recording a repair or blocking it.
  */
 async function pipelineGate(
   ctx: ColonydContext,
   scope: Scope,
   task: Task,
   headSha: string | undefined,
-): Promise<boolean> {
-  if (!headSha) return true;
+): Promise<PipelineGateResult> {
+  if (!headSha) return { ready: true };
   try {
     const pipeline = await ctx.provider.pipelines.getStatus(
       { id: scope.provider_repo_id, path: scope.provider_repo_path },
       headSha,
     );
-    if (pipeline.status === "success") return true;
-    if (pipeline.status === "failed" || pipeline.status === "canceled") {
-      ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_blocked", {
-        scope_id: scope.id,
-        task_id: task.id,
-        detail: { status: pipeline.status },
-      });
-    }
-    return false;
+    return {
+      ready: pipeline.status === "success",
+      pipeline,
+    };
   } catch {
     // No pipeline for this SHA / unknown status. Repos without CI (seed and
     // acceptance repos) have none and proceed: the gate's local commands are
@@ -699,14 +742,91 @@ async function pipelineGate(
       .runsForTask(task.id)
       .filter((r) => r.kind === "implement" && r.head_sha === headSha)
       .at(-1);
-    if (
-      pushed?.finished_at &&
-      Date.now() - Date.parse(pushed.finished_at) < PROVIDER_HEAD_LAG_MS
-    ) {
-      return false;
-    }
-    return true;
+    return {
+      ready: !(
+        pushed?.finished_at &&
+        Date.now() - Date.parse(pushed.finished_at) < PROVIDER_HEAD_LAG_MS
+      ),
+    };
   }
+}
+
+function repairAfterFailedPipeline(
+  ctx: ColonydContext,
+  scope: Scope,
+  task: Task,
+  headSha: string,
+  pipeline: ProviderPipeline,
+): void {
+  const current = getCurrentMrTask(ctx, scope, task);
+  if (!current) return;
+
+  const attempt = current.attempt + 1;
+  const pipelineUrl = pipeline.metadata.web_url;
+  const pipelineDetail = [
+    `pipeline ${pipeline.id}`,
+    `head ${headSha}`,
+    `status ${pipeline.status}`,
+    ...(pipelineUrl ? [`url ${pipelineUrl}`] : []),
+  ].join(", ");
+  const pipelineAudit = {
+    pipeline_id: pipeline.id,
+    pipeline_status: pipeline.status,
+    pipeline_commit_sha: pipeline.commit_sha,
+    pipeline_url: pipelineUrl,
+    head_sha: headSha,
+  };
+  ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_blocked", {
+    scope_id: scope.id,
+    task_id: task.id,
+    detail: pipelineAudit,
+  });
+  const existingFeedback = current.human_feedback?.trim();
+  const feedback = [
+    existingFeedback,
+    `## Failed CI pipeline\n${pipelineDetail}\nRepair the implementation and rerun validation before opening or gating this MR.`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const withFeedback = ctx.store.setTaskFeedback(current.id, feedback);
+  const blocked = attempt >= ctx.env.maxAttempts;
+  if (blocked) {
+    ctx.store.transitionTask(
+      withFeedback.id,
+      withFeedback.state_version,
+      "blocked",
+      SERVICE_ACTOR,
+      {
+        blocked_reason: `CI pipeline ${pipeline.id} failed at ${headSha}; retries exhausted`,
+      },
+    );
+  } else {
+    ctx.store.transitionTask(
+      withFeedback.id,
+      withFeedback.state_version,
+      "queued",
+      SERVICE_ACTOR,
+      {
+        attempt,
+        next_retry_at: new Date(
+          Date.now() + retryBackoffMs(attempt),
+        ).toISOString(),
+      },
+    );
+  }
+  ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_failed", {
+    scope_id: scope.id,
+    task_id: task.id,
+    detail: {
+      pipeline_id: pipeline.id,
+      pipeline_status: pipeline.status,
+      pipeline_commit_sha: pipeline.commit_sha,
+      pipeline_url: pipelineUrl,
+      head_sha: headSha,
+      attempt,
+      outcome: blocked ? "blocked" : "retry",
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -752,10 +872,22 @@ async function advanceScopePlanning(
         .filter((r) => r.kind === "architect")
         .at(-1);
 
-      if (!lastArchitect) {
-        // Planning with no architect run at all: a crash between the status
-        // transition and the dispatch, or an operator unblock. Self-heal by
-        // dispatching rather than stalling until someone notices.
+      if (
+        !lastArchitect ||
+        (lastArchitect.status === "canceled" && !scope.plan_json)
+      ) {
+        if (lastArchitect?.status === "canceled") {
+          const attempts = architectAttempts(ctx, scope.id);
+          if (attempts >= ctx.env.maxAttempts) {
+            ctx.store.setScopeStatus(scope.id, "blocked", SERVICE_ACTOR, {
+              blocked_reason: `architect retries exhausted: ${attempts} failed attempts`,
+            });
+            continue;
+          }
+        }
+        // Planning with no architect run, or with an architect canceled by a
+        // pause/operator interruption, is recoverable. Canceled runs are not
+        // agent failures and must not consume the architect attempt budget.
         const slot = pickDispatchSlot(ctx, "architect");
         if (!slot.allowed) continue;
         dispatch(

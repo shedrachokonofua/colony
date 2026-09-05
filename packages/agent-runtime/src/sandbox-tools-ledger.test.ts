@@ -34,7 +34,6 @@ function recordingSink(failing = false): {
         events.push({ runId, event, detail });
       },
       putArtifact: () => Promise.resolve(undefined),
-      recordArtifactRef: () => {},
     },
   };
 }

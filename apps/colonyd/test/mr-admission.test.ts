@@ -25,6 +25,7 @@ import { tick } from "../src/tick.js";
 import { runMergeGate } from "../src/runs/merge-gate.js";
 
 const SHA = "a".repeat(40);
+const OTHER_SHA = "b".repeat(40);
 const dirs: string[] = [];
 const stores: Store[] = [];
 
@@ -62,7 +63,9 @@ interface Harness {
   readonly draining: { value: boolean };
 }
 
-async function harness(): Promise<Harness> {
+async function harness(
+  options: { readonly approvals?: "auto" | "manual" } = {},
+): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "colonyd-mr-admission-"));
   dirs.push(dir);
   const store = new Store(join(dir, "test.db"));
@@ -87,6 +90,7 @@ async function harness(): Promise<Harness> {
   const scope = store.createScope({
     goal: "review admission",
     title: "review admission",
+    approvals: options.approvals ?? "auto",
     provider_repo_id: repo.id,
     provider_repo_path: repo.path,
   });
@@ -265,7 +269,8 @@ describe("MR-derived dispatch admission", () => {
     h.provider.pipelines.getStatus = async (...args) => {
       started();
       await deferred;
-      return original(...args);
+      const pipeline = await original(...args);
+      return { ...pipeline, status: "failed", commit_sha: SHA };
     };
     const ticking = tick(h.ctx);
     await checking;
@@ -286,6 +291,250 @@ describe("MR-derived dispatch admission", () => {
       state: "mr_open",
       state_version: current.state_version,
     });
+  });
+
+  it("repairs a failed current-head pipeline once, preserving feedback and revoking approval", async () => {
+    const h = await harness({ approvals: "manual" });
+    h.store.setTaskFeedback(h.task.id, "operator context");
+    h.store.approveMerge(h.task.id, SHA);
+    const pipelineId = "pipeline-failed-current-head";
+    h.provider.pipelines.getStatus = async (_repo, _id) => ({
+      id: pipelineId,
+      status: "failed",
+      commit_sha: SHA,
+      metadata: {
+        provider: "fake",
+        id: pipelineId,
+        web_url: `https://fake.provider/${pipelineId}`,
+      },
+    });
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    let task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(1);
+    expect(task.next_retry_at).toBeTruthy();
+    expect(task.merge_approved_sha).toBeNull();
+    expect(task.human_feedback).toContain("operator context");
+    expect(task.human_feedback).toContain(pipelineId);
+    expect(task.human_feedback).toContain(SHA);
+    expect(task.human_feedback).toContain(
+      `https://fake.provider/${pipelineId}`,
+    );
+    const pipelineAudit = h.store
+      .listAudit({ task_id: h.task.id, limit: 1000 })
+      .events.find((row) => row.action === "gate.pipeline_failed");
+    expect(pipelineAudit).toBeTruthy();
+    expect(JSON.parse(pipelineAudit!.detail_json)).toMatchObject({
+      pipeline_id: pipelineId,
+      pipeline_status: "failed",
+      pipeline_commit_sha: SHA,
+      pipeline_url: `https://fake.provider/${pipelineId}`,
+      head_sha: SHA,
+      attempt: 1,
+      outcome: "retry",
+    });
+    expect(
+      h.store
+        .runsForTask(h.task.id)
+        .filter((run) =>
+          ["review", "merge_gate", "implement"].includes(run.kind),
+        ),
+    ).toHaveLength(0);
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+    task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(1);
+    expect(h.store.runsForTask(h.task.id)).toHaveLength(0);
+  });
+
+  it.each(["implement", "review", "merge_gate"] as const)(
+    "does not repair beside an active %s run",
+    async (kind) => {
+      const h = await harness();
+      const live = h.store.startRun({
+        scope_id: h.scope.id,
+        task_id: h.task.id,
+        kind,
+        lease_ttl_ms: 60_000,
+      });
+      h.provider.pipelines.getStatus = async (_repo, id) => ({
+        id,
+        status: "failed",
+        commit_sha: SHA,
+        metadata: { provider: "fake", id },
+      });
+
+      await tick(h.ctx);
+      await awaitPendingRuns();
+
+      const task = h.store.getTask(h.task.id)!;
+      expect(task.state).toBe("mr_open");
+      expect(task.attempt).toBe(0);
+      expect(h.store.getRun(live.id)?.status).toBe("running");
+      expect(h.store.runsForTask(h.task.id)).toHaveLength(1);
+    },
+  );
+
+  it("waits for a lagging provider head before repairing failed CI", async () => {
+    const h = await harness();
+    const pushed = h.store.startRun({
+      scope_id: h.scope.id,
+      task_id: h.task.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    h.store.finishRun(pushed.id, "succeeded", { head_sha: OTHER_SHA });
+    h.provider.pipelines.getStatus = async (_repo, id) => ({
+      id,
+      status: "failed",
+      commit_sha: SHA,
+      metadata: { provider: "fake", id },
+    });
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("mr_open");
+    expect(task.attempt).toBe(0);
+    expect(task.human_feedback).toBeNull();
+    expect(h.store.runsForTask(h.task.id)).toHaveLength(1);
+  });
+
+  it("blocks a failed-pipeline repair at the existing attempt limit", async () => {
+    const h = await harness();
+    let current = h.store.getTask(h.task.id)!;
+    current = h.store.transitionTask(
+      current.id,
+      current.state_version,
+      "queued",
+      "test",
+      { attempt: 2, next_retry_at: null },
+    );
+    current = h.store.transitionTask(
+      current.id,
+      current.state_version,
+      "running",
+      "test",
+    );
+    h.store.transitionTask(
+      current.id,
+      current.state_version,
+      "mr_open",
+      "test",
+    );
+    h.provider.pipelines.getStatus = async (_repo, id) => ({
+      id,
+      status: "failed",
+      commit_sha: SHA,
+      metadata: { provider: "fake", id },
+    });
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("blocked");
+    expect(task.attempt).toBe(2);
+    expect(task.blocked_reason).toContain("retries exhausted");
+    expect(h.store.runsForTask(h.task.id)).toHaveLength(0);
+    const pipelineAudit = h.store
+      .listAudit({ task_id: h.task.id, limit: 1000 })
+      .events.find((row) => row.action === "gate.pipeline_failed");
+    expect(pipelineAudit).toBeTruthy();
+    expect(JSON.parse(pipelineAudit!.detail_json)).toMatchObject({
+      pipeline_status: "failed",
+      pipeline_commit_sha: SHA,
+      head_sha: SHA,
+      outcome: "blocked",
+    });
+  });
+
+  it.each(["pending", "running", "canceled", "unknown"] as const)(
+    "does not repair or consume an attempt for a %s pipeline",
+    async (status) => {
+      const h = await harness();
+      h.provider.pipelines.getStatus = async (_repo, id) => ({
+        id,
+        status,
+        commit_sha: SHA,
+        metadata: { provider: "fake", id },
+      });
+
+      await tick(h.ctx);
+      await awaitPendingRuns();
+
+      const task = h.store.getTask(h.task.id)!;
+      expect(task.state).toBe("mr_open");
+      expect(task.attempt).toBe(0);
+      expect(task.human_feedback).toBeNull();
+      expect(h.store.runsForTask(h.task.id)).toHaveLength(0);
+    },
+  );
+
+  it("ignores a failed pipeline whose commit does not match the MR head", async () => {
+    const h = await harness({ approvals: "manual" });
+    h.store.setTaskFeedback(h.task.id, "operator context");
+    h.store.approveMerge(h.task.id, SHA);
+    h.provider.pipelines.getStatus = async (_repo, id) => ({
+      id,
+      status: "failed",
+      commit_sha: OTHER_SHA,
+      metadata: { provider: "fake", id },
+    });
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("mr_open");
+    expect(task.attempt).toBe(0);
+    expect(task.human_feedback).toBe("operator context");
+    expect(task.merge_approved_sha).toBe(SHA);
+    expect(h.store.runsForTask(h.task.id)).toHaveLength(0);
+  });
+
+  it("does not mutate after a failed pipeline reply races with a paused scope", async () => {
+    const h = await harness({ approvals: "manual" });
+    h.store.setTaskFeedback(h.task.id, "operator context");
+    h.store.approveMerge(h.task.id, SHA);
+    let started!: () => void;
+    let release!: () => void;
+    const checking = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const deferred = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.provider.pipelines.getStatus = async (_repo, id) => {
+      started();
+      await deferred;
+      return {
+        id,
+        status: "failed",
+        commit_sha: SHA,
+        metadata: { provider: "fake", id },
+      };
+    };
+
+    const ticking = tick(h.ctx);
+    await checking;
+    h.store.setScopeStatus(h.scope.id, "paused", "test");
+    release();
+    await ticking;
+    await awaitPendingRuns();
+
+    const task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("mr_open");
+    expect(task.attempt).toBe(0);
+    expect(task.human_feedback).toBe("operator context");
+    expect(task.merge_approved_sha).toBe(SHA);
+    expect(h.store.runsForTask(h.task.id)).toHaveLength(0);
   });
 
   it("continues dispatching valid current work after provider facts settle", async () => {

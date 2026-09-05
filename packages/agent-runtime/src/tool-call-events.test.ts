@@ -47,7 +47,6 @@ function recordingSink() {
           sha256: "0".repeat(64),
         });
       },
-      recordArtifactRef(): void {},
     },
   };
 }

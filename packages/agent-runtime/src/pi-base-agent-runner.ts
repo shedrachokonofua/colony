@@ -1672,7 +1672,6 @@ export class PiBaseAgentRunner implements PiRunner {
           await captureWorkspace({
             runId,
             handle,
-            repo: repoRef,
             parentSha: repoRef.base_commit,
             secrets: runToken ? [runToken] : [],
             sink: this.options.auditSink,

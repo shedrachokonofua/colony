@@ -53,7 +53,7 @@ function fakeCtx(store: Store): ColonydContext {
   };
 }
 
-function appWithStore() {
+export function appWithStore() {
   const dir = mkdtempSync(join(tmpdir(), "colonyd-project-running-"));
   dirs.push(dir);
   const store = new Store(join(dir, "test.db"));
@@ -75,6 +75,7 @@ interface RunningRow {
     status: string;
     model_id: string | null;
     started_at: string;
+    fault: unknown;
   } | null;
 }
 
@@ -87,7 +88,7 @@ async function getRunning(app: TestApp, project: string): Promise<Response> {
 }
 
 /** Scope owned by `project` holding one independent task per title. */
-function scopeWithTasks(
+export function scopeWithTasks(
   store: Store,
   project: string,
   titles: readonly string[],
@@ -135,7 +136,7 @@ function scopeWithTasks(
 }
 
 /** queued -> running -> (mr_open); returns the task's new state_version. */
-function advanceTask(
+export function advanceTask(
   store: Store,
   taskId: string,
   to: "running" | "mr_open",
@@ -207,6 +208,7 @@ describe("GET /projects/:name/running", () => {
       status: "running",
       model_id: "model-a",
       started_at: implementRun.started_at,
+      fault: null,
     });
     expect(runs.InReview).toMatchObject({
       id: reviewRun.id,
