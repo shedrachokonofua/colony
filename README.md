@@ -13,6 +13,8 @@ unblock tasks, and answer when the architect cannot.
 host. It is operated from a web console, a terminal UI, a CLI, or the HTTP
 API.
 
+![A finished scope in the console: the goal, and the nine-task dependency graph the architect planned for it, every task merged](docs/images/scope-top.png)
+
 [![status](https://img.shields.io/badge/status-early%20access-orange)](#status)
 [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
 
