@@ -24,6 +24,8 @@ import {
   type ProviderMergeRequest,
   type ProviderMetadata,
   type ProviderPipeline,
+  type ProviderPipelineJob,
+  sanitizeTrace,
   type ProviderRepoInfo,
   type ProviderRepoRef,
   type ProviderRef,
@@ -713,6 +715,53 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         method: "POST",
       });
       return toPipeline(this.provider, pipeline);
+    },
+    // Only failed/canceled jobs carry diagnostic value; traces of the rest
+    // are noise, so listJobs filters and getTrace is never called for them.
+    listJobs: async (repo, pipelineId) => {
+      type GitLabJob = GitLabEntity & {
+        readonly name?: string;
+        readonly status?: string;
+        readonly web_url?: string;
+      };
+      const jobs = await this.repoApi<GitLabJob[]>(
+        repo.id,
+        `/pipelines/${encodePath(pipelineId)}/jobs?per_page=100`,
+      );
+      return jobs
+        .filter((job) => job.status === "failed" || job.status === "canceled")
+        .map(
+          (job): ProviderPipelineJob => ({
+            id: String(job.id),
+            name: job.name ?? String(job.id),
+            status: job.status ?? "unknown",
+            ...(job.web_url ? { web_url: job.web_url } : {}),
+            metadata: { ...meta(this.provider, job), id: String(job.id) },
+          }),
+        );
+    },
+    getTrace: async (repo, jobId) => {
+      const trace = await this.repoApi<string>(
+        repo.id,
+        `/jobs/${encodePath(jobId)}/trace`,
+      );
+      type GitLabJob = GitLabEntity & {
+        readonly name?: string;
+        readonly status?: string;
+        readonly web_url?: string;
+      };
+      const job = await this.repoApi<GitLabJob>(
+        repo.id,
+        `/jobs/${encodePath(jobId)}`,
+      );
+      const providerJob: ProviderPipelineJob = {
+        id: String(job.id),
+        name: job.name ?? String(job.id),
+        status: job.status ?? "unknown",
+        ...(job.web_url ? { web_url: job.web_url } : {}),
+        metadata: { ...meta(this.provider, job), id: String(job.id) },
+      };
+      return { job: providerJob, text: sanitizeTrace(trace) };
     },
   };
 

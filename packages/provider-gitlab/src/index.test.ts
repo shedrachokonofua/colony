@@ -1107,6 +1107,125 @@ describe("GitLabProviderAdapter commits and pipelines", () => {
   });
 });
 
+describe("GitLabProviderAdapter pipeline jobs and traces", () => {
+  function jobAdapter() {
+    const traceRequests: string[] = [];
+    const jobRequests: string[] = [];
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+
+      if (
+        method === "GET" &&
+        path === "/projects/20/pipelines/77/jobs?per_page=100"
+      ) {
+        return Promise.resolve(
+          json([
+            {
+              id: 901,
+              name: "unit",
+              status: "failed",
+              web_url: "https://gitlab.test/proj/-/jobs/901",
+            },
+            {
+              id: 902,
+              name: "lint",
+              status: "success",
+              web_url: "https://gitlab.test/proj/-/jobs/902",
+            },
+            {
+              id: 903,
+              name: "deploy",
+              status: "canceled",
+              web_url: "https://gitlab.test/proj/-/jobs/903",
+            },
+          ]),
+        );
+      }
+      if (method === "GET" && path === "/projects/20/jobs/901/trace") {
+        traceRequests.push(path);
+        return Promise.resolve(
+          new Response(
+            `Running unit tests\nFAIL src/a.test.ts\nexport const TOKEN=glpat-AbCdEfGhIjKlMnOpQrStUv\n`,
+            { status: 200, headers: { "Content-Type": "text/plain" } },
+          ),
+        );
+      }
+      if (method === "GET" && path === "/projects/20/jobs/903/trace") {
+        traceRequests.push(path);
+        return Promise.resolve(
+          new Response("canceled while running", { status: 200 }),
+        );
+      }
+      if (method === "GET" && path === "/projects/20/jobs/903") {
+        jobRequests.push(path);
+        return Promise.resolve(
+          json({
+            id: 903,
+            name: "deploy",
+            status: "canceled",
+            web_url: "https://gitlab.test/proj/-/jobs/903",
+          }),
+        );
+      }
+      if (method === "GET" && path === "/projects/20/jobs/901") {
+        jobRequests.push(path);
+        return Promise.resolve(
+          json({
+            id: 901,
+            name: "unit",
+            status: "failed",
+            web_url: "https://gitlab.test/proj/-/jobs/901",
+          }),
+        );
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+    return { adapter, traceRequests, jobRequests };
+  }
+
+  const repo = { id: "20" } as const;
+
+  it("lists only failed and canceled jobs for a pipeline", async () => {
+    const { adapter } = jobAdapter();
+    const jobs = await adapter.pipelines.listJobs(repo, "77");
+    expect(jobs.map((job) => job.id)).toEqual(["901", "903"]);
+    expect(jobs[0]).toMatchObject({
+      name: "unit",
+      status: "failed",
+      web_url: "https://gitlab.test/proj/-/jobs/901",
+    });
+  });
+
+  it("fetches a job trace, sanitized", async () => {
+    const { adapter } = jobAdapter();
+    const trace = await adapter.pipelines.getTrace(repo, "901");
+    expect(trace.job).toMatchObject({ id: "901", name: "unit" });
+    expect(trace.text).toContain("FAIL src/a.test.ts");
+    expect(trace.text).not.toContain("glpat-AbCdEfGhIjKlMnOpQrStUv");
+  });
+
+  it("fetches traces for canceled jobs too", async () => {
+    const { adapter, traceRequests } = jobAdapter();
+    const trace = await adapter.pipelines.getTrace(repo, "903");
+    expect(trace.text).toBe("canceled while running");
+    expect(traceRequests).toEqual(["/projects/20/jobs/903/trace"]);
+  });
+});
+
 const describeLive =
   process.env.GITLAB_BASE_URL && process.env.GITLAB_TOKEN
     ? describe

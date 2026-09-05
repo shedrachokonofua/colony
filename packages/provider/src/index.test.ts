@@ -4,6 +4,7 @@ import {
   PROVIDER_COMMAND_SYNTAX,
   parseProviderCommand,
   redactBootstrapResult,
+  sanitizeTrace,
   type ProviderCommandSource,
 } from "./index.js";
 
@@ -305,5 +306,64 @@ describe("parseProviderCommand", () => {
     ).toMatchObject({
       status: "no_command",
     });
+  });
+});
+
+describe("sanitizeTrace", () => {
+  it("strips ANSI escapes and C0/C1 control characters", () => {
+    const out = sanitizeTrace(
+      "\u001b[31mFAILED\u001b[0m line\u0000\u0007\u009b2K more\nnext\ttab kept",
+    );
+    expect(out).not.toContain("\u001b");
+    expect(out).not.toContain("\u009b");
+    expect(out).not.toContain("\u0000");
+    expect(out).not.toContain("\u0007");
+    expect(out).toContain("FAILED line more");
+    expect(out).toContain("next\ttab kept");
+  });
+
+  it("redacts obvious secrets but keeps identifiers and URLs", () => {
+    const out = sanitizeTrace(
+      [
+        "git clone https://gitlab.example/colony/dev.git",
+        "token: glpat-AbCdEfGhIjKlMnOpQrStUv",
+        "xoxb-WxyzAbcdEfghIjklmnop1234 sent",
+        "AKIAIOSFODNN7EXAMPLE bad key",
+        "Authorization: Bearer abcdef123456",
+        "sk-proj-abcdefghijklmnopqrstuvwx",
+        "CI_JOB_TOKEN=supersecretvalue99",
+        "MY_SECRET=hunter2",
+        "pipeline url https://gitlab.example/colony/dev/-/pipelines/123",
+      ].join("\n"),
+    );
+    expect(out).not.toContain("glpat-AbCdEfGhIjKlMnOpQrStUv");
+    expect(out).not.toContain("xoxb-WxyzAbcdEfghIjklmnop1234");
+    expect(out).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(out).not.toContain("abcdef123456");
+    expect(out).not.toContain("sk-proj-abcdefghijklmnopqrstuvwx");
+    expect(out).not.toContain("supersecretvalue99");
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain("git clone https://gitlab.example/colony/dev.git");
+    expect(out).toContain("https://gitlab.example/colony/dev/-/pipelines/123");
+    expect(out).toContain("CI_JOB_TOKEN=");
+    expect(out).toContain("MY_SECRET=");
+  });
+
+  it("caps at 200 lines keeping the trailing lines", () => {
+    const text = Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\n");
+    const out = sanitizeTrace(text);
+    const lines = out.split("\n");
+    expect(lines.length).toBeLessThanOrEqual(200);
+    expect(lines[lines.length - 1]).toBe("line 299");
+    expect(out).not.toContain("line 90\n");
+    expect(out).toContain("line 100\n");
+  });
+
+  it("caps at 8 KiB keeping the trailing bytes", () => {
+    const text = `head-marker\n${"x".repeat(10_000)}`;
+    const out = sanitizeTrace(text);
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(8 * 1024);
+    expect(out.endsWith("x".repeat(50))).toBe(true);
+    expect(out).not.toContain("head-marker");
   });
 });
