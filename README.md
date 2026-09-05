@@ -307,9 +307,12 @@ run ends.
 ## Sandboxes
 
 `sandbox.engine` chooses where agent runs and scope validation execute.
-The merge gate is not sandboxed by either engine: it clones and runs
-`colony.gate.yaml` commands as a child of `colonyd`, with the daemon's
-environment and credentials.
+The merge gate remains a child of `colonyd`, not a sandbox-engine workload.
+Its checks use validation's environment allowlist (`CI`, `NO_COLOR`,
+`FORCE_COLOR`), the executable `PATH`, and a private `HOME`/`TMPDIR` outside
+the clone. Daemon configuration and provider tokens are not inherited as
+environment variables. This is configuration isolation, not a filesystem or
+security boundary; checks still have the daemon user's access.
 
 **`in-process`** (default). Agent commands are shell children of `colonyd`
 with the run's workspace as working directory, a private `HOME`/`TMPDIR`,

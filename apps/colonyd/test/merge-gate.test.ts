@@ -159,6 +159,56 @@ describe("defaultGateExecutor gate configuration", () => {
       expect(result.reason).toBe("no_gate_config");
     });
   }
+  it.each([0, 7])(
+    "isolates gate commands from daemon settings and cleans scratch after exit %i",
+    async (exitCode) => {
+      const settings = {
+        COLONY_GATE_ENV_SENTINEL: "must-not-reach-checks",
+        COLONY_OIDC_ISSUER: "https://must-not-reach-checks.invalid",
+        GITLAB_TOKEN: "synthetic-gate-token",
+        NODE_ENV: "production",
+        CI: "false",
+      };
+      const previous = Object.fromEntries(
+        Object.keys(settings).map((key) => [key, process.env[key]]),
+      );
+      const marker = join(tempDir("colony-gate-env-"), "home");
+      const command = [
+        'test -z "${COLONY_GATE_ENV_SENTINEL+x}"',
+        'test -z "${COLONY_OIDC_ISSUER+x}"',
+        'test -z "${GITLAB_TOKEN+x}"',
+        'test -z "${NODE_ENV+x}"',
+        'test "$CI" = true',
+        'test "$HOME" = "$TMPDIR"',
+        'test "$HOME" != "$PWD"',
+        'test -w "$HOME"',
+        `printf '%s' "$HOME" > ${JSON.stringify(marker)}`,
+        `exit ${exitCode}`,
+      ].join(" && ");
+      Object.assign(process.env, settings);
+      try {
+        const { repo, cleanSha } = seedRepo(
+          `commands:\n  - ${JSON.stringify(command)}\n`,
+        );
+        const result = await executeGate(repo, "clean", cleanSha);
+        if (exitCode === 0) {
+          expect(result).toEqual({ files_changed: ["note.txt"] });
+        } else {
+          expect(result).toMatchObject({
+            reason: "command_failed",
+            commands: [{ exit_code: exitCode }],
+          });
+        }
+        expect(existsSync(readFileSync(marker, "utf8"))).toBe(false);
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    },
+  );
+
   it("rejects a real failing command after the prospective merge", async () => {
     const { repo, cleanSha } = seedRepo(
       ["commands:", '  - "echo out; echo err >&2; exit 7"', ""].join("\n"),

@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import {
+  buildIsolatedCommandEnv,
+  VALIDATE_ENV_ALLOWLIST,
+} from "@colony/sandbox";
 import type { Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
 import { context } from "@opentelemetry/api";
@@ -418,7 +423,7 @@ async function executeMergeGate(
     });
     requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, evidence);
   } finally {
-    rmSync(workspace, { recursive: true, force: true });
+    await rm(workspace, { recursive: true, force: true });
   }
 }
 
@@ -667,20 +672,32 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   const gateConfig = readGateConfig(input.workspace);
   if ("reason" in gateConfig) return gateConfig;
 
-  const results: GateCommandResult[] = [];
-  for (const cmd of gateConfig.commands) {
-    const { exitCode, tail } = await runGateCommand(
-      input.workspace,
-      cmd,
-      gateConfig.timeoutSeconds,
-      input.signal,
+  const scratchDir = await mkdtemp(join(tmpdir(), "colonyd-gate-env-"));
+  try {
+    const commandEnv = buildIsolatedCommandEnv(
+      VALIDATE_ENV_ALLOWLIST,
+      scratchDir,
+      process.env,
+      { CI: "true", NO_COLOR: "1", FORCE_COLOR: "0" },
     );
-    results.push({ cmd, exit_code: exitCode, tail });
-    if (exitCode !== 0) {
-      return { reason: "command_failed", commands: results };
+    const results: GateCommandResult[] = [];
+    for (const cmd of gateConfig.commands) {
+      const { exitCode, tail } = await runGateCommand(
+        input.workspace,
+        cmd,
+        gateConfig.timeoutSeconds,
+        commandEnv,
+        input.signal,
+      );
+      results.push({ cmd, exit_code: exitCode, tail });
+      if (exitCode !== 0) {
+        return { reason: "command_failed", commands: results };
+      }
     }
+    return { files_changed: changedFiles };
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true });
   }
-  return { files_changed: changedFiles };
 };
 
 interface GateConfig {
@@ -938,13 +955,14 @@ async function runGateCommand(
   cwd: string,
   cmd: string,
   timeoutSeconds: number,
+  env: NodeJS.ProcessEnv,
   signal?: AbortSignal,
 ): Promise<{ exitCode: number; tail: readonly string[] }> {
-  const result = await runProcess("bash", ["-lc", cmd], {
+  const result = await runProcess("bash", ["-c", cmd], {
     cwd,
     timeoutMs: timeoutSeconds * 1000,
     signal,
-    env: process.env,
+    env,
   });
   throwIfAborted(signal ?? NEVER_ABORTED);
   const output =

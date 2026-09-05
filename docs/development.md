@@ -41,6 +41,10 @@ provider repository, across scopes. Their subprocesses are asynchronous and
 cancellable; heartbeats keep long-running checks leased. Dispatch rechecks
 current task/scope state after provider reads, and an in-flight gate rechecks
 its merge authority before sending the merge request.
+Checks share the validation environment policy: only allowlisted variables,
+the executable PATH, and per-gate HOME/TMPDIR reach their non-login shell.
+Scratch and workspace cleanup are asynchronous and also run on failure or
+cancellation.
 
 ## Running locally
 
