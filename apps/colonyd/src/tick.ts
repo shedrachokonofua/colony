@@ -1,5 +1,6 @@
 import type { AgentRole } from "@colony/config";
 import type { ProviderPipeline } from "@colony/provider";
+import { createHash } from "node:crypto";
 import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
 import type { Run, Scope, Task } from "@colony/core";
 import { SANDBOX_QUOTA_EXHAUSTED } from "@colony/sandbox";
@@ -563,33 +564,19 @@ async function advanceMrOpenTasks(
       });
       continue;
     }
-    if (pipeline?.status === "failed") {
-      if (providerHeadLagging) continue;
-      const activeTaskRun = ctx.store
-        .activeRuns()
-        .some(
-          (run) =>
-            run.task_id === task.id &&
-            (run.kind === "implement" ||
-              run.kind === "review" ||
-              run.kind === "merge_gate"),
-        );
-      if (activeTaskRun) continue;
-      repairAfterFailedPipeline(ctx, scope, task, headSha, pipeline);
+    if (
+      pipeline?.status === "failed" ||
+      pipeline?.status === "canceled"
+    ) {
+      await repairAfterFailedPipeline(
+        ctx,
+        scope,
+        task,
+        headSha,
+        pipeline,
+        providerHeadLagging,
+      );
       continue;
-    }
-    if (pipeline?.status === "canceled") {
-      ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_blocked", {
-        scope_id: scope.id,
-        task_id: task.id,
-        detail: {
-          pipeline_id: pipeline.id,
-          pipeline_commit_sha: pipeline.commit_sha,
-          head_sha: headSha,
-          status: pipeline.status,
-          pipeline_url: pipeline.metadata.web_url,
-        },
-      });
     }
     if (!pipelineResult.ready) continue;
     // Dispatch a gate when none succeeded at the current head SHA and no
@@ -751,81 +738,176 @@ async function pipelineGate(
   }
 }
 
-function repairAfterFailedPipeline(
+/** Exactly-once CI-failure repair dispatch, keyed on
+ *  sha256(task|ci_failure|head). The claim is persisted BEFORE any
+ *  transition or dispatch, so a crash between claim and dispatch cannot
+ *  duplicate the repair; the null-claim path reconciles that window. */
+async function repairAfterFailedPipeline(
   ctx: ColonydContext,
   scope: Scope,
   task: Task,
   headSha: string,
   pipeline: ProviderPipeline,
-): void {
-  const current = getCurrentMrTask(ctx, scope, task);
-  if (!current) return;
-
-  const attempt = current.attempt + 1;
-  const pipelineUrl = pipeline.metadata.web_url;
-  const pipelineDetail = [
-    `pipeline ${pipeline.id}`,
-    `head ${headSha}`,
-    `status ${pipeline.status}`,
-    ...(pipelineUrl ? [`url ${pipelineUrl}`] : []),
-  ].join(", ");
+  providerHeadLagging: boolean,
+): Promise<void> {
   const pipelineAudit = {
     pipeline_id: pipeline.id,
     pipeline_status: pipeline.status,
     pipeline_commit_sha: pipeline.commit_sha,
-    pipeline_url: pipelineUrl,
+    pipeline_url: pipeline.metadata.web_url,
     head_sha: headSha,
   };
+  // Operator trail first; the repair dispatch rides on top of it.
   ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_blocked", {
     scope_id: scope.id,
     task_id: task.id,
-    detail: pipelineAudit,
+    detail: { ...pipelineAudit, status: pipeline.status },
   });
-  const existingFeedback = current.human_feedback?.trim();
-  const feedback = [
-    existingFeedback,
-    `## Failed CI pipeline\n${pipelineDetail}\nRepair the implementation and rerun validation before opening or gating this MR.`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  const withFeedback = ctx.store.setTaskFeedback(current.id, feedback);
-  const blocked = attempt >= ctx.env.maxAttempts;
-  if (blocked) {
-    ctx.store.transitionTask(
-      withFeedback.id,
-      withFeedback.state_version,
-      "blocked",
-      SERVICE_ACTOR,
-      {
-        blocked_reason: `CI pipeline ${pipeline.id} failed at ${headSha}; retries exhausted`,
-      },
-    );
-  } else {
-    ctx.store.transitionTask(
-      withFeedback.id,
-      withFeedback.state_version,
-      "queued",
-      SERVICE_ACTOR,
-      {
-        attempt,
-        next_retry_at: new Date(
-          Date.now() + retryBackoffMs(attempt),
-        ).toISOString(),
-      },
-    );
+
+  // Obsolete head: a newer implement run already moved past this head, or
+  // the provider still reports the previous push. Wait instead of repairing
+  // a head nobody ships.
+  const pushed = lastImplementRun(ctx, task.id);
+  if (
+    providerHeadLagging ||
+    (pushed?.status === "succeeded" &&
+      !!pushed.head_sha &&
+      pushed.head_sha !== headSha)
+  ) {
+    return;
   }
-  ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_failed", {
+
+  let evidence: string[];
+  let jobIds: string[] = [];
+  let jobNames: string[] = [];
+  let jobUrls: string[] = [];
+  try {
+    const repo = { id: scope.provider_repo_id, path: scope.provider_repo_path };
+    const jobs = await ctx.provider.pipelines.listJobs(repo, pipeline.id);
+    const failed = jobs.filter(
+      (job) => job.status === "failed" || job.status === "canceled",
+    );
+    const traces: string[] = [];
+    for (const job of failed) {
+      jobIds.push(job.id);
+      jobNames.push(job.name);
+      if (job.web_url) jobUrls.push(job.web_url);
+      try {
+        const trace = await ctx.provider.pipelines.getTrace(repo, job.id);
+        if (trace.text.trim()) traces.push(`${job.name}: ${trace.text.trim()}`);
+      } catch (err) {
+        // A missing trace must not cost the intent its evidence bundle.
+        traces.push(
+          `${job.name}: trace unavailable (${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+    }
+    evidence = traces.length > 0 ? traces : [`pipeline ${pipeline.id} failed`];
+  } catch (err) {
+    // Detection is provider-backed; an unreachable provider never claims.
+    ctx.store.audit(SERVICE_ACTOR, "provider.unreachable", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: {
+        stage: "repair_evidence",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    return;
+  }
+
+  const fingerprint = createHash("sha256")
+    .update(`${task.id}|ci_failure|${headSha}`)
+    .digest("hex");
+  const intent = {
+    kind: "ci_failure",
+    source_head_sha: headSha,
+    provider: {
+      pipeline_id: pipeline.id,
+      ...(pipeline.metadata.web_url
+        ? { pipeline_url: pipeline.metadata.web_url }
+        : {}),
+      ...(jobIds.length ? { job_ids: jobIds } : {}),
+      ...(jobNames.length ? { job_names: jobNames } : {}),
+      ...(jobUrls.length ? { job_urls: jobUrls } : {}),
+    },
+    evidence,
+  } as const;
+
+  const fresh = ctx.store.claimRepairIntent({
+    fingerprint,
+    task_id: task.id,
+    trigger_kind: "ci_failure",
+    trigger_json: JSON.stringify(intent),
+  });
+  if (fresh === null) {
+    // Crash/capacity reconciliation: the claim exists. If a run is already
+    // bound, dispatch happened or is imminent — do nothing. Otherwise the
+    // window between claimRepairIntent and transitionTask was interrupted:
+    // redo it exactly as the fresh-claim path would have.
+    const existing = ctx.store.getRepairIntent(fingerprint);
+    if (!existing || existing.run_id !== null) return;
+    if (existing.resolved_head_sha !== null) return;
+    ctx.store.audit(SERVICE_ACTOR, "gate.repair_reconciled", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: { fingerprint },
+    });
+    await dispatchCiRepair(ctx, scope, task, fingerprint, intent);
+    return;
+  }
+
+  await dispatchCiRepair(ctx, scope, task, fingerprint, intent);
+}
+
+/** Shared dispatch body for a fresh claim and the null-claim reconciliation:
+ *  abort in-flight reviews first (never queue beside a live reviewer),
+ *  re-check authority, then transition through the single-writer path. */
+async function dispatchCiRepair(
+  ctx: ColonydContext,
+  scope: Scope,
+  task: Task,
+  fingerprint: string,
+  intent: {
+    readonly kind: "ci_failure";
+    readonly source_head_sha: string;
+  },
+): Promise<void> {
+  // A review in flight is reviewing the head the repair is about to
+  // replace; requeueing beside it ran an implementer and a reviewer on
+  // col-c8f58a57.3 concurrently (2026-09-01). Stop the review first.
+  const liveReviews = ctx.store
+    .activeRuns("review")
+    .filter((r) => r.task_id === task.id)
+    .map((r) => r.id);
+  if (liveReviews.length > 0) {
+    const stopped = await abortRunsAndWait(liveReviews);
+    if (!stopped.every(Boolean)) return;
+  }
+  const current = getCurrentMrTask(ctx, scope, task);
+  if (!current) return;
+  const slot = pickDispatchSlot(ctx, "developer");
+  if (!slot.allowed) {
+    // Capacity, not eligibility: the claim stays, the next tick reconciles
+    // through the null-claim path and dispatches when a slot opens.
+    ctx.store.audit(SERVICE_ACTOR, "gate.repair_deferred_capacity", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: { fingerprint },
+    });
+    return;
+  }
+  const attempt = current.attempt + 1;
+  ctx.store.transitionTask(current.id, current.state_version, "queued", SERVICE_ACTOR, {
+    attempt,
+    next_retry_at: new Date(
+      Date.now() + retryBackoffMs(attempt),
+    ).toISOString(),
+  });
+  ctx.store.audit(SERVICE_ACTOR, "gate.repair_dispatched", {
     scope_id: scope.id,
     task_id: task.id,
-    detail: {
-      pipeline_id: pipeline.id,
-      pipeline_status: pipeline.status,
-      pipeline_commit_sha: pipeline.commit_sha,
-      pipeline_url: pipelineUrl,
-      head_sha: headSha,
-      attempt,
-      outcome: blocked ? "blocked" : "retry",
-    },
+    detail: { fingerprint, trigger: intent, attempt },
   });
 }
 
@@ -1005,9 +1087,16 @@ async function dispatchImplementers(
       "running",
       SERVICE_ACTOR,
     );
+    // The newest unresolved CI-failure intent for this task, if any: its run
+    // id is bound inside runImplement BEFORE the run dispatches.
+    const intent = ctx.store
+      .listRepairIntents(current.id)
+      .filter((r) => r.run_id === null && r.resolved_head_sha === null)
+      .at(-1);
     dispatch(
       runImplement(ctx, scope, ctx.store.getTask(current.id)!, {
         startModelId: slot.startModelId ?? undefined,
+        repairIntentFingerprint: intent?.fingerprint,
       }),
     );
   }
