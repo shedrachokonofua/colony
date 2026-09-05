@@ -50,12 +50,23 @@ function fakeAdapter(): FakeAgentRuntimeAdapter {
         runId: environment.runId ?? "?",
         sandboxId: environment.sandboxId,
       });
+      // The resume packet carries the branch at packet.repo.branch (real
+      // implement packets have no top-level branch field). Report the same
+      // branch the completer verifies against the provider, and point the
+      // branch at the envelope head so provider fact verification passes.
+      const repo = packet.repo as { branch?: unknown } | undefined;
+      const branch =
+        typeof repo?.branch === "string" && repo.branch
+          ? repo.branch
+          : `colony/${String(packet.task_id)}`;
+      const headSha = "c".repeat(40);
+      void provider.branches.create({ id: repoId }, branch, headSha);
       return {
         kind: "implementer_completion",
         status: "complete",
         summary: "Resumed and completed.",
-        branch: String(packet.branch ?? `colony/${String(packet.task_id)}`),
-        head_sha: "c".repeat(40),
+        branch,
+        head_sha: headSha,
         commands: [{ cmd: "npm test", exit_code: 0 }],
       };
     },

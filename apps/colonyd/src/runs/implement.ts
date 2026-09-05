@@ -308,7 +308,12 @@ async function executeImplement(
     }
 
     // Verify envelope facts against the provider before any transition.
-    const verified = await verifyEnvelopeFacts(ctx, repo, envelope, branch);
+    const verified = await verifyEnvelopeFacts(
+      ctx.provider,
+      repo,
+      envelope,
+      branch,
+    );
     if (!verified.ok) {
       const reason = `envelope facts unverified: ${verified.reason}`;
       ctx.store.finishRun(runId, "failed", {
@@ -793,7 +798,7 @@ function latestGateFailure(
   }
   return { historical };
 }
-function buildMrDescription(
+export function buildMrDescription(
   task: Task,
   envelope: ImplementerCompletionV2,
   provenanceLine?: string,
@@ -812,14 +817,14 @@ function buildMrDescription(
     .join("\n");
 }
 
-async function verifyEnvelopeFacts(
-  ctx: ColonydContext,
+export async function verifyEnvelopeFacts(
+  provider: ColonydContext["provider"],
   repo: ProviderRepoRef,
   envelope: ImplementerCompletionV2,
   expectedBranch: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
-    await ctx.provider.commits.get(repo, envelope.head_sha);
+    await provider.commits.get(repo, envelope.head_sha);
   } catch {
     return { ok: false, reason: `commit ${envelope.head_sha} not found` };
   }
@@ -831,7 +836,7 @@ async function verifyEnvelopeFacts(
   }
   let branchHead: string;
   try {
-    branchHead = (await ctx.provider.commits.get(repo, envelope.branch)).sha;
+    branchHead = (await provider.commits.get(repo, envelope.branch)).sha;
   } catch {
     return { ok: false, reason: `branch ${envelope.branch} not found` };
   }
