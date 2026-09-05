@@ -91,6 +91,98 @@ function recoveryApp() {
 
 const actorHeaders = { "X-Actor-Id": "human:operator" };
 
+describe("scope pause admission", () => {
+  it("fences dispatch before cancellation and refuses resume until work settles", async () => {
+    const { app, store, scope, task } = recoveryApp();
+    const running = store.transitionTask(
+      task.id,
+      task.state_version,
+      "running",
+      "svc:colonyd",
+      { attempt: 2 },
+    );
+    const run = store.startRun({
+      scope_id: scope.id,
+      task_id: task.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    let settle!: () => void;
+    let abortStarted!: () => void;
+    const execution = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const cancellation = new Promise<void>((resolve) => {
+      abortStarted = resolve;
+    });
+    let scopeSeenByAbort: string | undefined;
+    trackRun(run.id, execution, () => {
+      scopeSeenByAbort = store.getScope(scope.id)?.status;
+      abortStarted();
+    });
+
+    const pausing = app.request(`/scopes/${scope.id}/pause`, {
+      method: "POST",
+      headers: actorHeaders,
+    });
+    await cancellation;
+    const earlyResume = await app.request(`/scopes/${scope.id}/resume`, {
+      method: "POST",
+      headers: actorHeaders,
+    });
+    store.finishRun(run.id, "canceled", { error: "aborted" });
+    settle();
+    const paused = await pausing;
+
+    expect(scopeSeenByAbort).toBe("paused");
+    expect(earlyResume.status).toBe(409);
+    await expect(earlyResume.json()).resolves.toMatchObject({
+      error: { code: "SCOPE_NOT_QUIESCENT" },
+    });
+    expect(paused.status).toBe(200);
+    expect(store.getTask(task.id)).toMatchObject({
+      state: "queued",
+      attempt: running.attempt,
+    });
+    const resumed = await app.request(`/scopes/${scope.id}/resume`, {
+      method: "POST",
+      headers: actorHeaders,
+    });
+    expect(resumed.status).toBe(200);
+    expect(store.getScope(scope.id)?.status).toBe("active");
+  });
+
+  it("keeps dispatch fenced when a live run cannot be canceled locally", async () => {
+    const { app, store, scope, task } = recoveryApp();
+    store.transitionTask(task.id, task.state_version, "running", "svc:colonyd");
+    const run = store.startRun({
+      scope_id: scope.id,
+      task_id: task.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    const response = await app.request(`/scopes/${scope.id}/pause`, {
+      method: "POST",
+      headers: actorHeaders,
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "RUN_NOT_LOCAL" },
+    });
+    expect(store.getScope(scope.id)).toMatchObject({
+      status: "paused",
+      paused_from: "active",
+    });
+    expect(store.getRun(run.id)?.status).toBe("running");
+    expect(store.getTask(task.id)?.state).toBe("running");
+    const resumed = await app.request(`/scopes/${scope.id}/resume`, {
+      method: "POST",
+      headers: actorHeaders,
+    });
+    expect(resumed.status).toBe(409);
+  });
+});
+
 describe("task recovery API", () => {
   it("stops the active run before requeueing without consuming an attempt", async () => {
     const { app, store, task, tickCount } = recoveryApp();

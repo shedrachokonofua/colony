@@ -32,7 +32,12 @@ One process, `apps/colonyd`:
 
 State machine, SQLite persistence, and backoff live in `packages/core`; run envelopes in `packages/schemas`. Envelopes are evidence, never authority: colonyd verifies branch/SHA facts with the provider before any transition.
 
-The merge gate clones the target branch fresh, prospectively merges the task head, scans for secrets/artifacts, runs `colony.gate.yaml` commands, rechecks the MR head, and merges with the gated SHA. Gates serialize per scope.
+The merge gate clones the target branch fresh, prospectively merges the task
+head, scans for secrets/artifacts, and validates the combined tree with every
+command in `colony.gate.yaml` before rechecking the MR head and merging the
+gated SHA. The file and its non-empty command list are mandatory; malformed
+configuration blocks the task for operator correction. Gates serialize per
+scope.
 
 ## Running locally
 

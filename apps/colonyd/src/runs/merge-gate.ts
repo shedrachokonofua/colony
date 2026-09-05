@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,15 +12,21 @@ import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
 import {
+  getCurrentMrTask,
+  hasActiveRepositoryMergeGate,
+} from "./mr-admission.js";
+import {
   buildMergeProvenanceLine,
   collectRunModelIds,
 } from "./model-provenance.js";
 
 const GATE_LEASE_MS = 30 * 60_000;
+const HEARTBEAT_INTERVAL_MS = 60_000;
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 600;
 const MAX_CONSECUTIVE_GATE_FAILURES = 3;
 const MAX_CONSECUTIVE_MERGE_REFUSALS = 3;
 
+const NEVER_ABORTED = new AbortController().signal;
 /**
  * Run `fn` inside the run root's span context so SDK GenAI spans nest under
  * it. With no span (tracing disabled) this stays on the ambient context —
@@ -32,7 +38,6 @@ function inRunSpanContext<T>(
 ): T {
   return runSpan ? context.with(runSpan.spanContext, fn) : fn();
 }
-
 export interface GateExecutionInput {
   readonly workspace: string;
   readonly cloneUrl: string;
@@ -40,6 +45,7 @@ export interface GateExecutionInput {
   readonly targetBranch: string;
   readonly taskBranch: string;
   readonly headSha: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface GateCommandResult {
@@ -55,6 +61,11 @@ export interface GateFailure {
     | "command_failed"
     | "workspace_failed"
     | "no_gate_config";
+  /**
+   * Static, operator-safe explanation for configuration failures. Never
+   * include parser errors or the configuration contents here.
+   */
+  readonly detail?: string;
   readonly files?: readonly string[];
   readonly commands?: readonly GateCommandResult[];
 }
@@ -78,6 +89,14 @@ export interface GateSuccess {
   readonly files_changed: readonly string[];
 }
 
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    const error = new Error("operation was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
+}
+
 function isGateFailure(
   result: GateFailure | GateSuccess,
 ): result is GateFailure {
@@ -95,8 +114,7 @@ interface GateOutcome {
 
 /**
  * Run the prospective merge gate for a task in `mr_open` at head SHA `H`.
- * Concurrency: the tick only dispatches a gate when none is active for the
- * scope, so two tasks in one scope never interleave merges.
+ * Gates are serialized by provider repository, across all scopes.
  */
 export async function runMergeGate(
   ctx: ColonydContext,
@@ -104,6 +122,14 @@ export async function runMergeGate(
   task: Task,
   headSha: string,
 ): Promise<void> {
+  const admitted = getCurrentMrTask(ctx, scope, task);
+  if (
+    !admitted ||
+    hasActiveRepositoryMergeGate(ctx, scope) ||
+    (scope.approvals === "manual" && admitted.merge_approved_sha !== headSha)
+  ) {
+    return;
+  }
   const repo: ProviderRepoRef = {
     id: scope.provider_repo_id,
     path: scope.provider_repo_path,
@@ -119,7 +145,7 @@ export async function runMergeGate(
     kind: "merge_gate",
     model_id: null,
   });
-  const run = ctx.store.startRun({
+  ctx.store.startRun({
     id: runId,
     scope_id: scope.id,
     task_id: task.id,
@@ -135,6 +161,11 @@ export async function runMergeGate(
     detail: { kind: "merge_gate", head_sha: headSha },
   });
 
+  const abortController = new AbortController();
+  const heartbeat = setInterval(() => {
+    if (abortController.signal.aborted) return;
+    ctx.store.heartbeatRun(runId, GATE_LEASE_MS);
+  }, HEARTBEAT_INTERVAL_MS);
   const execution = executeMergeGate(
     ctx,
     repo,
@@ -142,12 +173,16 @@ export async function runMergeGate(
     task,
     runId,
     headSha,
+    abortController.signal,
     runSpan,
   );
-  trackRun(runId, execution, () => Promise.resolve());
+  trackRun(runId, execution, () => {
+    abortController.abort();
+  });
   try {
     await execution;
   } finally {
+    clearInterval(heartbeat);
     // Safety net only: every terminal branch inside ends the span with its
     // own status; this catches paths that bypass finishRun entirely.
     runSpan?.end("canceled", "aborted");
@@ -161,12 +196,26 @@ async function executeMergeGate(
   task: Task,
   runId: string,
   headSha: string,
+  signal: AbortSignal,
   runSpan: ColonyRunSpan | undefined,
 ): Promise<void> {
   const workspace = join(tmpdir(), "colonyd-gate", runId);
   const repoPath = scope.provider_repo_path;
   const clone = buildCloneUrl(ctx, repoPath);
+  const requireMergeAuthority = (): void => {
+    // Draining stops new dispatch, not completion within the drain budget.
+    const current = getCurrentMrTask(ctx, scope, task, "in_flight");
+    if (
+      !current ||
+      (scope.approvals === "manual" && current.merge_approved_sha !== headSha)
+    ) {
+      const error = new Error("merge authority revoked");
+      error.name = "AbortError";
+      throw error;
+    }
+  };
   try {
+    throwIfAborted(signal);
     const executor = ctx.gateExecutor ?? defaultGateExecutor;
     const result = await executor({
       workspace,
@@ -175,7 +224,10 @@ async function executeMergeGate(
       targetBranch: scope.default_branch,
       taskBranch: task.branch ?? `colony/${task.id}`,
       headSha,
+      signal,
     });
+    throwIfAborted(signal);
+    requireMergeAuthority();
     if (result && isGateFailure(result)) {
       const failure: GateFailure = result;
       const evidence = { ...failure, head_sha: headSha };
@@ -193,6 +245,7 @@ async function executeMergeGate(
       return;
     }
 
+    throwIfAborted(signal);
     // Stale-head protection: re-fetch the MR; if the head moved since the
     // gate started, fail this gate and let the next tick re-gate the new SHA.
     let mr;
@@ -202,6 +255,8 @@ async function executeMergeGate(
         mrRef(repo.id, task.mr_iid!),
       );
     } catch (err) {
+      throwIfAborted(signal);
+      requireMergeAuthority();
       const reason = `mr refetch failed: ${err instanceof Error ? err.message : String(err)}`;
       ctx.store.finishRun(runId, "failed", {
         error: reason,
@@ -214,6 +269,8 @@ async function executeMergeGate(
       });
       return;
     }
+    throwIfAborted(signal);
+    requireMergeAuthority();
     const currentHead = mr.head_commit_sha;
     if (currentHead && currentHead !== headSha) {
       const evidence = {
@@ -282,6 +339,7 @@ async function executeMergeGate(
       throw mergeError;
     }
     if (mergeResult.merged === false) {
+      throwIfAborted(signal);
       const reason = `merge_refused:${mergeResult.reason ?? "unknown"}`;
       const evidence = {
         reason,
@@ -334,6 +392,14 @@ async function executeMergeGate(
     // The mr_open -> merged transition happens when the tick's provider poll
     // observes state='merged' — facts, not the merge API response.
   } catch (err) {
+    if (signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+      ctx.store.finishRun(runId, "canceled", {
+        error: "aborted",
+        evidence_json: JSON.stringify({ head_sha: headSha }),
+      });
+      runSpan?.end("canceled", "aborted");
+      return;
+    }
     const error = err instanceof Error ? err.message : String(err);
     const evidence = {
       reason: "workspace_failed",
@@ -410,6 +476,24 @@ function requeueOrBlockAfterGateFailure(
   if (!current || current.state !== "mr_open") return;
 
   const reason = typeof evidence.reason === "string" ? evidence.reason : "";
+  // A missing or invalid gate is an operator/configuration defect, not an
+  // implementation failure. Block immediately so the automatic implement
+  // retry loop cannot churn on a repository-wide admission problem.
+  if (reason === "no_gate_config") {
+    const detail =
+      typeof evidence.detail === "string"
+        ? evidence.detail
+        : "colony.gate.yaml is missing or invalid";
+    ctx.store.transitionTask(
+      current.id,
+      current.state_version,
+      "blocked",
+      SERVICE_ACTOR,
+      { blocked_reason: `merge gate configuration required: ${detail}` },
+    );
+    return;
+  }
+
   const gateFails = countConsecutive(ctx, task, headSha, "gate");
   const mergeRefusals = reason.startsWith("merge_refused")
     ? countConsecutive(ctx, task, headSha, "merge_refusal")
@@ -541,7 +625,7 @@ export function buildCloneUrl(
 // ---------------------------------------------------------------------------
 
 export const defaultGateExecutor: GateExecutor = async (input) => {
-  const gitArgs: string[][] = [
+  await git(
     [
       "clone",
       "--quiet",
@@ -550,42 +634,46 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
       input.cloneUrl,
       input.workspace,
     ],
-  ];
-  for (const args of gitArgs) {
-    git(args, tmpdir(), input);
-  }
-  git(["fetch", "--quiet", "origin", input.taskBranch], input.workspace, input);
+    tmpdir(),
+    input,
+  );
+  await git(
+    ["fetch", "--quiet", "origin", input.taskBranch],
+    input.workspace,
+    input,
+  );
 
   // Scan the incoming diff BEFORE the prospective merge. After merging
   // headSha into target, `git diff target...headSha` is empty because
   // headSha is an ancestor of target — that previously let secrets merge.
   // The same list is the gate's success payload: post-merge it is empty.
-  const changedFiles = changedDiffFiles(input);
-  const scan = secretScan(input, changedFiles);
+  const changedFiles = await changedDiffFiles(input);
+  const scan = await secretScan(input, changedFiles);
   if (scan) return scan;
 
   try {
-    git(
+    await git(
       ["merge", "--no-ff", "--no-edit", input.headSha],
       input.workspace,
       input,
     );
   } catch (err) {
-    const conflicts = conflictedFiles(input.workspace);
+    throwIfAborted(input.signal ?? NEVER_ABORTED);
+    const conflicts = await conflictedFiles(input.workspace, input);
     if (conflicts.length === 0) throw err;
     return { reason: "merge_conflict", files: conflicts };
   }
 
   const gateConfig = readGateConfig(input.workspace);
-  if (!gateConfig) return { files_changed: changedFiles }; // missing colony.gate.yaml -> no commands, audit handled by caller
-  if (gateConfig.commands.length === 0) return { files_changed: changedFiles };
+  if ("reason" in gateConfig) return gateConfig;
 
   const results: GateCommandResult[] = [];
   for (const cmd of gateConfig.commands) {
-    const { exitCode, tail } = runGateCommand(
+    const { exitCode, tail } = await runGateCommand(
       input.workspace,
       cmd,
       gateConfig.timeoutSeconds,
+      input.signal,
     );
     results.push({ cmd, exit_code: exitCode, tail });
     if (exitCode !== 0) {
@@ -595,16 +683,197 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   return { files_changed: changedFiles };
 };
 
-function conflictedFiles(workspace: string): string[] {
+interface GateConfig {
+  readonly commands: readonly string[];
+  readonly timeoutSeconds: number;
+}
+
+type GateConfigResult = GateConfig | GateFailure;
+
+function readGateConfig(workspace: string): GateConfigResult {
+  const configPath = join(workspace, "colony.gate.yaml");
+  if (!existsSync(configPath)) {
+    return {
+      reason: "no_gate_config",
+      detail: "colony.gate.yaml is missing",
+    };
+  }
+
+  let parsed: unknown;
   try {
-    const out = execFileSync(
-      "git",
+    parsed = parseYaml(readFileSync(configPath, "utf8"));
+  } catch {
+    // Do not expose parser diagnostics: YAML errors can echo a secret value
+    // from the repository configuration.
+    return {
+      reason: "no_gate_config",
+      detail: "colony.gate.yaml is malformed YAML",
+    };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      reason: "no_gate_config",
+      detail: "colony.gate.yaml must contain a mapping",
+    };
+  }
+
+  const raw = parsed as Record<string, unknown>;
+  if (!Array.isArray(raw.commands) || raw.commands.length === 0) {
+    return {
+      reason: "no_gate_config",
+      detail: "commands must be a non-empty array",
+    };
+  }
+  if (
+    !raw.commands.every(
+      (command): command is string =>
+        typeof command === "string" && command.trim().length > 0,
+    )
+  ) {
+    return {
+      reason: "no_gate_config",
+      detail: "commands must contain only non-blank strings",
+    };
+  }
+
+  let timeoutSeconds = DEFAULT_COMMAND_TIMEOUT_SECONDS;
+  if ("timeout_seconds" in raw) {
+    const timeout = raw.timeout_seconds;
+    if (
+      typeof timeout !== "number" ||
+      !Number.isFinite(timeout) ||
+      timeout <= 0
+    ) {
+      return {
+        reason: "no_gate_config",
+        detail: "timeout_seconds must be a positive finite number",
+      };
+    }
+    timeoutSeconds = timeout;
+  }
+  return {
+    commands: raw.commands,
+    timeoutSeconds,
+  };
+}
+
+interface ProcessResult {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+const MAX_PROCESS_OUTPUT_BYTES = 16 * 1024 * 1024;
+const PROCESS_KILL_GRACE_MS = 1_000;
+
+function runProcess(
+  file: string,
+  args: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly timeoutMs: number;
+    readonly signal?: AbortSignal;
+    readonly env?: NodeJS.ProcessEnv;
+  },
+): Promise<ProcessResult> {
+  const { promise, resolve, reject } = Promise.withResolvers<ProcessResult>();
+  const child = spawn(file, [...args], {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let outputBytes = 0;
+  let outputLimit = false;
+  let settled = false;
+  let timedOut = false;
+  let terminationRequested = false;
+  let timer: ReturnType<typeof setTimeout>;
+  let killTimer: ReturnType<typeof setTimeout>;
+  const finish = (result: ProcessResult): void => {
+    if (settled) return;
+    if (terminationRequested) sendSignal("SIGKILL");
+    settled = true;
+    clearTimeout(timer);
+    clearTimeout(killTimer);
+    options.signal?.removeEventListener("abort", abort);
+    resolve(result);
+  };
+  const sendSignal = (signal: NodeJS.Signals): void => {
+    try {
+      if (child.pid) process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch {
+      child.kill(signal);
+    }
+  };
+  const kill = (): void => {
+    terminationRequested = true;
+    if (!child.killed) sendSignal("SIGTERM");
+    if (!killTimer) {
+      killTimer = setTimeout(() => {
+        if (!settled) sendSignal("SIGKILL");
+      }, PROCESS_KILL_GRACE_MS);
+    }
+  };
+  const abort = (): void => {
+    kill();
+  };
+  const collect =
+    (target: Buffer[]): ((chunk: Buffer) => void) =>
+    (chunk: Buffer): void => {
+      if (outputLimit) return;
+      outputBytes += chunk.byteLength;
+      if (outputBytes > MAX_PROCESS_OUTPUT_BYTES) {
+        outputLimit = true;
+        kill();
+        return;
+      }
+      target.push(chunk);
+    };
+  child.stdout.on("data", collect(stdout));
+  child.stderr.on("data", collect(stderr));
+  child.once("error", (error) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    clearTimeout(killTimer);
+    options.signal?.removeEventListener("abort", abort);
+    reject(error);
+  });
+  child.once("close", (code) => {
+    finish({
+      exitCode: outputLimit || timedOut ? 1 : (code ?? 1),
+      stdout: Buffer.concat(stdout).toString("utf8"),
+      stderr: Buffer.concat(stderr).toString("utf8"),
+    });
+  });
+  timer = setTimeout(
+    () => {
+      timedOut = true;
+      kill();
+    },
+    Math.min(options.timeoutMs, 2_147_483_647),
+  );
+  if (options.signal?.aborted) {
+    abort();
+  } else {
+    options.signal?.addEventListener("abort", abort, { once: true });
+  }
+  return promise;
+}
+
+async function conflictedFiles(
+  workspace: string,
+  input: GateExecutionInput,
+): Promise<string[]> {
+  try {
+    const out = await git(
       ["diff", "--name-only", "--diff-filter=U"],
-      {
-        cwd: workspace,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+      workspace,
+      input,
     );
     return out
       .split("\n")
@@ -623,21 +892,23 @@ const SECRET_PATTERNS = [
 ];
 
 /** Incoming-diff file list (target...head), split/trimmed like secretScan. */
-function changedDiffFiles(input: GateExecutionInput): string[] {
-  return git(
-    ["diff", `${input.targetBranch}...${input.headSha}`, "--name-only"],
-    input.workspace,
-    input,
+async function changedDiffFiles(input: GateExecutionInput): Promise<string[]> {
+  return (
+    await git(
+      ["diff", `${input.targetBranch}...${input.headSha}`, "--name-only"],
+      input.workspace,
+      input,
+    )
   )
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 }
 
-function secretScan(
+async function secretScan(
   input: GateExecutionInput,
   changed: readonly string[],
-): GateFailure | null {
+): Promise<GateFailure | null> {
   for (const file of changed) {
     const name = file.split("/").pop() ?? file;
     if (name === "PACKET.json" || name === ".env") {
@@ -645,7 +916,7 @@ function secretScan(
     }
   }
 
-  const patch = git(
+  const patch = await git(
     ["diff", `${input.targetBranch}...${input.headSha}`],
     input.workspace,
     input,
@@ -663,58 +934,24 @@ function secretScan(
   return null;
 }
 
-interface GateConfig {
-  readonly commands: readonly string[];
-  readonly timeoutSeconds: number;
-}
-
-function readGateConfig(workspace: string): GateConfig | null {
-  const configPath = join(workspace, "colony.gate.yaml");
-  if (!existsSync(configPath)) return null;
-  const raw = parseYaml(readFileSync(configPath, "utf8")) as {
-    commands?: unknown;
-    timeout_seconds?: unknown;
-  };
-  const commands = Array.isArray(raw?.commands)
-    ? raw.commands.filter((c): c is string => typeof c === "string")
-    : [];
-  const timeoutSeconds =
-    typeof raw?.timeout_seconds === "number" && raw.timeout_seconds > 0
-      ? raw.timeout_seconds
-      : DEFAULT_COMMAND_TIMEOUT_SECONDS;
-  return { commands, timeoutSeconds };
-}
-
-function runGateCommand(
+async function runGateCommand(
   cwd: string,
   cmd: string,
   timeoutSeconds: number,
-): { exitCode: number; tail: readonly string[] } {
-  try {
-    const output = execFileSync("bash", ["-lc", cmd], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeoutSeconds * 1000,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return { exitCode: 0, tail: lastLines(output, 200) };
-  } catch (err) {
-    const output =
-      err && typeof err === "object" && "stderr" in err
-        ? String((err as { stderr: unknown }).stderr ?? "")
-        : err instanceof Error
-          ? err.message
-          : String(err);
-    const code =
-      err &&
-      typeof err === "object" &&
-      "status" in err &&
-      typeof (err as { status: unknown }).status === "number"
-        ? ((err as { status: number }).status as number)
-        : 1;
-    return { exitCode: code, tail: lastLines(output, 200) };
-  }
+  signal?: AbortSignal,
+): Promise<{ exitCode: number; tail: readonly string[] }> {
+  const result = await runProcess("bash", ["-lc", cmd], {
+    cwd,
+    timeoutMs: timeoutSeconds * 1000,
+    signal,
+    env: process.env,
+  });
+  throwIfAborted(signal ?? NEVER_ABORTED);
+  const output =
+    result.exitCode === 0
+      ? result.stdout
+      : [result.stderr, result.stdout].filter(Boolean).join("\n");
+  return { exitCode: result.exitCode, tail: lastLines(output, 200) };
 }
 
 function lastLines(text: string, max: number): string[] {
@@ -722,36 +959,34 @@ function lastLines(text: string, max: number): string[] {
   return lines.slice(Math.max(0, lines.length - max));
 }
 
-function git(
+async function git(
   args: readonly string[],
   cwd: string,
   input: GateExecutionInput,
-): string {
-  try {
-    return execFileSync("git", [...args], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 300_000,
-      // Prospective --no-ff merge creates a commit; CI images often have no
-      // git identity, which git otherwise reports as a merge failure.
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: process.env["GIT_AUTHOR_NAME"] || "colony-gate",
-        GIT_AUTHOR_EMAIL:
-          process.env["GIT_AUTHOR_EMAIL"] || "colony-gate@local",
-        GIT_COMMITTER_NAME: process.env["GIT_COMMITTER_NAME"] || "colony-gate",
-        GIT_COMMITTER_EMAIL:
-          process.env["GIT_COMMITTER_EMAIL"] || "colony-gate@local",
-      },
-    });
-  } catch (err) {
-    const message = sanitizeGitError(
-      err instanceof Error ? err.message : String(err),
-      input,
-    );
-    throw new Error(message);
+): Promise<string> {
+  throwIfAborted(input.signal ?? NEVER_ABORTED);
+  const result = await runProcess("git", args, {
+    cwd,
+    timeoutMs: 300_000,
+    signal: input.signal,
+    // Prospective --no-ff merge creates a commit; CI images often have no
+    // git identity, which git otherwise reports as a merge failure.
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: process.env["GIT_AUTHOR_NAME"] || "colony-gate",
+      GIT_AUTHOR_EMAIL: process.env["GIT_AUTHOR_EMAIL"] || "colony-gate@local",
+      GIT_COMMITTER_NAME: process.env["GIT_COMMITTER_NAME"] || "colony-gate",
+      GIT_COMMITTER_EMAIL:
+        process.env["GIT_COMMITTER_EMAIL"] || "colony-gate@local",
+    },
+  });
+  throwIfAborted(input.signal ?? NEVER_ABORTED);
+  if (result.exitCode !== 0) {
+    const output =
+      result.stderr || result.stdout || `git exited ${result.exitCode}`;
+    throw new Error(sanitizeGitError(output, input));
   }
+  return result.stdout;
 }
 
 function sanitizeGitError(message: string, input: GateExecutionInput): string {

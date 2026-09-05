@@ -138,13 +138,15 @@ flowchart LR
    have succeeded. The merge gate then clones the target branch fresh,
    merges the candidate head into it, scans the incoming diff for
    credential patterns (GitLab and AWS tokens, private keys) and refuses
-   `.env` or `PACKET.json`, runs the commands in the repository's
-   `colony.gate.yaml` (each under `timeout_seconds`, default 600; no file
-   or no commands means no checks), re-checks that the merge request head
-   has not moved, and merges that exact commit. A conflict or failing
-   command requeues the task; three consecutive gate failures at one head
-   block it. If GitLab refuses the merge while a pipeline is still
-   registering, the gate waits 60 s and retries; three refusals block.
+   `.env` or `PACKET.json`, validates the prospective tree with every command
+   in the repository's `colony.gate.yaml` (each under `timeout_seconds`,
+   default 600; the file and its non-empty command list are required), re-
+   checks the merge request head, and merges that exact commit. Missing or
+   invalid gate configuration blocks the task for operator correction; a
+   conflict or failing command requeues the task; three consecutive gate
+   failures at one head block it. If GitLab refuses the merge while a
+   pipeline is still registering, the gate waits 60 s and retries; three
+   refusals block.
    Gates serialize per scope so parallel tasks land one at a time.
 7. **Validate.** When every task is terminal and at least one merged, Colony
    clones the default branch fresh and runs the acceptance commands with no
@@ -369,12 +371,18 @@ review: { mode: required } # plan reviewer and code reviewer on
 sandbox: { engine: in-process }
 ```
 
-In each repository Colony will work on, say what a merge must pass:
+In each repository Colony will work on, define the checks a merge must pass.
+The file and its non-empty list of non-blank command strings are required;
+invalid YAML or timeout settings fail closed:
 
 ```yaml
 # colony.gate.yaml
 commands:
-  - make test
+  - bun install --frozen-lockfile
+  - bun run lint
+  - bun run typecheck
+  - bun run test:unit
+timeout_seconds: 1800
 ```
 
 Run:

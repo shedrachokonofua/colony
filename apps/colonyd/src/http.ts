@@ -968,13 +968,23 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         runIds.push(run.id);
       }
     }
+    // Fence new dispatch before yielding to cancellation. Otherwise a tick
+    // waiting on provider I/O can start work outside this captured run set.
+    try {
+      ctx.store.setScopeStatus(scope.id, "paused", c.get("actor"), {
+        run_ids: runIds,
+      });
+    } catch (err) {
+      return conflict(c, err);
+    }
     const stopped = await abortRunsAndWait(runIds);
     if (!stopped.every(Boolean)) {
       return c.json(
         {
           error: {
             code: "RUN_NOT_LOCAL",
-            message: "a live run is not owned by this colonyd process",
+            message:
+              "scope is paused, but a live run is not owned by this colonyd process",
           },
         },
         409,
@@ -996,13 +1006,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
           },
         );
       }
-      const updated = ctx.store.setScopeStatus(
-        scope.id,
-        "paused",
-        c.get("actor"),
-        { run_ids: runIds },
-      );
-      return c.json(updated);
+      return c.json(ctx.store.getScope(scope.id));
     } catch (err) {
       return conflict(c, err);
     }
@@ -1017,6 +1021,23 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
           error: {
             code: "NOT_PAUSED",
             message: "only a paused scope can be resumed",
+          },
+        },
+        409,
+      );
+    }
+    if (
+      ctx.store
+        .runsForScope(scope.id)
+        .some((run) => run.status === "running") ||
+      ctx.store.listTasks(scope.id).some((task) => task.state === "running")
+    ) {
+      return c.json(
+        {
+          error: {
+            code: "SCOPE_NOT_QUIESCENT",
+            message:
+              "scope still has running work; wait for cancellation to finish",
           },
         },
         409,
