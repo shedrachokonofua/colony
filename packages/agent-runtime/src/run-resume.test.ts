@@ -342,20 +342,17 @@ describe("resumeRun", () => {
     // by the daemon's adoption cycle, so the caller's fail+requeue can
     // connect to the same id again. Destroying it here made the next
     // adoption reject "sandbox … gone" and the run unresumable.
-    const { createInProcessEngine } = await import(
-      "@colony/sandbox-in-process"
-    );
+    const { createInProcessEngine } =
+      await import("@colony/sandbox-in-process");
     const { buildSandboxLaunchProfile } = await import("@colony/sandbox");
     const { mkdirSync, mkdtempSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { createServer } = await import("node:http");
-    const { PiBaseAgentRunner, REVIEWER_ROLE_PROFILE } = await import(
-      "./pi-base-agent-runner.js"
-    );
-    const { createFileSessionManager, sessionFilePath } = await import(
-      "./session-store.js"
-    );
+    const { PiBaseAgentRunner, REVIEWER_ROLE_PROFILE } =
+      await import("./pi-base-agent-runner.js");
+    const { createFileSessionManager, sessionFilePath } =
+      await import("./session-store.js");
     // The gateway settles the segment at once: an empty `length` stop is a
     // terminal response, so the run fails without spending its wall clock.
     const gateway = createServer((_request, response) => {
@@ -398,10 +395,7 @@ describe("resumeRun", () => {
           }),
         ].join("\n") + "\n",
       );
-      const sessionManager = await createFileSessionManager(
-        sessionsDir,
-        runId,
-      );
+      const sessionManager = await createFileSessionManager(sessionsDir, runId);
       const runner = new PiBaseAgentRunner(
         {
           ...REVIEWER_ROLE_PROFILE,
@@ -443,9 +437,7 @@ describe("resumeRun", () => {
       expect(result.reason).toBeDefined();
       // The resumed sandbox survives the failed segment: a fresh engine in
       // a new object graph — the post-restart adoption path — still connects.
-      const reattached = await createInProcessEngine().connect(
-        live.sandboxId,
-      );
+      const reattached = await createInProcessEngine().connect(live.sandboxId);
       expect(reattached).toBe(live);
       await expect(
         reattached.exec({ command: "true" }, () => undefined),
