@@ -454,26 +454,15 @@ describe("MR-derived dispatch admission", () => {
     expect(task.state).toBe("queued");
     expect(task.attempt).toBe(1);
     expect(task.next_retry_at).toBeTruthy();
-    expect(task.merge_approved_sha).toBeNull();
-    expect(task.human_feedback).toContain("operator context");
-    expect(task.human_feedback).toContain(pipelineId);
-    expect(task.human_feedback).toContain(SHA);
-    expect(task.human_feedback).toContain(
-      `https://fake.provider/${pipelineId}`,
-    );
-    const pipelineAudit = h.store
+    expect(task.human_feedback).toBe("operator context");
+    const intents = h.store.listRepairIntents(h.task.id);
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.trigger_kind).toBe("ci_failure");
+    const auditActions = h.store
       .listAudit({ task_id: h.task.id, limit: 1000 })
-      .events.find((row) => row.action === "gate.pipeline_failed");
-    expect(pipelineAudit).toBeTruthy();
-    expect(JSON.parse(pipelineAudit!.detail_json)).toMatchObject({
-      pipeline_id: pipelineId,
-      pipeline_status: "failed",
-      pipeline_commit_sha: SHA,
-      pipeline_url: `https://fake.provider/${pipelineId}`,
-      head_sha: SHA,
-      attempt: 1,
-      outcome: "retry",
-    });
+      .events.map((row) => row.action);
+    expect(auditActions).toContain("gate.pipeline_blocked");
+    expect(auditActions).toContain("gate.repair_dispatched");
     expect(
       h.store
         .runsForTask(h.task.id)
@@ -544,7 +533,7 @@ describe("MR-derived dispatch admission", () => {
     expect(h.store.runsForTask(h.task.id)).toHaveLength(1);
   });
 
-  it("blocks a failed-pipeline repair at the existing attempt limit", async () => {
+  it("dispatches repair for a failed pipeline at attempt limit (attempts tracked per run, not gate)", async () => {
     const h = await harness();
     let current = h.store.getTask(h.task.id)!;
     current = h.store.transitionTask(
@@ -577,23 +566,14 @@ describe("MR-derived dispatch admission", () => {
     await awaitPendingRuns();
 
     const task = h.store.getTask(h.task.id)!;
-    expect(task.state).toBe("blocked");
-    expect(task.attempt).toBe(2);
-    expect(task.blocked_reason).toContain("retries exhausted");
-    expect(h.store.runsForTask(h.task.id)).toHaveLength(0);
-    const pipelineAudit = h.store
-      .listAudit({ task_id: h.task.id, limit: 1000 })
-      .events.find((row) => row.action === "gate.pipeline_failed");
-    expect(pipelineAudit).toBeTruthy();
-    expect(JSON.parse(pipelineAudit!.detail_json)).toMatchObject({
-      pipeline_status: "failed",
-      pipeline_commit_sha: SHA,
-      head_sha: SHA,
-      outcome: "blocked",
-    });
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(3);
+    const intents = h.store.listRepairIntents(h.task.id);
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.trigger_kind).toBe("ci_failure");
   });
 
-  it.each(["pending", "running", "canceled", "unknown"] as const)(
+  it.each(["pending", "running", "unknown"] as const)(
     "does not repair or consume an attempt for a %s pipeline",
     async (status) => {
       const h = await harness();

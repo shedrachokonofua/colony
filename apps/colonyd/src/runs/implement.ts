@@ -16,6 +16,7 @@ import {
   type ImplementExecutionContext,
 } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
+import { isInfraError } from "../run-classification.js";
 import {
   amendBranchWithTrailer,
   buildMergeProvenanceLine,
@@ -264,6 +265,20 @@ async function executeImplement(
         run_id: runId,
         detail: { reason },
       });
+      if (repairIntent && !isInfraError(reason)) {
+        const current = ctx.store.getTask(task.id);
+        if (current) {
+          ctx.store.transitionTask(
+            current.id,
+            current.state_version,
+            "blocked",
+            SERVICE_ACTOR,
+            {
+              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+            },
+          );
+        }
+      }
       return;
     }
 
@@ -272,11 +287,26 @@ async function executeImplement(
       ? implementerCompletionV2Schema.safeParse(output.envelope)
       : null;
     if (!parsed || !parsed.success) {
+      const reason = "envelope invalid";
       ctx.store.finishRun(runId, "failed", {
-        error: "envelope invalid",
+        error: reason,
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
       });
-      runSpan?.end("failed", "envelope invalid");
+      runSpan?.end("failed", reason);
+      if (repairIntent) {
+        const current = ctx.store.getTask(task.id);
+        if (current) {
+          ctx.store.transitionTask(
+            current.id,
+            current.state_version,
+            "blocked",
+            SERVICE_ACTOR,
+            {
+              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+            },
+          );
+        }
+      }
       return;
     }
     const envelope = parsed.data;
@@ -302,11 +332,26 @@ async function executeImplement(
     // A completion without a single executed command is not evidence of
     // work — reject it before it can reach an MR or the gate.
     if (envelope.commands.length === 0) {
+      const reason = "envelope has no command evidence";
       ctx.store.finishRun(runId, "failed", {
-        error: "envelope has no command evidence",
+        error: reason,
         envelope_json: JSON.stringify(envelope),
       });
-      runSpan?.end("failed", "envelope has no command evidence");
+      runSpan?.end("failed", reason);
+      if (repairIntent) {
+        const current = ctx.store.getTask(task.id);
+        if (current) {
+          ctx.store.transitionTask(
+            current.id,
+            current.state_version,
+            "blocked",
+            SERVICE_ACTOR,
+            {
+              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+            },
+          );
+        }
+      }
       return;
     }
 
@@ -360,6 +405,20 @@ async function executeImplement(
         envelope_json: JSON.stringify(envelope),
       });
       runSpan?.end("failed", reason);
+      if (repairIntent) {
+        const current = ctx.store.getTask(task.id);
+        if (current) {
+          ctx.store.transitionTask(
+            current.id,
+            current.state_version,
+            "blocked",
+            SERVICE_ACTOR,
+            {
+              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+            },
+          );
+        }
+      }
       return;
     }
 
@@ -532,6 +591,20 @@ async function executeImplement(
       run_id: runId,
       detail: { reason },
     });
+    if (repairIntent && !isInfraError(reason)) {
+      const current = ctx.store.getTask(task.id);
+      if (current) {
+        ctx.store.transitionTask(
+          current.id,
+          current.state_version,
+          "blocked",
+          SERVICE_ACTOR,
+          {
+            blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+          },
+        );
+      }
+    }
   } finally {
     if (minted) {
       try {

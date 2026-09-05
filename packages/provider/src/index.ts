@@ -904,8 +904,14 @@ export class FakeProviderAdapter implements ProviderAdapter {
     },
   };
 
+  /** Set pipeline status for a commit SHA. */
+  setPipelineStatusForSha(sha: string, status: string): void {
+    this.pipelineStatusBySha.set(sha, status);
+  }
+
   /** Pipeline status per commit SHA; unset SHAs report success. */
   readonly pipelineStatusBySha = new Map<string, string>();
+
   /** Failed/canceled job names per commit SHA; drives listJobs/getTrace. */
   readonly pipelineJobsBySha = new Map<
     string,

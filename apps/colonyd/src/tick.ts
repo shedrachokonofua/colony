@@ -590,6 +590,14 @@ async function advanceMrOpenTasks(
       pipeline?.status === "failed" ||
       pipeline?.status === "canceled"
     ) {
+      const activeTaskRun = ctx.store
+        .activeRuns()
+        .some(
+          (run) =>
+            run.task_id === task.id &&
+            (run.kind === "implement" || run.kind === "merge_gate"),
+        );
+      if (activeTaskRun) continue;
       await repairAfterFailedPipeline(
         ctx,
         scope,
