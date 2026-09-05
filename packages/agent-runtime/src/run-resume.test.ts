@@ -336,4 +336,125 @@ describe("resumeRun", () => {
     expect(h.events.map((e) => e.event)).toEqual(["run_resume_failed"]);
     expect(h.spans[0]?.status).toBe("failed");
   });
+
+  it("a failed resume segment leaves the sandbox connectable for requeue", async () => {
+    // A failed resume destroys nothing: the surviving sandbox stays owned
+    // by the daemon's adoption cycle, so the caller's fail+requeue can
+    // connect to the same id again. Destroying it here made the next
+    // adoption reject "sandbox … gone" and the run unresumable.
+    const { createInProcessEngine } = await import(
+      "@colony/sandbox-in-process"
+    );
+    const { buildSandboxLaunchProfile } = await import("@colony/sandbox");
+    const { mkdirSync, mkdtempSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createServer } = await import("node:http");
+    const { PiBaseAgentRunner, REVIEWER_ROLE_PROFILE } = await import(
+      "./pi-base-agent-runner.js"
+    );
+    const { createFileSessionManager, sessionFilePath } = await import(
+      "./session-store.js"
+    );
+    // The gateway settles the segment at once: an empty `length` stop is a
+    // terminal response, so the run fails without spending its wall clock.
+    const gateway = createServer((_request, response) => {
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        connection: "keep-alive",
+        "cache-control": "no-cache",
+      });
+      response.end(
+        'data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"resume-keep-alive","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n',
+      );
+    });
+    await new Promise<void>((resolve) =>
+      gateway.listen(0, "127.0.0.1", resolve),
+    );
+    const address = gateway.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing port");
+    try {
+      const workspace = mkdtempSync(join(tmpdir(), "colony-resume-sandbox-"));
+      dirs.push(workspace);
+      const engine = createInProcessEngine();
+      const live = await engine.provision(
+        buildSandboxLaunchProfile("reviewer"),
+        workspace,
+      );
+      const runId = "run-resume-survives";
+      const sessionsDir = newDir("keep-alive");
+      mkdirSync(join(sessionsDir, "sessions", runId), { recursive: true });
+      writeFileSync(
+        sessionFilePath(sessionsDir, runId),
+        [
+          JSON.stringify({ type: "title", v: 1, title: "", updatedAt: "x" }),
+          JSON.stringify({
+            type: "session",
+            version: 3,
+            id: "01a05b1d-2073-7109-9bbd-66085c1611e1",
+            timestamp: "2026-09-01T00:00:00.000Z",
+            cwd: "/workspace",
+          }),
+        ].join("\n") + "\n",
+      );
+      const sessionManager = await createFileSessionManager(
+        sessionsDir,
+        runId,
+      );
+      const runner = new PiBaseAgentRunner(
+        {
+          ...REVIEWER_ROLE_PROFILE,
+          workspaceMode: "scratch",
+          requireRepositoryInspection: false,
+          defaultTools: [],
+        },
+        {
+          model: {
+            id: "resume-keep-alive",
+            name: "resume-keep-alive",
+            api: "openai-completions",
+            provider: "test-gateway",
+            baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128_000,
+            maxTokens: 8_192,
+          },
+          scratchDir: newDir("keep-alive-scratch"),
+          broker: { resolve: () => "test-key" },
+          maxTurns: 1,
+          jiggleBackoffMs: 0,
+          runTimeoutMs: 10_000,
+          retryMaxRetries: 0,
+          workspaceProbeIntervalMs: 3_600_000,
+        },
+      );
+      const result = await runner.resume({
+        runId,
+        packet: { goal: "Review the change", head_sha: "c".repeat(40) },
+        environment: { role: "reviewer" },
+        handle: live,
+        sessionManager,
+        steerPrompt: RESUME_STEER_PROMPT,
+      });
+      expect(result.envelope).toEqual({ __unfinished: true });
+      expect(result.reason).toBeDefined();
+      // The resumed sandbox survives the failed segment: a fresh engine in
+      // a new object graph — the post-restart adoption path — still connects.
+      const reattached = await createInProcessEngine().connect(
+        live.sandboxId,
+      );
+      expect(reattached).toBe(live);
+      await expect(
+        reattached.exec({ command: "true" }, () => undefined),
+      ).resolves.toMatchObject({ exitCode: 0 });
+      await live.destroy();
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        gateway.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
 });

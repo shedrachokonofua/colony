@@ -1535,7 +1535,13 @@ export class PiBaseAgentRunner implements PiRunner {
       // outlives the workspace removal above unless it is taken here.
       removeAdvisorDir?.();
       // (4) The sandbox pod goes last: destroy after the workspace is gone.
-      await handle?.destroy();
+      // A resumed handle is owned by the daemon's adoption cycle, not this
+      // segment: destroying it on failure deletes the Sandbox CR the caller
+      // needs to requeue against, so the next adoption's connect rejects
+      // "sandbox … gone" and the run can never be resumed again. The
+      // fresh path keeps destroying the sandbox it provisioned.
+      const segmentSucceeded = capturedEnvelope !== undefined;
+      if (!resumed || segmentSucceeded) await handle?.destroy();
     }
 
     return {
