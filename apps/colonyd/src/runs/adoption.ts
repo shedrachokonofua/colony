@@ -66,7 +66,10 @@ export async function classifyRuns(
     try {
       const probePromise = (async () => {
         const handle = await deps.connect(run.sandbox_id!);
-        const res = await handle.exec({ command: "test -e /workspace" }, () => {});
+        const res = await handle.exec(
+          { command: "test -e /workspace" },
+          () => {},
+        );
         return res.exitCode === 0 && !res.timedOut;
       })();
 

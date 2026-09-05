@@ -8,7 +8,10 @@ import {
   Store,
   type Run,
 } from "@colony/core";
-import { startTelemetryFromEnv, startColonyRunSpan } from "@colony/observability";
+import {
+  startTelemetryFromEnv,
+  startColonyRunSpan,
+} from "@colony/observability";
 import { createRunAuditSink } from "@colony/agent-runtime";
 import { readSessionHeader } from "@colony/agent-runtime/session-store";
 import { FakeProviderAdapter } from "@colony/provider";
@@ -182,8 +185,16 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         // re-mint under the same deterministic name. The revoke sweep at
         // finish covers the new token id the same way a fresh run's is.
         const scope = store.getScope(run.scope_id);
-        if (scope && (run.kind === "implement" || run.kind === "architect" || run.kind === "review")) {
-          const repo = { id: scope.provider_repo_id, path: scope.provider_repo_path };
+        if (
+          scope &&
+          (run.kind === "implement" ||
+            run.kind === "architect" ||
+            run.kind === "review")
+        ) {
+          const repo = {
+            id: scope.provider_repo_id,
+            path: scope.provider_repo_path,
+          };
           const name = expectedRunTokenName(run);
           if (name) {
             const minted = await mintRunToken(provider, repo, {
@@ -216,8 +227,9 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         // Record the continuation's envelope on the run row; task-state
         // advancement stays with the tick reconciler (the existing requeue).
         const output = await adapter.getRunOutput(run.id);
-        const envelope =
-          output?.envelope as { head_sha?: unknown; commands?: unknown } | undefined;
+        const envelope = output?.envelope as
+          | { head_sha?: unknown; commands?: unknown }
+          | undefined;
         store.finishRun(run.id, "succeeded", {
           ...(typeof envelope?.head_sha === "string"
             ? { head_sha: envelope.head_sha }

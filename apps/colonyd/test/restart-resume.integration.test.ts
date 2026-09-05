@@ -1,12 +1,15 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "bun:test";
 import { resetEnvCache } from "@colony/config";
 import {
   FakeAgentRuntimeAdapter,
@@ -15,9 +18,13 @@ import {
 } from "@colony/agent-runtime";
 import { Store } from "@colony/core";
 import { createInProcessEngine } from "@colony/sandbox-in-process";
+import { buildSandboxLaunchProfile } from "@colony/sandbox";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
-import { adoptOrExpireRuns, type AdoptionResult } from "../src/runs/adoption.js";
+import {
+  adoptOrExpireRuns,
+  type AdoptionResult,
+} from "../src/runs/adoption.js";
 import { trackRun } from "../src/runs/registry.js";
 import { createDrainController } from "../src/drain.js";
 import { readSessionHeader } from "@colony/agent-runtime/session-store";
@@ -63,6 +70,7 @@ beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "restart-resume-"));
   provider = new FakeProviderAdapter();
   const created = await provider.repos.create({
+    name: "resume-e2e",
     namespace: "so",
     path: "resume-e2e",
   });
@@ -87,7 +95,10 @@ let sessionsDir: string;
 let configPath: string;
 
 beforeEach(() => {
-  dbPath = join(root, `case-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  dbPath = join(
+    root,
+    `case-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+  );
   sessionsDir = join(root, `sessions-${Date.now()}`);
   mkdirSync(sessionsDir, { recursive: true });
   configPath = join(root, `colony-${Date.now()}.yaml`);
@@ -166,9 +177,7 @@ async function bootHeadless(
  * every runtime object afterwards — the run row is manually rewound to
  * `running` exactly as a SIGKILL mid-run would have left it.
  */
-async function seedMidFlightRun(
-  drainTimeoutMs = "600000",
-): Promise<{
+async function seedMidFlightRun(drainTimeoutMs = "600000"): Promise<{
   handle: ColonydHandle;
   runId: string;
   taskId: string;
@@ -214,11 +223,7 @@ async function seedMidFlightRun(
 
   const engine = createInProcessEngine();
   const handle2 = await engine.provision(
-    {
-      runtimeClass: "gvisor",
-      envAllowlist: ["PATH"],
-      podLabels: {},
-    },
+    buildSandboxLaunchProfile("developer"),
     workspace,
   );
   const sandboxId = handle2.sandboxId;
@@ -270,188 +275,180 @@ async function adoptAfterRestart(
 }
 
 describe("restart resume integration", () => {
-  it(
-    "case 1: crash restart adopts the run and resumes against the SAME sandbox",
-    async () => {
-      const seeded = await seedMidFlightRun();
-      const { runId, taskId, sandboxId, markerPath } = seeded;
-      await seeded.handle.shutdown();
+  it("case 1: crash restart adopts the run and resumes against the SAME sandbox", async () => {
+    const seeded = await seedMidFlightRun();
+    const { runId, taskId, sandboxId, markerPath } = seeded;
+    await seeded.handle.shutdown();
 
-      // --- the "crash": every runtime object dropped, run row left running.
-      // The restarted process's BOOT adoption (main.ts) does the rest.
-      expect(readSessionHeader(sessionsDir, runId).ok).toBe(true);
-      const preRestart = new Store(dbPath);
-      expect(preRestart.getRun(runId)!.status).toBe("running");
-      expect(preRestart.getRun(runId)!.sandbox_id).toBe(sandboxId);
-      preRestart.close();
+    // --- the "crash": every runtime object dropped, run row left running.
+    // The restarted process's BOOT adoption (main.ts) does the rest.
+    expect(readSessionHeader(sessionsDir, runId).ok).toBe(true);
+    const preRestart = new Store(dbPath);
+    expect(preRestart.getRun(runId)!.status).toBe("running");
+    expect(preRestart.getRun(runId)!.sandbox_id).toBe(sandboxId);
+    preRestart.close();
 
-      const resumed = await bootHeadless(dbPath);
-      const store = resumed.ctx.store;
+    const resumed = await bootHeadless(dbPath);
+    const store = resumed.ctx.store;
 
-      // Boot claimed and resumed the run against the SAME sandbox.
-      expect(resumeCalls).toEqual([{ runId, sandboxId }]);
+    // Boot claimed and resumed the run against the SAME sandbox.
+    expect(resumeCalls).toEqual([{ runId, sandboxId }]);
 
-      const run = store.getRun(runId)!;
-      expect(run.status).toBe("succeeded");
-      expect(run.adopted).toBe(1);
-      expect(run.envelope_json).toContain("implementer_completion");
+    const run = store.getRun(runId)!;
+    expect(run.status).toBe("succeeded");
+    expect(run.adopted).toBe(1);
+    expect(run.envelope_json).toContain("implementer_completion");
 
-      const events = store.listRunEventsByName(runId, "run_resumed");
-      expect(events).toHaveLength(1);
-      const detail = JSON.parse(events[0]!.detail_json) as Record<string, unknown>;
-      expect(detail.sandbox_id).toBe(sandboxId);
-      expect(detail.entries_loaded).toBe(2);
+    const events = store.listRunEventsByName(runId, "run_resumed");
+    expect(events).toHaveLength(1);
+    const detail = JSON.parse(events[0]!.detail_json) as Record<
+      string,
+      unknown
+    >;
+    expect(detail.sandbox_id).toBe(sandboxId);
+    expect(detail.entries_loaded).toBe(2);
 
-      const adoptedAudit = store
+    const adoptedAudit = store
+      .listAudit({ run_id: runId, limit: 100 })
+      .events.some((row) => row.action === "run.adopted");
+    expect(adoptedAudit).toBe(true);
+
+    // The marker written by the first segment is still readable through a
+    // fresh connect: the SAME live sandbox instance.
+    const again = await createInProcessEngine().connect(sandboxId);
+    const marker = await again.readFile(markerPath);
+    expect(marker.toString("utf8")).toBe("written-before-restart");
+
+    // A second adoption attempt of the same run is refused.
+    const second = await adoptOrExpireRuns({
+      store,
+      provider,
+      logger: console.error as never,
+      sessionsDir,
+      connect: (id) => createInProcessEngine().connect(id),
+      resume: async () => {
+        throw new Error("must not resume twice");
+      },
+      resumeLeaseTtlMs: 60_000,
+    });
+    expect(second.adoptable).toEqual([]);
+    await resumed.shutdown();
+  }, 60_000);
+
+  it("case 2: a missing session journal degrades to fail + revoke + requeue", async () => {
+    const seeded = await seedMidFlightRun();
+    const { runId, taskId } = seeded;
+    await seeded.handle.shutdown();
+
+    rmSync(join(sessionsDir, "sessions", runId, "session.jsonl"));
+
+    const minted = await provider.accessTokens.mint(
+      { id: repoId, path: "so/resume-e2e" },
+      {
+        name: `colony-task-${taskId}`,
+        scopes: ["api"],
+        access_level: 30,
+        expires_at: "2099-01-01",
+      },
+    );
+
+    const store = new Store(dbPath);
+    const result = await adoptOrExpireRuns({
+      store,
+      provider,
+      logger: console.error as never,
+      sessionsDir,
+      connect: (id) => createInProcessEngine().connect(id),
+      resume: async () => {
+        throw new Error("must not resume");
+      },
+      resumeLeaseTtlMs: 60_000,
+    });
+
+    expect(result.orphans.map((r) => r.id)).toEqual([runId]);
+    const run = store.getRun(runId)!;
+    expect(run.status).toBe("failed");
+    expect(run.error).toBe("process_restart");
+    expect(
+      provider.listAccessTokens().some((token) => token.id === minted.id),
+    ).toBe(false);
+    // Requeue is the tick's job: the task is out of `running` because the
+    // run failed (the tick reconciler sees no active run and requeues).
+    expect(resumeCalls).toEqual([]);
+    store.close();
+  }, 60_000);
+
+  it("case 3: drain-cap shutdown heartbeats (never adopts), and the next boot resumes", async () => {
+    // The seed handle is booted with the drain cap at 0; its boot adoption
+    // is a no-op because the run row is seeded AFTER boot — exactly the
+    // shape of a first process that started a run and then hits the cap.
+    const seeded = await seedMidFlightRun("0");
+    const { runId, sandboxId } = seeded;
+
+    // A live in-flight run for the drain to find: the registry entry
+    // parks on an unresolved promise, so abortAll sees it at the cap.
+    let release!: () => void;
+    const parked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    trackRun(runId, parked, () => release());
+
+    // Shutdown at the cap: drain.wait() returns "aborted" with the run
+    // still alive. main.ts's partition fires inside drainDeps.abortAll.
+    await seeded.handle.shutdown();
+    release();
+
+    const store = new Store(dbPath);
+    const after = store.getRun(runId)!;
+    // NOT aborted, NOT finishRun'ed, lease pushed out by the resume TTL,
+    // adopted still 0: the next boot's claim must be the winner.
+    expect(after.status).toBe("running");
+    expect(after.adopted).toBe(0);
+    expect(after.error).toBeNull();
+    const afterLease = Date.parse(after.lease_expires_at);
+    expect(afterLease).toBeGreaterThan(Date.now() + 900_000 - 5_000);
+    const finished = store
+      .listAudit({ run_id: runId, limit: 100 })
+      .events.filter((row) => row.action === "run.finished");
+    expect(finished).toEqual([]);
+    const tokenRevoked = store
+      .listAudit({ run_id: runId, limit: 100 })
+      .events.some((row) => row.action === "agent_token.revoked");
+    expect(tokenRevoked).toBe(false);
+    store.close();
+
+    // --- next boot: the claim wins, resume runs against the SAME sandbox.
+    // (The run row was still `running` with adopted = 0 and a live lease,
+    // so the boot-time adoptRun claim is the winner.)
+    const resumed = await bootHeadless(dbPath);
+    const fresh = resumed.ctx.store;
+    expect(resumeCalls).toEqual([{ runId, sandboxId }]);
+    const run = fresh.getRun(runId)!;
+    expect(run.status).toBe("succeeded");
+    expect(run.adopted).toBe(1);
+    expect(
+      fresh
         .listAudit({ run_id: runId, limit: 100 })
-        .events.some((row) => row.action === "run.adopted");
-      expect(adoptedAudit).toBe(true);
+        .events.some((row) => row.action === "run.adopted"),
+    ).toBe(true);
+    await resumed.shutdown();
+  }, 60_000);
 
-      // The marker written by the first segment is still readable through a
-      // fresh connect: the SAME live sandbox instance.
-      const again = await createInProcessEngine().connect(sandboxId);
-      const marker = await again.readFile(markerPath);
-      expect(marker.toString("utf8")).toBe("written-before-restart");
+  it("safety net: an adopted run whose lease lapses is failed by expireDeadLeases", async () => {
+    const seeded = await seedMidFlightRun();
+    const { runId } = seeded;
+    const store = new Store(dbPath);
+    // Adopt (claim) then age the lease past expiry.
+    expect(store.adoptRun(runId, 60_000)).toBe(true);
+    store.db
+      .prepare(`UPDATE runs SET lease_expires_at = ? WHERE id = ?`)
+      .run(new Date(Date.now() - 5_000).toISOString(), runId);
 
-      // A second adoption attempt of the same run is refused.
-      const second = await adoptOrExpireRuns({
-        store,
-        provider,
-        logger: console.error as never,
-        sessionsDir,
-        connect: (id) => createInProcessEngine().connect(id),
-        resume: async () => {
-          throw new Error("must not resume twice");
-        },
-        resumeLeaseTtlMs: 60_000,
-      });
-      expect(second.adoptable).toEqual([]);
-      await resumed.shutdown();
-    },
-    60_000,
-  );
-
-  it(
-    "case 2: a missing session journal degrades to fail + revoke + requeue",
-    async () => {
-      const seeded = await seedMidFlightRun();
-      const { runId, taskId } = seeded;
-      await seeded.handle.shutdown();
-
-      rmSync(join(sessionsDir, "sessions", runId, "session.jsonl"));
-
-      const minted = await provider.accessTokens.mint(
-        { id: repoId, path: "so/resume-e2e" },
-        { name: `colony-task-${taskId}`, scopes: ["api"], access_level: 30, expires_at: "2099-01-01" },
-      );
-
-      const store = new Store(dbPath);
-      const result = await adoptOrExpireRuns({
-        store,
-        provider,
-        logger: console.error as never,
-        sessionsDir,
-        connect: (id) => createInProcessEngine().connect(id),
-        resume: async () => {
-          throw new Error("must not resume");
-        },
-        resumeLeaseTtlMs: 60_000,
-      });
-
-      expect(result.orphans.map((r) => r.id)).toEqual([runId]);
-      const run = store.getRun(runId)!;
-      expect(run.status).toBe("failed");
-      expect(run.error).toBe("process_restart");
-      expect(
-        provider.listAccessTokens().some((token) => token.id === minted.id),
-      ).toBe(false);
-      // Requeue is the tick's job: the task is out of `running` because the
-      // run failed (the tick reconciler sees no active run and requeues).
-      expect(resumeCalls).toEqual([]);
-      store.close();
-    },
-    60_000,
-  );
-
-  it(
-    "case 3: drain-cap shutdown heartbeats (never adopts), and the next boot resumes",
-    async () => {
-      // The seed handle is booted with the drain cap at 0; its boot adoption
-      // is a no-op because the run row is seeded AFTER boot — exactly the
-      // shape of a first process that started a run and then hits the cap.
-      const seeded = await seedMidFlightRun("0");
-      const { runId, sandboxId } = seeded;
-
-      // A live in-flight run for the drain to find: the registry entry
-      // parks on an unresolved promise, so abortAll sees it at the cap.
-      let release!: () => void;
-      const parked = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      trackRun(runId, parked, () => release());
-
-      // Shutdown at the cap: drain.wait() returns "aborted" with the run
-      // still alive. main.ts's partition fires inside drainDeps.abortAll.
-      await seeded.handle.shutdown();
-      release();
-
-      const store = new Store(dbPath);
-      const after = store.getRun(runId)!;
-      // NOT aborted, NOT finishRun'ed, lease pushed out by the resume TTL,
-      // adopted still 0: the next boot's claim must be the winner.
-      expect(after.status).toBe("running");
-      expect(after.adopted).toBe(0);
-      expect(after.error).toBeNull();
-      const afterLease = Date.parse(after.lease_expires_at);
-      expect(afterLease).toBeGreaterThan(Date.now() + 900_000 - 5_000);
-      const finished = store
-        .listAudit({ run_id: runId, limit: 100 })
-        .events.filter((row) => row.action === "run.finished");
-      expect(finished).toEqual([]);
-      const tokenRevoked = store
-        .listAudit({ run_id: runId, limit: 100 })
-        .events.some((row) => row.action === "agent_token.revoked");
-      expect(tokenRevoked).toBe(false);
-      store.close();
-
-      // --- next boot: the claim wins, resume runs against the SAME sandbox.
-      // (The run row was still `running` with adopted = 0 and a live lease,
-      // so the boot-time adoptRun claim is the winner.)
-      const resumed = await bootHeadless(dbPath);
-      const fresh = resumed.ctx.store;
-      expect(resumeCalls).toEqual([{ runId, sandboxId }]);
-      const run = fresh.getRun(runId)!;
-      expect(run.status).toBe("succeeded");
-      expect(run.adopted).toBe(1);
-      expect(
-        fresh
-          .listAudit({ run_id: runId, limit: 100 })
-          .events.some((row) => row.action === "run.adopted"),
-      ).toBe(true);
-      await resumed.shutdown();
-    },
-    60_000,
-  );
-
-  it(
-    "safety net: an adopted run whose lease lapses is failed by expireDeadLeases",
-    async () => {
-      const seeded = await seedMidFlightRun();
-      const { runId } = seeded;
-      const store = new Store(dbPath);
-      // Adopt (claim) then age the lease past expiry.
-      expect(store.adoptRun(runId, 60_000)).toBe(true);
-      store.db
-        .prepare(`UPDATE runs SET lease_expires_at = ? WHERE id = ?`)
-        .run(new Date(Date.now() - 5_000).toISOString(), runId);
-
-      const expired = store.expireDeadLeases(new Date());
-      expect(expired.map((r) => r.id)).toEqual([runId]);
-      const run = store.getRun(runId)!;
-      expect(run.status).toBe("failed");
-      expect(run.error).toBe("lease_expired");
-      store.close();
-    },
-    60_000,
-  );
+    const expired = store.expireDeadLeases(new Date());
+    expect(expired.map((r) => r.id)).toEqual([runId]);
+    const run = store.getRun(runId)!;
+    expect(run.status).toBe("failed");
+    expect(run.error).toBe("lease_expired");
+    store.close();
+  }, 60_000);
 });

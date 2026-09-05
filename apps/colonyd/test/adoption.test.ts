@@ -58,9 +58,10 @@ function seedRun(
   if (overrides.withSession ?? true) {
     const runDir = join(sessionsDir, "sessions", id);
     mkdirSync(runDir, { recursive: true });
-    const header = (overrides.parseableSession ?? true)
-      ? '{"title":"adoption-test"}\n'
-      : "not-json-at-all\n";
+    const header =
+      (overrides.parseableSession ?? true)
+        ? '{"title":"adoption-test"}\n'
+        : "not-json-at-all\n";
     writeFileSync(join(runDir, "session.jsonl"), header, "utf8");
   }
   if (overrides.withSandbox ?? true) {
