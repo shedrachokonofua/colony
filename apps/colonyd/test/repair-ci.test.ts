@@ -353,12 +353,12 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
       metadata: { provider: "fake", id: pipelineId, web_url: "https://pipe-multi" },
     });
     h.provider.pipelines.listJobs = async () => [
-      { id: "j1", name: "test-unit", status: "failed", metadata: {} },
-      { id: "j2", name: "lint", status: "failed", metadata: {} },
-      { id: "j3", name: "build", status: "success", metadata: {} },
+      { id: "j1", name: "test-unit", status: "failed", metadata: { provider: "fake", id: "j1" } },
+      { id: "j2", name: "lint", status: "failed", metadata: { provider: "fake", id: "j2" } },
+      { id: "j3", name: "build", status: "success", metadata: { provider: "fake", id: "j3" } },
     ];
     h.provider.pipelines.getTrace = async (_repo, jobId) => ({
-      job: { id: jobId, name: jobId, status: "failed", metadata: {} },
+      job: { id: jobId, name: jobId, status: "failed", metadata: { provider: "fake", id: jobId } },
       text: `Error in ${jobId}`,
     });
 
