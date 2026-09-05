@@ -92,7 +92,7 @@ export async function classifyRuns(
   return { adoptable, orphans };
 }
 
-/** Boot replacement for expireOrphanedRuns: fail+revoke orphans, adopt+resume the rest. */
+/** Boot replacement: fail+revoke orphans, adopt+resume the rest. */
 export async function adoptOrExpireRuns(
   deps: AdoptionDeps & {
     readonly resume: (run: Run) => Promise<void>;
