@@ -92,8 +92,8 @@ export interface PiRunnerBaseOptions {
   readonly runTimeoutMs?: number;
   /** Zero-output recovery backoff base. Tests shrink it; production defaults to 15s. */
   readonly jiggleBackoffMs?: number;
-  /** Pi SDK retries per failed request. Tests isolate runner failover with zero SDK retries. */
-  readonly retryMaxRetries?: number;
+  /** Transport retry backoff base; quota failures skip directly to another model. */
+  readonly connectionRetryBackoffMs?: number;
   readonly scratchDir?: string;
   readonly engine?: SandboxEngine;
   /**
@@ -916,8 +916,10 @@ export function installRunGuards(
           inputTokens: usage?.input,
           outputTokens: usage?.output,
           cacheReadTokens: usage?.cacheRead,
-          turnDurationSeconds: (messageCompletedAt - previousMessageAt) / 1_000,
           cacheWriteTokens: usage?.cacheWrite,
+          stop_reason: event.message.stopReason,
+          error_message: event.message.errorMessage,
+          turnDurationSeconds: (messageCompletedAt - previousMessageAt) / 1_000,
         },
         // Was "pi_usage": that name is now owned by the sink row above.
         "pi_turn_usage",

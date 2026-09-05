@@ -223,8 +223,6 @@ export interface PiSessionOptions {
   readonly defaultThinkingLevel: ColonyThinkingLevel;
   readonly maxTurns: number;
   readonly runTimeoutMs?: number;
-  /** Bounds the SDK's own same-model retry budget inside one prompt. */
-  readonly retryMaxRetries?: number;
   readonly logger?: PiRunnerLogger;
   readonly auditSink?: RunAuditSink;
   readonly logToolArgs?: boolean;
@@ -317,7 +315,6 @@ export interface PiSession {
     systemPrompt: string;
     customTools: readonly ToolDefinition[];
     toolNames: readonly string[];
-    prewalk: boolean;
     /**
      * Which journal this session persists to. Only the run's own session is
      * evidence, so it alone gets the file-backed manager whose path teardown
@@ -397,12 +394,8 @@ export async function buildPiSession(
   const buildSettings = (enableAdvisor: boolean) =>
     Settings.isolated({
       "compaction.enabled": true,
-      "retry.enabled": true,
-      // The SDK's auto-retry re-prompts a transient failure same-model
-      // with exponential backoff, defaulting to 10 attempts. On a dead
-      // leg that spends the whole run wall inside one prompt, so bound
-      // the budget the leg may burn before the runner sees an error.
-      "retry.maxRetries": options.retryMaxRetries ?? 4,
+      "retry.enabled": false,
+      "retry.modelFallback": false,
       "todo.enabled": true,
       "todo.reminders": true,
       "goal.enabled": true,
@@ -410,7 +403,6 @@ export async function buildPiSession(
       ...(enableAdvisor
         ? {
             "advisor.syncBacklog": "off" as const,
-            "retry.modelFallback": false,
             modelRoles: {
               advisor: `${input.advisorSpec!.provider}/${input.advisorSpec!.id}:xhigh`,
             },
@@ -437,7 +429,6 @@ export async function buildPiSession(
     systemPrompt: string;
     customTools: readonly ToolDefinition[];
     toolNames: readonly string[];
-    prewalk: boolean;
     journal: "run" | "transient";
   }) => {
     const useAdvisor = shouldEnableColonyAdvisor(
@@ -486,9 +477,6 @@ export async function buildPiSession(
       toolNames: [...perSession.toolNames],
       restrictToolNames: true,
       allowRestrictedCustomTools: true,
-      // Arming prewalk keeps the todo tool active, which is what drives omp's
-      // mid-run progress reminders.
-      ...(perSession.prewalk ? { prewalk: { target: primaryModel } } : {}),
       deadline,
       enableMCP: false,
       enableLsp: false,
@@ -526,7 +514,6 @@ export async function buildPiSession(
         systemPrompt: buildSubagentSystemPrompt(),
         customTools: childCustomTools,
         toolNames: childToolNames,
-        prewalk: false,
         journal: "transient",
       }),
     );
@@ -603,8 +590,8 @@ export async function buildPiSession(
         ...sandboxTools.map((tool) => tool.name),
         goalTool.name,
         subagentTool.name,
+        "todo",
       ],
-      prewalk: true,
       journal: input.journal,
     }),
   );

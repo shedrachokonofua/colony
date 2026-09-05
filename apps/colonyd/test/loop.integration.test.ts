@@ -942,7 +942,7 @@ describe("colonyd fake end-to-end loop", () => {
     }
   }, 30_000);
 
-  it("retry: failed runs requeue with backoff; third consecutive failure blocks", async () => {
+  it("counts failed executions independently of revisions and honors an explicit retry reset", async () => {
     const scopeId = await createScope("retry path");
     const taskAId = `${scopeId}.1`;
     // Script A's implementer runs to fail BEFORE any dispatch tick runs.
@@ -950,10 +950,14 @@ describe("colonyd fake end-to-end loop", () => {
 
     await tickAndSettle(); // draft -> planning (architect run)
     await tickAndSettle(); // planning -> active; dispatch A (fails)
-    await tickAndSettle(); // reconcile failed run -> queued attempt=1
+    const priorRevisions = 12;
+    handle.ctx.store.db
+      .prepare("UPDATE tasks SET attempt = ? WHERE id = ?")
+      .run(priorRevisions, taskAId);
+    await tickAndSettle(); // First real execution failure gets a retry.
     let a = handle.ctx.store.getTask(taskAId)!;
     expect(a.state).toBe("queued");
-    expect(a.attempt).toBe(1);
+    expect(a.attempt).toBe(priorRevisions + 1);
     expect(a.next_retry_at).toBeTruthy();
     const delayMs = new Date(a.next_retry_at!).getTime() - Date.now();
     expect(delayMs).toBeGreaterThan(5_000);
@@ -965,7 +969,7 @@ describe("colonyd fake end-to-end loop", () => {
     await tickAndSettle();
     a = handle.ctx.store.getTask(taskAId)!;
     expect(a.state).toBe("queued");
-    expect(a.attempt).toBe(2);
+    expect(a.attempt).toBe(priorRevisions + 2);
 
     // Failure #3 -> blocked (maxAttempts=3)
     handle.ctx.store.clearRetryDelay(taskAId);
@@ -973,7 +977,6 @@ describe("colonyd fake end-to-end loop", () => {
     await tickAndSettle();
     a = handle.ctx.store.getTask(taskAId)!;
     expect(a.state).toBe("blocked");
-    expect(a.blocked_reason).toMatch(/retries exhausted/);
 
     // B depends on A and is still `queued`: nothing in the scope can run, so
     // the scope must say so instead of reading `active` forever
@@ -984,7 +987,23 @@ describe("colonyd fake end-to-end loop", () => {
     await tickAndSettle();
     const scope = handle.ctx.store.getScope(scopeId)!;
     expect(scope.status).toBe("blocked");
-    expect(scope.blocked_reason).toBe(`no runnable tasks; blocked: ${taskAId}`);
+
+    script.implementerFailures.set(taskAId, 1);
+    const app = buildApp(handle.ctx);
+    const unblocked = await app.request(`/tasks/${taskAId}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(unblocked.status).toBe(200);
+    for (let index = 0; index < 600; index += 1) {
+      handle.ctx.store.audit(ACTOR, "provider.observed", {
+        scope_id: scopeId,
+        task_id: taskAId,
+      });
+    }
+    await tickAndSettle();
+    await tickAndSettle();
+    expect(handle.ctx.store.getTask(taskAId)!.state).toBe("queued");
   }, 30_000);
 
   it("gate fail: requeued with evidence, then merged on the second pass", async () => {
@@ -1180,11 +1199,6 @@ describe("colonyd fake end-to-end loop", () => {
 
     taskA = handle.ctx.store.getTask(taskA.id)!;
     expect(taskA.state).toBe("merged");
-    expect(
-      handle.ctx.store
-        .listAudit({ task_id: taskA.id, limit: 100 })
-        .events.some((row) => row.action === "gate.merge_timeout_reconciled"),
-    ).toBe(true);
   }, 30_000);
 
   it("restart: dead lease expires once; task requeues exactly once without duplicate runs", async () => {

@@ -456,8 +456,9 @@ describe("runImplement continuity dispatch", () => {
     expect(packet.body).toContain("provider gate failed");
   });
 
-  it("selects the previous interrupted attempt even when the current run is already a new running row", async () => {
+  it("recovers pushed work after a provider failure before task branch metadata was saved", async () => {
     const h = await harness();
+    await prepareBranch(h, `colony/${h.task.id}`, SHA_B);
     const interrupted = h.store.startRun({
       scope_id: h.scope.id,
       task_id: h.task.id,
@@ -466,7 +467,7 @@ describe("runImplement continuity dispatch", () => {
       base_sha: SHA_A,
     });
     h.store.finishRun(interrupted.id, "failed", {
-      error: "timeout_without_envelope",
+      error: "provider_connection_failure: stream interrupted",
       head_sha: SHA_A,
     });
     setRunTimes(
@@ -479,12 +480,11 @@ describe("runImplement continuity dispatch", () => {
     await runImplement(h.ctx, h.scope, h.task);
 
     const packet = capturedPacket(h.runtime);
-    expect(h.task.branch).toBeNull();
-    expect(h.task.mr_iid).toBeNull();
     expect(packet.execution_context.mode).toBe("repair");
-    expect(packet.body).toContain("previous attempt was cut off");
-    expect(packet.body).toContain("interrupted");
-    expect(packet.body).not.toContain("MR for this task already exists");
+    expect(packet.execution_context.remote_head).toEqual({
+      status: "known",
+      value: SHA_B,
+    });
   });
 
   it("does not request a nonexistent task branch or pipeline for a fresh task", async () => {

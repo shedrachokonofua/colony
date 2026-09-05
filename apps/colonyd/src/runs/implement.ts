@@ -24,10 +24,6 @@ import {
 import { buildCloneUrl } from "./merge-gate.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
-/** Run errors that mean "killed before it could submit", not "did the wrong thing". */
-const INTERRUPTED_RUN_ERROR =
-  /timeout_without_envelope|process_restart|operation was aborted/i;
-
 /**
  * Run `fn` inside the run root's span context so SDK GenAI spans nest under
  * it. With no span (tracing disabled) this stays on the ambient context —
@@ -605,8 +601,8 @@ function interruptedAttempt(
     .runsForTask(task.id)
     .filter((run) => run.kind === "implement" && run.id !== excludeRunId);
   const last = runs.at(-1);
-  if (!last || last.status !== "failed" || !last.error) return undefined;
-  if (!INTERRUPTED_RUN_ERROR.test(last.error)) return undefined;
+  if (!last || (last.status !== "failed" && last.status !== "canceled"))
+    return undefined;
   const minutes =
     last.finished_at && last.started_at
       ? Math.round(
@@ -622,7 +618,7 @@ function interruptedAttempt(
         ? { head_sha: last.head_sha ?? last.base_sha! }
         : {}),
       text: [
-        `The previous attempt was cut off${ran} (${last.error}) without submitting an envelope.`,
+        `The previous attempt ended${ran} (${last.error ?? last.status}) without an accepted completion.`,
         "It may already have pushed part of this task. BEFORE writing anything:",
         "- Inspect the remote task branch and its diff against packet.repo.base_commit to see what already landed.",
         "- Continue from that state; never restart work that is already pushed.",

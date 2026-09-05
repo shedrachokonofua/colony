@@ -14,9 +14,13 @@ import type { ColonydContext } from "../src/context.js";
 import type { Scope, Store, Task } from "@colony/core";
 import { Store as ColonyStore } from "@colony/core";
 import { createLocalArtifactStore } from "@colony/core";
-import { abortRunAndWait } from "../src/runs/registry.js";
+import { abortRun, abortRunAndWait } from "../src/runs/registry.js";
 import { FakeProviderAdapter } from "@colony/provider";
-import { defaultGateExecutor, runMergeGate } from "../src/runs/merge-gate.js";
+import {
+  GateExecutionError,
+  defaultGateExecutor,
+  runMergeGate,
+} from "../src/runs/merge-gate.js";
 
 const dirs: string[] = [];
 
@@ -474,6 +478,286 @@ describe("runMergeGate success evidence", () => {
       head_sha: headSha,
       files_changed: ["note.txt"],
     });
+    store.close();
+  });
+
+  it("defers workspace failures without charging an implementation attempt", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow();
+    (ctx as unknown as { gateExecutor: unknown }).gateExecutor = async () => ({
+      reason: "workspace_failed",
+      detail: "workspace provisioning failed",
+    });
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+
+    const current = store.getTask(task!.id)!;
+    const gate = store
+      .runsForTask(task!.id)
+      .find((run) => run.kind === "merge_gate")!;
+    expect(current.state).toBe("mr_open");
+    expect(current.attempt).toBe(0);
+    expect(
+      store.runsForTask(task!.id).filter((run) => run.kind === "implement"),
+    ).toHaveLength(0);
+    expect(JSON.parse(gate.evidence_json!)).toMatchObject({
+      reason: "workspace_failed",
+      detail: "workspace provisioning failed",
+      head_sha: headSha,
+    });
+    expect(JSON.parse(gate.fault_json!)).toEqual({
+      layer: "sandbox",
+      code: "workspace_failed",
+    });
+    expect(
+      store
+        .listAudit({ task_id: task!.id, limit: 100 })
+        .events.some((event) => event.action === "gate.deferred"),
+    ).toBe(true);
+    store.close();
+  });
+
+  it("defers provider failures with their error evidence", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow();
+    const originalGet = ctx.provider.mergeRequests.get.bind(
+      ctx.provider.mergeRequests,
+    );
+    ctx.provider.mergeRequests.get = async () => {
+      throw new Error("provider unavailable");
+    };
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+    ctx.provider.mergeRequests.get = originalGet;
+
+    const current = store.getTask(task!.id)!;
+    const gate = store
+      .runsForTask(task!.id)
+      .find((run) => run.kind === "merge_gate")!;
+    expect(current.state).toBe("mr_open");
+    expect(current.attempt).toBe(0);
+    expect(JSON.parse(gate.evidence_json!)).toMatchObject({
+      reason: "workspace_failed",
+      error: "mr refetch failed: provider unavailable",
+      head_sha: headSha,
+    });
+    expect(JSON.parse(gate.fault_json!)).toEqual({
+      layer: "provider",
+      code: "provider_failed",
+    });
+    store.close();
+  });
+  it("records merge_unconfirmed when merge and confirmation both fail", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow();
+    const originalGet = ctx.provider.mergeRequests.get.bind(
+      ctx.provider.mergeRequests,
+    );
+    const originalMerge = ctx.provider.mergeRequests.merge.bind(
+      ctx.provider.mergeRequests,
+    );
+    let getCalls = 0;
+    ctx.provider.mergeRequests.get = async (...args) => {
+      getCalls += 1;
+      if (getCalls === 1) return originalGet(...args);
+      throw new Error("confirmation unavailable");
+    };
+    ctx.provider.mergeRequests.merge = async () => {
+      throw new Error("merge request timed out");
+    };
+
+    try {
+      await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+    } finally {
+      ctx.provider.mergeRequests.get = originalGet;
+      ctx.provider.mergeRequests.merge = originalMerge;
+    }
+
+    const gate = store
+      .runsForTask(task!.id)
+      .find((run) => run.kind === "merge_gate")!;
+    expect(store.getTask(task!.id)!.state).toBe("mr_open");
+    expect(JSON.parse(gate.evidence_json!)).toMatchObject({
+      reason: "merge_unconfirmed",
+      error: "merge request timed out",
+      confirmation_error: "confirmation unavailable",
+      head_sha: headSha,
+    });
+    expect(JSON.parse(gate.fault_json!)).toEqual({
+      layer: "provider",
+      code: "merge_unconfirmed",
+    });
+    store.close();
+  });
+
+  it("lets same-head merge confirmation win a cancellation race", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow();
+    const originalGet = ctx.provider.mergeRequests.get.bind(
+      ctx.provider.mergeRequests,
+    );
+    const mergeStarted = Promise.withResolvers<void>();
+    const releaseMerge = Promise.withResolvers<void>();
+    ctx.provider.mergeRequests.merge = async () => {
+      mergeStarted.resolve();
+      await releaseMerge.promise;
+      throw new Error("merge response lost");
+    };
+    let getCalls = 0;
+    ctx.provider.mergeRequests.get = async (...args) => {
+      getCalls += 1;
+      const current = await originalGet(...args);
+      if (getCalls === 1) return current;
+      return { ...current, state: "merged", head_commit_sha: headSha };
+    };
+
+    const pending = runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+    await mergeStarted.promise;
+    const run = store
+      .runsForTask(task!.id)
+      .find((candidate) => candidate.kind === "merge_gate")!;
+    expect(await abortRun(run.id)).toBe(true);
+    releaseMerge.resolve();
+    await pending;
+
+    const finished = store.getRun(run.id)!;
+    expect(finished.status).toBe("succeeded");
+    expect(JSON.parse(finished.evidence_json!)).toMatchObject({
+      reason: "merge_observed_after_error",
+      head_sha: headSha,
+    });
+    store.close();
+  });
+
+  it("defers a moved head without requesting a repair", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow();
+    const originalGet = ctx.provider.mergeRequests.get.bind(
+      ctx.provider.mergeRequests,
+    );
+    ctx.provider.mergeRequests.get = async (...args) => ({
+      ...(await originalGet(...args)),
+      head_commit_sha: "moved-head",
+    });
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+
+    const current = store.getTask(task!.id)!;
+    const gate = store
+      .runsForTask(task!.id)
+      .find((run) => run.kind === "merge_gate")!;
+    expect(current.state).toBe("mr_open");
+    expect(current.attempt).toBe(0);
+    expect(
+      store.runsForTask(task!.id).filter((run) => run.kind === "implement"),
+    ).toHaveLength(0);
+    expect(JSON.parse(gate.evidence_json!)).toEqual({
+      reason: "head_moved",
+      head_sha: headSha,
+      observed: "moved-head",
+    });
+    expect(JSON.parse(gate.fault_json!)).toEqual({
+      layer: "provider",
+      code: "head_moved",
+    });
+    store.close();
+  });
+
+  it("still queues an implementation repair for a real command failure", async () => {
+    const gateConfig = ["commands:", '  - "exit 7"', ""].join("\n");
+    const { ctx, scope, task, opened, headSha, store } =
+      await setupFlow(gateConfig);
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+
+    const current = store.getTask(task!.id)!;
+    const gate = store
+      .runsForTask(task!.id)
+      .find((run) => run.kind === "merge_gate")!;
+    expect(current.state).toBe("queued");
+    expect(current.attempt).toBe(1);
+    expect(JSON.parse(gate.evidence_json!)).toMatchObject({
+      reason: "command_failed",
+      head_sha: headSha,
+    });
+    expect(gate.fault_json).toBeNull();
+    store.close();
+  });
+
+  it("bounds deterministic executor failures with the gate repair budget", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow();
+    for (let index = 0; index < 2; index += 1) {
+      const prior = store.startRun({
+        scope_id: scope.id,
+        task_id: task!.id,
+        kind: "merge_gate",
+        lease_ttl_ms: 60_000,
+        base_sha: headSha,
+      });
+      store.finishRun(prior.id, "failed", {
+        error: "unrelated histories",
+        evidence_json: JSON.stringify({
+          reason: "command_failed",
+          error: "unrelated histories",
+          head_sha: headSha,
+        }),
+      });
+    }
+    (ctx as unknown as { gateExecutor: unknown }).gateExecutor = async () => {
+      throw new GateExecutionError(
+        "repository",
+        new Error("unrelated histories"),
+      );
+    };
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+
+    const gate = store
+      .runsForTask(task!.id)
+      .filter((run) => run.kind === "merge_gate")
+      .at(-1)!;
+    expect(store.getTask(task!.id)!.state).toBe("blocked");
+    expect(JSON.parse(gate.evidence_json!)).toMatchObject({
+      reason: "command_failed",
+      error: "unrelated histories",
+      head_sha: headSha,
+    });
+    expect(gate.fault_json).toBeNull();
+    store.close();
+  });
+
+  it("skips evidence-less deferred gate rows in the failure cap", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow();
+    for (let index = 0; index < 2; index += 1) {
+      const priorCommand = store.startRun({
+        scope_id: scope.id,
+        task_id: task!.id,
+        kind: "merge_gate",
+        lease_ttl_ms: 60_000,
+        base_sha: headSha,
+      });
+      store.finishRun(priorCommand.id, "failed", {
+        error: "command failed",
+        evidence_json: JSON.stringify({
+          reason: "command_failed",
+          head_sha: headSha,
+        }),
+      });
+    }
+    const deferred = store.startRun({
+      scope_id: scope.id,
+      task_id: task!.id,
+      kind: "merge_gate",
+      lease_ttl_ms: 60_000,
+      base_sha: headSha,
+    });
+    store.finishRun(deferred.id, "failed", {
+      error: "process_restart",
+      fault: { layer: "colonyd", code: "process_restart" },
+    });
+    (ctx as unknown as { gateExecutor: unknown }).gateExecutor = async () => ({
+      reason: "command_failed",
+      commands: [{ cmd: "check", exit_code: 1, tail: ["failed"] }],
+    });
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+
+    expect(store.getTask(task!.id)!.state).toBe("blocked");
     store.close();
   });
 

@@ -165,16 +165,24 @@ flowchart LR
    and up to two repair rounds (fix the acceptance criteria, or append
    repair tasks to the graph); then the scope blocks and asks you.
 
-Retries are bounded (`COLONYD_MAX_ATTEMPTS`, default 3) with exponential
-backoff. Failures classified as infrastructure (the daemon restarting
-mid-run, the model gateway returning `429`/`5xx`, a sandbox that failed to
-provision) do not consume attempts; failures the agent could have
-prevented do. Every state change is reconciled by a single-flight tick
-that reads facts back from the Git host. A restarted `colonyd` does not
-resume in-flight runs: it marks them failed with `process_restart`,
-revokes their tokens, and requeues their tasks at no attempt cost.
-Resuming a paused planning scope also restarts a canceled architect, without
-charging the cancellation as an agent failure or resetting prior failures.
+Implementation execution failures are bounded (`COLONYD_MAX_ATTEMPTS`,
+default 3) with exponential backoff. That budget counts failed executions,
+not operator revisions or CI/conflict repair cycles; a successful execution
+or explicit operator unblock starts a new execution budget. Infrastructure
+failures (daemon restart or expired lease, provider `429`/`5xx`, sandbox
+provisioning failure) and cancellations do not consume it. Structured fault
+classification takes precedence over legacy error-message matching.
+
+Every state change is reconciled by a single-flight tick that reads facts
+back from the Git host. A restarted `colonyd` marks orphaned runs failed with
+`process_restart`, revokes their tokens, and retries their work at no attempt
+cost. Expired gates and gate infrastructure failures keep the task
+`mr_open` and retry the gate after backoff, rather than sending unchanged
+code to an implementer. Pipeline lookup errors cannot admit review or merge.
+Failed or canceled implementations inspect the remote task branch before
+continuing, including work pushed before task metadata was saved.
+Resuming a paused planning scope restarts a canceled architect without
+charging the cancellation or resetting prior execution failures.
 
 ## Agents
 
@@ -249,6 +257,9 @@ Fallbacks work at two points:
   `fallback_models` inside the same session and attempt. It prefers a
   fallback with a free slot; if every remaining fallback is capped it takes
   the next one anyway and logs `pi_model_fallback_all_capped`.
+  Colony owns model selection: SDK same-model retries and prewalk hand-backs
+  are disabled. Quota errors advance immediately; transient connection errors
+  get interruptible 1/2/4/8-second backoff before the next model is tried.
 
 The run records the model that actually finished it, the fallback event is
 in the run's event stream, and the architect, developer, and reviewer
@@ -257,6 +268,10 @@ Fallbacks are same-provider and
 ordered. `plan_reviewer` inherits the `reviewer` entry if omitted.
 Per-role `thinking_level`, `timeout_ms`, and `max_turns` bound cost;
 per-model `cost` lets the console estimate spend per task.
+
+Useful-progress timestamps advance on tool activity or successful,
+non-empty assistant output. Error-only usage events and aborted turns do
+not make a stalled run appear productive.
 
 ## Architecture
 

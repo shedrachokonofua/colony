@@ -27,7 +27,10 @@ import {
   runValidation,
 } from "./runs/validate.js";
 import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
-import { isInfraError } from "./run-classification.js";
+import {
+  consecutiveImplementationFailures,
+  isDeferredRunFailure,
+} from "./run-classification.js";
 import { abortRunsAndWait } from "./runs/registry.js";
 
 /** How long after a push the provider's MR head may still report the previous commit. */
@@ -126,7 +129,12 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
     } else if (run.kind === "architect") {
       retryOrFailScope(ctx, run.scope_id, "lease_expired");
     } else if (run.kind === "merge_gate" && run.task_id) {
-      requeueGateTask(ctx, run.task_id);
+      ctx.store.audit(SERVICE_ACTOR, "gate.deferred", {
+        scope_id: run.scope_id,
+        task_id: run.task_id,
+        run_id: run.id,
+        detail: { reason: "lease_expired" },
+      });
     } else if (run.kind === "review" || run.kind === "plan_review") {
       // Task stays mr_open (or the scope stays planning); the next tick
       // re-dispatches a review. Review is evidence, not a state owner.
@@ -211,9 +219,13 @@ function retryOrFailTask(
   // platform broke underneath the run, or the cluster refused to schedule
   // it. Neither may consume the task's attempt budget.
   const last = lastImplementRun(ctx, taskId);
-  const deferred =
-    last?.status === "failed" &&
-    (isInfraError(last.error) || isQuotaDeferred(last.error));
+  const deferred = last?.status === "canceled" || isDeferredRunFailure(last);
+  const since = retryResetAt(ctx, "task", task.id);
+  const failures = consecutiveImplementationFailures(
+    ctx.store
+      .runsForTask(task.id)
+      .filter((run) => !since || run.started_at > since),
+  );
   const attempt = deferred ? task.attempt : task.attempt + 1;
   if (deferred) {
     ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
@@ -222,14 +234,14 @@ function retryOrFailTask(
       detail: { reason },
     });
   }
-  if (attempt >= ctx.env.maxAttempts) {
+  if (!deferred && failures >= ctx.env.maxAttempts) {
     ctx.store.transitionTask(
       task.id,
       task.state_version,
       "blocked",
       SERVICE_ACTOR,
       {
-        blocked_reason: `retries exhausted: ${reason}`,
+        blocked_reason: `${failures} consecutive implementation failures: ${reason}`,
       },
     );
     return;
@@ -247,7 +259,7 @@ function retryOrFailTask(
       : {
           attempt,
           next_retry_at: new Date(
-            Date.now() + retryBackoffMs(attempt),
+            Date.now() + retryBackoffMs(Math.max(1, failures)),
           ).toISOString(),
         },
   );
@@ -276,17 +288,7 @@ function retryOrFailScope(
  * three architects per scope with workspace_lost and blocked every scope).
  */
 function architectAttempts(ctx: ColonydContext, scopeId: string): number {
-  // An operator unblock resets the budget: attempts are counted since the
-  // latest `scope.unblocked`. Counting all of history re-blocked a scope on
-  // the very next tick without running anything (col-1e4f99fd, 2026-09-02:
-  // unblocked twice, never planned again).
-  // listAudit returns its window oldest-first: the LATEST unblock is the
-  // last match, not the first. Taking the first re-blocked col-1ee0d633 and
-  // col-fa9f6385 on the tick after their second unblock (2026-09-03).
-  const unblocks = ctx.store
-    .listAudit({ scope_id: scopeId, limit: 500 })
-    .events.filter((row) => row.action === "scope.unblocked");
-  const since = unblocks.at(-1)?.at;
+  const since = retryResetAt(ctx, "scope", scopeId);
   return ctx.store
     .runsForScope(scopeId)
     .filter(
@@ -294,27 +296,47 @@ function architectAttempts(ctx: ColonydContext, scopeId: string): number {
         r.kind === "architect" &&
         r.status === "failed" &&
         (!since || r.started_at > since) &&
-        !isQuotaDeferred(r.error) &&
-        !isInfraError(r.error),
+        !isDeferredRunFailure(r),
     ).length;
 }
 
-function requeueGateTask(ctx: ColonydContext, taskId: string): void {
-  const task = ctx.store.getTask(taskId);
-  if (!task || task.state !== "mr_open") return;
-  const attempt = task.attempt + 1;
-  ctx.store.transitionTask(
-    task.id,
-    task.state_version,
-    "queued",
-    SERVICE_ACTOR,
-    {
-      attempt,
-      next_retry_at: new Date(
-        Date.now() + retryBackoffMs(attempt),
-      ).toISOString(),
-    },
-  );
+/** Find the latest explicit reset without losing it behind a noisy audit page. */
+function retryResetAt(
+  ctx: ColonydContext,
+  kind: "task" | "scope",
+  id: string,
+): string | undefined {
+  let beforeId: number | undefined;
+  for (;;) {
+    const page = ctx.store.listAudit({
+      ...(kind === "task" ? { task_id: id } : { scope_id: id }),
+      ...(beforeId === undefined ? {} : { before_id: beforeId }),
+      limit: 200,
+    });
+    for (let index = page.events.length - 1; index >= 0; index -= 1) {
+      const row = page.events[index]!;
+      if (kind === "scope" && row.action === "scope.unblocked") return row.at;
+      if (
+        kind !== "task" ||
+        row.action !== "task.transition" ||
+        row.actor === SERVICE_ACTOR
+      ) {
+        continue;
+      }
+      const detail = JSON.parse(row.detail_json) as {
+        from?: string;
+        to?: string;
+      };
+      if (
+        detail.to === "queued" &&
+        (detail.from === "blocked" || detail.from === "canceled")
+      ) {
+        return row.at;
+      }
+    }
+    if (!page.has_more || page.oldest_id === null) return undefined;
+    beforeId = page.oldest_id;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,13 +470,14 @@ async function advanceMrOpenTasks(
         headSha !== undefined &&
         lastGate?.status === "succeeded" &&
         evidence?.head_sha === headSha;
-      const timedOutMergeObserved =
+      const ambiguousMergeObserved =
         headSha !== undefined &&
         lastGate?.status === "failed" &&
         evidence?.head_sha === headSha &&
-        evidence.reason === "workspace_failed" &&
-        isMergeRequestTimeout(evidence.error);
-      if (!gatePassedAtHead && !timedOutMergeObserved) {
+        (evidence.reason === "merge_unconfirmed" ||
+          (evidence.reason === "workspace_failed" &&
+            isMergeRequestTimeout(evidence.error)));
+      if (!gatePassedAtHead && !ambiguousMergeObserved) {
         // MR merged at a SHA the gate never approved. Record and hold.
         ctx.store.audit(SERVICE_ACTOR, "gate.stale_merge_observed", {
           scope_id: scope.id,
@@ -463,10 +486,9 @@ async function advanceMrOpenTasks(
         });
         continue;
       }
-      if (timedOutMergeObserved) {
-        // Compatibility recovery for runs written before the merge gate
-        // confirmed an ambiguous timeout by re-reading the MR.
-        ctx.store.audit(SERVICE_ACTOR, "gate.merge_timeout_reconciled", {
+      if (ambiguousMergeObserved) {
+        // The gate passed this exact head before its merge response was lost.
+        ctx.store.audit(SERVICE_ACTOR, "gate.merge_reconciled", {
           scope_id: scope.id,
           task_id: task.id,
           run_id: lastGate.id,
@@ -652,14 +674,16 @@ async function advanceMrOpenTasks(
     ) {
       continue;
     }
-    // A transient refusal (405/409: pipeline registering or mergeability
-    // being rechecked) holds mr_open for a re-gate at the same head; give
-    // GitLab a beat rather than retrying on every tick.
+    // Provider refusals and platform failures need fresh facts or a new gate,
+    // not a code repair. Bound re-gating without charging the task's history.
     if (
       lastGate?.status === "failed" &&
       lastGate.finished_at &&
-      parseEvidence(lastGate.evidence_json)?.head_sha === headSha &&
-      isTransientMergeRefusal(parseEvidence(lastGate.evidence_json)?.reason) &&
+      (isDeferredRunFailure(lastGate) ||
+        (parseEvidence(lastGate.evidence_json)?.head_sha === headSha &&
+          isTransientMergeRefusal(
+            parseEvidence(lastGate.evidence_json)?.reason,
+          ))) &&
       Date.now() - Date.parse(lastGate.finished_at) < REGATE_BACKOFF_MS
     ) {
       continue;
@@ -731,23 +755,24 @@ async function pipelineGate(
       ready: pipeline.status === "success",
       pipeline,
     };
-  } catch {
-    // No pipeline for this SHA / unknown status. Repos without CI (seed and
-    // acceptance repos) have none and proceed: the gate's local commands are
-    // their CI. But a head pushed moments ago has no pipeline yet either -
-    // GitLab registers it a few seconds after the push - and gating in that
-    // window merges into a 405 (col-e3021988.11, 2026-09-03). Treat a young
-    // head as pending, not exempt.
-    const pushed = ctx.store
-      .runsForTask(task.id)
-      .filter((r) => r.kind === "implement" && r.head_sha === headSha)
-      .at(-1);
-    return {
-      ready: !(
-        pushed?.finished_at &&
-        Date.now() - Date.parse(pushed.finished_at) < PROVIDER_HEAD_LAG_MS
-      ),
-    };
+  } catch (error) {
+    if (
+      error !== null &&
+      typeof error === "object" &&
+      "status" in error &&
+      error.status === 404 &&
+      "body" in error &&
+      error.body === "pipeline_not_found"
+    ) {
+      const pushed = lastImplementRun(ctx, task.id);
+      const youngHead =
+        pushed?.head_sha === headSha &&
+        !!pushed.finished_at &&
+        Date.now() - Date.parse(pushed.finished_at) < PROVIDER_HEAD_LAG_MS;
+      return { ready: !youngHead };
+    }
+    // Transport/authorization errors do not establish that CI is absent.
+    return { ready: false };
   }
 }
 
@@ -1102,7 +1127,7 @@ async function validateScopes(
     // unreachable) has no verdict for an architect to diagnose; re-run it.
     // col-7064acc1 (2026-09-03): an etcd stall failed the sandbox create and
     // the scope spent an extension round asking an architect to explain it.
-    if (isInfraError(lastValidate.error)) {
+    if (isDeferredRunFailure(lastValidate)) {
       const slot = pickDispatchSlot(ctx, "developer");
       if (!slot.allowed) continue;
       dispatch(runValidation(ctx, fresh));
@@ -1124,7 +1149,7 @@ async function validateScopes(
     // hours behind a restart-killed replan, 2026-09-01). Infra deaths are
     // free; agent failures are budgeted like every other retry.
     const agentFailures = architectsSince.filter(
-      (run) => run.status === "failed" && !isInfraError(run.error),
+      (run) => run.status === "failed" && !isDeferredRunFailure(run),
     ).length;
     if (agentFailures >= MAX_VALIDATION_REPLAN_FAILURES) {
       ctx.store.setScopeStatus(fresh.id, "blocked", SERVICE_ACTOR, {

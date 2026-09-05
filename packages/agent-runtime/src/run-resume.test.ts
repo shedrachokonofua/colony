@@ -421,7 +421,6 @@ describe("resumeRun", () => {
           maxTurns: 1,
           jiggleBackoffMs: 0,
           runTimeoutMs: 10_000,
-          retryMaxRetries: 0,
           workspaceProbeIntervalMs: 3_600_000,
         },
       );
