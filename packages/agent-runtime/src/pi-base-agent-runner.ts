@@ -1066,7 +1066,11 @@ export class PiBaseAgentRunner implements PiRunner {
                   const next = resolvedModels[index]!;
                   unchangedRepairSubmissions = 0;
                   await target.setModel(next);
+                  steering.resetContinuationAllowance();
                   zeroOutputStalled = false;
+                  jigglesUsed = 0;
+                  connectionErrors = 0;
+                  quotaScanFloor = target.agent.state.messages.length;
                   this.options.logger?.warn?.(
                     {
                       runId,
@@ -1446,6 +1450,7 @@ export class PiBaseAgentRunner implements PiRunner {
               // finalizer arm a fresh directive for the active candidate.
               stageSession.toolChoiceQueue.removeByLabel("user-force");
               await stageSession.setModel(candidate);
+              steering.resetContinuationAllowance();
               zeroOutputStalled = false;
               jigglesUsed = 0;
               connectionErrors = 0;
@@ -1641,6 +1646,7 @@ export class PiBaseAgentRunner implements PiRunner {
             const candidate = resolvedModels[index]!;
             if (index > 0) {
               await activeSession.setModel(candidate);
+              steering.resetContinuationAllowance();
               zeroOutputStalled = false;
               jigglesUsed = 0;
               connectionErrors = 0;
@@ -1701,6 +1707,7 @@ export class PiBaseAgentRunner implements PiRunner {
             jigglesUsed = 0;
             connectionErrors = 0;
             await session.setModel(next);
+            steering.resetContinuationAllowance();
             zeroOutputStalled = false;
             quotaScanFloor = session.agent.state.messages.length;
             this.options.logger?.warn?.(
@@ -1741,6 +1748,7 @@ export class PiBaseAgentRunner implements PiRunner {
               connectionErrors = 0;
               const next = resolvedModels[index]!;
               await session.setModel(next);
+              steering.resetContinuationAllowance();
               zeroOutputStalled = false;
               quotaScanFloor = session.agent.state.messages.length;
               this.options.logger?.warn?.(
@@ -1764,17 +1772,45 @@ export class PiBaseAgentRunner implements PiRunner {
             const steer = steering.takeContinuationSteer(
               packetObjective(request.packet),
             );
-            if (!steer) break;
-            this.options.logger?.warn?.(
-              { runId, sandboxId },
-              "pi_run_continuation",
-            );
-            // A model that stops without tool calls never sees the
-            // tool-result nudge (qwen wrote a 13k-token prose review with
-            // zero tool calls and no submit, 2026-09-01); the stop-steer is
-            // its only channel, so the clock rides here too, unthrottled.
-            const deadlineOnStop = takeSubmitDeadlineNudge(true);
-            prompt = deadlineOnStop ? `${deadlineOnStop}\n\n${steer}` : steer;
+            if (!steer) {
+              if (!steering.continuationAllowanceExhausted()) break;
+              // Continuation allowance is local to a model leg. Exhausting
+              // this candidate's stop-steers must not terminate a run while a
+              // permitted fallback can continue the retained session.
+              const from = resolvedModels[index]?.id;
+              const nextIndex = nextCandidateIndex(index);
+              const next =
+                nextIndex === null ? undefined : resolvedModels[nextIndex];
+              if (!next || nextIndex === null) break;
+              index = nextIndex;
+              await session.setModel(next);
+              steering.resetContinuationAllowance();
+              zeroOutputStalled = false;
+              jigglesUsed = 0;
+              connectionErrors = 0;
+              quotaScanFloor = session.agent.state.messages.length;
+              this.options.logger?.warn?.(
+                {
+                  runId,
+                  from,
+                  to: next.id,
+                  error: "continuation_exhausted",
+                },
+                "pi_model_fallback",
+              );
+              prompt = MODEL_FAILED_PROMPT;
+            } else {
+              this.options.logger?.warn?.(
+                { runId, sandboxId },
+                "pi_run_continuation",
+              );
+              // A model that stops without tool calls never sees the
+              // tool-result nudge (qwen wrote a 13k-token prose review with
+              // zero tool calls and no submit, 2026-09-01); the stop-steer is
+              // its only channel, so the clock rides here too, unthrottled.
+              const deadlineOnStop = takeSubmitDeadlineNudge(true);
+              prompt = deadlineOnStop ? `${deadlineOnStop}\n\n${steer}` : steer;
+            }
           }
           try {
             const waitPromise = submissionPromise();
