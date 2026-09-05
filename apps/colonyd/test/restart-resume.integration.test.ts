@@ -310,6 +310,27 @@ describe("restart resume integration", () => {
     expect(run.adopted).toBe(1);
     expect(run.envelope_json).toContain("implementer_completion");
 
+    // The resume completion path ran, not just the run row: the task left
+    // `running` for `mr_open` with an MR, so the next tick will not requeue
+    // it via retryOrFailTask("run_failed").
+    const task = store.getTask(taskId)!;
+    expect(task.state).toBe("mr_open");
+    expect(task.mr_iid).not.toBeNull();
+    expect(task.branch).toBe(`colony/${taskId}`);
+    const mr = await provider.mergeRequests.get(
+      { id: repoId, path: "so/resume-e2e" },
+      `${repoId}:${task.mr_iid}`,
+    );
+    expect(mr.state).toBe("opened");
+    expect(mr.source_branch).toBe(`colony/${taskId}`);
+
+    // The re-minted resume token was revoked like a fresh run's finally.
+    expect(
+      store
+        .listAudit({ run_id: runId, limit: 100 })
+        .events.some((row) => row.action === "agent_token.revoked"),
+    ).toBe(true);
+
     const events = store.listRunEventsByName(runId, "run_resumed");
     expect(events).toHaveLength(1);
     const detail = JSON.parse(events[0]!.detail_json) as Record<
@@ -394,7 +415,7 @@ describe("restart resume integration", () => {
     // is a no-op because the run row is seeded AFTER boot — exactly the
     // shape of a first process that started a run and then hits the cap.
     const seeded = await seedMidFlightRun("0");
-    const { runId, sandboxId } = seeded;
+    const { runId, taskId, sandboxId } = seeded;
 
     // A live in-flight run for the drain to find: the registry entry
     // parks on an unresolved promise, so abortAll sees it at the cap.
@@ -437,6 +458,21 @@ describe("restart resume integration", () => {
     const run = fresh.getRun(runId)!;
     expect(run.status).toBe("succeeded");
     expect(run.adopted).toBe(1);
+    // Same completion parity as case 1: task advanced out of `running`
+    // with an MR, and the resume token was revoked.
+    const task = fresh.getTask(taskId)!;
+    expect(task.state).toBe("mr_open");
+    expect(task.mr_iid).not.toBeNull();
+    const mr = await provider.mergeRequests.get(
+      { id: repoId, path: "so/resume-e2e" },
+      `${repoId}:${task.mr_iid}`,
+    );
+    expect(mr.state).toBe("opened");
+    expect(
+      fresh
+        .listAudit({ run_id: runId, limit: 100 })
+        .events.some((row) => row.action === "agent_token.revoked"),
+    ).toBe(true);
     expect(
       fresh
         .listAudit({ run_id: runId, limit: 100 })
