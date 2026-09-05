@@ -67,9 +67,10 @@ in parallel:
 
 ![The scope sheet replayed from the audit log: tasks move queued, running, mr_open, merged along the graph; task 1 blocks on the 401 and is unblocked; 6 and 7 run in parallel; the scope ends done](docs/images/scope-replay.gif)
 
-The console at each of the 48 state changes in the audit log, in order.
-Task 1 blocks after three `401`s and waits for the operator. Tasks 6 and 7
-run at the same time; 7 is sent back twice.
+The scope sheet at fifteen points in the audit log, in order: plan
+applied, task 1 blocked after three `401`s and unblocked, tasks 1–5 in
+sequence, 6 and 7 at the same time, 7 requeued by the gate conflict,
+8, 9, done.
 
 **Result.** 9 merge requests merged. 39 runs: 1 architect, 14 implement,
 11 review, 13 gate. Task 9's gate ran `docker build` and the smoke test
