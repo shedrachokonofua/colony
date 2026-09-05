@@ -148,7 +148,7 @@ flowchart LR
    failures at one head block it. If GitLab refuses the merge while a
    pipeline is still registering, the gate waits 60 s and retries; three
    refusals block.
-   Gates serialize per scope so parallel tasks land one at a time.
+   Gates serialize per provider repository, across scopes, so parallel tasks land one at a time.
 7. **Validate.** When every task is terminal and at least one merged, Colony
    clones the default branch fresh and runs the acceptance commands with no
    credentials. Pass: `done`. Fail: the architect gets the failure evidence

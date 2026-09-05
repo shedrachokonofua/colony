@@ -37,7 +37,10 @@ head, scans for secrets/artifacts, and validates the combined tree with every
 command in `colony.gate.yaml` before rechecking the MR head and merging the
 gated SHA. The file and its non-empty command list are mandatory; malformed
 configuration blocks the task for operator correction. Gates serialize per
-scope.
+provider repository, across scopes. Their subprocesses are asynchronous and
+cancellable; heartbeats keep long-running checks leased. Dispatch rechecks
+current task/scope state after provider reads, and an in-flight gate rechecks
+its merge authority before sending the merge request.
 
 ## Running locally
 
