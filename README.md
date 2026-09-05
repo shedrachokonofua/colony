@@ -1,18 +1,45 @@
 # Colony
 
 Colony is a self-hosted control plane that turns a written engineering goal
-into merged code. It plans the goal as a graph of tasks, runs one coding
-agent per task in parallel on its own branch and merge request, tests every
-merge request against the target branch before merging it, and then runs
-the goal's acceptance commands against the merged result.
+into merged code. It runs a team of coding agents against your
+repositories, unattended: an architect agent decomposes the goal into a
+dependency graph of tasks; developer agents implement the tasks in
+parallel, each on its own branch and merge request; reviewer agents and a
+deterministic merge gate decide what lands on `main`; an acceptance run on
+the merged result decides whether the goal is met. You approve plans and
+handle what blocks.
 
-You operate it from a web console, a terminal UI, a CLI, or the HTTP API. It
-runs as a single process backed by SQLite and your Git host.
+One process, one SQLite database, your Git host. Operated from a web
+console, a terminal UI, a CLI, or the HTTP API.
 
 [![status](https://img.shields.io/badge/status-early%20access-orange)](#status)
 [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
 
-[Example](#a-scope-start-to-finish) · [Concepts](#concepts) · [Lifecycle](#how-a-scope-runs) · [Agents](#agents) · [Models](#models-and-fallbacks) · [Architecture](#architecture) · [Sandboxes](#sandboxes) · [Install](#install) · [Deploy](#deploy) · [Interfaces](#interfaces) · [Integrations](#integrations) · [Status](#status)
+[Concepts](#concepts) · [Example](#a-scope-start-to-finish) · [Lifecycle](#how-a-scope-runs) · [Agents](#agents) · [Models](#models-and-fallbacks) · [Architecture](#architecture) · [Sandboxes](#sandboxes) · [Install](#install) · [Deploy](#deploy) · [Interfaces](#interfaces) · [Integrations](#integrations) · [Status](#status)
+
+## Concepts
+
+**Project.** A named container for related work. It holds a Markdown brief
+and reference files that every agent working under the project receives:
+architecture notes, conventions, forbidden areas, how to run the tests.
+Projects have a scopes list, a running-tasks tab, and settings.
+
+**Scope.** One goal against one repository: the goal text, the plan, the
+acceptance commands, an approval mode (`auto` or `manual` merges), and a
+status: `draft`, `planning`, `active`, `validating`, `blocked`, `paused`,
+`done`, `abandoned`. A scope belongs to a project or stands alone.
+
+**Task.** One node of the plan: a spec, its dependencies on other tasks, and
+one branch and merge request. Task ids are `scope.N`. A task is `queued`
+until its dependencies merge, then `running`, `mr_open`, `merged`, or
+`blocked` if it needs you. Tasks record retry attempts, reviewer findings,
+and any feedback you gave them.
+
+**Run.** One execution attempt, attached to a scope and usually a task.
+Kinds: `architect`, `plan_review`, `implement`, `review`, `merge_gate`,
+`validate`. A run keeps its lease, base and head SHAs, the model that
+actually ran it, its event stream, its evidence, and its artifacts. Runs
+are what you read when something goes wrong.
 
 ## A scope, start to finish
 
@@ -59,30 +86,6 @@ Task 7's drawer: spec, branch, MR `!7`, and its eight runs in order.
    at the gated SHA `caca2a5`.
 
 Full timeline in [docs/examples/reddit-clone.md](docs/examples/reddit-clone.md).
-
-## Concepts
-
-**Project.** A named container for related work. It holds a Markdown brief
-and reference files that every agent working under the project receives:
-architecture notes, conventions, forbidden areas, how to run the tests.
-Projects have a scopes list, a running-tasks tab, and settings.
-
-**Scope.** One goal against one repository: the goal text, the plan, the
-acceptance commands, an approval mode (`auto` or `manual` merges), and a
-status: `draft`, `planning`, `active`, `validating`, `blocked`, `paused`,
-`done`, `abandoned`. A scope belongs to a project or stands alone.
-
-**Task.** One node of the plan: a spec, its dependencies on other tasks, and
-one branch and merge request. Task ids are `scope.N`. A task is `queued`
-until its dependencies merge, then `running`, `mr_open`, `merged`, or
-`blocked` if it needs you. Tasks record retry attempts, reviewer findings,
-and any feedback you gave them.
-
-**Run.** One execution attempt, attached to a scope and usually a task.
-Kinds: `architect`, `plan_review`, `implement`, `review`, `merge_gate`,
-`validate`. A run keeps its lease, base and head SHAs, the model that
-actually ran it, its event stream, its evidence, and its artifacts. Runs
-are what you read when something goes wrong.
 
 ## How a scope runs
 
