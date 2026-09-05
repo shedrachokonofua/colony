@@ -724,8 +724,12 @@ export async function buildPiSession(
           const verdict = hooks.repairRejection!.onUnchanged();
           if (verdict.action === "failover") {
             await target.setModel(verdict.model);
-            // A new candidate starts a fresh leg: the stall the old one
-            // accumulated says nothing about this one.
+            // A new candidate starts a fresh leg: the stall, jitter budget,
+            // and continuation allowance the old one accumulated say nothing
+            // about this one. The allowance is per-leg, so carrying it over
+            // would end the run while a permitted candidate could still
+            // continue the retained session.
+            steering.resetContinuationAllowance();
             state.zeroOutputStalled = false;
           } else if (verdict.action === "exhausted") {
             state.failureReason = "repair_no_change";
