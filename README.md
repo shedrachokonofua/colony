@@ -12,33 +12,51 @@ runs as a single process backed by SQLite and your Git host.
 [![status](https://img.shields.io/badge/status-early%20access-orange)](#status)
 [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
 
-[Console](#the-console) · [Concepts](#concepts) · [Lifecycle](#how-a-scope-runs) · [Agents](#agents) · [Models](#models-and-fallbacks) · [Architecture](#architecture) · [Sandboxes](#sandboxes) · [Install](#install) · [Deploy](#deploy) · [Interfaces](#interfaces) · [Integrations](#integrations) · [Status](#status)
+[Example](#a-scope-start-to-finish) · [Concepts](#concepts) · [Lifecycle](#how-a-scope-runs) · [Agents](#agents) · [Models](#models-and-fallbacks) · [Architecture](#architecture) · [Sandboxes](#sandboxes) · [Install](#install) · [Deploy](#deploy) · [Interfaces](#interfaces) · [Integrations](#integrations) · [Status](#status)
 
-## The console
+## A scope, start to finish
 
-Both screenshots show the same real scope: the goal "Build a self-hostable
-Reddit clone as a production-ready Docker image", given to Colony against an
-empty GitLab project. The architect planned nine tasks; all nine merged; the
-acceptance run built the image and passed the smoke test. Timeline and plan
-are in [docs/examples/reddit-clone.md](docs/examples/reddit-clone.md).
+An operator opened a scope against an empty GitLab project with this goal:
+
+> Build a self-hostable Reddit clone as a production-ready Docker image.
+> Posts, up/down votes, nested comments, ranked front page. Auth with
+> sessions, no OAuth. Communities: create, join, list, post into.
+> Server-rendered UI, SQLite, one container. Multi-stage Dockerfile, port
+> 8080, compose file, README with exact commands, and a `colony.gate.yaml`
+> that `docker build`s the image so the merge gate proves it packages.
+
+Four minutes later the architect proposed nine tasks. It put the whole
+schema in task 2 so no two feature tasks would write competing migrations,
+and left voting and comments to run in parallel. The operator approved
+the plan; the console showed it fill in from left to right:
 
 ![Scope sheet: the task graph across the top, with goal, plan, and activity cards beneath](docs/images/scope-sheet.png)
 
-The scope sheet. The task graph is laid out by dependency, left to right;
-each node shows the task's state. Below it: the goal as written, the
-architect's plan summary and its run history, and the audit feed. Every
-operator action (approve a plan, unblock a task, request changes) is a
-button on this page and lands in the audit log with your actor id.
+This is the scope sheet after the fact: the task graph by dependency, each
+node in its final state; beneath it the goal as written, the architect's
+plan and its run, and the audit feed. Every operator action (approve a
+plan, unblock a task, request changes) is a button here and lands in the
+audit log with your actor id.
+
+Task 7, nested comments, is the one to click on:
 
 ![Task drawer: spec, merge request, and the run history including a reviewer's request_changes finding](docs/images/task-drawer.png)
 
-One task, opened from the graph. The drawer shows the spec the architect
-wrote, the branch and merge request, and every run against the task in
-order. Here the reviewer rejected the first implementation: the comment tree
-was built by iterating a Go map, so ordering was random despite the
-`ORDER BY`. The developer fixed it, the reviewer approved, the merge gate
-found a conflict with a task that had merged in parallel, the task was
-rebased and re-implemented, and the gate merged the exact SHA it tested.
+The drawer shows the spec the architect wrote, the branch and merge
+request, and every run against the task in order. The reviewer rejected
+the first implementation: the comment tree was assembled by iterating a Go
+map, so ordering was random despite the `ORDER BY`. The developer fixed
+it and the reviewer approved. Then the merge gate found a conflict with
+task 6, which had merged in parallel meanwhile; the task was requeued,
+re-implemented on the new `main`, approved again, and the gate merged the
+exact SHA it had tested.
+
+Two hours and fifty-two minutes after the goal was written, nine merge
+requests were on `main` and the scope's acceptance run had built the image
+and passed the smoke test. Of 174 audit events, two were human: opening
+the scope, and one `unblock` after GitLab had answered the first merge
+with `401` three times and the operator fixed the token. The full timeline
+and plan are in [docs/examples/reddit-clone.md](docs/examples/reddit-clone.md).
 
 ## Concepts
 
@@ -351,9 +369,11 @@ to require a bearer token from your identity provider instead.
 
 ## Deploy
 
-**Docker Compose.** The image has no `config/colony.yaml`; mount yours.
-Mount `data/` so the database, artifacts, and transcripts persist, and make
-it writable by the image's `bun` user.
+### Docker Compose
+
+One container running `colonyd`, built from the repository `Dockerfile`.
+The image ships without a config file; you mount `colony.yaml` and a
+`data/` directory for the database, artifacts, and transcripts.
 
 ```yaml
 # compose.yaml
@@ -373,24 +393,31 @@ services:
 ```
 
 ```sh
-mkdir -p data && chown 1000:1000 data
+mkdir -p data && chown 1000:1000 data # the image runs as uid 1000
 docker compose up -d
 curl -fsS localhost:4400/health
 ```
 
-With `sandbox.engine: in-process`, agents run inside this container, which
-has git and a shell but not your project's toolchain. Extend the image, or
-use Kubernetes sandboxes.
+The container has git and a shell, not your project's toolchain. With
+`sandbox.engine: in-process`, agents and acceptance commands run inside
+it, so extend the image with what your repositories need, or move agent
+execution to Kubernetes sandboxes below.
 
-**Kubernetes.** Run `colonyd` as a Deployment with a PersistentVolumeClaim
-at `/workspace/data`, your config in a ConfigMap, secrets in a Secret,
-`/health` as liveness and `/ready` as readiness (it returns 503 while
-draining), and `terminationGracePeriodSeconds` at least
-`COLONY_DRAIN_TIMEOUT_MS` (default 10 min) plus 60 s so in-flight runs
-finish.
+### Kubernetes
 
-For isolated agent runs, set `sandbox.engine: kubernetes` and provide, per
-[`packages/sandbox-k8s/README.md`](packages/sandbox-k8s/README.md):
+Two independent pieces: the daemon, and optionally a sandbox per agent run.
+
+**The daemon.** A Deployment of the same image with:
+
+- a PersistentVolumeClaim mounted at `/workspace/data`;
+- `colony.yaml` from a ConfigMap, credentials from a Secret;
+- liveness on `/health`, readiness on `/ready` (503 once draining starts);
+- `terminationGracePeriodSeconds` of at least `COLONY_DRAIN_TIMEOUT_MS`
+  (default 10 min) plus 60 s, so in-flight runs finish before the pod dies.
+
+**Isolated agent runs.** Set `sandbox.engine: kubernetes`. Each run then
+gets its own Kata VM pod (see [Sandboxes](#sandboxes)). The cluster needs,
+per [`packages/sandbox-k8s/README.md`](packages/sandbox-k8s/README.md):
 
 - the agent-sandbox v0.4 controller serving the `agents.x-k8s.io` `Sandbox` CRD;
 - a `RuntimeClass` named `kata`;
@@ -401,17 +428,24 @@ For isolated agent runs, set `sandbox.engine: kubernetes` and provide, per
 - your sandbox image built from `docker/sandbox/Dockerfile`, set as
   `sandbox.kubernetes.image`.
 
-In-cluster credentials are used when present; outside the cluster the
-engine loads the default kubeconfig. Colony does not ship manifests or a
-chart; [`config/colony.deploy.yaml`](config/colony.deploy.yaml) is the
-production config of the cluster that builds Colony itself, useful as a
-reference for a Kubernetes-engine configuration.
+The engine uses in-cluster credentials when present and the default
+kubeconfig otherwise. Colony ships no manifests or chart.
+[`config/colony.deploy.yaml`](config/colony.deploy.yaml) is the config of
+the cluster that builds Colony itself and shows a complete
+Kubernetes-engine setup.
 
-**Operations.** Back up `COLONYD_DB_PATH` (use `sqlite3 .backup` or stop
-`colonyd`), `artifacts.local.dir`, and `sessions_dir`. Traces go to
-`OTEL_EXPORTER_OTLP_*`; metrics are on `COLONY_METRICS_PORT`. Push
-notifications for plans awaiting approval, blocked tasks, and merges go to
-`notifications.sinks` (ntfy), with per-class cooldowns and a digest window.
+### Operations
+
+**Back up** `COLONYD_DB_PATH` (with `sqlite3 .backup`, or stop `colonyd`
+first), `artifacts.local.dir`, and `sessions_dir`.
+
+**Observe** with OpenTelemetry traces (`OTEL_EXPORTER_OTLP_*`; every run
+is a trace the console links to) and Prometheus metrics on
+`COLONY_METRICS_PORT`.
+
+**Get paged** through `notifications.sinks` (ntfy) when a plan awaits
+approval, a task blocks, or a merge lands; severity thresholds, per-class
+cooldowns, and a digest window keep it quiet.
 
 ## Interfaces
 
