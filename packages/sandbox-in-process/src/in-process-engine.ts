@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
@@ -33,6 +34,7 @@ class InProcessSandboxHandle implements SandboxHandle {
   private destroyed = false;
 
   constructor(
+    readonly sandboxId: string,
     private readonly workspaceDir: string,
     private readonly scratchDir: string,
     private readonly envAllowlist: readonly string[],
@@ -63,6 +65,7 @@ class InProcessSandboxHandle implements SandboxHandle {
   async destroy(): Promise<void> {
     if (this.destroyed) return;
     this.destroyed = true;
+    sandboxRegistry.delete(this.sandboxId);
     await rm(this.scratchDir, { recursive: true, force: true });
   }
 
@@ -153,6 +156,15 @@ function isAbsoluteWindowsPath(path: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(path);
 }
 
+/**
+ * Module-level registry of live handles, keyed by the sandbox id each handle
+ * carries. It is deliberately shared across every engine instance this module
+ * creates: a daemon that rebuilds its object graph (fresh engine, same
+ * process) must still be able to `connect` to a sandbox an earlier instance
+ * provisioned — that is exactly the restart-adoption path.
+ */
+const sandboxRegistry = new Map<string, InProcessSandboxHandle>();
+
 /** Creates a fresh in-process sandbox engine. */
 export function createInProcessEngine(): SandboxEngine {
   return {
@@ -161,11 +173,21 @@ export function createInProcessEngine(): SandboxEngine {
       workspace: string,
     ): Promise<SandboxHandle> {
       const scratchDir = await mkdtemp(join(tmpdir(), "colony-sandbox-"));
-      return new InProcessSandboxHandle(
+      const handle = new InProcessSandboxHandle(
+        `in-process-${randomUUID()}`,
         workspace,
         scratchDir,
         profile.envAllowlist,
       );
+      sandboxRegistry.set(handle.sandboxId, handle);
+      return handle;
+    },
+    async connect(sandboxId: string): Promise<SandboxHandle> {
+      const handle = sandboxRegistry.get(sandboxId);
+      if (handle === undefined) {
+        throw new Error(`sandbox not found: ${sandboxId}`);
+      }
+      return handle;
     },
   };
 }

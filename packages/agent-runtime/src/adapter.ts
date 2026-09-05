@@ -13,6 +13,7 @@ import {
   isArchitectExtensionPacket,
 } from "./architect-extension.js";
 import type { Context } from "@opentelemetry/api";
+import type { SandboxHandle } from "@colony/sandbox";
 import { sha256Json } from "./hashing.js";
 
 /**
@@ -81,6 +82,13 @@ export interface AgentRunOutput {
   readonly envelopeHash: string;
 }
 
+/** What a resumed run needs beyond a fresh one: its surviving sandbox. */
+export interface AgentRunResumeEnvironment extends AgentRunEnvironment {
+  readonly sandboxId: string;
+  readonly sessionsDir: string;
+  readonly connect: (id: string) => Promise<SandboxHandle>;
+}
+
 export interface AgentRuntimeAdapter {
   startRun(
     packet: AgentRuntimePacket,
@@ -89,6 +97,15 @@ export interface AgentRuntimeAdapter {
   getRunStatus(runId: string): Promise<AgentRunMetadata | null>;
   getRunOutput(runId: string): Promise<AgentRunOutput | null>;
   cancelRun(runId: string): Promise<AgentRunMetadata | null>;
+  /**
+   * Continues a checkpointed run on its surviving sandbox. Optional: an
+   * adapter without durable sessions cannot resume and need not implement
+   * it.
+   */
+  resumeRun?(
+    packet: AgentRuntimePacket,
+    runEnvironment: AgentRunResumeEnvironment,
+  ): Promise<AgentRunMetadata>;
 }
 
 export function start_run(
@@ -124,6 +141,15 @@ export interface FakeAgentRuntimeOptions {
   readonly envelopeForRun?: (
     packet: AgentRuntimePacket,
     environment: AgentRunEnvironment,
+  ) => unknown;
+  /**
+   * Envelope returned by a resumed run; unset means the same envelope a fresh
+   * run would produce. Integration tests that drive adoption supply the
+   * continuation here.
+   */
+  readonly envelopeForResume?: (
+    packet: AgentRuntimePacket,
+    environment: AgentRunResumeEnvironment,
   ) => unknown;
 }
 
@@ -184,6 +210,52 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
     const canceled = { ...run, status: "canceled" as const };
     this.runs.set(runId, canceled);
     return Promise.resolve(withoutOutput(canceled));
+  }
+
+  async resumeRun(
+    packet: AgentRuntimePacket,
+    runEnvironment: AgentRunResumeEnvironment,
+  ): Promise<AgentRunMetadata> {
+    const runId = runEnvironment.runId ?? `run-${this.nextId++}`;
+    // A resumed run must prove the surviving sandbox is really there: the
+    // handle is what the continuation runs against, so connect first and let
+    // a dead sandbox reject here rather than after the run is marked live.
+    const handle = await runEnvironment.connect(runEnvironment.sandboxId);
+    const probe = await handle.exec({ command: "true" }, () => undefined);
+    if (probe.exitCode !== 0) {
+      const failed: AgentRunMetadata = {
+        runId,
+        sandboxId: runEnvironment.sandboxId,
+        role: runEnvironment.role,
+        status: "failed",
+        packetHash: hashPacket(packet),
+        rejectionReason: "resume_sandbox_unusable",
+      };
+      this.runs.set(runId, failed);
+      return failed;
+    }
+    const rawEnvelope =
+      this.options.envelopeForResume?.(packet, runEnvironment) ??
+      this.options.envelopeForRun?.(packet, runEnvironment) ??
+      defaultEnvelope(packet, runEnvironment.role);
+    const parsed = parseEnvelope(runEnvironment.role, rawEnvelope, packet);
+    const output = parsed.ok
+      ? {
+          envelope: parsed.envelope,
+          envelopeHash: hashEnvelope(parsed.envelope),
+        }
+      : undefined;
+    const metadata: AgentRunMetadata = {
+      runId,
+      sandboxId: runEnvironment.sandboxId,
+      role: runEnvironment.role,
+      status: parsed.ok ? "succeeded" : "envelope_rejected",
+      packetHash: hashPacket(packet),
+      outputEnvelopeHash: output?.envelopeHash,
+      rejectionReason: parsed.ok ? undefined : truncate(parsed.reason),
+    };
+    this.runs.set(runId, { ...metadata, output });
+    return metadata;
   }
 }
 

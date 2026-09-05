@@ -5,6 +5,7 @@ import { resolve, sep } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import type { KubeConfig } from "@kubernetes/client-node";
 import {
+  buildSandboxLaunchProfile,
   DEFAULT_EXEC_TIMEOUT_MS,
   SANDBOX_PART_OF_LABEL,
   SANDBOX_PART_OF_VALUE,
@@ -100,6 +101,8 @@ class K8sSandboxHandle implements SandboxHandle {
   readonly name: string;
   readonly profile: SandboxLaunchProfile;
   readonly workspace: string;
+  /** The Sandbox CR name: the id `connect(sandboxId)` re-attaches by. */
+  readonly sandboxId: string;
   private destroyed = false;
   /** In-flight pods/exec WebSockets, closed on destroy. */
   private readonly sockets = new Set<ExecPodConnection>();
@@ -109,7 +112,7 @@ class K8sSandboxHandle implements SandboxHandle {
     kubeconfig: KubeConfig | undefined,
     namespace: string,
     podName: string,
-    name: string,
+    sandboxId: string,
     profile: SandboxLaunchProfile,
     workspace: string,
   ) {
@@ -117,7 +120,8 @@ class K8sSandboxHandle implements SandboxHandle {
     this.kubeconfig = kubeconfig;
     this.namespace = namespace;
     this.podName = podName;
-    this.name = name;
+    this.sandboxId = sandboxId;
+    this.name = sandboxId;
     this.profile = profile;
     this.workspace = workspace;
   }
@@ -509,23 +513,37 @@ async function removeStartupOrphans(
   namespace: string,
   pollIntervalMs: number,
   timeoutMs: number,
+  excludes: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   const labelSelector = `${SANDBOX_PART_OF_LABEL}=${SANDBOX_PART_OF_VALUE}`;
-  const names = await client.listSandboxes(namespace, labelSelector);
+  const candidates = await client.listSandboxes(namespace, labelSelector);
+  const names = candidates.filter((name) => !excludes.has(name));
   await Promise.all(names.map((name) => client.deleteSandbox(namespace, name)));
+  const remaining = (): Promise<readonly string[]> =>
+    client
+      .listSandboxes(namespace, labelSelector)
+      .then((listed) => listed.filter((name) => !excludes.has(name)));
+
+  const remainingPods = () =>
+    client.listPods(namespace, labelSelector).then((pods) =>
+      pods.filter((pod) => {
+        const sandboxId = pod.labels?.[SANDBOX_ID_LABEL];
+        return !sandboxId || !excludes.has(sandboxId);
+      }),
+    );
 
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const [remainingSandboxes, remainingPods] = await Promise.all([
-      client.listSandboxes(namespace, labelSelector),
-      client.listPods(namespace, labelSelector),
+    const [remainingSandboxesList, remainingPodsList] = await Promise.all([
+      remaining(),
+      remainingPods(),
     ]);
     // A pod already Terminating is the kubelet's to finish; on an
     // unreachable node that never happens (5 h on talos-trinity,
     // 2026-09-03) and waiting on it failed every provision for the process.
     // The CR is gone, so it holds no controller quota; move on.
-    const draining = remainingPods.filter((pod) => !pod.terminating);
-    if (remainingSandboxes.length === 0 && draining.length === 0) return;
+    const draining = remainingPodsList.filter((pod) => !pod.terminating);
+    if (remainingSandboxesList.length === 0 && draining.length === 0) return;
     if (Date.now() >= deadline) {
       throw new Error(
         `timed out after ${timeoutMs}ms reaping ${names.length} startup-orphaned Sandbox CRs in namespace ${namespace}`,
@@ -552,13 +570,55 @@ async function removeStartupOrphans(
  */
 const startupCleanups = new Map<string, Promise<void>>();
 
+/**
+ * Sandbox ids no startup cleanup in THIS PROCESS may reap — the union of
+ * every `adoptedSandboxIds` set an engine was constructed with.
+ *
+ * Process-wide for the same reason the cleanup itself is: colonyd builds one
+ * engine for the agent runners (carrying the adopted set) and another for
+ * validation (carrying none), and whichever one provisions first runs the
+ * only pass there will ever be. Per-instance exclusions let the
+ * exclusionless engine reap the very CRs its sibling was constructed to
+ * protect, decided purely by which engine happened to provision first.
+ *
+ * Registration happens at construction, not at provision, so the set is
+ * complete before any engine can trigger the pass.
+ */
+const protectedSandboxIds = new Set<string>();
+
 export function resetStartupCleanupForTests(): void {
   startupCleanups.clear();
+  protectedSandboxIds.clear();
 }
 
 export function createKubernetesEngine(
   options: KubernetesSandboxEngineOptions = {},
 ): SandboxEngine {
+  // Registered at construction, not at provision: the first engine to
+  // provision runs the only cleanup pass there will be, so every engine's
+  // adopted ids must already be registered by then.
+  for (const sandboxId of options.adoptedSandboxIds ?? []) {
+    protectedSandboxIds.add(sandboxId);
+  }
+
+  /**
+   * Client construction (kubeconfig load, cluster wiring) is deferred to the
+   * first engine call, satisfying the lazy factory contract. Tests inject
+   * their own. The KubeConfig is threaded through to the handle so the
+   * dependent exec-channel task can build the Exec API from it without
+   * re-loading.
+   */
+  const resolveClient = (): {
+    client: KubernetesSandboxClient;
+    kubeconfig: KubeConfig | undefined;
+  } => {
+    if (options.client !== undefined) {
+      return { client: options.client, kubeconfig: options.kubeconfig };
+    }
+    const kc = options.kubeconfig ?? loadKubernetesConfig();
+    return { client: createKubernetesClient(kc), kubeconfig: kc };
+  };
+
   return {
     async provision(
       profile: SandboxLaunchProfile,
@@ -569,17 +629,7 @@ export function createKubernetesEngine(
       const pollIntervalMs = options.pollIntervalMs ?? 1000;
       const provisionTimeoutMs = options.provisionTimeoutMs ?? 300_000;
 
-      // Client construction (kubeconfig load, cluster wiring) is deferred to
-      // here, satisfying the lazy factory contract. Tests inject their own.
-      // The KubeConfig is threaded through to the handle so the dependent
-      // exec-channel task can build the Exec API from it without re-loading.
-      let client = options.client;
-      let kubeconfig: KubeConfig | undefined = options.kubeconfig;
-      if (client === undefined) {
-        const kc = options.kubeconfig ?? loadKubernetesConfig();
-        kubeconfig = kc;
-        client = createKubernetesClient(kc);
-      }
+      const { client, kubeconfig } = resolveClient();
 
       // Agent sessions do not survive a colonyd process restart. Reap every
       // Sandbox CR from the previous process before admitting new work so
@@ -591,6 +641,7 @@ export function createKubernetesEngine(
           namespace,
           pollIntervalMs,
           provisionTimeoutMs,
+          protectedSandboxIds,
         ).catch((err: unknown) => {
           // A failed reap must not poison every later provision: one pod
           // stuck Terminating on a sick node made the daemon refuse all
@@ -704,6 +755,52 @@ export function createKubernetesEngine(
         await client.deleteSandbox(namespace, name).catch(() => undefined);
         throw err;
       }
+    },
+
+    async connect(
+      sandboxId: string,
+      profile: SandboxLaunchProfile = buildSandboxLaunchProfile("developer"),
+    ): Promise<SandboxHandle> {
+      // Re-attaching must never trigger the startup orphan cleanup: that pass
+      // deletes CRs from the previous process, and the sandbox being adopted
+      // is exactly one of them. Deliberately not `startupCleanup`.
+      const namespace = options.namespace ?? DEFAULT_KUBERNETES_NAMESPACE;
+      const { client, kubeconfig } = resolveClient();
+      const labelSelector = `${SANDBOX_ID_LABEL}=${sandboxId}`;
+
+      const names = await client.listSandboxes(namespace, labelSelector);
+      if (!names.includes(sandboxId)) {
+        throw new Error(
+          `sandbox ${sandboxId} gone: no Sandbox CR in namespace ${namespace}`,
+        );
+      }
+
+      const state = await client.getSandbox(namespace, sandboxId);
+      if (state.failed !== undefined) {
+        throw new Error(
+          `sandbox ${sandboxId} gone: Sandbox CR failed: ${state.failed}`,
+        );
+      }
+
+      const pods = await client.listPods(namespace, labelSelector);
+      const running = pods.find(
+        (pod) => pod.phase === "Running" && pod.containerReady === true,
+      );
+      if (running === undefined) {
+        throw new Error(
+          `sandbox ${sandboxId} gone: no Running and ready backing pod in namespace ${namespace}`,
+        );
+      }
+
+      return new K8sSandboxHandle(
+        client,
+        kubeconfig,
+        namespace,
+        running.name,
+        sandboxId,
+        profile,
+        POD_WORKSPACE_DIR,
+      );
     },
   };
 }

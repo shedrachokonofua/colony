@@ -3,6 +3,7 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  SandboxEngine,
   SandboxHandle,
 } from "@colony/sandbox";
 
@@ -30,6 +31,8 @@ export interface ContractStubOptions {
   readonly execStdout?: string;
   /** Content returned by readFile (default "stub file content\n"). */
   readonly fileContent?: string;
+  /** Custom sandboxId for the stub handle (default "contract-stub"). */
+  readonly sandboxId?: string;
 }
 
 function assertContained(path: string, api: string): void {
@@ -57,7 +60,10 @@ export function createContractStubHandle(
     if (destroyed) throw new Error(`${api} after destroy`);
   };
 
+  const sandboxId = options.sandboxId ?? "contract-stub";
+
   return {
+    sandboxId,
     execs,
     reads,
     writes,
@@ -95,6 +101,33 @@ export function createContractStubHandle(
     async destroy(): Promise<void> {
       destroyCalls += 1;
       destroyed = true;
+    },
+  };
+}
+
+export interface ContractStubEngine extends SandboxEngine {
+  readonly handles: Map<string, ContractStubHandle>;
+}
+
+export function createContractStubEngine(
+  options: ContractStubOptions = {},
+): ContractStubEngine {
+  const handles = new Map<string, ContractStubHandle>();
+  let idCounter = 1;
+  return {
+    handles,
+    async provision(): Promise<SandboxHandle> {
+      const id = options.sandboxId ?? `stub-sandbox-${idCounter++}`;
+      const handle = createContractStubHandle({ ...options, sandboxId: id });
+      handles.set(id, handle);
+      return handle;
+    },
+    async connect(sandboxId: string): Promise<SandboxHandle> {
+      const handle = handles.get(sandboxId);
+      if (!handle) {
+        throw new Error(`sandbox not found: ${sandboxId}`);
+      }
+      return handle;
     },
   };
 }

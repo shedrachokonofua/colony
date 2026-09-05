@@ -40,10 +40,15 @@ afterEach(async () => {
 
 /** Stub handle that records every sandbox call instead of touching an engine. */
 class RecordingHandle implements SandboxHandle {
+  readonly sandboxId: string;
   readonly execs: { command: string; cwd?: string }[] = [];
   readonly reads: string[] = [];
   readonly writes: { path: string; content: string }[] = [];
   destroyCalls = 0;
+
+  constructor(sandboxId = "sandbox-recording") {
+    this.sandboxId = sandboxId;
+  }
 
   exec(request: ExecRequest, _onEvent: (event: ExecEvent) => void) {
     this.execs.push({ command: request.command, cwd: request.cwd });
@@ -131,9 +136,13 @@ describe("sandbox tool wiring", () => {
       ],
       head_sha: headSha,
     };
-    const handle = new RecordingHandle();
+    const handle = new RecordingHandle("sandbox-wiring-1");
     const engine: SandboxEngine = {
       provision: () => Promise.resolve(handle),
+      connect: async (sandboxId) =>
+        sandboxId === handle.sandboxId
+          ? handle
+          : Promise.reject(new Error(`sandbox not found: ${sandboxId}`)),
     };
 
     let callCount = 0;
@@ -370,6 +379,7 @@ describe("exec deadline surfacing", () => {
     // engine deadline. The shim treats exitCode null as success, so the bash
     // operations seam must translate timedOut into its `timeout:` contract.
     const handle: SandboxHandle = {
+      sandboxId: "sandbox-timed-out",
       exec: () => Promise.resolve({ exitCode: null, timedOut: true }),
       readFile: () => Promise.reject(new Error("unused")),
       writeFile: () => Promise.reject(new Error("unused")),
@@ -397,6 +407,7 @@ describe("exec output bounding", () => {
     const line = `${"x".repeat(1023)}\n`;
     const chunks = 2048; // 2 MiB of stdout, 1 KiB per chunk
     const handle: SandboxHandle = {
+      sandboxId: "sandbox-chatty",
       exec: (_request, onEvent) => {
         for (let i = 0; i < chunks; i += 1) {
           onEvent({

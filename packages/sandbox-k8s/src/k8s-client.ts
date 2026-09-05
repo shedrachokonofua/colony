@@ -256,6 +256,8 @@ export function createKubernetesClient(
           phase: pod.status?.phase ?? "",
           containerReady: ready,
           terminating: pod.metadata?.deletionTimestamp !== undefined,
+          labels:
+            (pod.metadata?.labels as Record<string, string> | undefined) ?? {},
         };
       });
     },
