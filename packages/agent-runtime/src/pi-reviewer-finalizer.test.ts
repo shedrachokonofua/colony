@@ -202,7 +202,6 @@ describe("pi reviewer per-leg finalizer", () => {
         scratchDir,
         broker: { resolve: () => "test-key" },
         jiggleBackoffMs: 1,
-        retryMaxRetries: 0,
         maxTurns: 16,
         runTimeoutMs: 120_000,
         logger: {
@@ -294,7 +293,6 @@ describe("pi reviewer per-leg finalizer", () => {
         scratchDir,
         broker: { resolve: () => "test-key" },
         jiggleBackoffMs: 1,
-        retryMaxRetries: 0,
         maxTurns: 16,
         runTimeoutMs: 120_000,
         logger: {
@@ -376,7 +374,6 @@ describe("pi reviewer per-leg finalizer", () => {
         scratchDir,
         broker: { resolve: () => "test-key" },
         jiggleBackoffMs: 1,
-        retryMaxRetries: 0,
         maxTurns: 30,
         runTimeoutMs: 120_000,
         logger: {
@@ -476,8 +473,8 @@ describe("pi reviewer per-leg finalizer", () => {
       const isForcedChoice =
         body.tool_choice !== undefined &&
         typeof body.tool_choice === "object" &&
-        (body.tool_choice as { function?: { name?: string } }).function?.name ===
-          "submit_reviewer_verdict";
+        (body.tool_choice as { function?: { name?: string } }).function
+          ?.name === "submit_reviewer_verdict";
 
       if (!isForcedChoice) {
         respondProseStop(response, model);
@@ -519,7 +516,6 @@ describe("pi reviewer per-leg finalizer", () => {
         scratchDir,
         broker: { resolve: () => "test-key" },
         jiggleBackoffMs: 1,
-        retryMaxRetries: 0,
         maxTurns: 16,
         runTimeoutMs: 120_000,
         logger: {
