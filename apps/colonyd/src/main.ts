@@ -8,8 +8,9 @@ import {
   Store,
   type Run,
 } from "@colony/core";
-import { startTelemetryFromEnv } from "@colony/observability";
+import { startTelemetryFromEnv, startColonyRunSpan } from "@colony/observability";
 import { createRunAuditSink } from "@colony/agent-runtime";
+import { readSessionHeader } from "@colony/agent-runtime/session-store";
 import { FakeProviderAdapter } from "@colony/provider";
 import { GitLabProviderAdapter } from "@colony/provider-gitlab";
 import {
@@ -36,6 +37,7 @@ import {
 } from "./runs/registry.js";
 import type { GateExecutor } from "./runs/merge-gate.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
+import { adoptOrExpireRuns } from "./runs/adoption.js";
 import { tick } from "./tick.js";
 
 export interface BootOptions {
@@ -104,33 +106,114 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
           token: environment.GITLAB_TOKEN || undefined,
         }));
 
-  // Crash recovery: rows left `running` belong to a dead process.
-  // Revoke any repo tokens those runs minted before dying.
-  const orphans = store.expireOrphanedRuns();
-  await revokeTokensForRuns(store, provider, orphans);
+  // Boot adoption replaces the old blanket orphan sweep: classify every
+  // `running` row, fail+revoke the non-adoptable, claim and resume the rest.
+  // This runs BEFORE the agent wiring is constructed so the k8s engine built
+  // inside it registers the adopted exclusion set before any provision() can
+  // trigger its startup cleanup. The probe engine only ever connects —
+  // connect never provisions and never cleans up.
+  const probeEngine = await createEngine(config.sandbox.engine, config);
+  const adoptedIds = new Set<string>();
+  let wiredAgents: ColonydContext["agents"] | undefined;
+  const ensureAgents = async (): Promise<ColonydContext["agents"]> => {
+    if (wiredAgents) return wiredAgents;
+    // Claims all precede the resume loop, so rows already marked adopted are
+    // the complete claim set even when this first fires mid-resume.
+    for (const claimed of store.activeRuns()) {
+      if (claimed.adopted === 1 && claimed.sandbox_id) {
+        adoptedIds.add(claimed.sandbox_id);
+      }
+    }
+    wiredAgents =
+      options.agents ??
+      (await createAgentWiring(
+        config,
+        createRunEventSink(store),
+        {
+          // Fresh history per architect session: landed-attempt cost model from
+          // the runs table, paired with the developer session budget.
+          provider: () => ({
+            model: buildTaskCostModel(
+              store.db
+                .prepare(
+                  "SELECT * FROM runs WHERE status = 'succeeded' AND kind IN ('implement','merge_gate')",
+                )
+                .all() as Run[],
+            ),
+            budget_ms: config.forAgent("developer").ceilings.timeoutMs,
+          }),
+        },
+        createRunAuditSink(store, artifacts, logger),
+        store,
+        adoptedIds,
+      ));
+    return wiredAgents;
+  };
 
-  const agents =
-    options.agents ??
-    (await createAgentWiring(
-      config,
-      createRunEventSink(store),
-      {
-        // Fresh history per architect session: landed-attempt cost model from
-        // the runs table, paired with the developer session budget.
-        provider: () => ({
-          model: buildTaskCostModel(
-            store.db
-              .prepare(
-                "SELECT * FROM runs WHERE status = 'succeeded' AND kind IN ('implement','merge_gate')",
-              )
-              .all() as Run[],
-          ),
-          budget_ms: config.forAgent("developer").ceilings.timeoutMs,
-        }),
-      },
-      createRunAuditSink(store, artifacts, logger),
-      store,
-    ));
+  const adoption = await adoptOrExpireRuns({
+    store,
+    provider,
+    logger,
+    sessionsDir: config.sessionsDir,
+    connect: (id) => probeEngine.connect(id),
+    resume: async (run) => {
+      // A FRESH root span for the resumed segment — never the run's old
+      // trace_id: that trace's parent span belongs to a dead process.
+      const resumeSpan = startColonyRunSpan({
+        scope_id: run.scope_id,
+        task_id: run.task_id,
+        run_id: run.id,
+        kind: run.kind,
+        model_id: run.model_id,
+      });
+      try {
+        const agents = await ensureAgents();
+        const adapter = resumeAdapter(agents, run.kind);
+        const metadata = await adapter.resumeRun!(resumePacket(store, run), {
+          role: resumeRole(run.kind),
+          runId: run.id,
+          sandboxId: run.sandbox_id!,
+          sessionsDir: config.sessionsDir,
+          connect: (id) => probeEngine.connect(id),
+          traceContext: resumeSpan?.spanContext,
+        });
+        if (metadata.status !== "succeeded") {
+          throw new Error(
+            `resumed run did not succeed: ${metadata.rejectionReason ?? metadata.status}`,
+          );
+        }
+        // Record the continuation's envelope on the run row; task-state
+        // advancement stays with the tick reconciler (the existing requeue).
+        const output = await adapter.getRunOutput(run.id);
+        const envelope =
+          output?.envelope as { head_sha?: unknown; commands?: unknown } | undefined;
+        store.finishRun(run.id, "succeeded", {
+          ...(typeof envelope?.head_sha === "string"
+            ? { head_sha: envelope.head_sha }
+            : {}),
+          ...(output ? { envelope_json: JSON.stringify(output.envelope) } : {}),
+          ...(Array.isArray(envelope?.commands)
+            ? {
+                evidence_json: JSON.stringify({ commands: envelope!.commands }),
+              }
+            : {}),
+        });
+        resumeSpan?.end("succeeded");
+      } catch (err) {
+        resumeSpan?.end(
+          "failed",
+          err instanceof Error ? err.message : String(err),
+        );
+        throw err;
+      }
+    },
+    resumeLeaseTtlMs: environment.COLONY_RESUME_LEASE_TTL_MS,
+  });
+  for (const run of adoption.adoptable) {
+    if (run.sandbox_id) adoptedIds.add(run.sandbox_id);
+  }
+
+  const agents = options.agents ?? (await ensureAgents());
   if (config.reviewMode === "required" && !agents.reviewer) {
     throw new Error(
       "review.mode is 'required' but no reviewer agent is configured",
