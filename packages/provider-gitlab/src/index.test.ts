@@ -1224,6 +1224,39 @@ describe("GitLabProviderAdapter pipeline jobs and traces", () => {
     expect(trace.text).toBe("canceled while running");
     expect(traceRequests).toEqual(["/projects/20/jobs/903/trace"]);
   });
+
+  it("returns an empty trace for a 200 with an empty body", async () => {
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const urlText =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      const path = urlText.replace("https://gitlab.test/api/v4", "");
+      if (method === "GET" && path === "/projects/20/jobs/905") {
+        return Promise.resolve(
+          json({ id: 905, name: "build", status: "canceled" }),
+        );
+      }
+      if (method === "GET" && path === "/projects/20/jobs/905/trace") {
+        // Canceled before it ever started: 200 with no body.
+        return Promise.resolve(new Response("", { status: 200 }));
+      }
+      return Promise.resolve(
+        json({ error: `unexpected ${method} ${path}` }, 500),
+      );
+    };
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot-token",
+      fetch: fetchMock,
+    });
+    const trace = await adapter.pipelines.getTrace(repo, "905");
+    expect(trace.job).toMatchObject({ id: "905", name: "build" });
+    expect(trace.text).toBe("");
+  });
 });
 
 const describeLive =

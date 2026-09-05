@@ -741,7 +741,10 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         );
     },
     getTrace: async (repo, jobId) => {
-      const trace = await this.repoApi<string>(
+      // A 200 with an empty body is a job that never produced output
+      // (canceled before start, or an expired artifact): requestPage leaves
+      // the body null, so coerce before any string handling.
+      const trace = await this.repoApi<string | null>(
         repo.id,
         `/jobs/${encodePath(jobId)}/trace`,
       );
@@ -761,7 +764,10 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         ...(job.web_url ? { web_url: job.web_url } : {}),
         metadata: { ...meta(this.provider, job), id: String(job.id) },
       };
-      return { job: providerJob, text: sanitizeTrace(trace) };
+      return {
+        job: providerJob,
+        text: sanitizeTrace(typeof trace === "string" ? trace : ""),
+      };
     },
   };
 
