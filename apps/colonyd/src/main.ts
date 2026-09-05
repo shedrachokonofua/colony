@@ -177,6 +177,27 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         model_id: run.model_id,
       });
       try {
+        // A resumed implement run pushes to the provider on its own; the
+        // run token minted before the restart died with that process, so
+        // re-mint under the same deterministic name. The revoke sweep at
+        // finish covers the new token id the same way a fresh run's is.
+        const scope = store.getScope(run.scope_id);
+        if (scope && (run.kind === "implement" || run.kind === "architect" || run.kind === "review")) {
+          const repo = { id: scope.provider_repo_id, path: scope.provider_repo_path };
+          const name = expectedRunTokenName(run);
+          if (name) {
+            const minted = await mintRunToken(provider, repo, {
+              name,
+              scopes:
+                run.kind === "implement"
+                  ? ["api", "write_repository"]
+                  : ["api", "read_repository"],
+              singleToken: environment.COLONYD_SINGLE_TOKEN,
+              fallbackToken: environment.GITLAB_TOKEN || undefined,
+            });
+            if (minted?.token_id) store.setRunToken(run.id, minted.token_id);
+          }
+        }
         const agents = await ensureAgents();
         const adapter = resumeAdapter(agents, run.kind);
         const metadata = await adapter.resumeRun!(resumePacket(store, run), {
@@ -208,6 +229,16 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
               }
             : {}),
         });
+        // The resume path's own emitEvent owns this event when the adapter
+        // reports one; adapters without the seam (fake runtime) rely on this
+        // fallback so run_events always records the resumption.
+        if (store.listRunEventsByName(run.id, "run_resumed").length === 0) {
+          store.appendRunEvent(run.id, "run_resumed", {
+            sandbox_id: run.sandbox_id,
+            entries_loaded: readSessionHeader(config.sessionsDir, run.id)
+              .entries,
+          });
+        }
         resumeSpan?.end("succeeded");
       } catch (err) {
         resumeSpan?.end(
