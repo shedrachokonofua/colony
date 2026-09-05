@@ -425,7 +425,7 @@ function inRunSpanContext<T>(
   return runSpan ? context.with(runSpan.spanContext, fn) : fn();
 }
 
-function isAcyclic(deps: ReadonlyArray<readonly number[]>): boolean {
+export function isAcyclic(deps: ReadonlyArray<readonly number[]>): boolean {
   const indegree = deps.map((edges) => edges.length);
   const queue: number[] = [];
   indegree.forEach((degree, node) => {

@@ -156,6 +156,7 @@ async function harness(
       singleToken: true,
       maxConcurrent: 4,
       maxAttempts: 3,
+      resumeLeaseTtlMs: 900_000,
       oidcIssuer: "",
       oidcClientId: "colony",
       oidcRequiredRole: "",

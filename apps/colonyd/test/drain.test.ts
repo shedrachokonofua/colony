@@ -164,6 +164,7 @@ async function offlineCtx(
       singleToken: true,
       maxConcurrent: 2,
       maxAttempts: 3,
+      resumeLeaseTtlMs: 900_000,
       oidcIssuer: "",
       oidcClientId: "colony",
       oidcRequiredRole: "",
