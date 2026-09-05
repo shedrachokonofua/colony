@@ -501,10 +501,7 @@ describe("plan-review cap escape hatch", () => {
 
     // 3. Abandon button
     abandonBtn.click();
-    expect(seen).toContainEqual([
-      "colony-abandon",
-      { scopeId: "col-x" },
-    ]);
+    expect(seen).toContainEqual(["colony-abandon", { scopeId: "col-x" }]);
 
     // 4. Replan form with feedback
     const form = planCard.querySelector("form.feedback");
@@ -539,7 +536,10 @@ describe("plan-review cap escape hatch", () => {
           status: "failed",
           started_at: "2026-01-01T00:00:00Z",
           finished_at: "2026-01-01T00:01:00Z",
-          evidence_json: JSON.stringify({ passed: false, results: [{ exit_code: 1, index: 0 }] }),
+          evidence_json: JSON.stringify({
+            passed: false,
+            results: [{ exit_code: 1, index: 0 }],
+          }),
         },
       ],
     });
@@ -569,7 +569,10 @@ describe("plan-review cap escape hatch", () => {
           status: "failed",
           started_at: "2026-01-01T00:00:00Z",
           finished_at: "2026-01-01T00:01:00Z",
-          evidence_json: JSON.stringify({ passed: false, results: [{ exit_code: 1, index: 0 }] }),
+          evidence_json: JSON.stringify({
+            passed: false,
+            results: [{ exit_code: 1, index: 0 }],
+          }),
         },
       ],
     });
@@ -624,4 +627,3 @@ describe("plan-review cap escape hatch", () => {
     ]);
   });
 });
-

@@ -87,10 +87,10 @@ export const PLAN_REVIEW_CAP_REASON =
 export function isCapBlockedWithPlan(scope, plan) {
   return Boolean(
     scope &&
-      scope.status === "blocked" &&
-      typeof scope.blocked_reason === "string" &&
-      PLAN_REVIEW_CAP_REASON.test(scope.blocked_reason) &&
-      plan,
+    scope.status === "blocked" &&
+    typeof scope.blocked_reason === "string" &&
+    PLAN_REVIEW_CAP_REASON.test(scope.blocked_reason) &&
+    plan,
   );
 }
 
