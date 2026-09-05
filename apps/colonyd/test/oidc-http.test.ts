@@ -129,6 +129,7 @@ function oidcApp() {
       singleToken: true,
       maxConcurrent: 1,
       maxAttempts: 3,
+      resumeLeaseTtlMs: 900_000,
       oidcIssuer: ISSUER,
       oidcClientId: CLIENT,
       oidcRequiredRole: "admin",

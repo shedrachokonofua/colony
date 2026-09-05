@@ -95,6 +95,7 @@ function appWith(traceUiBaseUrl = "") {
       singleToken: true,
       maxConcurrent: 1,
       maxAttempts: 3,
+      resumeLeaseTtlMs: 900_000,
       oidcIssuer: "",
       oidcClientId: "colony",
       oidcRequiredRole: "",

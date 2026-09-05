@@ -54,6 +54,17 @@ export async function abortRuns(runIds: readonly string[]): Promise<void> {
   await Promise.all(runIds.map((id) => abortRun(id)));
 }
 
+/**
+ * Drop a run's registry entry WITHOUT running its abort handler: the
+ * promise stays pending until the process exits. Shutdown at the drain cap
+ * uses this for runs being handed to the next boot — aborting them would
+ * record a canceled result, but leaving the entry would make
+ * `awaitPendingRuns` (and the drain) wait on work meant to outlive us.
+ */
+export function detachRun(runId: string): boolean {
+  return tracked.delete(runId);
+}
+
 export function activeTrackedRunIds(): string[] {
   return [...tracked.keys()];
 }
