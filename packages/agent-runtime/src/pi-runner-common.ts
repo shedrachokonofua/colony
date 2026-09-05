@@ -924,7 +924,10 @@ export function installRunGuards(
         (isErrorText || event.isError === true)
       ) {
         options.evidence?.completionRejected(text, event.toolName);
-        options.onRejection?.(text, argInvalid === undefined ? "rejected" : "invalid");
+        options.onRejection?.(
+          text,
+          argInvalid === undefined ? "rejected" : "invalid",
+        );
         options.onSubmissionRejected?.(
           text.trim() || "terminal submission was rejected",
         );

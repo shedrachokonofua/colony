@@ -1,11 +1,4 @@
-import {
-  afterEach,
-  describe,
-  expect,
-  it,
-  mock,
-  spyOn,
-} from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import type { Fault } from "@colony/core";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -586,7 +579,8 @@ describe("fault emission from a real run", () => {
     expect(result.fault).toEqual({
       layer: "model",
       code: "timeout_no_envelope",
-      detail: "run timed out after tool activity without submitting an envelope",
+      detail:
+        "run timed out after tool activity without submitting an envelope",
     });
   }, 120_000);
 
