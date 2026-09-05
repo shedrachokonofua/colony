@@ -84,9 +84,13 @@ function fakeConnect(mode: ProbeMode): AdoptionDeps["connect"] {
     return {
       sandboxId,
       async exec(
-        _request,
+        request,
         _onEvent: (event: ExecEvent) => void,
       ): Promise<ExecResult> {
+        // The liveness probe must be cwd-relative: exec cwd is the
+        // workspace on every engine, so only a relative probe tests the
+        // sandbox. An absolute path would test the host under in-process.
+        expect(request.command).toBe("test -e .");
         if (mode === "hang") {
           return new Promise<ExecResult>(() => {});
         }

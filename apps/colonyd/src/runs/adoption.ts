@@ -56,7 +56,12 @@ export async function classifyRuns(
       continue;
     }
 
-    // Gate d: run.sandbox_id is non-null AND connect resolves AND exec("test -e /workspace") exits 0 within probeTimeoutMs
+    // Gate d: run.sandbox_id is non-null AND connect resolves AND exec("test -e .") exits 0 within probeTimeoutMs.
+    // The probe is cwd-relative on purpose: exec cwd is the workspace on every
+    // engine (/workspace on k8s, workspaceDir in-process), so `test -e .`
+    // verifies a live sandbox whose workspace exists. An absolute
+    // `test -e /workspace` would check the HOST root under the in-process
+    // engine and only pass where the host happens to have /workspace.
     if (!run.sandbox_id) {
       orphans.push(run);
       continue;
@@ -66,10 +71,7 @@ export async function classifyRuns(
     try {
       const probePromise = (async () => {
         const handle = await deps.connect(run.sandbox_id!);
-        const res = await handle.exec(
-          { command: "test -e /workspace" },
-          () => {},
-        );
+        const res = await handle.exec({ command: "test -e ." }, () => {});
         return res.exitCode === 0 && !res.timedOut;
       })();
 
