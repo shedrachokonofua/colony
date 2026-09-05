@@ -22,8 +22,8 @@ import { tick } from "../src/tick.js";
 
 // Fake credentials, assembled so the literals never appear contiguously in
 // source: the merge gate's secret scan would reject this file otherwise.
-const FAKE_GLPAT = `glpat-${'abcdef12345678901234'}`;
-const FAKE_SK = `sk-${'abcdef12345678901234'}`;
+const FAKE_GLPAT = `glpat-${"abcdef12345678901234"}`;
+const FAKE_SK = `sk-${"abcdef12345678901234"}`;
 
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);

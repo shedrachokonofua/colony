@@ -311,8 +311,8 @@ describe("parseProviderCommand", () => {
 
 // Fake credentials, assembled so the literal never appears contiguously in
 // source: the merge gate's secret scan would reject this file otherwise.
-const FAKE_GLPAT = `glpat-${'AbCdEfGhIjKlMnOpQrStUv'}`;
-const FAKE_AWS_KEY = `AKIA${'IOSFODNN7EXAMPLE'}`;
+const FAKE_GLPAT = `glpat-${"AbCdEfGhIjKlMnOpQrStUv"}`;
+const FAKE_AWS_KEY = `AKIA${"IOSFODNN7EXAMPLE"}`;
 
 describe("sanitizeTrace", () => {
   it("strips ANSI escapes and C0/C1 control characters", () => {

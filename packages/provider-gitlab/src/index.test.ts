@@ -1109,7 +1109,7 @@ describe("GitLabProviderAdapter commits and pipelines", () => {
 
 // Assembled so the literal never appears contiguously in source: the merge
 // gate's secret scan would reject this file otherwise.
-const FAKE_GLPAT = `glpat-${'AbCdEfGhIjKlMnOpQrStUv'}`;
+const FAKE_GLPAT = `glpat-${"AbCdEfGhIjKlMnOpQrStUv"}`;
 
 describe("GitLabProviderAdapter pipeline jobs and traces", () => {
   function jobAdapter() {
