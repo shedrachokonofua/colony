@@ -1,6 +1,6 @@
 import type { PiModelSpec } from "./pi-runner-common.js";
 import { createServer, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
@@ -33,9 +33,9 @@ afterEach(async () => {
 
 const countOf = (values: string[], target: string): number =>
   values.filter((value) => value === target).length;
-const FAST_RETRY = {
+const FAST_RECOVERY = {
   jiggleBackoffMs: 1,
-  retryMaxRetries: 0,
+  connectionRetryBackoffMs: 1,
 } as const;
 
 /** A gateway whose answer depends only on the requested model. */
@@ -153,6 +153,19 @@ const respondServiceUnavailable = (response: ServerResponse): void => {
         message: "ECONNRESET: upstream connection reset",
         type: "server_error",
       },
+    }),
+  );
+};
+
+/** A quota error with a server-directed delay the outer runner must ignore. */
+const respondQuotaRateLimit = (response: ServerResponse): void => {
+  response.writeHead(429, {
+    "content-type": "application/json",
+    "retry-after": "300",
+  });
+  response.end(
+    JSON.stringify({
+      error: { message: "quota exhausted", type: "insufficient_quota" },
     }),
   );
 };
@@ -284,9 +297,10 @@ const modelSpec = (
 });
 
 describe("Pi model fallback", () => {
-  it("continues the same session on the next configured model after a provider failure", async () => {
+  it("keeps the working fallback after a write instead of returning to a quota-limited primary", async () => {
     const requestedModels: string[] = [];
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];
+    let fallbackTurns = 0;
     const headSha = "a".repeat(40);
     const envelope = {
       kind: "reviewer_verdict",
@@ -309,12 +323,42 @@ describe("Pi model fallback", () => {
         const model = (JSON.parse(body) as { model: string }).model;
         requestedModels.push(model);
         if (model === "primary") {
-          response.writeHead(403, { "content-type": "application/json" });
-          response.end(
-            JSON.stringify({
-              error: { message: "quota exhausted", type: "insufficient_quota" },
-            }),
-          );
+          respondQuotaRateLimit(response);
+          return;
+        }
+        if (fallbackTurns++ === 0) {
+          response.writeHead(200, sseHeaders);
+          sseChunk(response, model, [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "write-recovery",
+                    type: "function",
+                    function: {
+                      name: "write",
+                      arguments: JSON.stringify({
+                        path: join(scratchDir, "recovered.txt"),
+                        content: "work continued on the fallback",
+                      }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ]);
+          sseChunk(response, model, [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: "tool_calls",
+            },
+          ]);
+          response.end("data: [DONE]\n\n");
           return;
         }
 
@@ -391,15 +435,15 @@ describe("Pi model fallback", () => {
         ...REVIEWER_ROLE_PROFILE,
         workspaceMode: "scratch",
         requireRepositoryInspection: false,
-        defaultTools: [],
+        defaultTools: ["write"],
       },
       {
         model: model("primary"),
         fallbackModels: [model("fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
-        maxTurns: 3,
+        ...FAST_RECOVERY,
+        maxTurns: 6,
         runTimeoutMs: 10_000,
         logger: {
           warn: (fields: Record<string, unknown>, message: string) => {
@@ -409,13 +453,18 @@ describe("Pi model fallback", () => {
       },
     );
 
+    const startedAt = performance.now();
     const result = await runner.run({
       runId: "fallback-contract",
       packet: { goal: "Review the change", head_sha: headSha },
       environment: { role: "reviewer" },
     });
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
 
-    expect(requestedModels).toEqual(["primary", "fallback"]);
+    expect(requestedModels).toEqual(["primary", "fallback", "fallback"]);
+    expect(readFileSync(join(scratchDir, "recovered.txt"), "utf8")).toBe(
+      "work continued on the fallback",
+    );
     expect(result.reason).toBeUndefined();
     expect(result.envelope).toEqual(envelope);
 
@@ -425,6 +474,81 @@ describe("Pi model fallback", () => {
     expect(fallbackWarnings).toHaveLength(1);
     expect(fallbackWarnings[0].fields.from).toBe("primary");
     expect(fallbackWarnings[0].fields.to).toBe("fallback");
+  });
+
+  it("does not retry a quota 429 when no alternate model exists", async () => {
+    const { baseUrl, requestedModels } = await startGateway(
+      (_model, response) => respondQuotaRateLimit(response),
+    );
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-quota-solo-test-"));
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RECOVERY,
+        maxTurns: 4,
+        runTimeoutMs: 10_000,
+      },
+    );
+
+    const startedAt = performance.now();
+    const result = await runner.run({
+      runId: "quota-solo-contract",
+      packet: { goal: "Review the change", head_sha: "1".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+    expect(requestedModels).toEqual(["primary"]);
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toMatch(/^provider_protocol_failure:/);
+  });
+
+  it("stops after every configured model rejects the quota request", async () => {
+    const { baseUrl, requestedModels } = await startGateway(
+      (_model, response) => respondQuotaRateLimit(response),
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-quota-exhausted-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "alternate")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RECOVERY,
+        maxTurns: 4,
+        runTimeoutMs: 10_000,
+      },
+    );
+
+    const startedAt = performance.now();
+    const result = await runner.run({
+      runId: "quota-exhausted-contract",
+      packet: { goal: "Review the change", head_sha: "2".repeat(40) },
+      environment: { role: "reviewer" },
+    });
+
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+    expect(requestedModels).toEqual(["primary", "alternate"]);
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toMatch(/^provider_protocol_failure:/);
   });
 
   it("keeps recovering a mute primary across exhausted continuations before fallback", async () => {
@@ -461,7 +585,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         jiggleBackoffMs: 0,
         maxTurns: 12,
         runTimeoutMs: 120_000,
@@ -528,7 +652,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         jiggleBackoffMs: 0,
         maxTurns: 12,
         runTimeoutMs: 120_000,
@@ -579,7 +703,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         jiggleBackoffMs: 0,
         maxTurns: 12,
         runTimeoutMs: 120_000,
@@ -648,7 +772,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         jiggleBackoffMs: 0,
         maxTurns: 12,
         runTimeoutMs: 120_000,
@@ -743,7 +867,7 @@ describe("Pi model fallback", () => {
             truncated: false,
           }),
         } as never,
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 20,
         runTimeoutMs: 120_000,
         logger: {
@@ -801,7 +925,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 20,
         runTimeoutMs: 120_000,
         logger: {
@@ -839,56 +963,30 @@ describe("Pi model fallback", () => {
     expect(fallback[0].fields.error).toBe("continuation_exhausted");
   }, 120_000);
 
-  it("a prior model's quota error never short-circuits the current model's stall handling", async () => {
-    const requestedModels: string[] = [];
-    const warnings: { fields: Record<string, unknown>; message: string }[] = [];
-    const server = createServer((request, response) => {
-      let body = "";
-      request.setEncoding("utf8");
-      request.on("data", (chunk) => {
-        body += chunk;
-      });
-      request.on("end", () => {
-        const parsed: unknown = JSON.parse(body);
-        const model =
-          parsed && typeof parsed === "object" && "model" in parsed
-            ? String(parsed.model)
-            : "";
-        requestedModels.push(model);
-        if (model === "primary") {
-          response.writeHead(403, { "content-type": "application/json" });
-          response.end(
-            JSON.stringify({
-              error: { message: "quota exhausted", type: "insufficient_quota" },
-            }),
-          );
+  it("lets the next model recover from empty replies without inheriting prior quota exhaustion", async () => {
+    const headSha = "b".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary:
+        "The implementation satisfies the complete specification; acceptance checks pass without regressions.",
+      findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the specification" },
+      ],
+      head_sha: headSha,
+    };
+    let secondTurns = 0;
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response) => {
+        if (model === "primary") return respondQuotaRateLimit(response);
+        if (model === "second" && ++secondTurns <= 3) {
+          respondEmpty(response, model);
           return;
         }
-        // "second" and "third" both answer with the settled mute-model shape;
-        // see respondEmpty for why `length` and not a clean `stop`.
-        respondEmpty(response, model);
-      });
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve),
+        respondVerdictToolCall(response, model, envelope);
+      },
     );
-    const address = server.address();
-    if (!address || typeof address === "string")
-      throw new Error("missing port");
-    const baseUrl = `http://127.0.0.1:${address.port}/v1`;
-    const model = (id: string): PiModelSpec => ({
-      id,
-      name: id,
-      api: "openai-completions",
-      provider: "test-gateway",
-      baseUrl,
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128_000,
-      maxTokens: 8_192,
-    });
     const scratchDir = mkdtempSync(join(tmpdir(), "colony-stale-quota-test-"));
     scratchDirs.push(scratchDir);
     const runner = new PiBaseAgentRunner(
@@ -899,48 +997,87 @@ describe("Pi model fallback", () => {
         defaultTools: [],
       },
       {
-        model: model("primary"),
-        fallbackModels: [model("second"), model("third")],
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [
+          modelSpec(baseUrl, "second"),
+          modelSpec(baseUrl, "third"),
+        ],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
-        maxTurns: 8,
-        runTimeoutMs: 30_000,
-        logger: {
-          warn: (fields: Record<string, unknown>, message: string) => {
-            warnings.push({ fields, message });
-          },
-        },
+        ...FAST_RECOVERY,
+        maxTurns: 40,
+        runTimeoutMs: 90_000,
       },
     );
-
     const result = await runner.run({
       runId: "stale-quota-contract",
-      packet: { goal: "Review the change", head_sha: "b".repeat(40) },
+      packet: { goal: "Review the change", head_sha: headSha },
       environment: { role: "reviewer" },
     });
-
-    expect(requestedModels).toContain("second");
-    expect(result.reason).toBeDefined();
-    // The stall took the jiggle path on the CURRENT model instead of
-    // inheriting primary's quota verdict: "second" is jiggled, and any
-    // failover away from it is a stall verdict, never the stale quota one.
-    expect(
-      warnings.some(
-        (warning) =>
-          warning.message === "pi_zero_output_jiggle" &&
-          warning.fields["model"] === "second",
-      ),
-    ).toBe(true);
-    const fallbacksFromSecond = warnings.filter(
-      (warning) =>
-        warning.message === "pi_model_fallback" &&
-        warning.fields["from"] === "second",
-    );
-    for (const fallback of fallbacksFromSecond) {
-      expect(fallback.fields["error"]).toBe("zero_output_stall");
-    }
+    expect(result.envelope).toEqual(envelope);
+    expect(result.reason).toBeUndefined();
+    expect(requestedModels).toEqual([
+      "primary",
+      "second",
+      "second",
+      "second",
+      "second",
+    ]);
   }, 90_000);
+
+  it("lets a brief transport outage recover before exhausting healthy model choices", async () => {
+    const headSha = "f".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary:
+        "The diff implements the complete specification; acceptance checks passed and no regressions were found.",
+      findings: [],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the specification" },
+      ],
+      head_sha: headSha,
+    };
+    let recoveryAt: number | undefined;
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response) => {
+        recoveryAt ??= performance.now() + 120;
+        if (model === "primary" && performance.now() < recoveryAt) {
+          respondServiceUnavailable(response);
+          return;
+        }
+        respondVerdictToolCall(response, model, envelope);
+      },
+    );
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-brief-outage-"));
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "fallback")],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RECOVERY,
+        connectionRetryBackoffMs: 100,
+        maxTurns: 20,
+        runTimeoutMs: 10_000,
+      },
+    );
+    const result = await runner.run({
+      runId: "brief-transport-outage",
+      packet: { goal: "Review the change", head_sha: headSha },
+      environment: { role: "reviewer" },
+    });
+    expect(result.envelope).toEqual(envelope);
+    expect(result.reason).toBeUndefined();
+    expect(requestedModels).not.toContain("fallback");
+  });
 
   it("fails over to the next configured model after five consecutive connection errors", async () => {
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];
@@ -976,7 +1113,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 60,
         runTimeoutMs: 300_000,
         logger: {
@@ -1049,7 +1186,7 @@ describe("Pi model fallback", () => {
         modelHasCapacity: (modelId) => modelId !== "capped",
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 60,
         runTimeoutMs: 300_000,
         logger: {
@@ -1105,7 +1242,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 8,
         runTimeoutMs: 20_000,
         logger: {
@@ -1169,13 +1306,12 @@ describe("Pi model fallback", () => {
         ],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         // Both dead legs must settle five errors each before "third" is
-        // reached: six settled turns per leg, at ~16s apiece while the SDK
-        // retries one dead upstream, so the wall has to cover ~200s (plus
-        // the two jiggles the stall path spends on a leg that goes mute
-        // before its connection budget is spent). maxTurns must exceed the
-        // turns a leg needs or the turn guard ends the run first.
+        // reached: six settled turns per leg. SDK retries are disabled so
+        // each provider response reaches Colony's outer connection budget
+        // promptly. maxTurns must exceed the turns a leg needs or the turn
+        // guard ends the run first.
         maxTurns: 60,
         runTimeoutMs: 600_000,
         logger: {
@@ -1240,7 +1376,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 1,
         runTimeoutMs: 120_000,
       },
@@ -1319,7 +1455,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         runTimeoutMs: 120_000,
       },
     );
@@ -1353,7 +1489,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 8,
         runTimeoutMs: 120_000,
         logger: {
@@ -1412,7 +1548,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 8,
         runTimeoutMs: 120_000,
       },
@@ -1497,7 +1633,7 @@ describe("Pi model fallback", () => {
         fallbackModels: [modelSpec(baseUrl, "fallback")],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         runTimeoutMs: 120_000,
       },
     );
@@ -1542,7 +1678,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 4,
         runTimeoutMs: 120_000,
       },
@@ -1577,7 +1713,7 @@ describe("Pi model fallback", () => {
         model: modelSpec(baseUrl, "primary"),
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         maxTurns: 20,
         runTimeoutMs: 120_000,
       },
@@ -1705,7 +1841,7 @@ describe("Pi model fallback", () => {
         ],
         scratchDir,
         broker: { resolve: () => "test-key" },
-        ...FAST_RETRY,
+        ...FAST_RECOVERY,
         runTimeoutMs: 120_000,
       },
     );

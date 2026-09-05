@@ -1,5 +1,6 @@
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   ModelRegistry,
   SessionManager,
@@ -340,7 +341,9 @@ export class PiBaseAgentRunner implements PiRunner {
     // and the run lives on as a lease-heartbeating zombie (71 minutes past
     // a 45-minute wall, 2026-09-01). Every parent abort drains this first.
     const childSessions = new Set<AgentSession>();
+    const recoveryAbort = new AbortController();
     const abortRun = async (): Promise<void> => {
+      recoveryAbort.abort();
       for (const child of childSessions) {
         try {
           await child.abort();
@@ -666,9 +669,6 @@ export class PiBaseAgentRunner implements PiRunner {
           ...(this.options.runTimeoutMs
             ? { runTimeoutMs: this.options.runTimeoutMs }
             : {}),
-          ...(this.options.retryMaxRetries !== undefined
-            ? { retryMaxRetries: this.options.retryMaxRetries }
-            : {}),
           ...(this.options.logger ? { logger: this.options.logger } : {}),
           ...(this.options.auditSink
             ? { auditSink: this.options.auditSink }
@@ -752,6 +752,19 @@ export class PiBaseAgentRunner implements PiRunner {
         "The previous model request failed with a transient provider connection error. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
       const sleep = (ms: number) =>
         new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const waitAfterConnectionError = async (): Promise<void> => {
+        if (
+          state.connectionErrors > 0 &&
+          state.connectionErrors < MODEL_CONNECTION_ERROR_LIMIT
+        ) {
+          await delay(
+            (this.options.connectionRetryBackoffMs ?? 1_000) *
+              2 ** (state.connectionErrors - 1),
+            undefined,
+            { signal: recoveryAbort.signal },
+          );
+        }
+      };
 
       try {
         const MODEL_FAILED_PROMPT =
@@ -773,6 +786,7 @@ export class PiBaseAgentRunner implements PiRunner {
           landedPromise: Promise<void>,
         ): Promise<boolean> => {
           try {
+            await waitAfterConnectionError();
             const promptPromise = inTraceContext(request.environment, () =>
               target.prompt(prompt, { expandPromptTemplates: false }),
             ).catch((err) => {
@@ -979,7 +993,6 @@ export class PiBaseAgentRunner implements PiRunner {
                     ...stageCustomTools.map((tool) => tool.name),
                     ...stageBuiltinNames,
                   ],
-                  prewalk: false,
                   // The first stage owns the durable transcript; later stages
                   // are compact checks whose artifacts are logged below.
                   journal: stage === stages[0] ? "run" : "transient",
@@ -1393,6 +1406,7 @@ export class PiBaseAgentRunner implements PiRunner {
             }
           }
           try {
+            await waitAfterConnectionError();
             const waitPromise = submissionPromise();
             const steerPromise = inTraceContext(request.environment, () =>
               session!.prompt(prompt, {
