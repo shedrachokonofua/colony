@@ -13,7 +13,7 @@ unblock tasks, and answer when the architect cannot.
 host. It is operated from a web console, a terminal UI, a CLI, or the HTTP
 API.
 
-![A finished scope in the console: the goal, and the nine-task dependency graph the architect planned for it, every task merged](docs/images/scope-top.png)
+![The scope sheet: the goal, the task graph by dependency with each node in its terminal state, the architect's plan, and the audit feed](docs/images/scope-sheet.png)
 
 [![status](https://img.shields.io/badge/status-early%20access-orange)](#status)
 [![license](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
@@ -65,18 +65,18 @@ in parallel:
                                                            └─ 7 comments ─┘
 ```
 
+![The scope sheet replayed from the audit log: tasks move queued, running, mr_open, merged along the graph; task 1 blocks on the 401 and is unblocked; 6 and 7 run in parallel; the scope ends done](docs/images/scope-replay.gif)
+
+The console at each of the 48 state changes in the audit log, in order.
+Task 1 blocks after three `401`s and waits for the operator. Tasks 6 and 7
+run at the same time; 7 is sent back twice.
+
 **Result.** 9 merge requests merged. 39 runs: 1 architect, 14 implement,
 11 review, 13 gate. Task 9's gate ran `docker build` and the smoke test
 against the merged tree (scope-level acceptance runs did not exist yet).
 174 audit events, 2 human: `scope.created`, and one `unblock` after
 GitLab returned `401` on the first merge three times and the operator
 replaced the token.
-
-![Scope sheet: the task graph across the top, with goal, plan, and activity cards beneath](docs/images/scope-sheet.png)
-
-The scope sheet: task graph by dependency, each node in its terminal
-state; the goal, the architect's plan and run, and the audit feed. Every
-operator action is a button here and an audit row with your actor id.
 
 ![Task drawer: spec, merge request, and the run history including a reviewer's request_changes finding](docs/images/task-drawer.png)
 
