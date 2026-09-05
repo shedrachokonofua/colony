@@ -586,10 +586,7 @@ async function advanceMrOpenTasks(
       });
       continue;
     }
-    if (
-      pipeline?.status === "failed" ||
-      pipeline?.status === "canceled"
-    ) {
+    if (pipeline?.status === "failed" || pipeline?.status === "canceled") {
       const activeTaskRun = ctx.store
         .activeRuns()
         .some(
@@ -931,12 +928,18 @@ async function dispatchCiRepair(
     return;
   }
   const attempt = current.attempt + 1;
-  ctx.store.transitionTask(current.id, current.state_version, "queued", SERVICE_ACTOR, {
-    attempt,
-    next_retry_at: new Date(
-      Date.now() + retryBackoffMs(attempt),
-    ).toISOString(),
-  });
+  ctx.store.transitionTask(
+    current.id,
+    current.state_version,
+    "queued",
+    SERVICE_ACTOR,
+    {
+      attempt,
+      next_retry_at: new Date(
+        Date.now() + retryBackoffMs(attempt),
+      ).toISOString(),
+    },
+  );
   ctx.store.audit(SERVICE_ACTOR, "gate.repair_dispatched", {
     scope_id: scope.id,
     task_id: task.id,

@@ -203,10 +203,7 @@ export interface Run {
 export interface RepairIntentRow {
   readonly fingerprint: string;
   readonly task_id: string;
-  readonly trigger_kind:
-    | "ci_failure"
-    | "merge_conflict"
-    | "merge_gate_failure";
+  readonly trigger_kind: "ci_failure" | "merge_conflict" | "merge_gate_failure";
   /** Sanitized trigger, source head, provider metadata, bounded evidence. */
   readonly trigger_json: string;
   readonly created_at: string;

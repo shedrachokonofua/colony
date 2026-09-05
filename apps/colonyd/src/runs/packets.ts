@@ -1,7 +1,4 @@
-import type {
-  ArchitectDecompositionV2,
-  RepairIntentV1,
-} from "@colony/schemas";
+import type { ArchitectDecompositionV2, RepairIntentV1 } from "@colony/schemas";
 import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 
@@ -601,9 +598,7 @@ function buildImplementBody(
           "## Repair intent — CI FAILURE",
           `Trigger: \`${current.repairIntent.kind}\` at source head \`${current.repairIntent.source_head_sha}\`.`,
           ...(current.repairIntent.target_head_sha
-            ? [
-                `Target head: \`${current.repairIntent.target_head_sha}\`.`,
-              ]
+            ? [`Target head: \`${current.repairIntent.target_head_sha}\`.`]
             : []),
           ...formatRepairIntentProvider(current.repairIntent.provider),
           "Sanitized, bounded diagnostic evidence:",
@@ -698,8 +693,10 @@ function formatRepairIntentProvider(
 ): string[] {
   if (!provider) return [];
   const lines: string[] = [];
-  if (provider.pipeline_id) lines.push(`Pipeline: \`${provider.pipeline_id}\`.`);
-  if (provider.pipeline_url) lines.push(`Pipeline URL: ${provider.pipeline_url}`);
+  if (provider.pipeline_id)
+    lines.push(`Pipeline: \`${provider.pipeline_id}\`.`);
+  if (provider.pipeline_url)
+    lines.push(`Pipeline URL: ${provider.pipeline_url}`);
   if (provider.job_ids?.length)
     lines.push(`Failed job ids: ${provider.job_ids.join(", ")}.`);
   if (provider.job_names?.length)

@@ -61,17 +61,22 @@ interface Harness {
   readonly dirs: string[];
 }
 
-async function createHarness(options: {
-  readonly headSha?: string;
-  readonly branch?: string;
-  readonly developerCompletion?: {
-    readonly head_sha?: string;
-    readonly status?: "complete" | "blocked";
-    readonly blocked_reason?: string;
-    readonly commands?: readonly { readonly cmd: string; readonly exit_code: number }[];
-    readonly throwError?: string;
-  };
-} = {}): Promise<Harness> {
+async function createHarness(
+  options: {
+    readonly headSha?: string;
+    readonly branch?: string;
+    readonly developerCompletion?: {
+      readonly head_sha?: string;
+      readonly status?: "complete" | "blocked";
+      readonly blocked_reason?: string;
+      readonly commands?: readonly {
+        readonly cmd: string;
+        readonly exit_code: number;
+      }[];
+      readonly throwError?: string;
+    };
+  } = {},
+): Promise<Harness> {
   const head = options.headSha ?? SHA_A;
   const branch = options.branch ?? "colony/repair-task";
   const dir = mkdtempSync(join(tmpdir(), "colonyd-repair-ci-"));
@@ -84,8 +89,16 @@ async function createHarness(options: {
     name: "test-repo",
     path: "test/repo",
   });
-  await provider.branches.create({ id: repo.id, path: repo.path }, "main", SHA_B);
-  await provider.branches.create({ id: repo.id, path: repo.path }, branch, head);
+  await provider.branches.create(
+    { id: repo.id, path: repo.path },
+    "main",
+    SHA_B,
+  );
+  await provider.branches.create(
+    { id: repo.id, path: repo.path },
+    branch,
+    head,
+  );
 
   const mr = await provider.mergeRequests.open(
     { id: repo.id, path: repo.path },
@@ -124,7 +137,11 @@ async function createHarness(options: {
         throw new Error(options.developerCompletion.throwError);
       }
       const completionHead = options.developerCompletion?.head_sha ?? SHA_C;
-      void provider.branches.create({ id: repo.id, path: repo.path }, branch, completionHead);
+      void provider.branches.create(
+        { id: repo.id, path: repo.path },
+        branch,
+        completionHead,
+      );
       return {
         kind: "implementer_completion",
         status: options.developerCompletion?.status ?? "complete",
@@ -132,7 +149,9 @@ async function createHarness(options: {
         summary: "Repaired CI failure",
         branch,
         head_sha: completionHead,
-        commands: options.developerCompletion?.commands ?? [{ cmd: "bun test", exit_code: 0 }],
+        commands: options.developerCompletion?.commands ?? [
+          { cmd: "bun test", exit_code: 0 },
+        ],
       };
     },
   });
@@ -299,7 +318,11 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
       fingerprint,
       task_id: h.task.id,
       trigger_kind: "ci_failure",
-      trigger_json: JSON.stringify({ kind: "ci_failure", source_head_sha: SHA_A, evidence: [] }),
+      trigger_json: JSON.stringify({
+        kind: "ci_failure",
+        source_head_sha: SHA_A,
+        evidence: [],
+      }),
     });
     h.store.setRepairIntentRunId(fingerprint, dummyRun.id);
 
@@ -350,15 +373,39 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
       id: pipelineId,
       status: "failed",
       commit_sha: SHA_A,
-      metadata: { provider: "fake", id: pipelineId, web_url: "https://pipe-multi" },
+      metadata: {
+        provider: "fake",
+        id: pipelineId,
+        web_url: "https://pipe-multi",
+      },
     });
     h.provider.pipelines.listJobs = async () => [
-      { id: "j1", name: "test-unit", status: "failed", metadata: { provider: "fake", id: "j1" } },
-      { id: "j2", name: "lint", status: "failed", metadata: { provider: "fake", id: "j2" } },
-      { id: "j3", name: "build", status: "success", metadata: { provider: "fake", id: "j3" } },
+      {
+        id: "j1",
+        name: "test-unit",
+        status: "failed",
+        metadata: { provider: "fake", id: "j1" },
+      },
+      {
+        id: "j2",
+        name: "lint",
+        status: "failed",
+        metadata: { provider: "fake", id: "j2" },
+      },
+      {
+        id: "j3",
+        name: "build",
+        status: "success",
+        metadata: { provider: "fake", id: "j3" },
+      },
     ];
     h.provider.pipelines.getTrace = async (_repo, jobId) => ({
-      job: { id: jobId, name: jobId, status: "failed", metadata: { provider: "fake", id: jobId } },
+      job: {
+        id: jobId,
+        name: jobId,
+        status: "failed",
+        metadata: { provider: "fake", id: jobId },
+      },
       text: `Error in ${jobId}`,
     });
 
@@ -387,7 +434,11 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
       fingerprint,
       task_id: h.task.id,
       trigger_kind: "ci_failure",
-      trigger_json: JSON.stringify({ kind: "ci_failure", source_head_sha: SHA_A, evidence: ["crash"] }),
+      trigger_json: JSON.stringify({
+        kind: "ci_failure",
+        source_head_sha: SHA_A,
+        evidence: ["crash"],
+      }),
     });
 
     // Start a live review run and track it
@@ -514,7 +565,10 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
   it("traces are capped at 8 KiB / 200 lines with ANSI/control characters and secrets stripped", () => {
     const secret = "glpat-abcdef12345678901234 sk-abcdef12345678901234";
     const ansi = "\x1b[31mRed text\x1b[0m";
-    const longText = Array.from({ length: 300 }, (_, i) => `line ${i} ${secret} ${ansi}`).join("\n");
+    const longText = Array.from(
+      { length: 300 },
+      (_, i) => `line ${i} ${secret} ${ansi}`,
+    ).join("\n");
 
     const sanitized = sanitizeTrace(longText);
 

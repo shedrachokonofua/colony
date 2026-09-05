@@ -69,10 +69,10 @@ export async function runImplement(
   const leaseTtlMs =
     options.leaseTtlMs ?? developer.ceilings.timeoutMs + 5 * 60_000;
   const repairIntent = options.repairIntentFingerprint
-    ? (repairIntentFromRow(
+    ? repairIntentFromRow(
         ctx.store.getRepairIntent(options.repairIntentFingerprint),
         options.repairIntentFingerprint,
-      ))
+      )
     : undefined;
 
   // The span must exist first so its trace id can ride on the run row:
@@ -158,7 +158,7 @@ async function executeImplement(
   abortController: AbortController,
   runSpan: ColonyRunSpan | undefined,
   startModelId: string | undefined,
-  repairIntent: RepairIntentV1 & { readonly fingerprint: string } | undefined,
+  repairIntent: (RepairIntentV1 & { readonly fingerprint: string }) | undefined,
 ): Promise<void> {
   let minted: MintedToken | null = null;
   try {

@@ -226,7 +226,10 @@ export const RepairIntentV1 = z
   .object({
     kind: z.enum(["ci_failure", "merge_conflict", "merge_gate_failure"]),
     source_head_sha: z.string().regex(/^[0-9a-f]{40}$/),
-    target_head_sha: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+    target_head_sha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/)
+      .optional(),
     provider: z
       .object({
         pipeline_id: z.string().optional(),

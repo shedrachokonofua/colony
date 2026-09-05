@@ -528,7 +528,8 @@ const TRACE_MAX_LINES = 200;
 const TRACE_MAX_BYTES = 8 * 1024;
 
 // eslint-disable-next-line no-control-regex
-const ANSI_REGEX = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+const ANSI_REGEX =
+  /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 // C0/C1 controls except \n (LF) and \t (benign whitespace) so lines and
 // column layout survive; ESC-run sequences go first.
 // eslint-disable-next-line no-control-regex
