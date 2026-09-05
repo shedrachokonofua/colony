@@ -1,13 +1,21 @@
 # Colony
 
 Colony is a self-hosted control plane that turns a written engineering goal
-into merged code. It runs a team of coding agents against your
-repositories, unattended: an architect agent decomposes the goal into a
-dependency graph of tasks; developer agents implement the tasks in
-parallel, each on its own branch and merge request; reviewer agents and a
-deterministic merge gate decide what lands on `main`; an acceptance run on
-the merged result decides whether the goal is met. You approve plans,
-unblock tasks, and answer when the architect cannot.
+into merged code. The goal is the unit of work, not the prompt: something
+that takes a team hours or days, that no single agent session could hold
+in context, and that you do not want to sit and supervise.
+
+An architect agent decomposes the goal into a dependency graph of tasks.
+Developer agents implement the tasks in parallel, each on its own branch
+and merge request. Reviewer agents and a deterministic merge gate decide
+what lands on `main`. An acceptance run on the merged result decides
+whether the goal is met. Between those points Colony runs itself: it
+dispatches work as dependencies clear, retries with backoff, fails over
+between models, requeues tasks the reviewer or gate rejects, reaps runs
+that die, and survives its own restarts. You are asked for three things:
+approve the plan, unblock a task it could not fix, and decide when the
+architect has run out of repair rounds. Colony has been building itself
+this way since August 2026.
 
 `colonyd` is one process; its state is one SQLite database plus your Git
 host. It is operated from a web console, a terminal UI, a CLI, or the HTTP
@@ -576,8 +584,7 @@ constructed.
 
 ## Status
 
-Early access. Colony has planned, implemented, reviewed, gated, and merged
-its own merge requests since August 2026. The SQLite schema is migrated
+Early access. The SQLite schema is migrated
 forward automatically on boot; there is no downgrade, so back up
 `COLONYD_DB_PATH` before upgrading. Interfaces between packages still
 change without notice. GitLab is the supported Git host; model providers
