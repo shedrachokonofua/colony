@@ -1,3 +1,4 @@
+import type { Fault } from "@colony/core";
 import {
   beginAgentRun,
   type AgentMetricAttributes,
@@ -37,6 +38,7 @@ export interface PiRunResult {
   readonly sandboxId: string;
   readonly envelope: unknown;
   readonly reason?: string;
+  readonly fault?: Fault;
 }
 
 export interface PiRunResumeRequest extends PiRunRequest {
@@ -174,23 +176,50 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
           : parsed.ok
             ? undefined
             : truncate(describeRejection(result.envelope, parsed.reason), 800),
+        fault: result.fault,
       };
-      this.runs.set(runId, { ...metadata, output });
-      finishMetrics(metadata.status, metadata.rejectionReason);
-      return metadata;
+      let finalMetadata: AgentRunMetadata = metadata;
+      if (metadata.status === "envelope_rejected" && !metadata.fault) {
+        // Only a schema-parse failure can reach the adapter: a submit tool
+        // that refuses an envelope does so before capturing it.
+        finalMetadata = {
+          ...metadata,
+          fault: {
+            layer: "model",
+            code: "envelope_invalid",
+            detail: truncate(
+              metadata.rejectionReason ?? "envelope failed schema parse",
+              240,
+            ),
+          },
+        };
+      }
+      this.runs.set(runId, { ...finalMetadata, output });
+      finishMetrics(finalMetadata.status, finalMetadata.rejectionReason);
+      return finalMetadata;
     } catch (err) {
       const current = this.runs.get(runId);
+      const excerpt = err instanceof Error ? err.message : String(err);
+      // A throw racing a cancel is the cancel, not an unclassified fault: the
+      // operator asked for this run to stop.
+      const canceled = current?.status === "canceled";
+      if (!canceled) {
+        console.error("[fault] unknown classification", excerpt);
+      }
       const metadata: AgentRunMetadata = {
         ...running,
         sandboxId: current?.sandboxId ?? running.sandboxId,
-        status: current?.status === "canceled" ? "canceled" : "failed",
-        rejectionReason:
-          current?.status === "canceled"
-            ? undefined
-            : redactPacketSecret(
-                err instanceof Error ? err.message : String(err),
-                packet,
-              ),
+        status: canceled ? "canceled" : "failed",
+        rejectionReason: canceled
+          ? undefined
+          : redactPacketSecret(excerpt, packet),
+        fault: canceled
+          ? undefined
+          : {
+              layer: "unknown",
+              code: "unknown",
+              detail: truncate(excerpt, 240),
+            },
       };
       this.runs.set(runId, metadata);
       finishMetrics(metadata.status, metadata.rejectionReason);
@@ -231,6 +260,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
       status: AgentRunMetadata["status"],
       reason?: string,
       output?: AgentRunOutput,
+      fault?: Fault,
     ) => {
       const metadata: AgentRunMetadata = {
         runId,
@@ -249,6 +279,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         ...(output === undefined
           ? {}
           : { outputEnvelopeHash: output.envelopeHash }),
+        ...(fault === undefined ? {} : { fault }),
       };
       // The resumed envelope must be stored, not just counted: without it
       // getRunOutput stays null for every adopted run.
@@ -308,7 +339,12 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
             runResult.envelope !== null &&
             "__unfinished" in runResult.envelope;
           if (unfinished || runResult.reason !== undefined) {
-            return record("failed", runResult.reason ?? "resume_no_submission");
+            return record(
+              "failed",
+              runResult.reason ?? "resume_no_submission",
+              undefined,
+              runResult.fault,
+            );
           }
           const parsed = parseEnvelope(
             runEnvironment.role,
@@ -316,9 +352,22 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
             packet,
           );
           if (!parsed.ok) {
+            const rejection = describeRejection(
+              runResult.envelope,
+              parsed.reason,
+            );
+            // As in startRun, only a schema-parse failure reaches the
+            // adapter: a submit tool that refuses an envelope does so
+            // before capturing it.
             return record(
               "envelope_rejected",
-              describeRejection(runResult.envelope, parsed.reason),
+              rejection,
+              undefined,
+              runResult.fault ?? {
+                layer: "model",
+                code: "envelope_invalid",
+                detail: truncate(rejection, 240),
+              },
             );
           }
           return record("succeeded", undefined, {
@@ -328,7 +377,16 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         },
       });
     } catch (err) {
-      return record("failed", err instanceof Error ? err.message : String(err));
+      const excerpt = err instanceof Error ? err.message : String(err);
+      // The single allowed text-derived path: a throw with no structured
+      // fault (resume plumbing, a runner without resume support) is
+      // unclassified, never re-derived from its text.
+      console.error("[fault] unknown classification", excerpt);
+      return record("failed", excerpt, undefined, {
+        layer: "unknown",
+        code: "unknown",
+        detail: truncate(excerpt, 240),
+      });
     }
   }
 
@@ -388,6 +446,7 @@ function withoutOutput(
     packetHash: run.packetHash,
     outputEnvelopeHash: run.outputEnvelopeHash,
     rejectionReason: run.rejectionReason,
+    fault: run.fault,
   };
 }
 

@@ -1,3 +1,4 @@
+import type { Fault } from "@colony/core";
 import {
   type ArchitectDecompositionV2,
   type ImplementerCompletionV2,
@@ -83,6 +84,8 @@ export interface AgentRunMetadata {
    * suitable for audit evidence. Truncated to a few hundred characters.
    */
   readonly rejectionReason?: string;
+  /** Structured failure classification when the run terminated in failure. */
+  readonly fault?: Fault;
 }
 
 export interface AgentRunOutput {
@@ -378,5 +381,6 @@ function withoutOutput(
     packetHash: run.packetHash,
     outputEnvelopeHash: run.outputEnvelopeHash,
     rejectionReason: run.rejectionReason,
+    fault: run.fault,
   };
 }

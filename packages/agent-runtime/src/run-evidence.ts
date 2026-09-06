@@ -430,3 +430,20 @@ export function toolResultText(result: unknown): {
     isErrorText: isError,
   };
 }
+
+/**
+ * The message the loop produced when it refused a tool call's arguments, or
+ * undefined when the tool ran. That path is the only one carrying the message
+ * in `details.error` alongside `details.isError`; a tool that failed while
+ * executing leaves `details` empty, so the two are told apart without reading
+ * either message.
+ */
+export function toolArgValidationError(result: unknown): string | undefined {
+  const details = (result as { details?: unknown } | undefined)?.details;
+  if (!details || typeof details !== "object") return undefined;
+  const record = details as { isError?: unknown; error?: unknown };
+  if (record.isError !== true || typeof record.error !== "string") {
+    return undefined;
+  }
+  return record.error;
+}
