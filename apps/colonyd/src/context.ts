@@ -33,6 +33,7 @@ export interface ColonydContext {
     readonly singleToken: boolean;
     readonly maxConcurrent: number;
     readonly maxAttempts: number;
+    readonly resumeLeaseTtlMs: number;
     readonly oidcIssuer: string;
     readonly oidcClientId: string;
     readonly oidcRequiredRole: string;

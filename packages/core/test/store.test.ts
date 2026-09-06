@@ -435,16 +435,19 @@ describe("Store", () => {
     expect(store.activeRunCount()).toBe(0);
   });
 
-  it("expires orphaned in-flight runs regardless of lease TTL", () => {
+  it("fails orphaned in-flight runs with process_restart semantics at boot adoption", () => {
     const scopeId = seededScope();
     const run = store.startRun({
       scope_id: scopeId,
       kind: "implement",
       lease_ttl_ms: 30 * 60_000,
     });
-    const expired = store.expireOrphanedRuns();
-    expect(expired).toHaveLength(1);
-    expect(expired[0]!.id).toBe(run.id);
+    // The orphan sweep moved to apps/colonyd's adoptOrExpireRuns; the store
+    // contract it relies on is finishRun's process_restart fault write.
+    store.finishRun(run.id, "failed", {
+      error: "process_restart",
+      fault: { layer: "colonyd", code: "process_restart" },
+    });
     expect(store.getRun(run.id)!.status).toBe("failed");
     expect(store.getRun(run.id)!.error).toBe("process_restart");
     expect(store.activeRunCount()).toBe(0);
@@ -458,8 +461,13 @@ describe("Store", () => {
       lease_ttl_ms: 30 * 60_000,
     });
     store.setRunToken(run.id, "glpat-token-99");
-    const expired = store.expireOrphanedRuns();
-    expect(expired[0]!.token_id).toBe("glpat-token-99");
+    // Boot adoption reaps process_restart corpses the way expireOrphanedRuns
+    // did; the token id must survive on the finished row so the revoke can
+    // target it.
+    store.finishRun(run.id, "failed", {
+      error: "process_restart",
+      fault: { layer: "colonyd", code: "process_restart" },
+    });
     expect(store.getRun(run.id)!.token_id).toBe("glpat-token-99");
   });
 
@@ -624,7 +632,7 @@ describe("Store", () => {
     expect(JSON.parse(rows[0]!.detail_json).status).toBe("succeeded");
   });
 
-  it("writes run.finished audit rows for lease expiry and orphan sweeps", () => {
+  it("writes run.finished audit rows for lease expiry and boot-adoption reaps", () => {
     const scopeId = seededScope();
     const leased = store.startRun({
       scope_id: scopeId,
@@ -637,7 +645,11 @@ describe("Store", () => {
       kind: "validate",
       lease_ttl_ms: 60_000,
     });
-    store.expireOrphanedRuns();
+    // Boot adoption's orphan reap is finishRun(process_restart) + revoke.
+    store.finishRun(orphaned.id, "failed", {
+      error: "process_restart",
+      fault: { layer: "colonyd", code: "process_restart" },
+    });
 
     for (const id of [leased.id, orphaned.id]) {
       const rows = store
@@ -2763,7 +2775,7 @@ describe("fault contract", () => {
     }
   });
 
-  it("expireDeadLeases and expireOrphanedRuns write colonyd faults to the audit", () => {
+  it("writes run.finished audit rows for lease expiry and boot-adoption reaps", () => {
     const a = createRun("lease expiry fault");
     const b = createRun("orphan fault");
     const expiredAt = new Date(Date.now() - 1_000).toISOString();
@@ -2772,7 +2784,10 @@ describe("fault contract", () => {
       .run(expiredAt, a);
 
     store.expireDeadLeases(new Date());
-    store.expireOrphanedRuns();
+    store.finishRun(b, "failed", {
+      error: "process_restart",
+      fault: { layer: "colonyd", code: "process_restart" },
+    });
 
     expect(parseFault(store.getRun(a)!.fault_json)).toEqual({
       layer: "colonyd",

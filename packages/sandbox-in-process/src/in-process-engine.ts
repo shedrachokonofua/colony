@@ -97,7 +97,15 @@ class InProcessSandboxHandle implements SandboxHandle {
     // detached:true puts the shell (and everything it spawns) in its own
     // process group so a timeout can kill the entire tree, not just the
     // shell, via `process.kill(-child.pid, ...)`.
-    const child = spawn(request.command, {
+    // In containerized engines (k8s), the workspace is mounted at /workspace.
+    // In the in-process engine, commands referencing /workspace (such as the
+    // boot adoption liveness probe `test -e /workspace`) map to the handle's
+    // actual workspaceDir so they behave identically across host substrates.
+    const command = request.command.replace(
+      /(^|\s)\/workspace(\b|$)/g,
+      `$1'${this.workspaceDir}'$2`,
+    );
+    const child = spawn(command, {
       cwd,
       env: buildIsolatedCommandEnv(
         this.envAllowlist,

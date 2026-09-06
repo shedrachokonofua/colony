@@ -1676,6 +1676,16 @@ export class Store {
     return true;
   }
 
+  /** Release the adoption claim and extend the lease for daemon handoff. */
+  handoffRun(runId: string, leaseTtlMs: number): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET adopted = 0, lease_expires_at = ?
+         WHERE id = ? AND status = 'running' AND sandbox_id IS NOT NULL`,
+      )
+      .run(new Date(Date.now() + leaseTtlMs).toISOString(), runId);
+  }
+
   finishRun(
     runId: string,
     status: "succeeded" | "failed" | "canceled",
@@ -1748,23 +1758,6 @@ export class Store {
       });
     }
     return expired;
-  }
-
-  /**
-   * Fail every in-flight run. A previous process's work cannot still be
-   * executing after this process opened the DB (single-process colonyd).
-   */
-  expireOrphanedRuns(): Run[] {
-    const orphans = this.db
-      .prepare(`SELECT * FROM runs WHERE status = 'running'`)
-      .all() as Run[];
-    for (const run of orphans) {
-      this.finishRun(run.id, "failed", {
-        error: "process_restart",
-        fault: { layer: "colonyd", code: "process_restart" },
-      });
-    }
-    return orphans;
   }
 
   activeRunCount(kind?: Run["kind"]): number {

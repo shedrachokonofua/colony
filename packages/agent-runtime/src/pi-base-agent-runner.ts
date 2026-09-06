@@ -1,5 +1,6 @@
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   ModelRegistry,
   SessionManager,
@@ -264,7 +265,22 @@ export class PiBaseAgentRunner implements PiRunner {
     // The run's own provider token; redaction secrets for persisted evidence.
     const runToken = packetRepo(request.packet)?.credentials?.token;
     let model = await resolvePiModel(request, this.options.model);
-    const models = [model, ...(this.options.fallbackModels ?? [])];
+    const configuredModels = [model, ...(this.options.fallbackModels ?? [])];
+    const excludedModelIds = request.environment.excludedModelIds;
+    // Eligibility is subject-scoped retry state, not dispatch capacity. Apply
+    // it to the complete configured primary chain before registry resolution
+    // and start-model rotation, so a rejected primary cannot reappear after a
+    // later leg fails. The advisor remains separate below.
+    const models = excludedModelIds?.length
+      ? configuredModels.filter(
+          (candidate) => !excludedModelIds.includes(candidate.id),
+        )
+      : configuredModels;
+    if (models.length === 0) {
+      throw new Error(
+        `no eligible configured model remains for the ${request.environment.role} agent`,
+      );
+    }
     const availableModels =
       this.options.advisorModel &&
       !models.some(
@@ -340,7 +356,9 @@ export class PiBaseAgentRunner implements PiRunner {
     // and the run lives on as a lease-heartbeating zombie (71 minutes past
     // a 45-minute wall, 2026-09-01). Every parent abort drains this first.
     const childSessions = new Set<AgentSession>();
+    const recoveryAbort = new AbortController();
     const abortRun = async (): Promise<void> => {
+      recoveryAbort.abort();
       for (const child of childSessions) {
         try {
           await child.abort();
@@ -611,6 +629,7 @@ export class PiBaseAgentRunner implements PiRunner {
       // Active model index survives past the prompt loop so submit-gate
       // failures and stall recovery share one fallback chain.
       let index = 0;
+      const finalizerAttemptedModels: string[] = [];
 
       /**
        * The ONE session construction, shared by the fresh-start and the
@@ -665,9 +684,6 @@ export class PiBaseAgentRunner implements PiRunner {
             this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
           ...(this.options.runTimeoutMs
             ? { runTimeoutMs: this.options.runTimeoutMs }
-            : {}),
-          ...(this.options.retryMaxRetries !== undefined
-            ? { retryMaxRetries: this.options.retryMaxRetries }
             : {}),
           ...(this.options.logger ? { logger: this.options.logger } : {}),
           ...(this.options.auditSink
@@ -752,6 +768,19 @@ export class PiBaseAgentRunner implements PiRunner {
         "The previous model request failed with a transient provider connection error. Continue the same task from the current conversation and workspace state, then submit the required envelope.";
       const sleep = (ms: number) =>
         new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const waitAfterConnectionError = async (): Promise<void> => {
+        if (
+          state.connectionErrors > 0 &&
+          state.connectionErrors < MODEL_CONNECTION_ERROR_LIMIT
+        ) {
+          await delay(
+            (this.options.connectionRetryBackoffMs ?? 1_000) *
+              2 ** (state.connectionErrors - 1),
+            undefined,
+            { signal: recoveryAbort.signal },
+          );
+        }
+      };
 
       try {
         const MODEL_FAILED_PROMPT =
@@ -773,6 +802,7 @@ export class PiBaseAgentRunner implements PiRunner {
           landedPromise: Promise<void>,
         ): Promise<boolean> => {
           try {
+            await waitAfterConnectionError();
             const promptPromise = inTraceContext(request.environment, () =>
               target.prompt(prompt, { expandPromptTemplates: false }),
             ).catch((err) => {
@@ -979,7 +1009,6 @@ export class PiBaseAgentRunner implements PiRunner {
                     ...stageCustomTools.map((tool) => tool.name),
                     ...stageBuiltinNames,
                   ],
-                  prewalk: false,
                   // The first stage owns the durable transcript; later stages
                   // are compact checks whose artifacts are logged below.
                   journal: stage === stages[0] ? "run" : "transient",
@@ -1354,31 +1383,215 @@ export class PiBaseAgentRunner implements PiRunner {
             );
             if (!steer) {
               if (!steering.continuationAllowanceExhausted()) break;
-              // Continuation allowance is local to a model leg. Exhausting
-              // this candidate's stop-steers must not terminate a run while a
-              // permitted fallback can continue the retained session.
-              const from = resolvedModels[index]?.id;
-              const nextIndex = nextCandidateIndex(index);
-              const next =
-                nextIndex === null ? undefined : resolvedModels[nextIndex];
-              if (!next || nextIndex === null) break;
-              index = nextIndex;
-              await session.setModel(next);
-              steering.resetContinuationAllowance();
-              state.zeroOutputStalled = false;
-              state.jigglesUsed = 0;
-              state.connectionErrors = 0;
-              state.quotaScanFloor = session.agent.state.messages.length;
-              this.options.logger?.warn?.(
-                {
-                  runId,
-                  from,
-                  to: next.id,
-                  error: "continuation_exhausted",
-                },
-                "pi_model_fallback",
-              );
-              prompt = MODEL_FAILED_PROMPT;
+
+              const skipFinalizer =
+                submissionCaptured() ||
+                state.timeoutTriggered ||
+                state.cancellationTriggered ||
+                state.failureReason !== undefined ||
+                state.submissionRejectionReason !== undefined ||
+                (this.profile.requireRepositoryInspection &&
+                  !state.repositoryInspected);
+
+              if (!skipFinalizer) {
+                const currentCandidate = resolvedModels[index]!;
+                finalizerAttemptedModels.push(currentCandidate.id);
+                const liveSession = session;
+                if (!liveSession) throw new Error("run session missing");
+
+                let savedTools: string[];
+                try {
+                  savedTools = liveSession.getActiveToolNames();
+                } catch {
+                  savedTools = [...toolNames];
+                }
+
+                // One shared exit for every failed-leg path (budget spent,
+                // thrown prompt): restore tools, drop the stale forced
+                // directive, then fail over to the next candidate. Returns
+                // false when no candidate remains.
+                const advanceAfterFinalizer = async (
+                  from: string,
+                  error: string,
+                ): Promise<boolean> => {
+                  liveSession.toolChoiceQueue.removeByLabel("user-force");
+                  const nextIndex = nextCandidateIndex(index);
+                  if (nextIndex === null) {
+                    this.options.logger?.warn?.(
+                      { runId, models: [...finalizerAttemptedModels] },
+                      "pi_finalizer_exhausted",
+                    );
+                    return false;
+                  }
+                  index = nextIndex;
+                  const next = resolvedModels[index]!;
+                  await liveSession.setModel(next);
+                  steering.resetContinuationAllowance();
+                  state.zeroOutputStalled = false;
+                  state.jigglesUsed = 0;
+                  state.connectionErrors = 0;
+                  state.quotaScanFloor =
+                    liveSession.agent.state.messages.length;
+                  this.options.logger?.warn?.(
+                    { runId, from, to: next.id, error },
+                    "pi_model_fallback",
+                  );
+                  return true;
+                };
+
+                let finalizerSubmitted = false;
+                let promptError: unknown;
+                try {
+                  await liveSession
+                    .setActiveToolsByName([submitTool.name])
+                    .catch(() => undefined);
+
+                  for (
+                    let attempt = 1;
+                    attempt <= 2 &&
+                    !submissionCaptured() &&
+                    !state.timeoutTriggered &&
+                    !state.cancellationTriggered &&
+                    state.failureReason === undefined;
+                    attempt += 1
+                  ) {
+                    liveSession.toolChoiceQueue.removeByLabel("user-force");
+                    const compat = liveSession.model?.compat;
+                    if (
+                      compat !== undefined &&
+                      typeof compat === "object" &&
+                      "supportsForcedToolChoice" in compat &&
+                      compat.supportsForcedToolChoice === false
+                    ) {
+                      this.options.logger?.info?.(
+                        { runId, model: currentCandidate.id },
+                        "pi_finalizer_force_unsupported",
+                      );
+                    } else {
+                      try {
+                        liveSession.setForcedToolChoice(submitTool.name);
+                      } catch (err: unknown) {
+                        this.options.logger?.warn?.(
+                          {
+                            runId,
+                            model: currentCandidate.id,
+                            error:
+                              err instanceof Error ? err.message : String(err),
+                          },
+                          "pi_finalizer_force_failed",
+                        );
+                      }
+                    }
+
+                    this.options.logger?.info?.(
+                      {
+                        runId,
+                        sandboxId,
+                        model: currentCandidate.id,
+                        attempt,
+                      },
+                      "pi_finalizer_forced",
+                    );
+
+                    if (state.cancellationTriggered) {
+                      throw new Error("run canceled during finalizer");
+                    }
+                    if (state.timeoutTriggered) {
+                      break;
+                    }
+
+                    const finalizerPromise = inTraceContext(
+                      request.environment,
+                      () =>
+                        liveSession.prompt(
+                          this.profile.finalizerPrompt(request.packet),
+                          { expandPromptTemplates: false },
+                        ),
+                    ).catch((err: unknown) => {
+                      if (submissionCaptured()) return;
+                      throw err;
+                    });
+
+                    await Promise.race([finalizerPromise, submissionPromise()]);
+                    if (!submissionCaptured()) {
+                      await waitForIdleOrCapturedEnvelope(
+                        liveSession.agent,
+                        submissionPromise(),
+                      );
+                    }
+                  }
+
+                  finalizerSubmitted = submissionCaptured();
+                } catch (err: unknown) {
+                  promptError = err;
+                }
+
+                await liveSession
+                  .setActiveToolsByName(savedTools)
+                  .catch(() => undefined);
+
+                if (finalizerSubmitted) break;
+
+                if (promptError !== undefined) {
+                  if (state.cancellationTriggered) throw promptError;
+                  // A thrown finalizer prompt is a failed leg, not a dead
+                  // run: fail over like the exhaustion exit below. With no
+                  // candidate left the error propagates so the run keeps
+                  // its provider-failure classification (driveSession
+                  // parity).
+                  if (
+                    !(await advanceAfterFinalizer(
+                      currentCandidate.id,
+                      promptError instanceof Error
+                        ? promptError.message
+                        : String(promptError),
+                    ))
+                  ) {
+                    throw promptError;
+                  }
+                  prompt = MODEL_FAILED_PROMPT;
+                } else if (
+                  state.timeoutTriggered ||
+                  state.cancellationTriggered
+                ) {
+                  break;
+                } else if (
+                  !(await advanceAfterFinalizer(
+                    currentCandidate.id,
+                    "finalize_no_submission",
+                  ))
+                ) {
+                  break;
+                } else {
+                  prompt = MODEL_FAILED_PROMPT;
+                }
+              } else {
+                // Continuation allowance is local to a model leg. Exhausting
+                // this candidate's stop-steers must not terminate a run while a
+                // permitted fallback can continue the retained session.
+                const from = resolvedModels[index]?.id;
+                const nextIndex = nextCandidateIndex(index);
+                const next =
+                  nextIndex === null ? undefined : resolvedModels[nextIndex];
+                if (!next || nextIndex === null) break;
+                index = nextIndex;
+                await session.setModel(next);
+                steering.resetContinuationAllowance();
+                state.zeroOutputStalled = false;
+                state.jigglesUsed = 0;
+                state.connectionErrors = 0;
+                state.quotaScanFloor = session.agent.state.messages.length;
+                this.options.logger?.warn?.(
+                  {
+                    runId,
+                    from,
+                    to: next.id,
+                    error: "continuation_exhausted",
+                  },
+                  "pi_model_fallback",
+                );
+                prompt = MODEL_FAILED_PROMPT;
+              }
             } else {
               this.options.logger?.warn?.(
                 { runId, sandboxId },
@@ -1393,6 +1606,7 @@ export class PiBaseAgentRunner implements PiRunner {
             }
           }
           try {
+            await waitAfterConnectionError();
             const waitPromise = submissionPromise();
             const steerPromise = inTraceContext(request.environment, () =>
               session!.prompt(prompt, {
