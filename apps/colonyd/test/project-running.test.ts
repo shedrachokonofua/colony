@@ -183,6 +183,7 @@ describe("GET /projects/:name/running", () => {
     for (const row of body) {
       expect(Object.keys(row).sort()).toEqual([
         "attempt",
+        "delivery_status",
         "run",
         "scope_id",
         "scope_title",
