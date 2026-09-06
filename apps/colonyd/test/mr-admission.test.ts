@@ -20,7 +20,7 @@ import {
   hasActiveRepositoryMergeGate,
 } from "../src/runs/mr-admission.js";
 import { abortRun, awaitPendingRuns } from "../src/runs/registry.js";
-import { runReview } from "../src/runs/review.js";
+import { reconcileRejectedReview, runReview } from "../src/runs/review.js";
 import { tick } from "../src/tick.js";
 import { runMergeGate } from "../src/runs/merge-gate.js";
 
@@ -156,6 +156,7 @@ async function harness(
       singleToken: true,
       maxConcurrent: 4,
       maxAttempts: 3,
+      resumeLeaseTtlMs: 900_000,
       oidcIssuer: "",
       oidcClientId: "colony",
       oidcRequiredRole: "",
@@ -163,6 +164,7 @@ async function harness(
       consoleBaseUrl: "",
     },
     draining: { isDraining: () => draining.value },
+    validateExecutor: async () => ({ passed: true, results: [] }),
     requestTick() {},
   };
   return { ctx, store, provider, scope, task, mr, draining };
@@ -194,6 +196,178 @@ async function deferSecondProviderGet(
 }
 
 describe("MR-derived dispatch admission", () => {
+  it("keeps the rejection budget across an intervening reviewer timeout", async () => {
+    const h = await harness();
+    for (let round = 0; round < 10; round += 1) {
+      const head = round === 9 ? SHA : round.toString(16).padStart(40, "0");
+      const rejected = h.store.startRun({
+        scope_id: h.scope.id,
+        task_id: h.task.id,
+        kind: "review",
+        base_sha: head,
+        lease_ttl_ms: 60_000,
+      });
+      h.store.finishRun(rejected.id, "succeeded", {
+        evidence_json: JSON.stringify({
+          head_sha: head,
+          verdict: "request_changes",
+        }),
+      });
+      if (round === 8) {
+        const timedOut = h.store.startRun({
+          scope_id: h.scope.id,
+          task_id: h.task.id,
+          kind: "review",
+          base_sha: SHA,
+          lease_ttl_ms: 60_000,
+        });
+        h.store.finishRun(timedOut.id, "failed", {
+          error: "timeout_without_envelope",
+          evidence_json: JSON.stringify({ head_sha: SHA }),
+        });
+      }
+    }
+    reconcileRejectedReview(h.ctx, h.task);
+    expect(h.store.getTask(h.task.id)?.state).toBe("blocked");
+  });
+
+  it("does not admit review or merge when pipeline lookup is unavailable", async () => {
+    const h = await harness();
+    h.provider.pipelines.getStatus = async () => {
+      throw new Error("pipeline provider HTTP 503");
+    };
+    await tick(h.ctx);
+    await awaitPendingRuns();
+    expect(h.store.getTask(h.task.id)?.state).toBe("mr_open");
+    expect(h.store.runsForTask(h.task.id)).toEqual([]);
+    const mr = await h.provider.mergeRequests.get(
+      { id: h.scope.provider_repo_id },
+      h.mr.id,
+    );
+    expect(mr.state).toBe("opened");
+  });
+
+  it("waits for a fresh head to register CI but permits confirmed pipeline absence afterward", async () => {
+    const h = await harness();
+    const pushed = h.store.startRun({
+      scope_id: h.scope.id,
+      task_id: h.task.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    h.store.finishRun(pushed.id, "succeeded", { head_sha: SHA });
+    h.provider.pipelines.getStatus = async () => {
+      throw Object.assign(new Error("no pipeline for this SHA"), {
+        status: 404,
+        body: "pipeline_not_found",
+      });
+    };
+    const ctx = { ...h.ctx, gateExecutor: async () => null };
+    await tick(ctx);
+    await awaitPendingRuns();
+    expect(
+      h.store.runsForTask(h.task.id).filter((run) => run.kind === "review"),
+    ).toEqual([]);
+    h.store.db
+      .prepare("UPDATE runs SET finished_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 240_000).toISOString(), pushed.id);
+    await tick(ctx);
+    await awaitPendingRuns();
+    await tick(ctx);
+    await awaitPendingRuns();
+    const mr = await h.provider.mergeRequests.get(
+      { id: h.scope.provider_repo_id },
+      h.mr.id,
+    );
+    expect(mr.state).toBe("merged");
+  });
+
+  it("reconciles an unconfirmed merge only after the provider confirms the gated head", async () => {
+    const h = await harness();
+    await runReview(h.ctx, h.scope, h.task, SHA);
+    const originalGet = h.provider.mergeRequests.get.bind(
+      h.provider.mergeRequests,
+    );
+    const originalMerge = h.provider.mergeRequests.merge.bind(
+      h.provider.mergeRequests,
+    );
+    let mergeAttempted = false;
+    h.provider.mergeRequests.merge = async (repo, id, options) => {
+      await originalMerge(repo, id, options);
+      mergeAttempted = true;
+      throw new Error("merge response HTTP 502");
+    };
+    h.provider.mergeRequests.get = async (repo, id) => {
+      if (mergeAttempted) throw new Error("confirmation HTTP 503");
+      return originalGet(repo, id);
+    };
+    const ctx = { ...h.ctx, gateExecutor: async () => null };
+    await runMergeGate(ctx, h.scope, h.task, SHA);
+    expect(h.store.getTask(h.task.id)?.state).toBe("mr_open");
+
+    h.provider.mergeRequests.get = async (repo, id) => ({
+      ...(await originalGet(repo, id)),
+      head_commit_sha: OTHER_SHA,
+    });
+    await tick(ctx);
+    await awaitPendingRuns();
+    expect(h.store.getTask(h.task.id)?.state).toBe("mr_open");
+
+    h.provider.mergeRequests.get = originalGet;
+    await tick(ctx);
+    await awaitPendingRuns();
+    expect(h.store.getTask(h.task.id)?.state).toBe("merged");
+    expect(
+      h.store.runsForTask(h.task.id).filter((run) => run.kind === "implement"),
+    ).toEqual([]);
+  });
+
+  it("retries an expired gate without sending code back to an implementer", async () => {
+    const h = await harness();
+    await runReview(h.ctx, h.scope, h.task, SHA);
+    const expired = h.store.startRun({
+      scope_id: h.scope.id,
+      task_id: h.task.id,
+      kind: "merge_gate",
+      lease_ttl_ms: 60_000,
+    });
+    h.store.db
+      .prepare("UPDATE runs SET lease_expires_at = ? WHERE id = ?")
+      .run("2000-01-01T00:00:00.000Z", expired.id);
+    const ctx = { ...h.ctx, gateExecutor: async () => null };
+    await tick(ctx);
+    await awaitPendingRuns();
+    expect(h.store.getRun(expired.id)?.status).toBe("failed");
+    expect(h.store.getTask(h.task.id)?.state).toBe("mr_open");
+    expect(h.store.getTask(h.task.id)?.attempt).toBe(h.task.attempt);
+    expect(
+      h.store.runsForTask(h.task.id).filter((run) => run.kind === "implement"),
+    ).toEqual([]);
+    expect(
+      h.store.runsForTask(h.task.id).filter((run) => run.kind === "merge_gate"),
+    ).toHaveLength(1);
+
+    h.store.db
+      .prepare("UPDATE runs SET finished_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 120_000).toISOString(), expired.id);
+    await tick(ctx);
+    await awaitPendingRuns();
+    const mr = await h.provider.mergeRequests.get(
+      { id: h.scope.provider_repo_id },
+      h.mr.id,
+    );
+    expect(mr.state).toBe("merged");
+    expect(
+      h.store.runsForTask(h.task.id).filter((run) => run.kind === "implement"),
+    ).toEqual([]);
+    expect(
+      h.store
+        .runsForTask(h.task.id)
+        .filter((run) => run.kind === "merge_gate")
+        .map((run) => run.status),
+    ).toEqual(["failed", "succeeded"]);
+  });
+
   it("rejects a direct review call after the task version changes", async () => {
     const h = await harness();
     const stale = h.store.getTask(h.task.id)!;

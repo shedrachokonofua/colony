@@ -16,6 +16,12 @@ import type { TaskCostModelV1 } from "@colony/schemas";
 import type { SandboxEngine } from "@colony/sandbox";
 import type { RunAuditSink } from "@colony/agent-runtime";
 
+/** Construction options forwarded to the k8s sandbox engine. */
+export interface EngineOptions {
+  /** Sandbox ids the k8s startup orphan cleanup must never reap. */
+  readonly adoptedSandboxIds?: ReadonlySet<string>;
+}
+
 /**
  * Per-session architect size gate source: colonyd rebuilds the offline cost
  * model from its runs table for each architect session and pairs it with the
@@ -43,33 +49,83 @@ export type RunEventSink = (
   event: string,
   detail: Record<string, unknown>,
 ) => void;
+/**
+ * A usage row is progress only when the provider produced output. Error and
+ * aborted rows are still recorded, but they are not evidence that the run is
+ * doing useful work.
+ */
+function isSuccessfulModelOutput(detail: unknown): boolean {
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail)) {
+    return false;
+  }
+  const fields = detail as Record<string, unknown>;
+  const outputTokens =
+    typeof fields.outputTokens === "number"
+      ? fields.outputTokens
+      : fields.output_tokens;
+  if (
+    typeof outputTokens !== "number" ||
+    !Number.isFinite(outputTokens) ||
+    outputTokens <= 0
+  ) {
+    return false;
+  }
+
+  const stopReason =
+    fields.stop_reason === undefined ? fields.stopReason : fields.stop_reason;
+  if (stopReason !== undefined && typeof stopReason !== "string") {
+    return false;
+  }
+  if (
+    typeof stopReason === "string" &&
+    /^(?:abort(?:ed)?|error)$/iu.test(stopReason.trim())
+  ) {
+    return false;
+  }
+  const errorMessage =
+    fields.error_message === undefined
+      ? fields.errorMessage
+      : fields.error_message;
+  if (errorMessage !== undefined && typeof errorMessage !== "string") {
+    return false;
+  }
+  return !(typeof errorMessage === "string" && errorMessage.trim().length > 0);
+}
 
 /**
- * Build the run-event sink that appends every agent event to `run_events`
- * and, on a `pi_model_fallback` event, updates the run's `model_id` to the
- * fallback model. Never throws: the activity feed must not break a run.
+ * Build the run-event sink that appends every agent event to `run_events`,
+ * updates fallback model routing, and marks progress only for successful
+ * usage rows or actual tool lifecycle events. Never throws: the activity feed
+ * must not break a run.
  */
 export function createRunEventSink(store: Store): RunEventSink {
   return (runId, event, detail) => {
     try {
       store.appendRunEvent(runId, event, detail);
-      if (event === "pi_model_fallback" && typeof detail.to === "string") {
-        store.setRunModel(runId, detail.to);
+      const fields =
+        detail !== null && typeof detail === "object" && !Array.isArray(detail)
+          ? detail
+          : undefined;
+      if (event === "pi_model_fallback" && typeof fields?.to === "string") {
+        store.setRunModel(runId, fields.to);
       }
       if (
         event === "pi_tool_start" &&
-        typeof detail.tool === "string" &&
-        typeof detail.startedAt === "string"
+        typeof fields?.tool === "string" &&
+        typeof fields.startedAt === "string"
       ) {
         store.setRunActiveTool(
           runId,
-          detail.tool,
-          typeof detail.detail === "string" ? detail.detail : null,
-          detail.startedAt,
+          fields.tool,
+          typeof fields.detail === "string" ? fields.detail : null,
+          fields.startedAt,
         );
       } else if (event === "pi_tool_end") {
         store.clearRunActiveTool(runId, new Date().toISOString());
-      } else if (event === "pi_turn_usage") {
+      } else if (
+        (event === "pi_usage" || event === "pi_turn_usage") &&
+        isSuccessfulModelOutput(fields)
+      ) {
         store.touchRunProgress(runId, new Date().toISOString());
       }
     } catch {
@@ -86,17 +142,23 @@ export function createRunEventSink(store: Store): RunEventSink {
  */
 export const ENGINE_REGISTRY: Record<
   SandboxEngineName,
-  (config: ColonyConfig) => Promise<() => SandboxEngine>
+  (
+    config: ColonyConfig,
+    options?: EngineOptions,
+  ) => Promise<() => SandboxEngine>
 > = {
   "in-process": () =>
     import("@colony/sandbox-in-process").then((m) => m.createInProcessEngine),
-  kubernetes: (config) =>
+  kubernetes: (config, options) =>
     import("@colony/sandbox-k8s").then(
       (m) => () =>
         m.createKubernetesEngine({
           namespace: config.sandbox.kubernetes.namespace,
           image: config.sandbox.kubernetes.image,
           apiVersionOverride: config.sandbox.kubernetes.api_version_override,
+          ...(options?.adoptedSandboxIds
+            ? { adoptedSandboxIds: options.adoptedSandboxIds }
+            : {}),
         }),
     ),
 };
@@ -105,12 +167,13 @@ export const ENGINE_REGISTRY: Record<
 export async function createEngine(
   name: string,
   config: ColonyConfig,
+  options?: EngineOptions,
 ): Promise<SandboxEngine> {
   const factory = ENGINE_REGISTRY[name as SandboxEngineName];
   if (!factory) {
     throw new Error(`unknown sandbox engine: ${name}`);
   }
-  const engineFactory = await factory(config);
+  const engineFactory = await factory(config, options);
   return engineFactory();
 }
 
@@ -129,6 +192,7 @@ export async function createAgentWiring(
   taskCost?: AgentTaskCostSource,
   auditSink?: RunAuditSink,
   store?: Store,
+  adoptedSandboxIds?: ReadonlySet<string>,
 ): Promise<AgentWiring> {
   if (config.agentRuntime === "fake") {
     const fake = new FakeAgentRuntimeAdapter();
@@ -174,7 +238,9 @@ export async function createAgentWiring(
         fallbackModels: [],
       })
     : undefined;
-  const engine = await createEngine(config.sandbox.engine, config);
+  const engine = await createEngine(config.sandbox.engine, config, {
+    adoptedSandboxIds,
+  });
   const webTools = resolveWebToolsConfig(env().COLONY_SEARXNG_URL);
   const { PiArchitectRunner } =
     await import("@colony/agent-runtime/pi-architect-runner");

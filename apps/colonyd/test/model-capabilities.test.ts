@@ -253,7 +253,6 @@ describe("production model capability metadata", () => {
         maxTurns: 5,
         runTimeoutMs: 120_000,
         jiggleBackoffMs: 1,
-        retryMaxRetries: 0,
       },
     );
 

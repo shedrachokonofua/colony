@@ -24,10 +24,6 @@ import {
 import { buildCloneUrl } from "./merge-gate.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
-/** Run errors that mean "killed before it could submit", not "did the wrong thing". */
-const INTERRUPTED_RUN_ERROR =
-  /timeout_without_envelope|process_restart|operation was aborted/i;
-
 /**
  * Run `fn` inside the run root's span context so SDK GenAI spans nest under
  * it. With no span (tracing disabled) this stays on the ambient context —
@@ -308,7 +304,12 @@ async function executeImplement(
     }
 
     // Verify envelope facts against the provider before any transition.
-    const verified = await verifyEnvelopeFacts(ctx, repo, envelope, branch);
+    const verified = await verifyEnvelopeFacts(
+      ctx.provider,
+      repo,
+      envelope,
+      branch,
+    );
     if (!verified.ok) {
       const reason = `envelope facts unverified: ${verified.reason}`;
       ctx.store.finishRun(runId, "failed", {
@@ -605,8 +606,8 @@ function interruptedAttempt(
     .runsForTask(task.id)
     .filter((run) => run.kind === "implement" && run.id !== excludeRunId);
   const last = runs.at(-1);
-  if (!last || last.status !== "failed" || !last.error) return undefined;
-  if (!INTERRUPTED_RUN_ERROR.test(last.error)) return undefined;
+  if (!last || (last.status !== "failed" && last.status !== "canceled"))
+    return undefined;
   const minutes =
     last.finished_at && last.started_at
       ? Math.round(
@@ -622,7 +623,7 @@ function interruptedAttempt(
         ? { head_sha: last.head_sha ?? last.base_sha! }
         : {}),
       text: [
-        `The previous attempt was cut off${ran} (${last.error}) without submitting an envelope.`,
+        `The previous attempt ended${ran} (${last.error ?? last.status}) without an accepted completion.`,
         "It may already have pushed part of this task. BEFORE writing anything:",
         "- Inspect the remote task branch and its diff against packet.repo.base_commit to see what already landed.",
         "- Continue from that state; never restart work that is already pushed.",
@@ -793,7 +794,7 @@ function latestGateFailure(
   }
   return { historical };
 }
-function buildMrDescription(
+export function buildMrDescription(
   task: Task,
   envelope: ImplementerCompletionV2,
   provenanceLine?: string,
@@ -812,14 +813,14 @@ function buildMrDescription(
     .join("\n");
 }
 
-async function verifyEnvelopeFacts(
-  ctx: ColonydContext,
+export async function verifyEnvelopeFacts(
+  provider: ColonydContext["provider"],
   repo: ProviderRepoRef,
   envelope: ImplementerCompletionV2,
   expectedBranch: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
-    await ctx.provider.commits.get(repo, envelope.head_sha);
+    await provider.commits.get(repo, envelope.head_sha);
   } catch {
     return { ok: false, reason: `commit ${envelope.head_sha} not found` };
   }
@@ -831,7 +832,7 @@ async function verifyEnvelopeFacts(
   }
   let branchHead: string;
   try {
-    branchHead = (await ctx.provider.commits.get(repo, envelope.branch)).sha;
+    branchHead = (await provider.commits.get(repo, envelope.branch)).sha;
   } catch {
     return { ok: false, reason: `branch ${envelope.branch} not found` };
   }

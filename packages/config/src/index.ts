@@ -47,6 +47,10 @@ const envSchema = z.object({
    * must be >= COLONY_DRAIN_TIMEOUT_MS + 60s; that setting lives in the aether IaC repo
    * (tofu/home/kubernetes/colony.tf), not here. */
   COLONY_DRAIN_TIMEOUT_MS: z.coerce.number().int().default(600_000),
+  /** Lease TTL (ms) granted to adoptable runs at shutdown so the lease outlives the
+   * restart window (pod rollout + boot adoption). Default 15 min; keep it above
+   * COLONY_DRAIN_TIMEOUT_MS. */
+  COLONY_RESUME_LEASE_TTL_MS: z.coerce.number().int().default(900_000),
   COLONYD_MAX_CONCURRENT: z.coerce.number().int().default(1),
   COLONYD_MAX_ATTEMPTS: z.coerce.number().int().default(3),
   /** Single-token mode: use GITLAB_TOKEN directly in packet credentials. */

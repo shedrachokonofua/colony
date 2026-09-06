@@ -8,8 +8,9 @@ import {
   buildIsolatedCommandEnv,
   VALIDATE_ENV_ALLOWLIST,
 } from "@colony/sandbox";
-import type { Scope, Store, Task } from "@colony/core";
+import type { Fault, Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
+import { isDeferredRunFailure } from "../run-classification.js";
 import { context } from "@opentelemetry/api";
 import type { ProviderMergeRequest, ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -73,6 +74,22 @@ export interface GateFailure {
   readonly detail?: string;
   readonly files?: readonly string[];
   readonly commands?: readonly GateCommandResult[];
+}
+
+/**
+ * Errors raised by the deterministic executor carry the boundary that owns
+ * the failure. Workspace provisioning/clone failures are transient platform
+ * faults; repository and gate-command failures are deterministic gate
+ * failures and must consume the normal bounded repair budget.
+ */
+export class GateExecutionError extends Error {
+  constructor(
+    readonly stage: "workspace" | "repository" | "gate_command",
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "GateExecutionError";
+  }
 }
 
 /**
@@ -236,17 +253,24 @@ async function executeMergeGate(
     if (result && isGateFailure(result)) {
       const failure: GateFailure = result;
       const evidence = { ...failure, head_sha: headSha };
-      ctx.store.finishRun(runId, "failed", {
-        evidence_json: JSON.stringify(evidence),
-      });
-      runSpan?.end("failed", String(evidence.reason));
-      ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
-        scope_id: scope.id,
-        task_id: task.id,
-        run_id: runId,
-        detail: evidence,
-      });
-      requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, evidence);
+      const deferred = failure.reason === "workspace_failed";
+      finishGateFailure(
+        ctx,
+        scope,
+        task,
+        runId,
+        runSpan,
+        evidence,
+        deferred
+          ? {
+              error: failure.detail,
+              fault: { layer: "sandbox", code: "workspace_failed" },
+            }
+          : undefined,
+      );
+      if (!deferred) {
+        requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, evidence);
+      }
       return;
     }
 
@@ -262,15 +286,17 @@ async function executeMergeGate(
     } catch (err) {
       throwIfAborted(signal);
       requireMergeAuthority();
-      const reason = `mr refetch failed: ${err instanceof Error ? err.message : String(err)}`;
-      ctx.store.finishRun(runId, "failed", {
-        error: reason,
-        evidence_json: JSON.stringify({ head_sha: headSha }),
-      });
-      runSpan?.end("failed", reason);
-      requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, {
-        reason: "head_moved",
+      const error = `mr refetch failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      const evidence = {
+        reason: "workspace_failed",
+        error,
         head_sha: headSha,
+      };
+      finishGateFailure(ctx, scope, task, runId, runSpan, evidence, {
+        error,
+        fault: { layer: "provider", code: "provider_failed" },
       });
       return;
     }
@@ -283,20 +309,11 @@ async function executeMergeGate(
         head_sha: headSha,
         observed: currentHead,
       };
-      ctx.store.finishRun(runId, "failed", {
-        evidence_json: JSON.stringify(evidence),
+      finishGateFailure(ctx, scope, task, runId, runSpan, evidence, {
+        fault: { layer: "provider", code: "head_moved" },
       });
-      runSpan?.end("failed", "head_moved");
-      ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
-        scope_id: scope.id,
-        task_id: task.id,
-        run_id: runId,
-        detail: evidence,
-      });
-      requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, evidence);
       return;
     }
-
     let mergeResult: ProviderMergeRequest;
     try {
       // Merge subject names the merged work; the Colony-Models provenance
@@ -311,10 +328,16 @@ async function executeMergeGate(
       });
     } catch (mergeError) {
       let observed: ProviderMergeRequest | undefined;
+      let confirmationError: unknown;
+      let confirmationFailed = false;
       try {
         observed = await ctx.provider.mergeRequests.get(repo, mr.id);
-      } catch {
-        // Preserve the merge error when the confirming read also fails.
+      } catch (err) {
+        // Preserve the merge error when the confirming read also fails. The
+        // merge may have committed even though neither API call gave us a
+        // definitive result.
+        confirmationFailed = true;
+        confirmationError = err;
       }
       if (
         observed?.state === "merged" &&
@@ -341,7 +364,40 @@ async function executeMergeGate(
         });
         return;
       }
-      throw mergeError;
+      const error =
+        mergeError instanceof Error ? mergeError.message : String(mergeError);
+      if (confirmationFailed) {
+        // Once merge has been attempted, a failed confirmation is itself an
+        // actionable provider outcome. Preserve it even if cancellation
+        // raced the confirmation read; an authoritative same-head merged
+        // response above still wins and records success.
+        const evidence = {
+          reason: "merge_unconfirmed",
+          error,
+          confirmation_error:
+            confirmationError instanceof Error
+              ? confirmationError.message
+              : String(confirmationError),
+          head_sha: headSha,
+        };
+        finishGateFailure(ctx, scope, task, runId, runSpan, evidence, {
+          error,
+          fault: { layer: "provider", code: "merge_unconfirmed" },
+        });
+        return;
+      }
+      throwIfAborted(signal);
+      requireMergeAuthority();
+      const evidence = {
+        reason: "workspace_failed",
+        error,
+        head_sha: headSha,
+      };
+      finishGateFailure(ctx, scope, task, runId, runSpan, evidence, {
+        error,
+        fault: { layer: "provider", code: "provider_failed" },
+      });
+      return;
     }
     if (mergeResult.merged === false) {
       throwIfAborted(signal);
@@ -406,25 +462,82 @@ async function executeMergeGate(
       return;
     }
     const error = err instanceof Error ? err.message : String(err);
+    const deferred =
+      err instanceof GateExecutionError && err.stage === "workspace";
     const evidence = {
-      reason: "workspace_failed",
+      reason: deferred ? "workspace_failed" : "command_failed",
       error,
       head_sha: headSha,
     };
-    ctx.store.finishRun(runId, "failed", {
-      evidence_json: JSON.stringify(evidence),
-    });
-    runSpan?.end("failed", error);
-    ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
-      scope_id: scope.id,
-      task_id: task.id,
-      run_id: runId,
-      detail: evidence,
-    });
-    requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, evidence);
+    finishGateFailure(
+      ctx,
+      scope,
+      task,
+      runId,
+      runSpan,
+      evidence,
+      deferred
+        ? {
+            error,
+            fault: { layer: "sandbox", code: "workspace_failed" },
+          }
+        : undefined,
+    );
+    if (!deferred) {
+      requeueOrBlockAfterGateFailure(ctx, scope, task, headSha, evidence);
+    }
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
+}
+
+interface GateFailureMetadata {
+  readonly error?: string;
+  readonly fault?: Fault;
+}
+
+/**
+ * Finish a gate failure once, retaining its typed evidence and, for platform
+ * failures, a structured fault so admission can defer instead of charging a
+ * code repair attempt.
+ */
+function finishGateFailure(
+  ctx: ColonydContext,
+  scope: Scope,
+  task: Task,
+  runId: string,
+  runSpan: ColonyRunSpan | undefined,
+  evidence: Record<string, unknown>,
+  metadata?: GateFailureMetadata,
+): void {
+  ctx.store.finishRun(runId, "failed", {
+    error: metadata?.error,
+    evidence_json: JSON.stringify(evidence),
+    fault: metadata?.fault,
+  });
+  const reason = String(evidence.reason ?? metadata?.error ?? "gate_failed");
+  runSpan?.end("failed", reason);
+  ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
+    scope_id: scope.id,
+    task_id: task.id,
+    run_id: runId,
+    detail: evidence,
+  });
+  if (!metadata?.fault) return;
+  // Do not mutate or advertise a retry for a task/scope that lost merge
+  // authority while the provider/workspace operation was in flight.
+  if (!getCurrentMrTask(ctx, scope, task, "in_flight")) return;
+  ctx.store.audit(SERVICE_ACTOR, "gate.deferred", {
+    scope_id: scope.id,
+    task_id: task.id,
+    run_id: runId,
+    detail: evidence,
+  });
+}
+
+/** GitLab's "not mergeable right now" answers: pipeline pending, mergeability being rechecked. */
+function isTransientMergeRefusal(reason: string | undefined): boolean {
+  return reason === "merge_http_405" || reason === "merge_http_409";
 }
 
 /**
@@ -432,10 +545,6 @@ async function executeMergeGate(
  * attempt++, or block after MAX consecutive failures at the same head SHA
  * (gate failures) / merge refusals.
  */
-/** GitLab's "not mergeable right now" answers: pipeline pending, mergeability being rechecked. */
-function isTransientMergeRefusal(reason: string | undefined): boolean {
-  return reason === "merge_http_405" || reason === "merge_http_409";
-}
 
 /**
  * Keep the task mr_open after a transient refusal. Only the refusal cap
@@ -545,9 +654,10 @@ function requeueOrBlockAfterGateFailure(
 }
 
 /**
- * Count consecutive failed merge_gate runs for this task at `headSha`.
- * Kind `gate` counts every failure; `merge_refusal` counts only refusals.
- * A succeeded gate at the same SHA resets the streak.
+ * Count consecutive accountable merge_gate failures for this task at
+ * `headSha`. Deferred workspace/provider failures and transient merge
+ * refusals are evidence for admission but do not consume the code-gate
+ * streak; a succeeded gate at the same SHA resets it.
  */
 function countConsecutive(
   ctx: ColonydContext,
@@ -560,13 +670,28 @@ function countConsecutive(
     .filter((r) => r.kind === "merge_gate");
   let count = 0;
   for (const run of [...runs].reverse()) {
-    const evidence = run.evidence_json
-      ? (JSON.parse(run.evidence_json) as Record<string, unknown>)
-      : {};
+    // Deferred runs (including restart/lease-expiry rows with no evidence)
+    // have no accountable head and must not reset a same-head streak.
+    if (isDeferredRunFailure(run)) continue;
+    let evidence: Record<string, unknown> = {};
+    if (run.evidence_json) {
+      try {
+        evidence = JSON.parse(run.evidence_json) as Record<string, unknown>;
+      } catch {
+        break;
+      }
+    }
     if (evidence.head_sha !== headSha) break;
     if (run.status === "succeeded") break;
     if (run.status !== "failed") break;
     const reason = typeof evidence.reason === "string" ? evidence.reason : "";
+    if (
+      kind === "gate" &&
+      (reason === "merge_refused:merge_http_405" ||
+        reason === "merge_refused:merge_http_409")
+    ) {
+      continue;
+    }
     if (kind === "merge_refusal" && !reason.startsWith("merge_refused")) break;
     count += 1;
   }
@@ -629,31 +754,56 @@ export function buildCloneUrl(
 // Real gate executor: clone, prospective merge, secret scan, gate commands.
 // ---------------------------------------------------------------------------
 
+async function atGateExecutionBoundary<T>(
+  stage: GateExecutionError["stage"],
+  fn: () => T | PromiseLike<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (
+      err instanceof GateExecutionError ||
+      (err instanceof Error && err.name === "AbortError")
+    ) {
+      throw err;
+    }
+    throw new GateExecutionError(stage, err);
+  }
+}
+
 export const defaultGateExecutor: GateExecutor = async (input) => {
-  await git(
-    [
-      "clone",
-      "--quiet",
-      "--branch",
-      input.targetBranch,
-      input.cloneUrl,
-      input.workspace,
-    ],
-    tmpdir(),
-    input,
+  await atGateExecutionBoundary("workspace", () =>
+    git(
+      [
+        "clone",
+        "--quiet",
+        "--branch",
+        input.targetBranch,
+        input.cloneUrl,
+        input.workspace,
+      ],
+      tmpdir(),
+      input,
+    ),
   );
-  await git(
-    ["fetch", "--quiet", "origin", input.taskBranch],
-    input.workspace,
-    input,
+  await atGateExecutionBoundary("workspace", () =>
+    git(
+      ["fetch", "--quiet", "origin", input.taskBranch],
+      input.workspace,
+      input,
+    ),
   );
 
   // Scan the incoming diff BEFORE the prospective merge. After merging
   // headSha into target, `git diff target...headSha` is empty because
   // headSha is an ancestor of target — that previously let secrets merge.
   // The same list is the gate's success payload: post-merge it is empty.
-  const changedFiles = await changedDiffFiles(input);
-  const scan = await secretScan(input, changedFiles);
+  const changedFiles = await atGateExecutionBoundary("repository", () =>
+    changedDiffFiles(input),
+  );
+  const scan = await atGateExecutionBoundary("repository", () =>
+    secretScan(input, changedFiles),
+  );
   if (scan) return scan;
 
   try {
@@ -665,29 +815,38 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   } catch (err) {
     throwIfAborted(input.signal ?? NEVER_ABORTED);
     const conflicts = await conflictedFiles(input.workspace, input);
-    if (conflicts.length === 0) throw err;
+    if (conflicts.length === 0) {
+      throw new GateExecutionError("repository", err);
+    }
     return { reason: "merge_conflict", files: conflicts };
   }
 
   const gateConfig = readGateConfig(input.workspace);
   if ("reason" in gateConfig) return gateConfig;
 
-  const scratchDir = await mkdtemp(join(tmpdir(), "colonyd-gate-env-"));
+  const scratchDir = await atGateExecutionBoundary("workspace", () =>
+    mkdtemp(join(tmpdir(), "colonyd-gate-env-")),
+  );
   try {
-    const commandEnv = buildIsolatedCommandEnv(
-      VALIDATE_ENV_ALLOWLIST,
-      scratchDir,
-      process.env,
-      { CI: "true", NO_COLOR: "1", FORCE_COLOR: "0" },
+    const commandEnv = await atGateExecutionBoundary("workspace", () =>
+      buildIsolatedCommandEnv(VALIDATE_ENV_ALLOWLIST, scratchDir, process.env, {
+        CI: "true",
+        NO_COLOR: "1",
+        FORCE_COLOR: "0",
+      }),
     );
     const results: GateCommandResult[] = [];
     for (const cmd of gateConfig.commands) {
-      const { exitCode, tail } = await runGateCommand(
-        input.workspace,
-        cmd,
-        gateConfig.timeoutSeconds,
-        commandEnv,
-        input.signal,
+      const { exitCode, tail } = await atGateExecutionBoundary(
+        "gate_command",
+        () =>
+          runGateCommand(
+            input.workspace,
+            cmd,
+            gateConfig.timeoutSeconds,
+            commandEnv,
+            input.signal,
+          ),
       );
       results.push({ cmd, exit_code: exitCode, tail });
       if (exitCode !== 0) {
@@ -696,7 +855,9 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
     }
     return { files_changed: changedFiles };
   } finally {
-    await rm(scratchDir, { recursive: true, force: true });
+    await atGateExecutionBoundary("workspace", () =>
+      rm(scratchDir, { recursive: true, force: true }),
+    );
   }
 };
 

@@ -11,6 +11,7 @@ import {
   isoDuration,
   runDurationMs,
 } from "../duration.js";
+import { PLAN_REVIEW_CAP_REASON } from "./plan-card.js";
 
 /** @param {string | null | undefined} raw @returns {any} */
 function parseEvidence(raw) {
@@ -155,7 +156,12 @@ export class ValidationCard extends ColonyElement {
             </p>`
           : nothing}
         ${(scope.status === "validating" || scope.status === "blocked") &&
-        failed
+        failed &&
+        !(
+          scope.status === "blocked" &&
+          typeof scope.blocked_reason === "string" &&
+          PLAN_REVIEW_CAP_REASON.test(scope.blocked_reason)
+        )
           ? html`<button
               class="btn btn-solid validation-retry"
               @click=${() =>

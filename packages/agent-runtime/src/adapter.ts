@@ -52,6 +52,14 @@ export interface AgentRunEnvironment {
   /** Caller-supplied run id; adapters use it so cancelRun(runId) addresses the same run. */
   readonly runId?: string;
   /**
+   * Subject-scoped retry eligibility: resolved model ids that already ended
+   * this subject with `timeout_without_envelope`. This is not a capacity
+   * hint; excluded candidates are removed from the complete configured
+   * fallback chain before start-model ordering and are never retried. Resume
+   * callers must carry the same constraint into the resumed environment.
+   */
+  readonly excludedModelIds?: readonly string[];
+  /**
    * Dispatch-time model choice when the primary has no free slot. Runners
    * rotate their configured chain so this model leads while preserving the
    * remaining configured order.
