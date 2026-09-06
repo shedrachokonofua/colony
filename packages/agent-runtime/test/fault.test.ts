@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import {
   PiBaseAgentRunner,
-  DEVELOPER_ROLE_PROFILE,
   REVIEWER_ROLE_PROFILE,
+  classifyProvisionFailure,
 } from "../src/pi-base-agent-runner.js";
 import {
   PiAgentRuntimeAdapter,
@@ -15,13 +15,24 @@ import {
   type PiRunRequest,
   type PiRunResult,
 } from "../src/pi-adapter.js";
-import type { AgentRuntimePacket } from "../src/adapter.js";
 import {
   LIVENESS_FAILURE_REASON,
   installRunGuards,
-  type PiModelSpec,
+  workspaceProbeStep,
+  type WorkspaceProbeHandle,
+  type WorkspaceProbeOptions,
+  type WorkspaceProbeState,
 } from "../src/pi-runner-common.js";
 import type { Agent } from "@oh-my-pi/pi-agent-core";
+
+/** The sandbox codes the attempt-budget consumer is told to expect. */
+const SANDBOX_FAULT_CODES = [
+  "workspace_lost",
+  "probe_failed",
+  "workspace_eacces",
+  "sandbox_cr_missing",
+  "exec_transport",
+];
 
 describe("fault emission", () => {
   it("emits wall timeout fault as {model, wall_timeout}", async () => {
@@ -89,42 +100,64 @@ describe("fault emission", () => {
   });
 
   it("emits workspace lost fault as {sandbox, workspace_lost}", async () => {
-    const fakeModel: PiModelSpec = {
-      id: "m",
-      name: "m",
-      provider: "p",
-      api: "openai",
-      baseUrl: "http://localhost",
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 1000,
-      maxTokens: 100,
-    };
-    // When scratchDir fails or repo provision fails, provisionProfileWorkspace throws.
-    // However, if scratchDir is provided, provisionScratchDir is called.
-    // If workspaceMode is repo-required, provisionRepoWorkspace is called.
-    const runner = new PiBaseAgentRunner(DEVELOPER_ROLE_PROFILE, {
-      model: fakeModel,
-    });
-    // With requireCredentials: true (default for DEVELOPER_ROLE_PROFILE repo workspace),
-    // missing credentials throws workspace_provision_failed:missing_credentials
-    const packet: AgentRuntimePacket = {
-      goal: "test",
-      repo: {
-        url: "so/test",
-        branch: "main",
-        base_commit: "0123456789012345678901234567890123456789",
+    let faults: Fault[] = [];
+    let lost = 0;
+    const state: WorkspaceProbeState = { misses: 0, fired: false };
+    const options: WorkspaceProbeOptions = {
+      runId: "run-ws-lost",
+      sandboxId: "sb-ws-lost",
+      onLost: () => {
+        lost += 1;
       },
     };
-    const result = await runner.run({
-      runId: "run-ws-lost",
-      packet,
-      environment: { role: "developer" },
+    // Two completed marker checks that find nothing: exactly the evidence
+    // `workspaceProbeStep` is specified to call loss.
+    const handle: WorkspaceProbeHandle = {
+      exec: () => Promise.resolve({ exitCode: 1 }),
+    };
+    await workspaceProbeStep(handle, state, options, (fault) => {
+      faults.push(fault);
     });
-    expect(result.fault).toBeDefined();
-    expect(result.fault?.layer).toBe("sandbox");
-    expect(result.fault?.code).toBe("workspace_lost");
+    expect(
+      await workspaceProbeStep(handle, state, options, (fault) => {
+        faults.push(fault);
+      }),
+    ).toBe(true);
+    expect(lost).toBe(1);
+    expect(faults).toEqual([
+      {
+        layer: "sandbox",
+        code: "workspace_lost",
+        detail: "workspace marker check failed",
+      },
+    ]);
+  });
+
+  // A code outside this set is invisible to the attempt-budget consumer, so
+  // every provision failure - including the ones nothing matches - must land
+  // on one of them.
+  it("classifies every provision failure into the sandbox contract", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      [
+        "workspace_provision_failed:packet_seed_failed: EACCES",
+        "workspace_eacces",
+      ],
+      // EROFS is a read-only filesystem, not a lost one: it is the same
+      // filesystem contract as EACCES, so it shares that code.
+      ["workspace_provision_failed:clone_failed: EROFS", "workspace_eacces"],
+      ["workspace_provision_failed:missing_credentials", "sandbox_cr_missing"],
+      [
+        "workspace_provision_failed:clone_failed: exit 128",
+        "sandbox_cr_missing",
+      ],
+      ["exec transport closed before provision", "exec_transport"],
+      ["exec-transport handshake failed", "exec_transport"],
+    ];
+    for (const [message, expected] of cases) {
+      const code = classifyProvisionFailure(message);
+      expect(SANDBOX_FAULT_CODES).toContain(code);
+      expect(code).toBe(expected);
+    }
   });
 
   it("emits provider connection exhaustion as {provider, connection_exhausted}", async () => {

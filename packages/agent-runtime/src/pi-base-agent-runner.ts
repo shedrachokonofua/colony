@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import type { Fault } from "@colony/core";
 import {
   ModelRegistry,
   SessionManager,
@@ -328,23 +329,13 @@ export class PiBaseAgentRunner implements PiRunner {
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const code = msg.includes("EACCES")
-          ? "workspace_eacces"
-          : msg.includes("EROFS")
-            ? "workspace_erofs"
-            : msg.includes("Sandbox CR") ||
-                msg.includes("sandboxes.agents.x-k8s.io")
-              ? "sandbox_cr_missing"
-              : msg.includes("exec transport") || msg.includes("exec-transport")
-                ? "exec_transport"
-                : "workspace_lost";
         return {
           sandboxId,
           envelope: { __unfinished: true },
           reason: msg,
           fault: {
             layer: "sandbox",
-            code,
+            code: classifyProvisionFailure(msg),
             detail: msg.slice(0, 240),
           },
         };
@@ -1935,6 +1926,25 @@ export class PiBaseAgentRunner implements PiRunner {
   async cancel(runId: string): Promise<void> {
     await this.activeRuns.get(runId)?.abort();
   }
+}
+
+/**
+ * The sandbox fault code for a workspace that could not be provisioned.
+ *
+ * Only the codes the attempt-budget consumer expects are legal here: the
+ * run's fault is persisted and read back by that consumer. EROFS is a
+ * read-only filesystem rather than a vanished one, so it shares the EACCES
+ * code - the one filesystem code in that set. A failure matching none of
+ * these signatures (a refused clone, a missing token) never proved the
+ * workspace existed, so it is the sandbox we were never given, not the
+ * loss the probe is reserved to detect.
+ */
+export function classifyProvisionFailure(message: string): Fault["code"] {
+  return message.includes("EACCES") || message.includes("EROFS")
+    ? "workspace_eacces"
+    : message.includes("exec transport") || message.includes("exec-transport")
+      ? "exec_transport"
+      : "sandbox_cr_missing";
 }
 
 function provisionProfileWorkspace(
