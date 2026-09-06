@@ -152,7 +152,8 @@ function waitingOnYou(scope, tasks, detail) {
     const stage = deliveryStage(byTask[task.id]);
     if (!stage) continue;
     const line = waitLineForStage(task, stage);
-    if (line) candidates.push({ priority: WAITING_STAGE_PRIORITY[stage], line });
+    if (line)
+      candidates.push({ priority: WAITING_STAGE_PRIORITY[stage], line });
   }
   candidates.sort((a, b) => a.priority - b.priority);
   if (candidates.length > 0) return candidates[0].line;
