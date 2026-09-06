@@ -1919,7 +1919,7 @@ describe("deliveryInputsFor", () => {
     });
 
     const inputs = store.deliveryInputsFor(taskId)!;
-    expect(inputs.task.id).toBe(taskId);
+    expect(String(inputs.task.id)).toBe(taskId);
     expect(inputs.mrHeadSha).toBe(HEAD);
     expect(inputs.runs.map((run) => run.id)).toContain(gate.id);
     expect(inputs.latestGate?.id).toBe(gate.id);

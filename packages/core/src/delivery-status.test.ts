@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { scopeId, taskId } from "@colony/domain";
 import {
   DELIVERY_STAGES,
   deriveDeliveryStatus,
@@ -12,8 +13,8 @@ const T = "2026-09-01T00:00:00.000Z";
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
-    id: "col-x.1",
-    scope_id: "col-x",
+    id: taskId("col-wxyz.1"),
+    scope_id: scopeId("col-wxyz"),
     title: "Task",
     spec: "spec",
     state: "mr_open",
@@ -35,8 +36,8 @@ function task(overrides: Partial<Task> = {}): Task {
 function run(overrides: Partial<Run> = {}): Run {
   return {
     id: "run-1",
-    scope_id: "col-x",
-    task_id: "col-x.1",
+    scope_id: scopeId("col-wxyz"),
+    task_id: taskId("col-wxyz.1"),
     kind: "merge_gate",
     status: "succeeded",
     lease_expires_at: T,
@@ -448,7 +449,7 @@ describe("evidence contract", () => {
   it("every stage carries at least one bounded evidence entry", () => {
     const seen = new Set<DeliveryStage>();
     // Each stage's minimal input; `merged`/`blocked` come from task state.
-    const inputs: Record<string, Parameters<typeof derive>[0]> = {
+    const inputs: Record<DeliveryStage, Parameters<typeof derive>[0]> = {
       provider_head_pending: { mrHeadSha: null, providerHeadSha: null },
       pipeline_pending: {
         runs: [run({ kind: "implement", status: "running" })],
@@ -516,7 +517,10 @@ describe("evidence contract", () => {
       merged: { task: task({ state: "merged" }) },
       blocked: { task: task({ state: "blocked" }) },
     };
-    for (const [stage, overrides] of Object.entries(inputs)) {
+    for (const [stage, overrides] of Object.entries(inputs) as [
+      DeliveryStage,
+      Parameters<typeof derive>[0],
+    ][]) {
       const status = derive(overrides);
       expect(status.stage).toBe(stage);
       seen.add(status.stage);
