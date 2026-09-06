@@ -162,6 +162,15 @@ export interface FakeAgentRuntimeOptions {
     packet: AgentRuntimePacket,
     environment: AgentRunResumeEnvironment,
   ) => unknown;
+  /**
+   * Scripted runner failure, mirroring PiRunResult's reason+fault: when set,
+   * startRun records a failed run with this reason and fault instead of
+   * producing an envelope. Integration tests drive budget paths through it.
+   */
+  readonly failureForRun?: (
+    packet: AgentRuntimePacket,
+    environment: AgentRunEnvironment,
+  ) => { readonly reason: string; readonly fault?: Fault } | undefined;
 }
 
 export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
@@ -180,6 +189,20 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
     const runId = runEnvironment.runId ?? `run-${this.nextId++}`;
     const sandboxId = `sandbox-${runId}`;
     const packetHash = hashPacket(packet);
+    const scripted = this.options.failureForRun?.(packet, runEnvironment);
+    if (scripted) {
+      const metadata: AgentRunMetadata = {
+        runId,
+        sandboxId,
+        role: runEnvironment.role,
+        status: "failed",
+        packetHash,
+        rejectionReason: truncate(scripted.reason),
+        ...(scripted.fault === undefined ? {} : { fault: scripted.fault }),
+      };
+      this.runs.set(runId, metadata);
+      return Promise.resolve(metadata);
+    }
     const rawEnvelope =
       this.options.envelopeForRun?.(packet, runEnvironment) ??
       defaultEnvelope(packet, runEnvironment.role);

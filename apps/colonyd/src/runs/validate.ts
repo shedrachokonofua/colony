@@ -12,7 +12,7 @@ import {
   type SandboxHandle,
 } from "@colony/sandbox";
 import { inProcessEngine } from "@colony/sandbox-in-process";
-import type { Scope } from "@colony/core";
+import type { Fault, Scope } from "@colony/core";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -76,6 +76,12 @@ export interface ValidateResult {
   readonly results: readonly ValidateResultEntry[];
   readonly passed: boolean;
   readonly error?: string;
+  /**
+   * Structured fault for a failed validation. A run that never produced a
+   * verdict (provisioning, provider) carries a platform fault so the tick
+   * re-runs it; a verdict (failing commands) carries a model fault.
+   */
+  readonly fault?: Fault;
 }
 
 /**
@@ -394,6 +400,7 @@ async function executeValidate(
     // lives on the run so the tick can tell "never ran" from "ran and
     // failed" - only the latter is a verdict worth an architect's time.
     error: result.error ?? undefined,
+    fault: result.fault,
   });
   runSpan?.end("failed", result.error ?? "validation failed");
   const failing = result.results.find((r) => r.exit_code !== 0);
@@ -453,6 +460,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       error: `workspace_provision_failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      fault: { layer: "sandbox", code: "workspace_transfer_failed" },
     };
   }
 
@@ -475,6 +483,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       error: `workspace_provision_failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      fault: { layer: "sandbox", code: "workspace_transfer_failed" },
     };
   }
 
@@ -504,6 +513,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       results: [],
       passed: false,
       error: err instanceof Error ? err.message : String(err),
+      fault: { layer: "colonyd", code: "process_restart" },
     };
   } finally {
     await handle?.destroy().catch(() => {});
