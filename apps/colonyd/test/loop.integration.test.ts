@@ -41,8 +41,9 @@ let reviewConfigPath: string;
 const script = {
   /** task id -> number of remaining forced implementer failures */
   implementerFailures: new Map<string, number>(),
-  /** Fault attached to scripted implementer failures (default: model). */
-  implementerFault: undefined as Fault | undefined,
+  /** Fault attached to scripted implementer failures. Undefined means the
+   *  default model fault; null means the runner result carries no fault. */
+  implementerFault: undefined as Fault | null | undefined,
   /** task id -> implementer run invocations observed */
   implementerCalls: new Map<string, number>(),
   gateFailOnceFor: undefined as string | undefined,
@@ -244,6 +245,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
     ) => {
       if (environment.role === "reviewer") {
         if (script.reviewerError === undefined) return undefined;
+        script.reviewerCalls += 1;
         return {
           reason: script.reviewerError,
           ...(script.reviewerFault === undefined
@@ -258,10 +260,14 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         script.implementerFailures.set(taskId, remaining - 1);
         return {
           reason: "simulated implementer failure",
-          fault: script.implementerFault ?? {
-            layer: "model",
-            code: "simulated_failure",
-          },
+          ...(script.implementerFault === null
+            ? {}
+            : {
+                fault: script.implementerFault ?? {
+                  layer: "model",
+                  code: "simulated_failure",
+                },
+              }),
         };
       }
       return undefined;
@@ -898,7 +904,11 @@ describe("colonyd fake end-to-end loop", () => {
         kind: "architect",
         lease_ttl_ms: 60_000,
       });
-      store.finishRun(failed.id, "failed", { error: "finalize_no_submission" });
+      // Agent failures carry model faults; only those spend the budget.
+      store.finishRun(failed.id, "failed", {
+        error: "finalize_no_submission",
+        fault: { layer: "model", code: "finalize_no_submission" },
+      });
     }
     const canceled = store.startRun({
       scope_id: scopeId,
@@ -1879,9 +1889,10 @@ describe("colonyd fake end-to-end loop", () => {
     script.singleTask = true;
     const scopeId = await createScope("unknown fault");
     const taskId = `${scopeId}.1`;
-    // No implementerFault: the runner result carries no fault, so the run
+    // Null implementerFault: the runner result carries no fault, so the run
     // is unclassified, never agent-blamed.
     script.implementerFailures.set(taskId, 1);
+    script.implementerFault = null;
     const logged: unknown[][] = [];
     const originalError = console.error;
     console.error = (...args: unknown[]) => {
