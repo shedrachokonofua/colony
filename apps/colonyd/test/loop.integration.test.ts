@@ -1745,7 +1745,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(handle.ctx.store.getTask(task.id)!.state).not.toBe("blocked");
   }, 30_000);
 
-  it("timeout_without_envelope review failures still block the task", async () => {
+  it("timeout_without_envelope exhausts the current review model", async () => {
     await handle.shutdown();
     handle = await bootHeadless(join(dir, `review-timeout-${Date.now()}.db`), {
       reviewRequired: true,
@@ -1759,15 +1759,18 @@ describe("colonyd fake end-to-end loop", () => {
     expect(task.state).toBe("mr_open");
 
     script.reviewerError = "timeout_without_envelope";
-    for (let i = 0; i < 3; i += 1) {
-      await tickAndSettle(); // review failure the reviewer is accountable for
-    }
-    await tickAndSettle(); // closeScopes
+    await tickAndSettle(); // first candidate times out
+    expect(handle.ctx.store.getTask(task.id)!.state).toBe("mr_open");
+    const timedOut = handle.ctx.store
+      .runsForTask(task.id)
+      .find((run) => run.kind === "review")!;
+    expect(timedOut.model_id).toBeTruthy();
 
+    await tickAndSettle(); // no eligible candidate remains; block normally
     const blocked = handle.ctx.store.getTask(task.id)!;
     expect(blocked.state).toBe("blocked");
-    expect(blocked.blocked_reason).toBe(
-      `review failed 3 consecutive times at ${SHA_A}`,
+    expect(blocked.blocked_reason).toContain(
+      `review models exhausted after timeout_without_envelope at ${SHA_A}`,
     );
     script.reviewerError = undefined;
   }, 30_000);
@@ -2050,5 +2053,5 @@ describe("colonyd fake end-to-end loop", () => {
     } finally {
       await seam.shutdown();
     }
-  });
+  }, 30_000);
 });

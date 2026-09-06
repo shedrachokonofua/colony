@@ -130,6 +130,7 @@ function writeConfig(
     readonly developerFallback?: boolean;
     readonly developerFallbackLimit?: number;
     readonly reviewerLimit?: number;
+    readonly reviewerFallback?: boolean;
     readonly reviewRequired?: boolean;
   } = {},
 ): string {
@@ -169,7 +170,14 @@ function writeConfig(
       "    model: model-a",
       ...(options.developerFallback ? ["    fallback_models: [model-b]"] : []),
       ...(options.reviewRequired
-        ? ["  reviewer:", "    provider: fake_llm", "    model: model-b"]
+        ? [
+            "  reviewer:",
+            "    provider: fake_llm",
+            "    model: model-b",
+            ...(options.reviewerFallback
+              ? ["    fallback_models: [model-a]"]
+              : []),
+          ]
         : []),
     ].join("\n"),
     "utf8",
@@ -610,6 +618,71 @@ describe("per-model dispatch slots", () => {
     await h.settle();
     expect(script.reviewerCalls).toBe(1);
     expect(h.store.getRun(reviews[0]!.id)!.status).toBe("succeeded");
+  }, 30_000);
+
+  it("moves a timed-out review to the next configured model", async () => {
+    const h = await harness(
+      writeConfig("review-timeout-fallback.yaml", {
+        reviewRequired: true,
+        reviewerFallback: true,
+      }),
+    );
+    const { taskId } = h.activeScopeWithTask("review timeout fallback");
+    await h.driveToMrOpen(taskId);
+
+    script.reviewerError = "timeout_without_envelope";
+    await h.tick();
+    await h.settle();
+    expect(h.store.getTask(taskId)!.state).toBe("mr_open");
+
+    script.reviewerError = undefined;
+    await h.tick();
+    const fallbackReviews = h.store
+      .runsForTask(taskId)
+      .filter((run) => run.kind === "review");
+    expect(fallbackReviews.map((run) => run.model_id)).toEqual([
+      "model-b",
+      "model-a",
+    ]);
+    await h.settle();
+    expect(h.store.getRun(fallbackReviews[1]!.id)!.status).toBe("succeeded");
+    expect(h.store.getTask(taskId)!.state).not.toBe("blocked");
+  }, 30_000);
+
+  it("waits when the remaining review fallback is saturated", async () => {
+    const h = await harness(
+      writeConfig("review-timeout-saturated.yaml", {
+        developerLimit: 1,
+        reviewRequired: true,
+        reviewerFallback: true,
+      }),
+    );
+    const target = h.activeScopeWithTask("review timeout saturated");
+    await h.driveToMrOpen(target.taskId);
+    script.reviewerError = "timeout_without_envelope";
+
+    const holder = h.activeScopeWithTask("fallback capacity holder");
+    await h.driveToMrOpen(holder.taskId);
+    const held = h.store.startRun({
+      scope_id: holder.scopeId,
+      task_id: holder.taskId,
+      kind: "review",
+      base_sha: SHA_A,
+      lease_ttl_ms: 30 * 60_000,
+      model_id: "model-a",
+    });
+    expect(h.store.activeRunCountByModel("model-a")).toBe(1);
+
+    await h.tick();
+    await h.settle();
+    script.reviewerError = undefined;
+    await h.tick();
+    expect(
+      h.store.runsForTask(target.taskId).filter((run) => run.kind === "review"),
+    ).toHaveLength(1);
+    expect(h.store.getTask(target.taskId)!.state).toBe("mr_open");
+    expect(h.store.getTask(target.taskId)!.attempt).toBe(0);
+    h.store.finishRun(held.id, "canceled", { error: "test cleanup" });
   }, 30_000);
 
   it("defers architect and validate dispatch, never the paths that spend no model slot", async () => {

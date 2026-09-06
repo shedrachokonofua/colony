@@ -1,7 +1,17 @@
 import { ReviewerVerdictV2 as reviewerVerdictV2Schema } from "@colony/schemas";
-import { retryBackoffMs, type Scope, type Task } from "@colony/core";
+import { z } from "zod";
+import {
+  retryBackoffMs,
+  type Scope,
+  type Store,
+  type Task,
+} from "@colony/core";
 import { isQuotaDeferred } from "@colony/sandbox";
-import { isInfraError } from "../run-classification.js";
+import {
+  isInfraError,
+  isTimeoutWithoutEnvelope,
+  retryResetAt,
+} from "../run-classification.js";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -35,6 +45,7 @@ function inRunSpanContext<T>(
 export interface ReviewRunOptions {
   readonly leaseTtlMs?: number;
   readonly startModelId?: string;
+  readonly excludedModelIds?: readonly string[];
 }
 
 /**
@@ -108,7 +119,7 @@ export async function runReview(
     headSha,
     abortController,
     runSpan,
-    options.startModelId,
+    options,
   );
   trackRun(runId, execution, () => {
     abortController.abort();
@@ -133,7 +144,7 @@ async function executeReview(
   headSha: string,
   abortController: AbortController,
   runSpan: ColonyRunSpan | undefined,
-  startModelId: string | undefined,
+  options: ReviewRunOptions,
 ): Promise<void> {
   const reviewer = ctx.agents.reviewer;
   if (!reviewer) {
@@ -187,7 +198,8 @@ async function executeReview(
       reviewer.startRun(full, {
         role: "reviewer",
         runId,
-        startModelId,
+        startModelId: options.startModelId,
+        excludedModelIds: options.excludedModelIds,
         traceContext: runSpan?.spanContext,
       }),
     );
@@ -333,6 +345,7 @@ function failReview(
   error: string,
   options: { runSpan?: ColonyRunSpan; envelopeJson?: string } = {},
 ): void {
+  const timeout = isTimeoutWithoutEnvelope({ status: "failed", error });
   ctx.store.finishRun(runId, "failed", {
     error,
     envelope_json: options.envelopeJson,
@@ -345,6 +358,7 @@ function failReview(
     run_id: runId,
     detail: { reason: error },
   });
+  if (timeout) return;
   blockIfConsecutiveReviewFailures(ctx, task, headSha);
 }
 
@@ -388,6 +402,7 @@ function countConsecutiveFailedReviews(
     if (evidence.head_sha !== headSha) break;
     if (run.status === "succeeded") break;
     if (run.status !== "failed") break;
+    if (isTimeoutWithoutEnvelope(run)) continue;
     if (isQuotaDeferred(run.error)) continue;
     if (isInfraError(run.error)) continue;
     count += 1;
@@ -443,7 +458,9 @@ function countConsecutiveReviewRejections(
   for (const run of [...runs].reverse()) {
     if (
       run.status === "failed" &&
-      (isQuotaDeferred(run.error) || isInfraError(run.error))
+      (isTimeoutWithoutEnvelope(run) ||
+        isQuotaDeferred(run.error) ||
+        isInfraError(run.error))
     )
       continue;
     if (run.status !== "succeeded") break;
@@ -455,17 +472,48 @@ function countConsecutiveReviewRejections(
   return count;
 }
 
+const reviewEvidence = z.object({
+  head_sha: z.string().optional(),
+  verdict: z.string().optional(),
+});
+
 function parseReviewEvidence(evidenceJson: string | null): {
   head_sha?: string;
   verdict?: string;
 } {
   if (!evidenceJson) return {};
   try {
-    return JSON.parse(evidenceJson) as {
-      head_sha?: string;
-      verdict?: string;
-    };
+    const parsed = reviewEvidence.safeParse(JSON.parse(evidenceJson));
+    return parsed.success ? parsed.data : {};
   } catch {
     return {};
   }
+}
+
+/**
+ * Return model ids whose review attempts terminally timed out for this exact
+ * MR head after the latest normal task reset. The dispatch base SHA is the
+ * authoritative subject; failure evidence is preferred when present because
+ * it records the subject at the terminal transition.
+ */
+export function reviewTimeoutModelExclusions(
+  store: Pick<Store, "runsForTask" | "listAudit">,
+  taskId: string,
+  headSha: string,
+): readonly string[] {
+  const since = retryResetAt(store, "task", taskId);
+  const ids = new Set<string>();
+  for (const run of store.runsForTask(taskId)) {
+    if (
+      run.kind !== "review" ||
+      !isTimeoutWithoutEnvelope(run) ||
+      !run.model_id ||
+      (since !== undefined && run.started_at <= since)
+    )
+      continue;
+    const evidence = parseReviewEvidence(run.evidence_json);
+    const subject = evidence.head_sha ?? run.base_sha;
+    if (subject === headSha) ids.add(run.model_id);
+  }
+  return [...ids];
 }

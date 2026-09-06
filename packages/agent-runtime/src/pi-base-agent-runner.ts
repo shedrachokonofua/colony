@@ -265,7 +265,22 @@ export class PiBaseAgentRunner implements PiRunner {
     // The run's own provider token; redaction secrets for persisted evidence.
     const runToken = packetRepo(request.packet)?.credentials?.token;
     let model = await resolvePiModel(request, this.options.model);
-    const models = [model, ...(this.options.fallbackModels ?? [])];
+    const configuredModels = [model, ...(this.options.fallbackModels ?? [])];
+    const excludedModelIds = request.environment.excludedModelIds;
+    // Eligibility is subject-scoped retry state, not dispatch capacity. Apply
+    // it to the complete configured primary chain before registry resolution
+    // and start-model rotation, so a rejected primary cannot reappear after a
+    // later leg fails. The advisor remains separate below.
+    const models = excludedModelIds?.length
+      ? configuredModels.filter(
+          (candidate) => !excludedModelIds.includes(candidate.id),
+        )
+      : configuredModels;
+    if (models.length === 0) {
+      throw new Error(
+        `no eligible configured model remains for the ${request.environment.role} agent`,
+      );
+    }
     const availableModels =
       this.options.advisorModel &&
       !models.some(

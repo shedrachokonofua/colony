@@ -21,12 +21,8 @@ import { createInProcessEngine } from "@colony/sandbox-in-process";
 import { buildSandboxLaunchProfile } from "@colony/sandbox";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
-import {
-  adoptOrExpireRuns,
-  type AdoptionResult,
-} from "../src/runs/adoption.js";
-import { trackRun } from "../src/runs/registry.js";
-import { createDrainController } from "../src/drain.js";
+import { adoptOrExpireRuns } from "../src/runs/adoption.js";
+import { awaitPendingRuns, trackRun } from "../src/runs/registry.js";
 import { readSessionHeader } from "@colony/agent-runtime/session-store";
 
 /**
@@ -42,9 +38,34 @@ const handles: ColonydHandle[] = [];
 
 /** Scripted continuation envelope the fake adapter returns on resume. */
 let resumeCalls: { runId: string; sandboxId: string }[] = [];
+let resumePause:
+  | {
+      started: () => void;
+      released: Promise<void>;
+      returned: () => void;
+    }
+  | undefined;
+
+class RestartAdapter extends FakeAgentRuntimeAdapter {
+  override async resumeRun(
+    packet: AgentRuntimePacket,
+    environment: AgentRunResumeEnvironment,
+  ) {
+    const pause = resumePause;
+    if (pause) {
+      pause.started();
+      await pause.released;
+    }
+    try {
+      return await super.resumeRun(packet, environment);
+    } finally {
+      pause?.returned();
+    }
+  }
+}
 
 function fakeAdapter(): FakeAgentRuntimeAdapter {
-  return new FakeAgentRuntimeAdapter({
+  return new RestartAdapter({
     envelopeForResume: (packet, environment: AgentRunResumeEnvironment) => {
       resumeCalls.push({
         runId: environment.runId ?? "?",
@@ -93,14 +114,6 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-interface World {
-  dbPath: string;
-  sessionsDir: string;
-  workspace: string;
-  configPath: string;
-}
-
-let world: World;
 let dbPath: string;
 let sessionsDir: string;
 let configPath: string;
@@ -260,31 +273,6 @@ async function seedMidFlightRun(drainTimeoutMs = "600000"): Promise<{
   };
 }
 
-/** Fresh Store on the SAME db file + boot adoption against the SAME sessionsDir. */
-async function adoptAfterRestart(
-  runId: string,
-  resumeImpl?: (run: { id: string }) => Promise<void>,
-): Promise<AdoptionResult> {
-  const store = new Store(dbPath);
-  try {
-    return await adoptOrExpireRuns({
-      store,
-      provider,
-      logger: console.error as never,
-      sessionsDir,
-      connect: (id) => createInProcessEngine().connect(id),
-      resume:
-        resumeImpl ??
-        (async () => {
-          throw new Error("resume must be provided");
-        }),
-      resumeLeaseTtlMs: 60_000,
-    });
-  } finally {
-    store.close();
-  }
-}
-
 describe("restart resume integration", () => {
   it("case 1: crash restart adopts the run and resumes against the SAME sandbox", async () => {
     const seeded = await seedMidFlightRun();
@@ -300,6 +288,7 @@ describe("restart resume integration", () => {
     preRestart.close();
 
     const resumed = await bootHeadless(dbPath);
+    await awaitPendingRuns();
     const store = resumed.ctx.store;
 
     // Boot claimed and resumed the run against the SAME sandbox.
@@ -361,6 +350,9 @@ describe("restart resume integration", () => {
       resume: async () => {
         throw new Error("must not resume twice");
       },
+      cancel: async () => {
+        throw new Error("must not cancel a completed run");
+      },
       resumeLeaseTtlMs: 60_000,
     });
     expect(second.adoptable).toEqual([]);
@@ -394,6 +386,7 @@ describe("restart resume integration", () => {
       resume: async () => {
         throw new Error("must not resume");
       },
+      cancel: async () => {},
       resumeLeaseTtlMs: 60_000,
     });
 
@@ -453,6 +446,7 @@ describe("restart resume integration", () => {
     // (The run row was still `running` with adopted = 0 and a live lease,
     // so the boot-time adoptRun claim is the winner.)
     const resumed = await bootHeadless(dbPath);
+    await awaitPendingRuns();
     const fresh = resumed.ctx.store;
     expect(resumeCalls).toEqual([{ runId, sandboxId }]);
     const run = fresh.getRun(runId)!;
@@ -479,6 +473,47 @@ describe("restart resume integration", () => {
         .events.some((row) => row.action === "run.adopted"),
     ).toBe(true);
     await resumed.shutdown();
+  }, 60_000);
+
+  it("hands an adopted run to a second restart without repeating the task", async () => {
+    const seeded = await seedMidFlightRun("0");
+    await seeded.handle.shutdown();
+    const released = Promise.withResolvers<void>();
+    const returned = Promise.withResolvers<void>();
+    let entered = false;
+    resumePause = {
+      started: () => {
+        entered = true;
+      },
+      released: released.promise,
+      returned: () => returned.resolve(),
+    };
+    const restarting = bootHeadless(dbPath, "0");
+    try {
+      const adopted = await Promise.race([
+        restarting,
+        Bun.sleep(2_000).then(() => undefined),
+      ]);
+      if (!adopted) throw new Error("boot waited for adopted execution");
+      await Bun.sleep(0);
+      expect(entered).toBe(true);
+      await adopted.shutdown();
+      resumePause = undefined;
+
+      const resumed = await bootHeadless(dbPath, "0");
+      await awaitPendingRuns();
+      expect(resumed.ctx.store.getRun(seeded.runId)?.status).toBe("succeeded");
+      expect(resumed.ctx.store.getTask(seeded.taskId)?.state).toBe("mr_open");
+      expect(
+        resumed.ctx.store.runsForTask(seeded.taskId).map((run) => run.id),
+      ).toEqual([seeded.runId]);
+    } finally {
+      resumePause = undefined;
+      released.resolve();
+      await restarting;
+      if (entered) await returned.promise;
+      await Bun.sleep(0);
+    }
   }, 60_000);
 
   it("safety net: an adopted run whose lease lapses is failed by expireDeadLeases", async () => {

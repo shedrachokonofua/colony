@@ -10,16 +10,22 @@ import { SERVICE_ACTOR } from "./context.js";
 import { runArchitect } from "./runs/architect.js";
 import { runImplement } from "./runs/implement.js";
 import { runMergeGate } from "./runs/merge-gate.js";
-import { reconcileRejectedReview, runReview } from "./runs/review.js";
 import {
   getCurrentMrTask,
   hasActiveRepositoryMergeGate,
 } from "./runs/mr-admission.js";
 import {
+  reconcileRejectedReview,
+  reviewTimeoutModelExclusions,
+  runReview,
+} from "./runs/review.js";
+import {
   latestPlanReview,
   MAX_PLAN_REVIEW_ROUNDS,
+  planHash,
   planReviewRounds,
   runPlanReview,
+  timedOutPlanReviewModelIds,
 } from "./runs/plan-review.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
 import {
@@ -30,6 +36,7 @@ import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
 import {
   consecutiveImplementationFailures,
   isDeferredRunFailure,
+  retryResetAt,
 } from "./run-classification.js";
 import { abortRunsAndWait } from "./runs/registry.js";
 
@@ -168,6 +175,17 @@ function isQuotaDeferred(error: string | null | undefined): boolean {
   return typeof error === "string" && error.includes(SANDBOX_QUOTA_EXHAUSTED);
 }
 
+interface DispatchSlotOptions {
+  readonly excludedModelIds?: readonly string[];
+}
+
+interface DispatchSlot {
+  readonly allowed: boolean;
+  readonly startModelId: string | null;
+  /** True only when every configured candidate was explicitly excluded. */
+  readonly exhausted: boolean;
+}
+
 /**
  * Pick the first model in a role's configured chain with a free dispatch slot.
  *
@@ -176,26 +194,81 @@ function isQuotaDeferred(error: string | null | undefined): boolean {
  * fake configs omitting it) counts as free rather than stalling the pipeline.
  */
 export function pickDispatchSlot(
-  ctx: ColonydContext,
+  ctx: Pick<ColonydContext, "config" | "store">,
   role: AgentRole,
-): { readonly allowed: boolean; readonly startModelId: string | null } {
+  options: DispatchSlotOptions = {},
+): DispatchSlot {
   let roleConfig;
   try {
     roleConfig = ctx.config.forAgent(role);
   } catch {
-    return { allowed: true, startModelId: null };
+    return { allowed: true, startModelId: null, exhausted: false };
   }
   const models = [roleConfig.model, ...roleConfig.fallbackModels];
-  for (const [index, model] of models.entries()) {
+  let eligible = false;
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index]!;
+    if (options.excludedModelIds?.includes(model.id)) continue;
+    eligible = true;
     const limit = ctx.config.modelParallelLimit(model.id);
     if (limit === null || ctx.store.activeRunCountByModel(model.id) < limit) {
       return {
         allowed: true,
         startModelId: index === 0 ? null : model.id,
+        exhausted: false,
       };
     }
   }
-  return { allowed: false, startModelId: null };
+  return { allowed: false, startModelId: null, exhausted: !eligible };
+}
+function blockExhaustedReview(
+  ctx: ColonydContext,
+  scope: Scope,
+  task: Task,
+  headSha: string,
+  excludedModelIds: readonly string[],
+): void {
+  const current = getCurrentMrTask(ctx, scope, task);
+  if (!current) return;
+  const boundedIds = excludedModelIds.slice(0, 16);
+  const reason = `review models exhausted after timeout_without_envelope at ${headSha}: ${boundedIds.join(", ")}`;
+  ctx.store.transitionTask(
+    current.id,
+    current.state_version,
+    "blocked",
+    SERVICE_ACTOR,
+    { blocked_reason: reason },
+  );
+  ctx.store.audit(SERVICE_ACTOR, "review.admission_blocked", {
+    scope_id: scope.id,
+    task_id: task.id,
+    detail: {
+      reason,
+      head_sha: headSha,
+      excluded_model_ids: boundedIds,
+    },
+  });
+}
+
+function blockExhaustedPlanReview(
+  ctx: ColonydContext,
+  scope: Scope,
+  planHashValue: string,
+  excludedModelIds: readonly string[],
+): void {
+  const boundedIds = excludedModelIds.slice(0, 16);
+  const reason = `plan review models exhausted after timeout_without_envelope for ${planHashValue}: ${boundedIds.join(", ")}`;
+  ctx.store.setScopeStatus(scope.id, "blocked", SERVICE_ACTOR, {
+    blocked_reason: reason,
+  });
+  ctx.store.audit(SERVICE_ACTOR, "plan_review.admission_blocked", {
+    scope_id: scope.id,
+    detail: {
+      reason,
+      plan_hash: planHashValue,
+      excluded_model_ids: boundedIds,
+    },
+  });
 }
 
 function lastImplementRun(
@@ -220,7 +293,7 @@ function retryOrFailTask(
   // it. Neither may consume the task's attempt budget.
   const last = lastImplementRun(ctx, taskId);
   const deferred = last?.status === "canceled" || isDeferredRunFailure(last);
-  const since = retryResetAt(ctx, "task", task.id);
+  const since = retryResetAt(ctx.store, "task", task.id);
   const failures = consecutiveImplementationFailures(
     ctx.store
       .runsForTask(task.id)
@@ -288,7 +361,7 @@ function retryOrFailScope(
  * three architects per scope with workspace_lost and blocked every scope).
  */
 function architectAttempts(ctx: ColonydContext, scopeId: string): number {
-  const since = retryResetAt(ctx, "scope", scopeId);
+  const since = retryResetAt(ctx.store, "scope", scopeId);
   return ctx.store
     .runsForScope(scopeId)
     .filter(
@@ -298,45 +371,6 @@ function architectAttempts(ctx: ColonydContext, scopeId: string): number {
         (!since || r.started_at > since) &&
         !isDeferredRunFailure(r),
     ).length;
-}
-
-/** Find the latest explicit reset without losing it behind a noisy audit page. */
-function retryResetAt(
-  ctx: ColonydContext,
-  kind: "task" | "scope",
-  id: string,
-): string | undefined {
-  let beforeId: number | undefined;
-  for (;;) {
-    const page = ctx.store.listAudit({
-      ...(kind === "task" ? { task_id: id } : { scope_id: id }),
-      ...(beforeId === undefined ? {} : { before_id: beforeId }),
-      limit: 200,
-    });
-    for (let index = page.events.length - 1; index >= 0; index -= 1) {
-      const row = page.events[index]!;
-      if (kind === "scope" && row.action === "scope.unblocked") return row.at;
-      if (
-        kind !== "task" ||
-        row.action !== "task.transition" ||
-        row.actor === SERVICE_ACTOR
-      ) {
-        continue;
-      }
-      const detail = JSON.parse(row.detail_json) as {
-        from?: string;
-        to?: string;
-      };
-      if (
-        detail.to === "queued" &&
-        (detail.from === "blocked" || detail.from === "canceled")
-      ) {
-        return row.at;
-      }
-    }
-    if (!page.has_more || page.oldest_id === null) return undefined;
-    beforeId = page.oldest_id;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -648,13 +682,26 @@ async function advanceMrOpenTasks(
         // Only review dispatch waits on a lagging provider head; a verdict
         // that matches the provider's current head is authoritative above.
         if (providerHeadLagging) continue;
-        const slot = pickDispatchSlot(ctx, "reviewer");
-        if (!slot.allowed) continue;
+        const excludedModelIds = reviewTimeoutModelExclusions(
+          ctx.store,
+          task.id,
+          headSha,
+        );
+        const slot = pickDispatchSlot(ctx, "reviewer", {
+          excludedModelIds,
+        });
+        if (!slot.allowed) {
+          if (slot.exhausted) {
+            blockExhaustedReview(ctx, scope, task, headSha, excludedModelIds);
+          }
+          continue;
+        }
         const admitted = getCurrentMrTask(ctx, scope, task);
         if (!admitted) continue;
         dispatch(
           runReview(ctx, scope, admitted, headSha, {
             startModelId: slot.startModelId ?? undefined,
+            excludedModelIds,
           }),
         );
         continue;
@@ -965,11 +1012,30 @@ async function advanceScopePlanning(
               });
               continue;
             }
-            const slot = pickDispatchSlot(ctx, "reviewer");
-            if (!slot.allowed) continue;
+            const excludedModelIds = timedOutPlanReviewModelIds(
+              ctx,
+              scope.id,
+              scope.plan_json,
+              lastArchitect.id,
+            );
+            const slot = pickDispatchSlot(ctx, "plan_reviewer", {
+              excludedModelIds,
+            });
+            if (!slot.allowed) {
+              if (slot.exhausted) {
+                blockExhaustedPlanReview(
+                  ctx,
+                  scope,
+                  planHash(scope.plan_json),
+                  excludedModelIds,
+                );
+              }
+              continue;
+            }
             dispatch(
               runPlanReview(ctx, scope, plan, rounds + 1, {
                 startModelId: slot.startModelId ?? undefined,
+                excludedModelIds,
               }),
             );
             continue;
