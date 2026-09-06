@@ -62,6 +62,13 @@ interface Harness {
   readonly developer: FakeAgentRuntimeAdapter;
 }
 
+/** The implement packet fields these assertions read. */
+interface ImplementPacketShape {
+  readonly repo: { readonly branch: string };
+  readonly repair?: { readonly intent?: Record<string, unknown> };
+  readonly body: string;
+}
+
 interface HarnessOptions {
   readonly headSha?: string;
   readonly branch?: string;
@@ -150,17 +157,14 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
         throw new Error(options.developerCompletion.throwError);
       }
       const completionHead = options.developerCompletion?.head_sha ?? SHA_C;
-      void provider.branches.create(
-        repoRef,
-        packet.repo.branch,
-        completionHead,
-      );
+      const { repo: packetRepo } = packet as unknown as ImplementPacketShape;
+      void provider.branches.create(repoRef, packetRepo.branch, completionHead);
       return {
         kind: "implementer_completion",
         status: options.developerCompletion?.status ?? "complete",
         blocked_reason: options.developerCompletion?.blocked_reason,
         summary: "Rebased onto the target branch",
-        branch: packet.repo.branch,
+        branch: packetRepo.branch,
         head_sha: completionHead,
         commands: [{ cmd: "bun test", exit_code: 0 }],
       };
@@ -594,7 +598,11 @@ describe("merge conflict repair dispatch", () => {
 describe("merge gate command failure repair dispatch", () => {
   async function gateFailure(
     h: Harness,
-    commands: readonly { cmd: string; exit_code: number; tail: string[] }[],
+    commands: readonly {
+      readonly cmd: string;
+      readonly exit_code: number;
+      readonly tail: readonly string[];
+    }[],
   ): Promise<void> {
     (h.ctx as unknown as { gateExecutor: unknown }).gateExecutor =
       async () => ({
@@ -630,9 +638,7 @@ describe("merge gate command failure repair dispatch", () => {
 
   it("repeating the same failing command claims nothing new and still requeues", async () => {
     const h = await createHarness({ conflicted: false });
-    const commands = [
-      { cmd: "bun test", exit_code: 1, tail: ["expected 1"] },
-    ] as const;
+    const commands = [{ cmd: "bun test", exit_code: 1, tail: ["expected 1"] }];
 
     await gateFailure(h, commands);
     const firstAttempt = h.store.getTask(h.task.id)!.attempt;
@@ -775,10 +781,7 @@ describe("repair packet evidence", () => {
     await awaitPendingRuns();
 
     expect(packets.length).toBeGreaterThan(0);
-    const packet = packets.at(-1) as {
-      repair?: { intent?: Record<string, unknown> };
-      body: string;
-    };
+    const packet = packets.at(-1) as unknown as ImplementPacketShape;
     expect(packet.repair?.intent?.kind).toBe("merge_conflict");
     expect(packet.repair?.intent?.source_head_sha).toBe(SHA_A);
     expect(packet.repair?.intent?.target_head_sha).toBe(SHA_B);
@@ -858,10 +861,7 @@ describe("repair packet evidence", () => {
     await tick(h.ctx);
     await awaitPendingRuns();
 
-    const packet = packets.at(-1) as {
-      repair?: { intent?: Record<string, unknown> };
-      body: string;
-    };
+    const packet = packets.at(-1) as unknown as ImplementPacketShape;
     expect(packet.repair?.intent?.kind).toBe("merge_gate_failure");
     expect(packet.repair?.intent?.source_head_sha).toBe(SHA_A);
     expect(packet.body).toContain("## Repair intent — MERGE GATE FAILURE");

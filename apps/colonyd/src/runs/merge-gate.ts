@@ -608,17 +608,24 @@ function gateCommandFailure(evidence: Record<string, unknown>): {
   return { criterion: criterion.slice(0, MAX_CRITERION_CHARS), tail };
 }
 
+interface GateFailureTrigger {
+  readonly kind: "merge_gate_failure";
+  readonly source_head_sha: string;
+  readonly evidence: readonly string[];
+}
+
 /** Decorate an existing requeue with a merge-gate-failure repair intent. The
  *  claim is exactly-once per (task, gated head, failing command): a repeated
  *  claim falls through to the unchanged requeue-or-block logic, which stays
  *  the authority on backoff, attempts, and blocking. */
 function claimGateFailureIntent(
   ctx: ColonydContext,
-  scope: Scope,
   task: Task,
   headSha: string,
   evidence: Record<string, unknown>,
-): { readonly fingerprint: string; readonly trigger: unknown } | undefined {
+):
+  | { readonly fingerprint: string; readonly trigger: GateFailureTrigger }
+  | undefined {
   const { criterion, tail } = gateCommandFailure(evidence);
   const fingerprint = createHash("sha256")
     .update(`${task.id}|merge_gate_failure|${headSha}|${criterion}`)
@@ -657,7 +664,7 @@ function requeueOrBlockAfterGateFailure(
   // refusal is not repairable at all. Only the first claims an intent.
   const gateIntent =
     reason === "command_failed"
-      ? claimGateFailureIntent(ctx, scope, task, headSha, evidence)
+      ? claimGateFailureIntent(ctx, task, headSha, evidence)
       : undefined;
   // A missing or invalid gate is an operator/configuration defect, not an
   // implementation failure. Block immediately so the automatic implement

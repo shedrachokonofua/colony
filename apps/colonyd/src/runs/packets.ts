@@ -1,4 +1,6 @@
 import type { ArchitectDecompositionV2, RepairIntentV1 } from "@colony/schemas";
+import type { Project, ProjectFile, Scope, Task } from "@colony/core";
+import type { ProviderRepoRef } from "@colony/provider";
 
 /** Operator-facing section title per repair trigger. */
 const REPAIR_INTENT_TITLE: Record<RepairIntentV1["kind"], string> = {
@@ -6,8 +8,6 @@ const REPAIR_INTENT_TITLE: Record<RepairIntentV1["kind"], string> = {
   merge_conflict: "MERGE CONFLICT",
   merge_gate_failure: "MERGE GATE FAILURE",
 };
-import type { Project, ProjectFile, Scope, Task } from "@colony/core";
-import type { ProviderRepoRef } from "@colony/provider";
 
 /**
  * Shared packet assembly for every agent role. A project's operator-authored
