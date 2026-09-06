@@ -106,13 +106,25 @@ async function harness(
   store.setScopeStatus(scope.id, "planning", "svc:test");
   const [created] = store.materializePlan(scope.id, PLAN, "svc:test");
   if (!created) throw new Error("fixture task missing");
-  store.transitionTask(created.id, created.state_version, "running", "svc:test", {
-    branch: "colony/delivery-task",
-  });
+  store.transitionTask(
+    created.id,
+    created.state_version,
+    "running",
+    "svc:test",
+    {
+      branch: "colony/delivery-task",
+    },
+  );
   const running = store.getTask(created.id)!;
-  store.transitionTask(running.id, running.state_version, "mr_open", "svc:test", {
-    mr_iid: mr.iid,
-  });
+  store.transitionTask(
+    running.id,
+    running.state_version,
+    "mr_open",
+    "svc:test",
+    {
+      mr_iid: mr.iid,
+    },
+  );
   const pushed = store.startRun({
     scope_id: scope.id,
     task_id: created.id,
@@ -277,18 +289,15 @@ describe("read paths perform no provider I/O", () => {
     const app = buildApp(h.ctx);
     const taskBody = await getJson(app, `/tasks/${h.task.id}`);
     const scopeBody = await getJson(app, `/scopes/${h.scopeId}`);
-    const running = await app.request(
-      `/projects/${h.project}/running`,
-      ACTOR,
-    );
+    const running = await app.request(`/projects/${h.project}/running`, ACTOR);
     expect(running.status).toBe(200);
     expect((taskBody.delivery_status as { stage: string }).stage).toBe(
       "ci_failed",
     );
     expect(
-      (
-        scopeBody.delivery_by_task as Record<string, { stage: string }>
-      )[String(h.task.id)]!.stage,
+      (scopeBody.delivery_by_task as Record<string, { stage: string }>)[
+        String(h.task.id)
+      ]!.stage,
     ).toBe("ci_failed");
   });
 });

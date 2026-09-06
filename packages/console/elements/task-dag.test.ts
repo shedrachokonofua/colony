@@ -7,10 +7,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { sharedDom } from "./test-dom.js";
 // A plain module (no custom element registration), so it is safe to import
 // before the shared window is installed.
-import {
-  DELIVERY_STAGES,
-  DELIVERY_STAGE_LABEL,
-} from "../delivery-stage.js";
+import { DELIVERY_STAGES, DELIVERY_STAGE_LABEL } from "../delivery-stage.js";
 
 sharedDom();
 
@@ -226,9 +223,7 @@ describe("task-dag delivery stage", () => {
     const el = makeDag(detailWithStage("ci_failed"));
     await el.updateComplete;
     const node = [...el.querySelectorAll("g.node.dag-node")][1];
-    expect(node.querySelector(".nstate")?.textContent).toContain(
-      "CI failed",
-    );
+    expect(node.querySelector(".nstate")?.textContent).toContain("CI failed");
     const text = node.querySelector(".nstate")?.textContent ?? "";
     expect(text).not.toContain("mr_open");
     expect(text.toLowerCase()).not.toContain("awaiting review");

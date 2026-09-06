@@ -6,10 +6,7 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it } from "bun:test";
 import { sharedDom } from "./test-dom.js";
-import {
-  DELIVERY_STAGES,
-  DELIVERY_STAGE_LABEL,
-} from "../delivery-stage.js";
+import { DELIVERY_STAGES, DELIVERY_STAGE_LABEL } from "../delivery-stage.js";
 
 // Element suites share this window and registry (bun runs every suite in one
 // process with one module cache); the shared window must be installed before

@@ -17,10 +17,7 @@ import {
 import { graphModel, layoutDag } from "../dag.js";
 import { createRunTicker, formatDuration, runDurationMs } from "../duration.js";
 import { KIND_LABEL } from "../kind-label.js";
-import {
-  deliveryStage,
-  deliveryStageLabel,
-} from "../delivery-stage.js";
+import { deliveryStage, deliveryStageLabel } from "../delivery-stage.js";
 
 /** @typedef {import("../delivery-stage.js").DeliveryStatus} DeliveryStatus */
 

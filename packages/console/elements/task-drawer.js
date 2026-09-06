@@ -144,17 +144,20 @@ export class TaskDrawer extends ColonyElement {
           ${deliveryStageLabel(status)}
         </span>
         ${status?.since
-          ? html`<span class="delivery-since mono">since ${rel(status.since)}</span>`
+          ? html`<span class="delivery-since mono"
+              >since ${rel(status.since)}</span
+            >`
           : nothing}
       </p>
       ${evidence.length
         ? html`<ul class="delivery-evidence">
             ${evidence.map(
-              (entry) => html`<li class="task-meta">
-                ${entry.url
-                  ? html`<a href=${entry.url}>${entry.text}</a>`
-                  : entry.text}
-              </li>`,
+              (entry) =>
+                html`<li class="task-meta">
+                  ${entry.url
+                    ? html`<a href=${entry.url}>${entry.text}</a>`
+                    : entry.text}
+                </li>`,
             )}
           </ul>`
         : nothing}

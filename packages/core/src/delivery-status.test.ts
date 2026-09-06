@@ -147,7 +147,10 @@ describe("terminal and blocked stages", () => {
 
   it("blocked is blocked with its reason as the first evidence", () => {
     const status = derive({
-      task: task({ state: "blocked", blocked_reason: "review model exhausted" }),
+      task: task({
+        state: "blocked",
+        blocked_reason: "review model exhausted",
+      }),
     });
     expect(status.stage).toBe("blocked");
     expect(status.evidence[0]?.text).toContain("review model exhausted");
@@ -156,7 +159,11 @@ describe("terminal and blocked stages", () => {
 
 describe("repair stages from repair_intents", () => {
   it("a claimed intent with a running repair run is repair_running", () => {
-    const repair = run({ id: "run-repair", kind: "implement", status: "running" });
+    const repair = run({
+      id: "run-repair",
+      kind: "implement",
+      status: "running",
+    });
     const status = derive({
       runs: [repair],
       repairIntents: [intent({ run_id: "run-repair" })],
@@ -193,7 +200,9 @@ describe("repair stages from repair_intents", () => {
     });
     const status = derive({
       runs: [repair],
-      repairIntents: [intent({ run_id: "run-repair", resolved_head_sha: HEAD })],
+      repairIntents: [
+        intent({ run_id: "run-repair", resolved_head_sha: HEAD }),
+      ],
     });
     expect(status.stage).toBe("repair_failed");
   });
@@ -225,11 +234,7 @@ describe("provider head", () => {
   });
 
   it("an unknown head is provider_head_pending and never a pipeline stage", () => {
-    for (const pipelineStatus of [
-      "failed",
-      "pending",
-      "running",
-    ] as const) {
+    for (const pipelineStatus of ["failed", "pending", "running"] as const) {
       const status = derive({
         mrHeadSha: null,
         providerHeadSha: null,
@@ -261,7 +266,9 @@ describe("pipeline facts", () => {
       },
     });
     expect(status.stage).toBe("ci_failed");
-    expect(status.evidence.some((e) => e.url === "https://ci.example/pipelines/9")).toBe(true);
+    expect(
+      status.evidence.some((e) => e.url === "https://ci.example/pipelines/9"),
+    ).toBe(true);
   });
 
   it("a canceled pipeline at the current head is ci_failed", () => {
@@ -396,9 +403,9 @@ describe("merge gate ladder", () => {
     });
     const status = derive({ runs: [gate], latestGate: gate });
     expect(status.stage).toBe("merge_gate_failed");
-    expect(status.evidence.some((e) => e.text.includes("bun test exited 1"))).toBe(
-      true,
-    );
+    expect(
+      status.evidence.some((e) => e.text.includes("bun test exited 1")),
+    ).toBe(true);
   });
 
   it("a transient refusal is merge_gate_pending", () => {
@@ -488,7 +495,9 @@ describe("evidence contract", () => {
       merge_gate_pending: {
         latestGate: run({
           status: "failed",
-          evidence_json: JSON.stringify({ reason: "merge_refused:merge_http_405" }),
+          evidence_json: JSON.stringify({
+            reason: "merge_refused:merge_http_405",
+          }),
         }),
       },
       merge_gate_running: { latestGate: run({ status: "running" }) },

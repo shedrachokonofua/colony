@@ -1715,7 +1715,9 @@ export class Store {
       );
   }
 
-  getPipelineObservation(taskId: TaskId | string): PipelineObservationRow | null {
+  getPipelineObservation(
+    taskId: TaskId | string,
+  ): PipelineObservationRow | null {
     return (this.db
       .prepare(`SELECT * FROM pipeline_observations WHERE task_id = ?`)
       .get(taskId) ?? null) as PipelineObservationRow | null;
@@ -2290,7 +2292,9 @@ export class Store {
       observation && mrHeadSha && observation.head_sha === mrHeadSha
         ? {
             status: observation.status,
-            ...(observation.web_url ? { pipelineUrl: observation.web_url } : {}),
+            ...(observation.web_url
+              ? { pipelineUrl: observation.web_url }
+              : {}),
             observedAt: observation.observed_at,
           }
         : null;

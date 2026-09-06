@@ -4,10 +4,7 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it } from "bun:test";
 import { sharedDom } from "./test-dom.js";
-import {
-  DELIVERY_STAGES,
-  DELIVERY_STAGE_LABEL,
-} from "../delivery-stage.js";
+import { DELIVERY_STAGES, DELIVERY_STAGE_LABEL } from "../delivery-stage.js";
 
 // Element modules self-register into globalThis.customElements at import
 // time (a static import would hoist above this setup), so the shared
@@ -268,9 +265,7 @@ describe("running-tab delivery stage", () => {
     const badge = el.querySelector(".running-row .badge");
     expect(badge?.textContent?.trim()).toBe("CI failed");
     expect(badge?.textContent).not.toContain("mr_open");
-    expect(badge?.textContent?.toLowerCase()).not.toContain(
-      "awaiting review",
-    );
+    expect(badge?.textContent?.toLowerCase()).not.toContain("awaiting review");
   });
 
   it("falls back to the task state only when the field is absent", async () => {

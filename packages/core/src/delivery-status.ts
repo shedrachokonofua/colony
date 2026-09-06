@@ -244,7 +244,10 @@ export function deriveDeliveryStatus(
     const movedHead =
       intent.resolved_head_sha !== null &&
       intent.resolved_head_sha !== triggerHead(intent);
-    if (run?.status === "failed" || (run?.status === "succeeded" && !movedHead)) {
+    if (
+      run?.status === "failed" ||
+      (run?.status === "succeeded" && !movedHead)
+    ) {
       return status(
         "repair_failed",
         newest([run.finished_at, intent.created_at]),
@@ -428,7 +431,12 @@ export function deriveDeliveryStatus(
       return status(
         "merge_conflict",
         when,
-        [{ kind: "gate", text: `Merge gate found a conflict at ${mrHeadSha}.` }],
+        [
+          {
+            kind: "gate",
+            text: `Merge gate found a conflict at ${mrHeadSha}.`,
+          },
+        ],
         [latestGate.id],
       );
     }
