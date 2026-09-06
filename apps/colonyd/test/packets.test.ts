@@ -596,6 +596,121 @@ describe("project reference files in packets", () => {
     expect(packet.body).toContain("- unit: FAIL src/a.test.ts");
   });
 
+  it("implement packet names the merge conflict trigger with source and target heads", async () => {
+    const { store, app } = appWithStore();
+    const scope = await createScope(app, {
+      goal: "conflict packet",
+      title: "conflict packet",
+      repo: { path: "so/demo" },
+    });
+    store.setScopeStatus(scope.id, "planning", "human:op-1");
+    store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "goal holds" }],
+        acceptance: [{ description: "d", command: "true" }],
+        tasks: [
+          {
+            title: "task1",
+            spec: "spec1",
+            depends_on: [],
+            files: ["src/task1.ts"],
+            evidence: ["true"],
+          },
+        ],
+      },
+      "human:op-1",
+    );
+    const task = store.listTasks(scope.id)[0]!;
+    const s = store.getScope(scope.id)!;
+    const source = "a".repeat(40);
+    const target = "b".repeat(40);
+    const intent = {
+      kind: "merge_conflict" as const,
+      source_head_sha: source,
+      target_head_sha: target,
+      evidence: [
+        "merge status: mergeable_broken_status",
+        "conflicted files: src/task1.ts",
+      ],
+    };
+
+    const packet = buildImplementPacket(
+      task,
+      s,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      target,
+      { repairIntent: intent },
+    );
+    expect(packet.repair).toEqual({ intent });
+    expect(packet.body).toContain("## Repair intent — MERGE CONFLICT");
+    expect(packet.body).toContain(
+      `Trigger: \`merge_conflict\` at source head \`${source}\`.`,
+    );
+    expect(packet.body).toContain(target);
+    expect(packet.body).toContain("- merge status: mergeable_broken_status");
+    expect(packet.body).toContain("- conflicted files: src/task1.ts");
+  });
+
+  it("implement packet names a merge gate command failure with its output tail", async () => {
+    const { store, app } = appWithStore();
+    const scope = await createScope(app, {
+      goal: "gate packet",
+      title: "gate packet",
+      repo: { path: "so/demo" },
+    });
+    store.setScopeStatus(scope.id, "planning", "human:op-1");
+    store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "goal holds" }],
+        acceptance: [{ description: "d", command: "true" }],
+        tasks: [
+          {
+            title: "task1",
+            spec: "spec1",
+            depends_on: [],
+            files: ["src/task1.ts"],
+            evidence: ["true"],
+          },
+        ],
+      },
+      "human:op-1",
+    );
+    const task = store.listTasks(scope.id)[0]!;
+    const s = store.getScope(scope.id)!;
+    const source = "c".repeat(40);
+    const intent = {
+      kind: "merge_gate_failure" as const,
+      source_head_sha: source,
+      evidence: ["command failed: bun run typecheck", "error TS2345"],
+    };
+
+    const packet = buildImplementPacket(
+      task,
+      s,
+      null,
+      [],
+      { id: "1", path: "so/demo" },
+      "colony/x",
+      "base",
+      { repairIntent: intent },
+    );
+    expect(packet.repair).toEqual({ intent });
+    expect(packet.body).toContain("## Repair intent — MERGE GATE FAILURE");
+    expect(packet.body).toContain("command failed: bun run typecheck");
+    expect(packet.body).toContain("- error TS2345");
+  });
+
   it("rejected_head_sha-only packets keep their legacy shape and body", async () => {
     const { store, app } = appWithStore();
     const scope = await createScope(app, {

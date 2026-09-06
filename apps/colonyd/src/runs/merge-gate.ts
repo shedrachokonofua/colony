@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { sanitizeTrace } from "@colony/provider";
 import {
   buildIsolatedCommandEnv,
   VALIDATE_ENV_ALLOWLIST,
@@ -31,6 +33,10 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 600;
 const MAX_CONSECUTIVE_GATE_FAILURES = 3;
 const MAX_CONSECUTIVE_MERGE_REFUSALS = 3;
+/** Failing-command length bound on the merge-gate repair fingerprint. */
+const MAX_CRITERION_CHARS = 200;
+/** Output-tail lines carried into merge-gate repair evidence. */
+const MAX_TAIL_LINES = 20;
 
 const NEVER_ABORTED = new AbortController().signal;
 /**
@@ -579,6 +585,69 @@ function holdForRegate(
   });
 }
 
+/** The repairable command failure inside gate evidence: the failing command
+ *  (bounded) and its output tail, which the gate executor already bounds. */
+function gateCommandFailure(evidence: Record<string, unknown>): {
+  readonly criterion: string;
+  readonly tail: readonly string[];
+} {
+  const commands = Array.isArray(evidence.commands) ? evidence.commands : [];
+  const results = commands.filter(
+    (entry): entry is GateCommandResult =>
+      entry !== null &&
+      typeof entry === "object" &&
+      typeof (entry as GateCommandResult).cmd === "string",
+  );
+  const failed =
+    [...results].reverse().find((result) => result.exit_code !== 0) ??
+    results.at(-1);
+  const cmd = failed?.cmd ?? "";
+  const tail = (failed?.tail ?? []).map((line) => sanitizeTrace(line));
+  const criterion =
+    cmd || (typeof evidence.error === "string" ? evidence.error : "");
+  return { criterion: criterion.slice(0, MAX_CRITERION_CHARS), tail };
+}
+
+interface GateFailureTrigger {
+  readonly kind: "merge_gate_failure";
+  readonly source_head_sha: string;
+  readonly evidence: readonly string[];
+}
+
+/** Decorate an existing requeue with a merge-gate-failure repair intent. The
+ *  claim is exactly-once per (task, gated head, failing command): a repeated
+ *  claim falls through to the unchanged requeue-or-block logic, which stays
+ *  the authority on backoff, attempts, and blocking. */
+function claimGateFailureIntent(
+  ctx: ColonydContext,
+  task: Task,
+  headSha: string,
+  evidence: Record<string, unknown>,
+):
+  | { readonly fingerprint: string; readonly trigger: GateFailureTrigger }
+  | undefined {
+  const { criterion, tail } = gateCommandFailure(evidence);
+  const fingerprint = createHash("sha256")
+    .update(`${task.id}|merge_gate_failure|${headSha}|${criterion}`)
+    .digest("hex");
+  const trigger = {
+    kind: "merge_gate_failure",
+    source_head_sha: headSha,
+    evidence: [
+      `command failed: ${criterion}`,
+      ...tail.slice(-MAX_TAIL_LINES).filter((line) => line.trim().length > 0),
+    ],
+  } as const;
+  const fresh = ctx.store.claimRepairIntent({
+    fingerprint,
+    task_id: task.id,
+    trigger_kind: "merge_gate_failure",
+    trigger_json: JSON.stringify(trigger),
+  });
+  if (fresh === null) return undefined;
+  return { fingerprint, trigger };
+}
+
 function requeueOrBlockAfterGateFailure(
   ctx: ColonydContext,
   scope: Scope,
@@ -590,6 +659,13 @@ function requeueOrBlockAfterGateFailure(
   if (!current || current.state !== "mr_open") return;
 
   const reason = typeof evidence.reason === "string" ? evidence.reason : "";
+  // A repairable command failure is a code defect an implementer can fix;
+  // a merge conflict belongs to the tick's conflict branch and a transient
+  // refusal is not repairable at all. Only the first claims an intent.
+  const gateIntent =
+    reason === "command_failed"
+      ? claimGateFailureIntent(ctx, task, headSha, evidence)
+      : undefined;
   // A missing or invalid gate is an operator/configuration defect, not an
   // implementation failure. Block immediately so the automatic implement
   // retry loop cannot churn on a repository-wide admission problem.
@@ -651,6 +727,16 @@ function requeueOrBlockAfterGateFailure(
       ).toISOString(),
     },
   );
+  if (!gateIntent) return;
+  ctx.store.audit(SERVICE_ACTOR, "gate.repair_dispatched", {
+    scope_id: scope.id,
+    task_id: task.id,
+    detail: {
+      fingerprint: gateIntent.fingerprint,
+      trigger: gateIntent.trigger,
+      attempt,
+    },
+  });
 }
 
 /**

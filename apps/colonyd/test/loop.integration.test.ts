@@ -27,6 +27,8 @@ import type { ValidateExecutor } from "../src/runs/validate.js";
 const ACTOR = "human:op-1";
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
+const SHA_C = "c".repeat(40);
+const SHA_D = "d".repeat(40);
 
 let dir: string;
 let provider: FakeProviderAdapter;
@@ -52,6 +54,8 @@ const script = {
   planReviewCalls: 0,
   distinctShas: false,
   singleTask: false,
+  /** Last head the fake implementer pushed, per task. */
+  pushedShas: new Map<string, string>(),
   validateFail: false,
   /** The first validation never runs (sandbox provision failure). */
   validateInfraFailOnce: false,
@@ -212,16 +216,29 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         : taskId.endsWith(".1")
           ? SHA_A
           : SHA_B;
+      // A repair run never re-pushes the head it was dispatched to fix:
+      // advance to the next head so the repair's no-change guard stays honest.
+      const repairing =
+        packet.repair !== null &&
+        typeof packet.repair === "object" &&
+        "intent" in packet.repair;
+      const effectiveSha =
+        repairing && script.pushedShas.get(taskId) === headSha
+          ? headSha === SHA_A
+            ? SHA_C
+            : SHA_D
+          : headSha;
+      script.pushedShas.set(taskId, effectiveSha);
       const branch = `colony/${taskId}`;
       // The fake provider needs the branch to exist so envelope fact
       // verification (branch head == head_sha) passes.
-      void provider.branches.create({ id: repoId }, branch, headSha);
+      void provider.branches.create({ id: repoId }, branch, effectiveSha);
       return {
         kind: "implementer_completion",
         status: "complete",
         summary: `Implemented ${taskId}.`,
         branch,
-        head_sha: headSha,
+        head_sha: effectiveSha,
         commands: [{ cmd: "npm test", exit_code: 0 }],
       };
     },
@@ -430,6 +447,7 @@ beforeEach(async () => {
   script.planReviewCalls = 0;
   script.distinctShas = false;
   script.singleTask = false;
+  script.pushedShas.clear();
   script.validateFail = false;
   script.validateInfraFailOnce = false;
   script.reviewerAdvancesHead = false;
@@ -1035,7 +1053,6 @@ describe("colonyd fake end-to-end loop", () => {
     // merge happens, task reaches merged.
     handle.ctx.store.clearRetryDelay(taskA.id);
     await driveToDone(scopeId);
-
     a = handle.ctx.store.getTask(taskA.id)!;
     expect(a.state).toBe("merged");
     const passedGate = handle.ctx.store
