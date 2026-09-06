@@ -1,4 +1,11 @@
 import type { ArchitectDecompositionV2, RepairIntentV1 } from "@colony/schemas";
+
+/** Operator-facing section title per repair trigger. */
+const REPAIR_INTENT_TITLE: Record<RepairIntentV1["kind"], string> = {
+  ci_failure: "CI FAILURE",
+  merge_conflict: "MERGE CONFLICT",
+  merge_gate_failure: "MERGE GATE FAILURE",
+};
 import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 
@@ -595,10 +602,12 @@ function buildImplementBody(
     ...(current.repairIntent && !current.legacy
       ? [
           "",
-          "## Repair intent — CI FAILURE",
+          `## Repair intent — ${REPAIR_INTENT_TITLE[current.repairIntent.kind]}`,
           `Trigger: \`${current.repairIntent.kind}\` at source head \`${current.repairIntent.source_head_sha}\`.`,
           ...(current.repairIntent.target_head_sha
-            ? [`Target head: \`${current.repairIntent.target_head_sha}\`.`]
+            ? [
+                `Target head: \`${current.repairIntent.target_head_sha}\` — rebase the task branch onto it and resolve the conflict from that merge base.`,
+              ]
             : []),
           ...formatRepairIntentProvider(current.repairIntent.provider),
           "Sanitized, bounded diagnostic evidence:",

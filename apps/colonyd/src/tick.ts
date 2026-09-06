@@ -1,5 +1,9 @@
 import type { AgentRole } from "@colony/config";
-import { sanitizeTrace, type ProviderPipeline } from "@colony/provider";
+import {
+  sanitizeTrace,
+  type ProviderMergeRequest,
+  type ProviderPipeline,
+} from "@colony/provider";
 import { createHash } from "node:crypto";
 import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
 import type { Run, Scope, Task } from "@colony/core";
@@ -557,45 +561,9 @@ async function advanceMrOpenTasks(
     if (task.state !== "mr_open") continue;
 
     // A conflicted MR cannot merge; reviewing or gating it wastes a full
-    // run. Requeue so an implement run rebases the branch - unless one is
-    // already in flight and may be about to move the head anyway.
+    // run. Dispatch one bounded rebase repair per (task, source, target).
     if (mr.has_conflicts === true) {
-      if (
-        ctx.store.activeRuns("implement").some((r) => r.task_id === task.id)
-      ) {
-        continue;
-      }
-      // A review in flight is reviewing the head the rebase is about to
-      // replace. Requeueing beside it ran an implementer and a reviewer on
-      // col-c8f58a57.3 concurrently (2026-09-01); stop the review first.
-      const liveReviews = ctx.store
-        .activeRuns("review")
-        .filter((r) => r.task_id === task.id)
-        .map((r) => r.id);
-      if (liveReviews.length > 0) {
-        const stopped = await abortRunsAndWait(liveReviews);
-        if (!stopped.every(Boolean)) continue;
-      }
-      const current = getCurrentMrTask(ctx, scope, task);
-      if (!current) continue;
-      const attempt = current.attempt + 1;
-      ctx.store.transitionTask(
-        current.id,
-        current.state_version,
-        "queued",
-        SERVICE_ACTOR,
-        {
-          attempt,
-          next_retry_at: new Date(
-            Date.now() + retryBackoffMs(attempt),
-          ).toISOString(),
-        },
-      );
-      ctx.store.audit(SERVICE_ACTOR, "mr.conflicted", {
-        scope_id: scope.id,
-        task_id: task.id,
-        detail: { mr_iid: task.mr_iid, head_sha: headSha },
-      });
+      await repairAfterMergeConflict(ctx, scope, task, mr);
       continue;
     }
 
@@ -780,6 +748,141 @@ function isMergeRequestTimeout(error: string | undefined): boolean {
 interface PipelineGateResult {
   readonly ready: boolean;
   readonly pipeline?: ProviderPipeline;
+}
+
+/** Conflict evidence: the provider's merge status plus the conflicted paths
+ *  when the provider exposes them. `mergeRequests.diff` is advisory only —
+ *  its failure must never block a repair claim. */
+async function conflictedFiles(
+  ctx: ColonydContext,
+  scope: Scope,
+  mr: ProviderMergeRequest,
+): Promise<readonly string[]> {
+  const repo = { id: scope.provider_repo_id, path: scope.provider_repo_path };
+  try {
+    const diffs = await ctx.provider.mergeRequests.diff(repo, mr.id);
+    const files = diffs
+      .map((entry) => entry.new_path ?? entry.old_path)
+      .filter((path): path is string => typeof path === "string")
+      .filter((path) => path.length > 0);
+    return files
+      .filter((path, index) => files.indexOf(path) === index)
+      .slice(0, 25);
+  } catch {
+    // A diff we cannot read is not a conflict we cannot repair.
+    return [];
+  }
+}
+
+/** Exactly-once merge-conflict repair dispatch, keyed on
+ *  sha256(task|merge_conflict|source|target). The claim is persisted BEFORE
+ *  any transition, so a crash between claim and dispatch cannot duplicate the
+ *  repair; the null-claim path reconciles that window. */
+async function repairAfterMergeConflict(
+  ctx: ColonydContext,
+  scope: Scope,
+  task: Task,
+  mr: ProviderMergeRequest,
+): Promise<void> {
+  const sourceSha = mr.head_commit_sha;
+  if (!sourceSha) return;
+  ctx.store.audit(SERVICE_ACTOR, "mr.conflicted", {
+    scope_id: scope.id,
+    task_id: task.id,
+    detail: { mr_iid: task.mr_iid, head_sha: sourceSha },
+  });
+
+  let targetSha: string;
+  try {
+    targetSha = (
+      await ctx.provider.commits.get(
+        { id: scope.provider_repo_id, path: scope.provider_repo_path },
+        scope.default_branch,
+      )
+    ).sha;
+  } catch (err) {
+    ctx.store.audit(SERVICE_ACTOR, "provider.unreachable", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: {
+        stage: "conflict_target_head",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    return;
+  }
+
+  const files = await conflictedFiles(ctx, scope, mr);
+  const fingerprint = createHash("sha256")
+    .update(`${task.id}|merge_conflict|${sourceSha}|${targetSha}`)
+    .digest("hex");
+  const intent = {
+    kind: "merge_conflict",
+    source_head_sha: sourceSha,
+    target_head_sha: targetSha,
+    evidence: [
+      `merge status: ${mr.detailed_merge_status ?? "conflicts"}`,
+      ...(files.length > 0 ? [`conflicted files: ${files.join(", ")}`] : []),
+    ],
+  } as const;
+
+  const fresh = ctx.store.claimRepairIntent({
+    fingerprint,
+    task_id: task.id,
+    trigger_kind: "merge_conflict",
+    trigger_json: JSON.stringify(intent),
+  });
+  if (fresh === null) {
+    // Crash/capacity reconciliation: the claim exists. A bound run means
+    // dispatch happened or is imminent; so does a resolved intent. Otherwise
+    // the window between the claim and the transition was interrupted, and
+    // only a task still in mr_open may redo it.
+    const existing = ctx.store.getRepairIntent(fingerprint);
+    if (!existing || existing.run_id !== null) return;
+    if (existing.resolved_head_sha !== null) return;
+    const stillOpen = ctx.store.getTask(task.id);
+    if (!stillOpen || stillOpen.state !== "mr_open") return;
+    ctx.store.audit(SERVICE_ACTOR, "gate.repair_reconciled", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: { fingerprint },
+    });
+  }
+
+  // An implement run already in flight may be about to move the head anyway.
+  if (ctx.store.activeRuns("implement").some((r) => r.task_id === task.id))
+    return;
+  // A review in flight is reviewing the head the rebase is about to
+  // replace. Requeueing beside it ran an implementer and a reviewer on
+  // col-c8f58a57.3 concurrently (2026-09-01); stop the review first.
+  const liveReviews = ctx.store
+    .activeRuns("review")
+    .filter((r) => r.task_id === task.id)
+    .map((r) => r.id);
+  if (liveReviews.length > 0) {
+    const stopped = await abortRunsAndWait(liveReviews);
+    if (!stopped.every(Boolean)) return;
+  }
+  const current = getCurrentMrTask(ctx, scope, task);
+  if (!current) return;
+  const attempt = current.attempt + 1;
+  ctx.store.transitionTask(
+    current.id,
+    current.state_version,
+    "queued",
+    SERVICE_ACTOR,
+    {
+      attempt,
+      next_retry_at: new Date(
+        Date.now() + retryBackoffMs(attempt),
+      ).toISOString(),
+    },
+  );
+  ctx.store.audit(SERVICE_ACTOR, "gate.repair_dispatched", {
+    scope_id: scope.id,
+    task_id: task.id,
+    detail: { fingerprint, trigger: intent, attempt },
+  });
 }
 
 /**

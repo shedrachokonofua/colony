@@ -275,7 +275,10 @@ async function executeImplement(
               "blocked",
               SERVICE_ACTOR,
               {
-                blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+                blocked_reason: repairFailureReason(
+                  repairIntent,
+                  `failed: ${reason}`,
+                ),
               },
             );
           }
@@ -307,7 +310,10 @@ async function executeImplement(
             "blocked",
             SERVICE_ACTOR,
             {
-              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+              blocked_reason: repairFailureReason(
+                repairIntent,
+                `failed: ${reason}`,
+              ),
             },
           );
         }
@@ -352,7 +358,10 @@ async function executeImplement(
             "blocked",
             SERVICE_ACTOR,
             {
-              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+              blocked_reason: repairFailureReason(
+                repairIntent,
+                `failed: ${reason}`,
+              ),
             },
           );
         }
@@ -393,7 +402,10 @@ async function executeImplement(
             "blocked",
             SERVICE_ACTOR,
             {
-              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} pushed no new head (repair_no_change)`,
+              blocked_reason: repairFailureReason(
+                repairIntent,
+                "pushed no new head (repair_no_change)",
+              ),
             },
           );
         }
@@ -424,7 +436,10 @@ async function executeImplement(
             "blocked",
             SERVICE_ACTOR,
             {
-              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+              blocked_reason: repairFailureReason(
+                repairIntent,
+                `failed: ${reason}`,
+              ),
             },
           );
         }
@@ -611,7 +626,10 @@ async function executeImplement(
             "blocked",
             SERVICE_ACTOR,
             {
-              blocked_reason: `ci_failure repair at ${repairIntent.source_head_sha} failed: ${reason}`,
+              blocked_reason: repairFailureReason(
+                repairIntent,
+                `failed: ${reason}`,
+              ),
             },
           );
         }
@@ -732,6 +750,15 @@ interface ReviewRepair {
   /** The latest rejection that has not been superseded by a later approval. */
   rejectedHeadSha?: string;
   historical: ImplementHistoricalEvidence[];
+}
+
+/** Why a repair run blocked the task: names the trigger kind, not just the
+ *  head, so the operator can tell a conflict rebase from a gate command. */
+function repairFailureReason(
+  repairIntent: RepairIntentV1 & { readonly fingerprint: string },
+  outcome: string,
+): string {
+  return `${repairIntent.kind} repair at ${repairIntent.source_head_sha} ${outcome}`;
 }
 
 /** The stored trigger_json is authoritative; a missing or unparseable row is
