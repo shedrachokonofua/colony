@@ -78,8 +78,9 @@ export function deliveryStage(deliveryStatus) {
 }
 
 /**
- * The short label for one delivery status. Falls back to the raw state for a
- * stage this build predates, so a new backend stage still reads as something.
+ * The short label for one delivery status. A stage this build predates falls
+ * back to the caller's fallback, so a newer backend stage still reads as
+ * something rather than rendering blank.
  * @param {Record<string, any> | null | undefined} deliveryStatus
  * @param {string} [fallback]
  */
