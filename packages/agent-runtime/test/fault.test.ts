@@ -848,4 +848,28 @@ describe("fault emission from a real run", () => {
     expect(result.fault?.layer).toBe("model");
     expect(result.fault?.code).toBe("envelope_rejected");
   }, 120_000);
+
+  // With no candidate left, driveSession's protocol arm is the last
+  // classifier before finalization. An SDK lifecycle throw there used to
+  // fall back to {provider,connection_exhausted}; the spec wants the same
+  // harness fallback the continuation steer uses.
+  it("classifies the last candidate's non-provider throw as a harness fault", async () => {
+    const baseUrl = await startGateway((_request, response) => {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ error: { message: "model lifecycle broke" } }),
+      );
+    });
+    const result = await runnerOn(baseUrl, 60_000).run({
+      runId: "run-last-candidate-harness",
+      packet: { goal: "Review the change" },
+      environment: { role: "reviewer" },
+    });
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.fault).toEqual({
+      layer: "harness",
+      code: "sdk_lifecycle",
+      detail: "400 model lifecycle broke",
+    });
+  }, 120_000);
 });

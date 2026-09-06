@@ -953,8 +953,8 @@ export class PiBaseAgentRunner implements PiRunner {
                 runToken,
               ).slice(0, 160)}`;
               state.failureFault ??= classifyPromptFailure(errText) ?? {
-                layer: "provider",
-                code: "connection_exhausted",
+                layer: "harness",
+                code: classifyHarnessFailure(errText),
                 detail: errText.slice(0, 240),
               };
               return false;
