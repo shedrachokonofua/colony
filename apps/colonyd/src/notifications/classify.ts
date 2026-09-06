@@ -1,5 +1,5 @@
 import type { AuditRow, FaultLayer } from "@colony/core";
-import { parseFault } from "@colony/core";
+import { FAULT_LAYERS, parseFault } from "@colony/core";
 import type { NotificationEvent } from "./types.js";
 
 export interface ClassifyContext {
@@ -209,12 +209,5 @@ function runFinishedLayer(
 }
 
 function isFaultLayer(value: string): value is FaultLayer {
-  return (
-    value === "model" ||
-    value === "harness" ||
-    value === "sandbox" ||
-    value === "provider" ||
-    value === "colonyd" ||
-    value === "unknown"
-  );
+  return (FAULT_LAYERS as readonly string[]).includes(value);
 }
