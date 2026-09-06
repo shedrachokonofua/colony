@@ -1,5 +1,12 @@
-import { parseFault, type Run } from "@colony/core";
+import { parseFault, type Run, type Store } from "@colony/core";
 import { isQuotaDeferred } from "@colony/sandbox";
+import { z } from "zod";
+import { SERVICE_ACTOR } from "./context.js";
+
+const taskRetryResetDetail = z.object({
+  from: z.enum(["blocked", "canceled"]),
+  to: z.literal("queued"),
+});
 
 /**
  * Failure classes that are the platform's fault, not the agent's: the
@@ -13,6 +20,12 @@ export const INFRA_FAILURE =
 /** Classify historical errors when no authoritative structured fault exists. */
 export function isInfraError(error: string | null | undefined): boolean {
   return typeof error === "string" && INFRA_FAILURE.test(error);
+}
+/** Only a terminal run with this exact reason consumes a model timeout budget. */
+export function isTimeoutWithoutEnvelope(
+  run: Pick<Run, "status" | "error"> | null | undefined,
+): boolean {
+  return run?.status === "failed" && run.error === "timeout_without_envelope";
 }
 
 // Structured faults are authoritative when they identify a concrete layer.
@@ -62,4 +75,41 @@ export function consecutiveImplementationFailures(
     failures += 1;
   }
   return failures;
+}
+
+/** Find the latest explicit reset without losing it behind a noisy audit page. */
+export function retryResetAt(
+  store: Pick<Store, "listAudit">,
+  kind: "task" | "scope",
+  id: string,
+): string | undefined {
+  let beforeId: number | undefined;
+  for (;;) {
+    const page = store.listAudit({
+      ...(kind === "task" ? { task_id: id } : { scope_id: id }),
+      ...(beforeId === undefined ? {} : { before_id: beforeId }),
+      limit: 200,
+    });
+    for (let index = page.events.length - 1; index >= 0; index -= 1) {
+      const row = page.events[index]!;
+      if (kind === "scope" && row.action === "scope.unblocked") return row.at;
+      if (
+        kind !== "task" ||
+        row.action !== "task.transition" ||
+        row.actor === SERVICE_ACTOR
+      ) {
+        continue;
+      }
+      try {
+        const parsed = taskRetryResetDetail.safeParse(
+          JSON.parse(row.detail_json),
+        );
+        if (parsed.success) return row.at;
+      } catch {
+        // Malformed historical detail cannot establish a reset boundary.
+      }
+    }
+    if (!page.has_more || page.oldest_id === null) return undefined;
+    beforeId = page.oldest_id;
+  }
 }

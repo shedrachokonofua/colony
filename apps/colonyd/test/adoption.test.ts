@@ -9,6 +9,11 @@ import type { ExecEvent, ExecResult, SandboxHandle } from "@colony/sandbox";
 import { classifyRuns, adoptOrExpireRuns } from "../src/runs/adoption.js";
 import type { AdoptionDeps } from "../src/runs/adoption.js";
 import { consoleLogger } from "../src/logging.js";
+import {
+  abortRunAndWait,
+  awaitPendingRuns,
+  detachRun,
+} from "../src/runs/registry.js";
 
 const logger = consoleLogger("adoption-test");
 
@@ -32,7 +37,8 @@ beforeEach(() => {
   scopeId = scope.id;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await awaitPendingRuns();
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -101,13 +107,19 @@ function fakeConnect(mode: ProbeMode): AdoptionDeps["connect"] {
   };
 }
 
-function deps(mode: ProbeMode = "ok", probeTimeoutMs?: number): AdoptionDeps {
+function deps(
+  mode: ProbeMode = "ok",
+  probeTimeoutMs?: number,
+): AdoptionDeps & {
+  cancel: (run: Run) => Promise<void>;
+} {
   return {
     store,
     provider,
     logger,
     sessionsDir,
     connect: fakeConnect(mode),
+    cancel: async () => {},
     ...(probeTimeoutMs === undefined ? {} : { probeTimeoutMs }),
   };
 }
@@ -189,6 +201,99 @@ describe("classifyRuns gates", () => {
 });
 
 describe("adoptOrExpireRuns", () => {
+  it("admits without waiting for resumed work", async () => {
+    const run = seedRun();
+    const completion = Promise.withResolvers<void>();
+    const admission = adoptOrExpireRuns({
+      ...deps(),
+      resume: async () => {
+        await completion.promise;
+        store.finishRun(run.id, "succeeded");
+      },
+      resumeLeaseTtlMs: 60_000,
+    });
+    let admittedBeforeCompletion = false;
+    try {
+      admittedBeforeCompletion = await Promise.race([
+        admission.then(() => true),
+        Bun.sleep(250).then(() => false),
+      ]);
+    } finally {
+      completion.resolve();
+      await admission;
+      await awaitPendingRuns();
+    }
+    expect(admittedBeforeCompletion).toBe(true);
+    expect(store.getRun(run.id)?.status).toBe("succeeded");
+  });
+
+  it("cancels adopted execution and revokes its credential", async () => {
+    const run = seedRun();
+    const minted = await mintInto({ id: "repo-1", path: "so/adoption" }, "x");
+    store.setRunToken(run.id, minted.id);
+    const completion = Promise.withResolvers<void>();
+    await adoptOrExpireRuns({
+      ...deps(),
+      resume: async () => completion.promise,
+      cancel: async () => completion.resolve(),
+      resumeLeaseTtlMs: 60_000,
+    });
+    try {
+      expect(await abortRunAndWait(run.id)).toBe(true);
+      expect(store.getRun(run.id)?.status).toBe("canceled");
+      expect(
+        provider.listAccessTokens().some((token) => token.id === minted.id),
+      ).toBe(false);
+    } finally {
+      completion.resolve();
+      await awaitPendingRuns();
+    }
+  });
+
+  it("hands off without waiting or mutating the lease and credential", async () => {
+    const run = seedRun();
+    const minted = await mintInto({ id: "repo-1", path: "so/adoption" }, "x");
+    store.setRunToken(run.id, minted.id);
+    const started = Promise.withResolvers<void>();
+    const completion = Promise.withResolvers<void>();
+    const returned = Promise.withResolvers<void>();
+    await adoptOrExpireRuns({
+      ...deps(),
+      resume: async (_run, signal) => {
+        started.resolve();
+        try {
+          await completion.promise;
+          signal.throwIfAborted();
+        } finally {
+          returned.resolve();
+        }
+      },
+      resumeLeaseTtlMs: 30,
+    });
+    await started.promise;
+    store.heartbeatRun(run.id, 60_000);
+    const handoffLease = store.getRun(run.id)?.lease_expires_at;
+    try {
+      expect(detachRun(run.id)).toBe(true);
+      const drained = await Promise.race([
+        awaitPendingRuns().then(() => true),
+        Bun.sleep(250).then(() => false),
+      ]);
+      expect(drained).toBe(true);
+      await Bun.sleep(50);
+      expect(store.getRun(run.id)?.lease_expires_at).toBe(handoffLease);
+    } finally {
+      completion.resolve();
+      await returned.promise;
+      await Bun.sleep(0);
+    }
+    expect(store.getRun(run.id)?.status).toBe("running");
+    expect(store.getRun(run.id)?.error).toBeNull();
+    expect(
+      provider.listAccessTokens().some((token) => token.id === minted.id),
+    ).toBe(true);
+  });
+
   it("orphans take today's fail+revoke path", async () => {
     const run = seedRun({ kind: "validate" });
     const minted = await mintInto({ id: "repo-1", path: "so/adoption" }, "x");
@@ -224,6 +329,7 @@ describe("adoptOrExpireRuns", () => {
       },
       resumeLeaseTtlMs: 60_000,
     });
+    await awaitPendingRuns();
     expect(result.adoptable.map((r) => r.id)).toEqual([run.id]);
     expect(resumeCalls).toEqual([run.id]);
     expect(adoptedAtResume).toBe(1);
@@ -243,6 +349,7 @@ describe("adoptOrExpireRuns", () => {
       });
     await call();
     await call();
+    await awaitPendingRuns();
     expect(resumeCalls).toEqual([run.id]);
     expect(store.getRun(run.id)!.status).toBe("running");
   });
@@ -260,6 +367,7 @@ describe("adoptOrExpireRuns", () => {
       },
       resumeLeaseTtlMs: 60_000,
     });
+    await awaitPendingRuns();
     expect(resumeCalls).toEqual([run.id]);
   });
 
@@ -275,6 +383,7 @@ describe("adoptOrExpireRuns", () => {
       },
       resumeLeaseTtlMs: 60_000,
     });
+    await awaitPendingRuns();
 
     const after = store.getRun(run.id)!;
     expect(after.status).toBe("failed");

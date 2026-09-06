@@ -2,12 +2,14 @@ import {
   type ArchitectDecompositionV2,
   PlanReviewVerdictV1,
 } from "@colony/schemas";
+import { z } from "zod";
 import { formatPlanReviewFeedback } from "@colony/agent-runtime";
 import { createHash } from "node:crypto";
 import { context } from "@opentelemetry/api";
 import type { Scope } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
+import { isTimeoutWithoutEnvelope } from "../run-classification.js";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -15,6 +17,7 @@ import { buildPlanReviewPacket } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
+const planReviewSubject = z.object({ plan_hash: z.string() });
 
 /**
  * Review rounds a plan may go through before the scope blocks on a human.
@@ -27,6 +30,7 @@ export const MAX_PLAN_REVIEW_ROUNDS = 10;
 export interface PlanReviewRunOptions {
   readonly leaseTtlMs?: number;
   readonly startModelId?: string;
+  readonly excludedModelIds?: readonly string[];
 }
 
 /**
@@ -116,7 +120,9 @@ async function executePlanReview(
   options: PlanReviewRunOptions,
 ): Promise<void> {
   const planReviewer = ctx.agents.planReviewer!;
+  const planHashValue = planHash(scope.plan_json ?? JSON.stringify(plan));
   let minted: MintedToken | null = null;
+  let baseSha: string | undefined;
   try {
     minted = await mintRunToken(ctx.provider, repo, {
       name: `colony-plan-review-${scope.id}`,
@@ -126,8 +132,7 @@ async function executePlanReview(
     });
     if (minted?.token_id) ctx.store.setRunToken(runId, minted.token_id);
 
-    const baseSha = (await ctx.provider.commits.get(repo, scope.default_branch))
-      .sha;
+    baseSha = (await ctx.provider.commits.get(repo, scope.default_branch)).sha;
     ctx.store.setRunBaseSha(runId, baseSha);
     const project = scope.project_name
       ? (ctx.store.getProject(scope.project_name) ?? null)
@@ -150,17 +155,18 @@ async function executePlanReview(
         credentials: minted ? { token: minted.token } : undefined,
       },
     };
-
+    const startRunOptions = {
+      role: "plan_reviewer" as const,
+      runId,
+      startModelId: options.startModelId,
+      excludedModelIds: options.excludedModelIds,
+      ...(runSpan ? { traceContext: runSpan.spanContext } : {}),
+    };
     const metadata = await (runSpan
       ? context.with(runSpan.spanContext, () =>
-          planReviewer.startRun(full, {
-            role: "plan_reviewer",
-            runId,
-            startModelId: options.startModelId,
-            traceContext: runSpan.spanContext,
-          }),
+          planReviewer.startRun(full, startRunOptions),
         )
-      : planReviewer.startRun(full, { role: "plan_reviewer", runId }));
+      : planReviewer.startRun(full, startRunOptions));
     if (abortController.signal.aborted) {
       ctx.store.finishRun(runId, "canceled", { error: "aborted" });
       runSpan?.end("canceled", "aborted");
@@ -168,7 +174,14 @@ async function executePlanReview(
     }
     if (metadata.status !== "succeeded") {
       const reason = metadata.rejectionReason ?? metadata.status;
-      ctx.store.finishRun(runId, "failed", { error: reason });
+      finishPlanReviewFailure(
+        ctx,
+        scope,
+        runId,
+        planHashValue,
+        baseSha,
+        reason,
+      );
       runSpan?.end("failed", reason);
       return;
     }
@@ -177,10 +190,15 @@ async function executePlanReview(
       ? PlanReviewVerdictV1.safeParse(output.envelope)
       : null;
     if (!parsed || !parsed.success) {
-      ctx.store.finishRun(runId, "failed", {
-        error: "envelope invalid",
-        envelope_json: output ? JSON.stringify(output.envelope) : undefined,
-      });
+      finishPlanReviewFailure(
+        ctx,
+        scope,
+        runId,
+        planHashValue,
+        baseSha,
+        "envelope invalid",
+        output ? JSON.stringify(output.envelope) : undefined,
+      );
       runSpan?.end("failed", "envelope invalid");
       return;
     }
@@ -190,7 +208,7 @@ async function executePlanReview(
       evidence_json: JSON.stringify({
         verdict: verdict.verdict,
         round,
-        plan_hash: planHash(scope.plan_json ?? JSON.stringify(plan)),
+        plan_hash: planHashValue,
         findings: verdict.findings,
         inspected: verdict.inspected,
       }),
@@ -229,13 +247,8 @@ async function executePlanReview(
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    ctx.store.finishRun(runId, "failed", { error: reason });
+    finishPlanReviewFailure(ctx, scope, runId, planHashValue, baseSha, reason);
     runSpan?.end("failed", reason);
-    ctx.store.audit(SERVICE_ACTOR, "run.failed", {
-      scope_id: scope.id,
-      run_id: runId,
-      detail: { reason, kind: "plan_review" },
-    });
   } finally {
     if (minted) {
       try {
@@ -250,10 +263,99 @@ async function executePlanReview(
   }
 }
 
+function finishPlanReviewFailure(
+  ctx: ColonydContext,
+  scope: Scope,
+  runId: string,
+  planHashValue: string,
+  baseSha: string | undefined,
+  error: string,
+  envelopeJson?: string,
+): void {
+  ctx.store.finishRun(runId, "failed", {
+    error,
+    envelope_json: envelopeJson,
+    evidence_json: JSON.stringify({
+      plan_hash: planHashValue,
+      ...(baseSha ? { base_sha: baseSha } : {}),
+    }),
+  });
+  ctx.store.audit(SERVICE_ACTOR, "run.failed", {
+    scope_id: scope.id,
+    run_id: runId,
+    detail: { reason: error, kind: "plan_review" },
+  });
+}
+
 export function planHash(planJson: string): string {
   return createHash("sha256").update(planJson).digest("hex");
 }
 
+/**
+ * Return model ids whose timeout failures belong to the current proposal and
+ * exact plan content. Runs before the proposal run (or before an operator
+ * reset) cannot consume this proposal's timeout budget.
+ */
+export function timedOutPlanReviewModelIds(
+  ctx: ColonydContext,
+  scopeId: string,
+  planJson: string,
+  proposedByRunId: string,
+  since?: string,
+): readonly string[] {
+  const runs = ctx.store.runsForScope(scopeId);
+  const proposedAt = runs.findIndex((run) => run.id === proposedByRunId);
+  if (proposedAt < 0) return [];
+  const hash = planHash(planJson);
+  const marker = since ?? planReviewResetAt(ctx, scopeId);
+  const ids = new Set<string>();
+  for (const run of runs.slice(proposedAt + 1)) {
+    if (
+      run.kind !== "plan_review" ||
+      !isTimeoutWithoutEnvelope(run) ||
+      !run.model_id ||
+      (marker !== undefined && run.started_at <= marker) ||
+      !run.evidence_json
+    )
+      continue;
+    try {
+      const evidence = planReviewSubject.safeParse(
+        JSON.parse(run.evidence_json),
+      );
+      if (evidence.success && evidence.data.plan_hash === hash) {
+        ids.add(run.model_id);
+      }
+    } catch {
+      // An unreadable failure row cannot establish the current subject.
+    }
+  }
+  return [...ids];
+}
+
+function planReviewResetAt(
+  ctx: ColonydContext,
+  scopeId: string,
+): string | undefined {
+  let beforeId: number | undefined;
+  for (;;) {
+    const page = ctx.store.listAudit({
+      scope_id: scopeId,
+      ...(beforeId === undefined ? {} : { before_id: beforeId }),
+      limit: 200,
+    });
+    for (let index = page.events.length - 1; index >= 0; index -= 1) {
+      const action = page.events[index]!.action;
+      if (
+        action === "scope.plan_review_continued" ||
+        action === "scope.plan_review_replanned" ||
+        action === "scope.unblocked"
+      )
+        return page.events[index]!.at;
+    }
+    if (!page.has_more || page.oldest_id === null) return undefined;
+    beforeId = page.oldest_id;
+  }
+}
 /**
  * The verdict recorded for exactly this plan: same content (hash) and
  * reviewed after the architect run that proposed it. "After" is the store's
