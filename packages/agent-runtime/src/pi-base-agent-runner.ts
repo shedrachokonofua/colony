@@ -1,6 +1,7 @@
 import { rmSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import type { Fault } from "@colony/core";
 import {
   ModelRegistry,
   SessionManager,
@@ -327,10 +328,16 @@ export class PiBaseAgentRunner implements PiRunner {
           this.options,
         );
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         return {
           sandboxId,
           envelope: { __unfinished: true },
-          reason: err instanceof Error ? err.message : String(err),
+          reason: msg,
+          fault: {
+            layer: "sandbox",
+            code: classifyProvisionFailure(msg),
+            detail: msg.slice(0, 240),
+          },
         };
       }
     }
@@ -535,8 +542,9 @@ export class PiBaseAgentRunner implements PiRunner {
         runId,
         this.options.runTimeoutMs,
         () => void abortRun(),
-        () => {
+        (fault) => {
           state.failureReason ??= "timeout_without_envelope";
+          state.failureFault ??= fault;
           state.timeoutTriggered = true;
         },
       );
@@ -554,10 +562,30 @@ export class PiBaseAgentRunner implements PiRunner {
         // operate on the scratch dir, not on the pre-restart path.
         handle = resumed.handle;
       } else if (this.options.engine) {
-        handle = await this.options.engine.provision(
-          buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
-          cwd,
-        );
+        // Caught, never rethrown: run() has no catch, so a k8s throw from
+        // here (a CR that never became ready, a CR that failed, a refused
+        // RBAC create) would reach the adapter's finish wrapper and come
+        // back {unknown,unknown}, hiding the sandbox layer at fault. Same
+        // contract as the workspace provision catch above, which only ever
+        // sees local clone errors and never these messages.
+        try {
+          handle = await this.options.engine.provision(
+            buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
+            cwd,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            sandboxId,
+            envelope: { __unfinished: true },
+            reason: msg,
+            fault: {
+              layer: "sandbox",
+              code: classifyProvisionFailure(msg),
+              detail: msg.slice(0, 240),
+            },
+          };
+        }
         sandboxId = handle.sandboxId;
       }
       if (handle) {
@@ -574,16 +602,27 @@ export class PiBaseAgentRunner implements PiRunner {
           logger: this.options.logger,
         });
 
-        workspaceProbe = installWorkspaceProbe(handle, {
-          intervalMs: this.options.workspaceProbeIntervalMs,
-          logger: this.options.logger,
-          runId,
-          sandboxId,
-          onLost: () => {
-            state.failureReason ??= WORKSPACE_LOST_REASON;
-            void abortRun();
+        workspaceProbe = installWorkspaceProbe(
+          handle,
+          {
+            intervalMs: this.options.workspaceProbeIntervalMs,
+            logger: this.options.logger,
+            runId,
+            sandboxId,
+            onLost: () => {
+              state.failureReason ??= WORKSPACE_LOST_REASON;
+              state.failureFault ??= {
+                layer: "sandbox",
+                code: "workspace_lost",
+                detail: "workspace probe reported lost",
+              };
+              void abortRun();
+            },
           },
-        });
+          (fault) => {
+            state.failureFault ??= fault;
+          },
+        );
         // Runs-table write-back, deliberately AFTER provision: a minted id
         // reported before the sandbox exists would persist an identity no
         // engine re-attaches by, leaving the run adoptable only on paper.
@@ -637,115 +676,133 @@ export class PiBaseAgentRunner implements PiRunner {
        * createAgentSession. A resumed agent is registered identically to a
        * fresh one, so the two paths cannot drift apart.
        */
-      const built = await buildPiSession(
-        {
-          runId,
-          sandboxId,
-          cwd,
-          packet: request.packet,
-          environment: request.environment,
-          ...(traceContext ? { traceContext } : {}),
-          sessionManager:
-            resumed?.sessionManager ??
-            (await createFileSessionManager(
-              this.options.sessionsDir ?? cwd,
-              runId,
-              cwd,
-            )),
-          submitTool,
-          customTools,
-          toolNames,
-          primaryModel,
-          scopedModels: resolvedModels,
-          authStorage,
-          modelRegistry,
-          broker,
-          steering,
-          sandboxTools,
-          systemPrompt: this.profile.systemPrompt(request.packet),
-          // Staged roles bring their own file-backed first session; this one
-          // is never prompted and must not own the transcript path.
-          journal: pipeline.length > 0 ? "transient" : "run",
-          role: this.profile.role,
-          ...(resolvedAdvisorModel !== undefined
-            ? { advisorModel: resolvedAdvisorModel }
-            : {}),
-          ...(this.options.advisorModel !== undefined
-            ? { advisorSpec: this.options.advisorModel }
-            : {}),
-        },
-        {
-          ...(this.options.webTools ? { webTools: this.options.webTools } : {}),
-          ...(this.options.thinkingLevel
-            ? { thinkingLevel: this.options.thinkingLevel }
-            : {}),
-          defaultThinkingLevel: this.profile.defaultThinkingLevel,
-          maxTurns:
-            this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
-          ...(this.options.runTimeoutMs
-            ? { runTimeoutMs: this.options.runTimeoutMs }
-            : {}),
-          ...(this.options.logger ? { logger: this.options.logger } : {}),
-          ...(this.options.auditSink
-            ? { auditSink: this.options.auditSink }
-            : {}),
-          ...(this.options.logToolArgs
-            ? { logToolArgs: this.options.logToolArgs }
-            : {}),
-          ...(runToken ? { runToken } : {}),
-          ...(this.options.scratchDir !== undefined
-            ? { scratchDir: this.options.scratchDir }
-            : {}),
-        },
-        {
-          state,
-          requireRepositoryInspection:
-            this.profile.requireRepositoryInspection === true,
-          ...(this.profile.verifyPushedHead
-            ? { verifyPushedHead: this.profile.verifyPushedHead }
-            : {}),
-          ...(handle ? { handle } : {}),
-          ...(rejectedRepairHead !== undefined
-            ? {
-                repairRejection: {
-                  rejectedHead: rejectedRepairHead,
-                  onUnchanged: () => {
-                    // Two unchanged submissions is a repair that never
-                    // happened: fall over to the next candidate with
-                    // capacity, or end the run when none is left.
-                    unchangedRepairSubmissions += 1;
-                    if (unchangedRepairSubmissions < 2)
-                      return { action: "reject" as const };
-                    const nextCandidate = nextCandidateIndex(index);
-                    if (nextCandidate === null)
-                      return { action: "exhausted" as const };
-                    const from = resolvedModels[index]?.id;
-                    index = nextCandidate;
-                    unchangedRepairSubmissions = 0;
-                    this.options.logger?.warn?.(
-                      {
-                        runId,
-                        from,
-                        to: resolvedModels[index]!.id,
-                        error: "repair_no_change",
-                      },
-                      "pi_model_fallback",
-                    );
-                    return {
-                      action: "failover" as const,
-                      model: resolvedModels[index]!,
-                    };
+      let built: Awaited<ReturnType<typeof buildPiSession>>;
+      try {
+        built = await buildPiSession(
+          {
+            runId,
+            sandboxId,
+            cwd,
+            packet: request.packet,
+            environment: request.environment,
+            ...(traceContext ? { traceContext } : {}),
+            sessionManager:
+              resumed?.sessionManager ??
+              (await createFileSessionManager(
+                this.options.sessionsDir ?? cwd,
+                runId,
+                cwd,
+              )),
+            submitTool,
+            customTools,
+            toolNames,
+            primaryModel,
+            scopedModels: resolvedModels,
+            authStorage,
+            modelRegistry,
+            broker,
+            steering,
+            sandboxTools,
+            systemPrompt: this.profile.systemPrompt(request.packet),
+            // Staged roles bring their own file-backed first session; this one
+            // is never prompted and must not own the transcript path.
+            journal: pipeline.length > 0 ? "transient" : "run",
+            role: this.profile.role,
+            ...(resolvedAdvisorModel !== undefined
+              ? { advisorModel: resolvedAdvisorModel }
+              : {}),
+            ...(this.options.advisorModel !== undefined
+              ? { advisorSpec: this.options.advisorModel }
+              : {}),
+          },
+          {
+            ...(this.options.webTools
+              ? { webTools: this.options.webTools }
+              : {}),
+            ...(this.options.thinkingLevel
+              ? { thinkingLevel: this.options.thinkingLevel }
+              : {}),
+            defaultThinkingLevel: this.profile.defaultThinkingLevel,
+            maxTurns:
+              this.options.maxTurns ?? this.profile.defaultLimits.maxTurns,
+            ...(this.options.runTimeoutMs
+              ? { runTimeoutMs: this.options.runTimeoutMs }
+              : {}),
+            ...(this.options.logger ? { logger: this.options.logger } : {}),
+            ...(this.options.auditSink
+              ? { auditSink: this.options.auditSink }
+              : {}),
+            ...(this.options.logToolArgs
+              ? { logToolArgs: this.options.logToolArgs }
+              : {}),
+            ...(runToken ? { runToken } : {}),
+            ...(this.options.scratchDir !== undefined
+              ? { scratchDir: this.options.scratchDir }
+              : {}),
+          },
+          {
+            state,
+            requireRepositoryInspection:
+              this.profile.requireRepositoryInspection === true,
+            ...(this.profile.verifyPushedHead
+              ? { verifyPushedHead: this.profile.verifyPushedHead }
+              : {}),
+            ...(handle ? { handle } : {}),
+            ...(rejectedRepairHead !== undefined
+              ? {
+                  repairRejection: {
+                    rejectedHead: rejectedRepairHead,
+                    onUnchanged: () => {
+                      // Two unchanged submissions is a repair that never
+                      // happened: fall over to the next candidate with
+                      // capacity, or end the run when none is left.
+                      unchangedRepairSubmissions += 1;
+                      if (unchangedRepairSubmissions < 2)
+                        return { action: "reject" as const };
+                      const nextCandidate = nextCandidateIndex(index);
+                      if (nextCandidate === null)
+                        return { action: "exhausted" as const };
+                      const from = resolvedModels[index]?.id;
+                      index = nextCandidate;
+                      unchangedRepairSubmissions = 0;
+                      this.options.logger?.warn?.(
+                        {
+                          runId,
+                          from,
+                          to: resolvedModels[index]!.id,
+                          error: "repair_no_change",
+                        },
+                        "pi_model_fallback",
+                      );
+                      return {
+                        action: "failover" as const,
+                        model: resolvedModels[index]!,
+                      };
+                    },
                   },
-                },
-              }
-            : {}),
-          abortRun,
-          childSessions,
-          submissionCaptured,
-          submitNameOf: () => activeStage?.submitName ?? submitTool.name,
-          stageNameOf: () => activeStage?.name,
-        },
-      );
+                }
+              : {}),
+            abortRun,
+            childSessions,
+            submissionCaptured,
+            submitNameOf: () => activeStage?.submitName ?? submitTool.name,
+            stageNameOf: () => activeStage?.name,
+          },
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const code = classifyHarnessFailure(msg);
+        // Returned, never rethrown: run() has no catch, so a throw here
+        // would reach the adapter's finish wrapper and come back as
+        // {unknown,unknown}, losing the harness classification the run
+        // was actually decided on.
+        return {
+          sandboxId,
+          envelope: { __unfinished: true },
+          reason: code,
+          fault: { layer: "harness", code, detail: msg.slice(0, 240) },
+        };
+      }
       session = built.session;
       removeAdvisorDir = built.removeAdvisorDir;
       if (pipeline.length === 0 && !resumed) {
@@ -858,9 +915,20 @@ export class PiBaseAgentRunner implements PiRunner {
               if (state.connectionErrors < MODEL_CONNECTION_ERROR_LIMIT)
                 return true;
               if (!next) {
-                state.failureReason = `provider_connection_failure: ${(
-                  state.lastConnectionError ?? errText
-                ).slice(0, 160)}`;
+                // CONNECTION_ERROR_RE already matches the 5xx and gateway
+                // texts, so the exhausted-leg code is decided by the same
+                // table the protocol path uses: an exhausted 502/503/529 is
+                // {provider,http_5xx}, not a generic connection_exhausted.
+                const lastError = state.lastConnectionError ?? errText;
+                state.failureReason = `provider_connection_failure: ${lastError.slice(
+                  0,
+                  160,
+                )}`;
+                state.failureFault ??= classifyPromptFailure(lastError) ?? {
+                  layer: "provider",
+                  code: "connection_exhausted",
+                  detail: lastError.slice(0, 240),
+                };
                 return false;
               }
               this.options.logger?.warn?.(
@@ -884,6 +952,11 @@ export class PiBaseAgentRunner implements PiRunner {
                 errText.replace(/\s+/g, " ").trim(),
                 runToken,
               ).slice(0, 160)}`;
+              state.failureFault ??= classifyPromptFailure(errText) ?? {
+                layer: "harness",
+                code: classifyHarnessFailure(errText),
+                detail: errText.slice(0, 240),
+              };
               return false;
             }
             this.options.logger?.warn?.(
@@ -1218,6 +1291,22 @@ export class PiBaseAgentRunner implements PiRunner {
                   state.submissionRejectionReason !== undefined
                     ? `submission_rejected: ${state.submissionRejectionReason}`
                     : `architect_stage_${stage.name}_no_submission`;
+                // A max_turns guard fault already on state is more precise
+                // than a stage-shaped no-submission: keep it. With no such
+                // fault and no rejection, the stage simply ended without an
+                // envelope, which is the no-submission contract - max_turns
+                // would claim a guard nobody ever tripped.
+                state.failureFault ??= {
+                  layer: "model",
+                  code:
+                    state.lastSubmissionFailure?.kind === "invalid"
+                      ? "envelope_invalid"
+                      : state.lastSubmissionFailure !== undefined ||
+                          state.submissionRejectionReason !== undefined
+                        ? "envelope_rejected"
+                        : "finalize_no_submission",
+                  detail: state.failureReason.slice(0, 240),
+                };
               }
               return;
             }
@@ -1302,9 +1391,17 @@ export class PiBaseAgentRunner implements PiRunner {
             const next =
               nextIndex === null ? undefined : resolvedModels[nextIndex];
             if (!next || nextIndex === null) {
-              state.failureReason = `provider_connection_failure: ${(
-                state.lastConnectionError ?? "repeated connection errors"
-              ).slice(0, 160)}`;
+              const lastError =
+                state.lastConnectionError ?? "repeated connection errors";
+              state.failureReason = `provider_connection_failure: ${lastError.slice(
+                0,
+                160,
+              )}`;
+              state.failureFault ??= classifyPromptFailure(lastError) ?? {
+                layer: "provider",
+                code: "connection_exhausted",
+                detail: lastError.slice(0, 240),
+              };
               break;
             }
             index = nextIndex;
@@ -1373,6 +1470,18 @@ export class PiBaseAgentRunner implements PiRunner {
               );
             } else {
               state.failureReason = "zero_output_stall";
+              const quotaError = lastAssistantQuotaError();
+              state.failureFault ??= quotaError
+                ? {
+                    layer: "provider",
+                    code: "quota_exhausted",
+                    detail: quotaError.slice(0, 240),
+                  }
+                : {
+                    layer: "provider",
+                    code: "connection_exhausted",
+                    detail: "zero_output_stall",
+                  };
               break;
             }
             prompt =
@@ -1534,22 +1643,26 @@ export class PiBaseAgentRunner implements PiRunner {
 
                 if (promptError !== undefined) {
                   if (state.cancellationTriggered) throw promptError;
-                  // A thrown finalizer prompt is a failed leg, not a dead
-                  // run: fail over like the exhaustion exit below. With no
-                  // candidate left the error propagates so the run keeps
-                  // its provider-failure classification (driveSession
-                  // parity).
-                  if (
-                    !(await advanceAfterFinalizer(
-                      currentCandidate.id,
-                      promptError instanceof Error
-                        ? promptError.message
-                        : String(promptError),
-                    ))
-                  ) {
-                    throw promptError;
-                  }
-                  prompt = MODEL_FAILED_PROMPT;
+                  // Classified here, at detection: the throw is the last
+                  // thing to happen before finalization, and the run has no
+                  // catch between here and executeRun's return. Stop the
+                  // loop instead of throwing - a throw would strand the run
+                  // with no Fault and let the adapter report
+                  // {unknown,unknown}.
+                  const errText =
+                    promptError instanceof Error
+                      ? promptError.message
+                      : String(promptError);
+                  state.failureReason ??= `prompt_failure: ${sanitizeSecret(
+                    errText.replace(/\s+/g, " ").trim(),
+                    runToken,
+                  ).slice(0, 160)}`;
+                  state.failureFault ??= classifyPromptFailure(errText) ?? {
+                    layer: "harness",
+                    code: classifyHarnessFailure(errText),
+                    detail: errText.slice(0, 240),
+                  };
+                  break;
                 } else if (
                   state.timeoutTriggered ||
                   state.cancellationTriggered
@@ -1632,11 +1745,22 @@ export class PiBaseAgentRunner implements PiRunner {
             ) {
               continue;
             }
+            const errText = err instanceof Error ? err.message : String(err);
+            // Classified here, at detection: finalization sees no envelope and
+            // no failureReason, so a throw left unclassified here comes back
+            // {model, finalize_no_submission} - a provider/harness failure
+            // reported as the model never submitting.
+            state.failureReason ??= `prompt_failure: ${sanitizeSecret(
+              errText.replace(/\s+/g, " ").trim(),
+              runToken,
+            ).slice(0, 160)}`;
+            state.failureFault ??= classifyPromptFailure(errText) ?? {
+              layer: "harness",
+              code: classifyHarnessFailure(errText),
+              detail: errText.slice(0, 240),
+            };
             this.options.logger?.warn?.(
-              {
-                runId,
-                error: err instanceof Error ? err.message : String(err),
-              },
+              { runId, error: errText },
               "pi_run_continuation_failed",
             );
             break;
@@ -1646,18 +1770,80 @@ export class PiBaseAgentRunner implements PiRunner {
         unsubscribeGuards();
       }
 
+      if (capturedEnvelope === undefined) {
+        // The wall timer arms {model, wall_timeout} as the default because it
+        // fires without evidence; this is the only place that can see whether
+        // the model worked before the wall closed.
+        if (
+          state.timeoutTriggered &&
+          state.failureFault?.code === "wall_timeout" &&
+          evidence.summary().tool_calls > 0
+        ) {
+          state.failureFault = {
+            layer: "model",
+            code: "timeout_no_envelope",
+            detail:
+              "run timed out after tool activity without submitting an envelope",
+          };
+        }
+      }
+
       if (capturedEnvelope === undefined && state.failureReason === undefined) {
         if (state.submissionRejectionReason !== undefined) {
           state.failureReason = `submission_rejected: ${state.submissionRejectionReason}`;
+          state.failureFault ??= {
+            layer: "model",
+            code:
+              state.lastSubmissionFailure?.kind === "invalid"
+                ? "envelope_invalid"
+                : "envelope_rejected",
+            detail: (
+              state.lastSubmissionFailure?.message ??
+              state.submissionRejectionReason
+            ).slice(0, 240),
+          };
         } else if (
           this.profile.requireRepositoryInspection &&
           !state.repositoryInspected
         ) {
           state.failureReason = "repository_inspection_required";
+          state.failureFault ??= {
+            layer: "model",
+            code: "fabricated_facts",
+            detail: "repository inspection required before submission",
+          };
         } else {
           // A clean run that never invoked the terminal tool is distinct
           // from a provider/protocol failure or a rejected submission.
           state.failureReason = "finalize_no_submission";
+          if (state.failureFault === undefined) {
+            if (state.lastSubmissionFailure !== undefined) {
+              // The model's last attempt at the envelope decided the run: an
+              // envelope the harness refused for its shape is invalid, one it
+              // accepted and the submit tool turned down is rejected.
+              state.failureFault = {
+                layer: "model",
+                code:
+                  state.lastSubmissionFailure.kind === "invalid"
+                    ? "envelope_invalid"
+                    : "envelope_rejected",
+                detail: state.lastSubmissionFailure.message.slice(0, 240),
+              };
+            } else if (state.lastToolArgInvalid !== undefined) {
+              state.failureFault = {
+                layer: "harness",
+                code: "tool_arg_invalid",
+                detail: state.lastToolArgInvalid,
+              };
+            } else {
+              state.failureFault = {
+                layer: "model",
+                code: "finalize_no_submission",
+                detail:
+                  "agent finished without calling terminal submission tool",
+              };
+            }
+          }
         }
       }
     } finally {
@@ -1764,12 +1950,83 @@ export class PiBaseAgentRunner implements PiRunner {
         capturedEnvelope === undefined
           ? (state.failureReason ?? "finalize_no_submission")
           : undefined,
+      fault: capturedEnvelope === undefined ? state.failureFault : undefined,
     };
   }
 
   async cancel(runId: string): Promise<void> {
     await this.activeRuns.get(runId)?.abort();
   }
+}
+
+/**
+ * The sandbox fault code for a workspace that could not be provisioned.
+ *
+ * Only the codes the attempt-budget consumer expects are legal here: the
+ * run's fault is persisted and read back by that consumer. EROFS is a
+ * read-only filesystem rather than a vanished one, so it shares the EACCES
+ * code - the one filesystem code in that set. A failure matching none of
+ * these signatures (a refused clone, a missing token) never proved the
+ * workspace existed, so it is the sandbox we were never given, not the
+ * loss the probe is reserved to detect.
+ */
+export function classifyProvisionFailure(message: string): Fault["code"] {
+  return message.includes("EACCES") || message.includes("EROFS")
+    ? "workspace_eacces"
+    : message.includes("exec transport") || message.includes("exec-transport")
+      ? "exec_transport"
+      : "sandbox_cr_missing";
+}
+
+/**
+ * The provider fault for a prompt that threw, or undefined when the text
+ * names no provider condition - an SDK/harness fault outlives finalization
+ * as the run's own opaque error rather than wearing a provider code it
+ * never earned.
+ *
+ * Shared by every path that sees a prompt throw: the connection-exhaustion
+ * arm and the protocol arm of `driveSession`, and the continuation steer.
+ * CONNECTION_ERROR_RE matches 5xx and gateway texts too, so the arms that
+ * test it must come through here as well - classifying them on their own
+ * would strand exhausted 502/503/529 legs on the generic code while the
+ * unreachable arms below held the spec's codes.
+ */
+/**
+ * The harness fault code for a throw out of session construction, or out of
+ * a prompt that names no provider condition - an SDK lifecycle break and a
+ * replaced session-init are the harness's own failures, and anything else
+ * is plumbing.
+ */
+export function classifyHarnessFailure(message: string): Fault["code"] {
+  return /session initialization/i.test(message) ||
+    /replaced during session/i.test(message)
+    ? "session_init_replaced"
+    : /lifecycle/i.test(message)
+      ? "sdk_lifecycle"
+      : "plumbing_error";
+}
+
+export function classifyPromptFailure(message: string): Fault | undefined {
+  const code = /\b429\b/.test(message)
+    ? "http_429"
+    : /\b50[0234]\b|\b529\b/.test(message)
+      ? "http_5xx"
+      : /quota|insufficient balance|no deployments available/i.test(message)
+        ? "quota_exhausted"
+        : /dead leg/i.test(message)
+          ? "dead_leg_exhausted"
+          : /bad gateway|gateway timeout/i.test(message)
+            ? "gateway_error"
+            : /GitLab .* timed out|\bETIMEDOUT\b/i.test(message)
+              ? "provider_timeout"
+              : /ECONNRESET|ECONNREFUSED|EAI_AGAIN|fetch failed|socket hang up|service unavailable|upstream|no capacity|network error|stream stall|connection\.|timed? ?out|Request timed out/i.test(
+                    message,
+                  )
+                ? "connection_exhausted"
+                : undefined;
+  return code === undefined
+    ? undefined
+    : { layer: "provider", code, detail: message.slice(0, 240) };
 }
 
 function provisionProfileWorkspace(
