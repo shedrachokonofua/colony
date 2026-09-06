@@ -1053,10 +1053,6 @@ describe("colonyd fake end-to-end loop", () => {
     // merge happens, task reaches merged.
     handle.ctx.store.clearRetryDelay(taskA.id);
     await driveToDone(scopeId);
-    console.log(
-      "GATE_BLOCKED:",
-      handle.ctx.store.getTask(taskA.id)!.blocked_reason,
-    );
     a = handle.ctx.store.getTask(taskA.id)!;
     expect(a.state).toBe("merged");
     const passedGate = handle.ctx.store
