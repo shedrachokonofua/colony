@@ -19,8 +19,6 @@ import { createRunTicker, formatDuration, runDurationMs } from "../duration.js";
 import { KIND_LABEL } from "../kind-label.js";
 import { deliveryStage, deliveryStageLabel } from "../delivery-stage.js";
 
-/** @typedef {import("../delivery-stage.js").DeliveryStatus} DeliveryStatus */
-
 /**
  * The running run for one task, for the node's live label.
  * @param {import("../dag.js").DagDetail | null | undefined} detail

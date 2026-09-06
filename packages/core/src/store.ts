@@ -2268,10 +2268,14 @@ export class Store {
    * store-only, so a read endpoint never touches the provider.
    *
    * `pipeline` is populated ONLY when the observation's head_sha is the
-   * task's current MR head (the provider's head when known, else the newest
-   * succeeded implement run's pushed head). A stale observation is dropped
-   * rather than shown, because a pipeline at another head proves nothing
-   * about this one.
+   * task's current MR head. The store holds no provider fact, so the MR head
+   * is the newest succeeded implement run's pushed head; an observation at
+   * any other head is dropped rather than shown, because a pipeline at
+   * another head proves nothing about this one.
+   *
+   * `providerHeadLagging` is always false here: detecting the lag needs the
+   * provider's own head, and a read path performs no provider I/O. The
+   * scheduler owns that fact and simply does not dispatch while it holds.
    */
   deliveryInputsFor(taskId: TaskId | string): DeliveryInputs | null {
     const task = this.getTask(taskId);
