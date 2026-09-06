@@ -563,13 +563,7 @@ async function advanceMrOpenTasks(
     // A conflicted MR cannot merge; reviewing or gating it wastes a full
     // run. Dispatch one bounded rebase repair per (task, source, target).
     if (mr.has_conflicts === true) {
-      await repairAfterMergeConflict(
-        ctx,
-        scope,
-        task,
-        mr,
-        providerHeadLagging,
-      );
+      await repairAfterMergeConflict(ctx, scope, task, mr, providerHeadLagging);
       continue;
     }
 
