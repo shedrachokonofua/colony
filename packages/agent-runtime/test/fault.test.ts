@@ -663,6 +663,46 @@ function runnerOn(baseUrl: string, runTimeoutMs: number): PiBaseAgentRunner {
 const HEAD_SHA = "a".repeat(40);
 
 /**
+ * The SDK folds every HTTP and stream failure into an error turn, so the
+ * finalizer's catch is only reachable through a fault the harness raises
+ * before the request goes out: a profile whose finalizer prompt throws.
+ */
+function runnerWithThrowingFinalizer(baseUrl: string): PiBaseAgentRunner {
+  const scratchDir = mkdtempSync(join(tmpdir(), "colony-fault-finalizer-"));
+  scratchDirs.push(scratchDir);
+  return new PiBaseAgentRunner(
+    {
+      ...REVIEWER_ROLE_PROFILE,
+      workspaceMode: "scratch",
+      requireRepositoryInspection: false,
+      defaultTools: [],
+      finalizerPrompt: () => {
+        throw new Error("finalizer prompt assembly exploded");
+      },
+    },
+    {
+      model: {
+        id: "primary",
+        name: "primary",
+        provider: "test-gateway",
+        api: "openai-completions",
+        baseUrl,
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      },
+      scratchDir,
+      broker: { resolve: () => "test-key" },
+      connectionRetryBackoffMs: 1,
+      jiggleBackoffMs: 1,
+      runTimeoutMs: 120_000,
+    },
+  );
+}
+
+/**
  * A runner whose sandbox engine refuses to provision, the way a k8s engine
  * does when the Sandbox CR never becomes ready or its create is refused.
  * The workspace provision succeeds here, so this is the engine path only.
@@ -871,5 +911,38 @@ describe("fault emission from a real run", () => {
       code: "sdk_lifecycle",
       detail: "400 model lifecycle broke",
     });
+  }, 120_000);
+
+  // The forced finalizer prompt is the last thing to run before
+  // finalization, and nothing between it and executeRun's return catches.
+  // Its throw used to escape with no Fault on state, so the adapter's
+  // finish wrapper reported {unknown,unknown} and the run kept no
+  // classification at all.
+  it("classifies a thrown finalizer prompt instead of reporting {unknown, unknown}", async () => {
+    const baseUrl = await startGateway((_request, response) => {
+      respondText(response, "primary");
+    });
+    // Through the adapter: {unknown,unknown} is exactly what its finish
+    // wrapper records for a throw that escapes the runner.
+    const adapter = new PiAgentRuntimeAdapter(
+      runnerWithThrowingFinalizer(baseUrl),
+    );
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    let meta;
+    try {
+      meta = await adapter.startRun(
+        { goal: "Review the change" },
+        { role: "reviewer", runId: "run-finalizer-throw" },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(meta.status).toBe("failed");
+    expect(meta.fault?.layer).not.toBe("unknown");
+    expect(meta.fault?.code).not.toBe("unknown");
+    expect(spy).not.toHaveBeenCalledWith(
+      "[fault] unknown classification",
+      expect.anything(),
+    );
   }, 120_000);
 });
