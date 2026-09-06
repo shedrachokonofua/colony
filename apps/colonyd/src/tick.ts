@@ -895,11 +895,6 @@ async function repairAfterMergeConflict(
   });
 }
 
-/**
- * Read the provider pipeline for the MR head. This helper intentionally has
- * no state mutation: the caller must revalidate the MR task after this
- * awaited provider operation before recording a repair or blocking it.
- */
 /** The persisted pipeline statuses; anything else the provider reports is
  *  not a fact this schema can store, so it is not recorded. */
 const PIPELINE_STATUSES: readonly string[] = [
@@ -933,6 +928,11 @@ function recordPipelineObservation(
   });
 }
 
+/**
+ * Read the provider pipeline for the MR head. This helper records the
+ * observation it fetched; the caller must revalidate the MR task after this
+ * awaited provider operation before recording a repair or blocking it.
+ */
 async function pipelineGate(
   ctx: ColonydContext,
   scope: Scope,

@@ -2262,7 +2262,6 @@ export class Store {
       .all(named({ afterId: afterId ?? 0, limit })) as AuditRow[];
   }
 
-  /** Read a `meta` row; null when the key is absent. */
   /**
    * The full derivation input for one task's delivery status: runs, gate,
    * reviews, repair intents, approvals, and the persisted pipeline facts —
@@ -2312,6 +2311,7 @@ export class Store {
     };
   }
 
+  /** Read a `meta` row; null when the key is absent. */
   getMetaValue(key: string): string | null {
     const row = this.db
       .prepare(`SELECT value FROM meta WHERE key = ?`)
