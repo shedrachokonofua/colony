@@ -174,9 +174,14 @@ provisioning failure) and cancellations do not consume it. Structured fault
 classification takes precedence over legacy error-message matching.
 
 Every state change is reconciled by a single-flight tick that reads facts
-back from the Git host. A restarted `colonyd` marks orphaned runs failed with
-`process_restart`, revokes their tokens, and retries their work at no attempt
-cost. Expired gates and gate infrastructure failures keep the task
+back from the Git host. On restart, eligible architect, implementer, and
+reviewer runs reconnect to their surviving sandbox and session journal.
+Claims precede sandbox cleanup; resumed execution is tracked in the
+background, so HTTP startup does not wait for it to finish. A bounded drain
+releases the adoption claim and extends the lease, allowing another daemon
+to continue the same run. Orphaned runs fail with `process_restart`, have
+their tokens revoked, and retry at no attempt cost.
+Expired gates and gate infrastructure failures keep the task
 `mr_open` and retry the gate after backoff, rather than sending unchanged
 code to an implementer. Pipeline lookup errors cannot admit review or merge.
 Failed or canceled implementations inspect the remote task branch before
@@ -248,7 +253,7 @@ agents:
     fallback_models: [glm-5.2]
 ```
 
-Fallbacks work at two points:
+Fallbacks work at three points:
 
 - **At dispatch.** If the primary model is at its `max_parallel_runs`, the
   run starts on the first fallback with a free slot instead of waiting.
@@ -260,6 +265,12 @@ Fallbacks work at two points:
   Colony owns model selection: SDK same-model retries and prewalk hand-backs
   are disabled. Quota errors advance immediately; transient connection errors
   get interruptible 1/2/4/8-second backoff before the next model is tried.
+- **After a reviewer timeout.** A terminal `timeout_without_envelope`
+  excludes that model from subsequent attempts and their fallback chains
+  for the same MR head or plan proposal. The next eligible configured model
+  runs when it has capacity. Saturation waits; timeout exhaustion of every
+  candidate blocks through the normal task or scope transition. A new head,
+  new proposal, or explicit operator retry reset starts fresh eligibility.
 
 The run records the model that actually finished it, the fallback event is
 in the run's event stream, and the architect, developer, and reviewer

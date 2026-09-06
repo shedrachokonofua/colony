@@ -475,6 +475,98 @@ describe("Pi model fallback", () => {
     expect(fallbackWarnings[0].fields.from).toBe("primary");
     expect(fallbackWarnings[0].fields.to).toBe("fallback");
   });
+  it("never contacts an excluded primary when an eligible fallback fails", async () => {
+    const headSha = "e".repeat(40);
+    const envelope = {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary:
+        "The eligible fallback completed the review and verified that the requested change satisfies the task specification end to end.",
+      findings: [],
+      inspected: [{ file: "src/main.ts", note: "checked against the task" }],
+      head_sha: headSha,
+    };
+    const { baseUrl, requestedModels } = await startGateway(
+      (model, response) => {
+        if (model === "fallback") {
+          respondQuotaRateLimit(response);
+          return;
+        }
+        respondVerdictToolCall(response, model, envelope);
+      },
+    );
+    const scratchDir = mkdtempSync(
+      join(tmpdir(), "colony-excluded-primary-test-"),
+    );
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [
+          modelSpec(baseUrl, "fallback"),
+          modelSpec(baseUrl, "eligible"),
+        ],
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        ...FAST_RECOVERY,
+        maxTurns: 6,
+        runTimeoutMs: 10_000,
+      },
+    );
+
+    const result = await runner.run({
+      runId: "excluded-primary-contract",
+      packet: { goal: "Review the change", head_sha: headSha },
+      environment: {
+        role: "reviewer",
+        excludedModelIds: ["primary"],
+        startModelId: "primary",
+      },
+    });
+
+    expect(requestedModels).toEqual(["fallback", "eligible"]);
+    expect(result.reason).toBeUndefined();
+    expect(result.envelope).toEqual(envelope);
+  });
+
+  it("fails closed when exclusions remove every configured model", async () => {
+    const { baseUrl, requestedModels } = await startGateway(
+      (_model, response) => respondQuotaRateLimit(response),
+    );
+    const runner = new PiBaseAgentRunner(
+      {
+        ...REVIEWER_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+      },
+      {
+        model: modelSpec(baseUrl, "primary"),
+        fallbackModels: [modelSpec(baseUrl, "fallback")],
+        broker: { resolve: () => "test-key" },
+        ...FAST_RECOVERY,
+        runTimeoutMs: 10_000,
+      },
+    );
+
+    await expect(
+      runner.run({
+        runId: "empty-eligibility-contract",
+        packet: { goal: "Review the change", head_sha: "f".repeat(40) },
+        environment: {
+          role: "reviewer",
+          excludedModelIds: ["primary", "fallback"],
+        },
+      }),
+    ).rejects.toThrow();
+    expect(requestedModels).toEqual([]);
+  });
 
   it("does not retry a quota 429 when no alternate model exists", async () => {
     const { baseUrl, requestedModels } = await startGateway(

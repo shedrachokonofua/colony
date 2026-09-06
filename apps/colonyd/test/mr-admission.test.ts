@@ -20,7 +20,7 @@ import {
   hasActiveRepositoryMergeGate,
 } from "../src/runs/mr-admission.js";
 import { abortRun, awaitPendingRuns } from "../src/runs/registry.js";
-import { runReview } from "../src/runs/review.js";
+import { reconcileRejectedReview, runReview } from "../src/runs/review.js";
 import { tick } from "../src/tick.js";
 import { runMergeGate } from "../src/runs/merge-gate.js";
 
@@ -196,6 +196,41 @@ async function deferSecondProviderGet(
 }
 
 describe("MR-derived dispatch admission", () => {
+  it("keeps the rejection budget across an intervening reviewer timeout", async () => {
+    const h = await harness();
+    for (let round = 0; round < 10; round += 1) {
+      const head = round === 9 ? SHA : round.toString(16).padStart(40, "0");
+      const rejected = h.store.startRun({
+        scope_id: h.scope.id,
+        task_id: h.task.id,
+        kind: "review",
+        base_sha: head,
+        lease_ttl_ms: 60_000,
+      });
+      h.store.finishRun(rejected.id, "succeeded", {
+        evidence_json: JSON.stringify({
+          head_sha: head,
+          verdict: "request_changes",
+        }),
+      });
+      if (round === 8) {
+        const timedOut = h.store.startRun({
+          scope_id: h.scope.id,
+          task_id: h.task.id,
+          kind: "review",
+          base_sha: SHA,
+          lease_ttl_ms: 60_000,
+        });
+        h.store.finishRun(timedOut.id, "failed", {
+          error: "timeout_without_envelope",
+          evidence_json: JSON.stringify({ head_sha: SHA }),
+        });
+      }
+    }
+    reconcileRejectedReview(h.ctx, h.task);
+    expect(h.store.getTask(h.task.id)?.state).toBe("blocked");
+  });
+
   it("does not admit review or merge when pipeline lookup is unavailable", async () => {
     const h = await harness();
     h.provider.pipelines.getStatus = async () => {

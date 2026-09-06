@@ -7,6 +7,7 @@
 interface TrackedRun {
   readonly promise: Promise<unknown>;
   readonly abort: () => Promise<void> | void;
+  readonly onDetach?: () => void;
 }
 
 const tracked = new Map<string, TrackedRun>();
@@ -15,8 +16,9 @@ export function trackRun(
   runId: string,
   promise: Promise<unknown>,
   abort: () => Promise<void> | void,
+  onDetach?: () => void,
 ): void {
-  tracked.set(runId, { promise, abort });
+  tracked.set(runId, { promise, abort, onDetach });
   void promise.finally(() => {
     // Drop once settled unless replaced by a re-registration.
     const current = tracked.get(runId);
@@ -62,7 +64,11 @@ export async function abortRuns(runIds: readonly string[]): Promise<void> {
  * `awaitPendingRuns` (and the drain) wait on work meant to outlive us.
  */
 export function detachRun(runId: string): boolean {
-  return tracked.delete(runId);
+  const entry = tracked.get(runId);
+  if (!entry) return false;
+  tracked.delete(runId);
+  entry.onDetach?.();
+  return true;
 }
 
 export function activeTrackedRunIds(): string[] {

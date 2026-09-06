@@ -1761,6 +1761,16 @@ export class Store {
     return true;
   }
 
+  /** Release the adoption claim and extend the lease for daemon handoff. */
+  handoffRun(runId: string, leaseTtlMs: number): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET adopted = 0, lease_expires_at = ?
+         WHERE id = ? AND status = 'running' AND sandbox_id IS NOT NULL`,
+      )
+      .run(new Date(Date.now() + leaseTtlMs).toISOString(), runId);
+  }
+
   finishRun(
     runId: string,
     status: "succeeded" | "failed" | "canceled",

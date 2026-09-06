@@ -26,7 +26,6 @@ import { SERVICE_ACTOR } from "./context.js";
 import type {
   AgentRuntimeAdapter,
   AgentRuntimePacket,
-  AgentRuntimeRole,
 } from "@colony/agent-runtime";
 import {
   createDrainController,
@@ -59,7 +58,10 @@ import {
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
 } from "@colony/schemas";
 import type { ProviderRepoRef } from "@colony/provider";
-import { reconcileRejectedReview } from "./runs/review.js";
+import {
+  reconcileRejectedReview,
+  reviewTimeoutModelExclusions,
+} from "./runs/review.js";
 import { isAcyclic } from "./runs/architect.js";
 import { buildMrDescription, verifyEnvelopeFacts } from "./runs/implement.js";
 import {
@@ -73,7 +75,7 @@ import {
   formatColonyModelsTrailer,
 } from "./runs/model-provenance.js";
 import { adoptOrExpireRuns } from "./runs/adoption.js";
-import { tick } from "./tick.js";
+import { pickDispatchSlot, tick } from "./tick.js";
 
 export interface BootOptions {
   /** Test seam: override the provider adapter (defaults to GitLab or fake). */
@@ -149,8 +151,8 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   // connect never provisions and never cleans up.
   const probeEngine = await createEngine(config.sandbox.engine, config);
   const adoptedIds = new Set<string>();
-  let wiredAgents: ColonydContext["agents"] | undefined;
-  const ensureAgents = async (): Promise<ColonydContext["agents"]> => {
+  let wiredAgents: Promise<ColonydContext["agents"]> | undefined;
+  const ensureAgents = (): Promise<ColonydContext["agents"]> => {
     if (wiredAgents) return wiredAgents;
     // Claims all precede the resume loop, so rows already marked adopted are
     // the complete claim set even when this first fires mid-resume.
@@ -159,29 +161,30 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         adoptedIds.add(claimed.sandbox_id);
       }
     }
-    wiredAgents =
+    wiredAgents = Promise.resolve(
       options.agents ??
-      (await createAgentWiring(
-        config,
-        createRunEventSink(store),
-        {
-          // Fresh history per architect session: landed-attempt cost model from
-          // the runs table, paired with the developer session budget.
-          provider: () => ({
-            model: buildTaskCostModel(
-              store.db
-                .prepare(
-                  "SELECT * FROM runs WHERE status = 'succeeded' AND kind IN ('implement','merge_gate')",
-                )
-                .all() as Run[],
-            ),
-            budget_ms: config.forAgent("developer").ceilings.timeoutMs,
-          }),
-        },
-        createRunAuditSink(store, artifacts, logger),
-        store,
-        adoptedIds,
-      ));
+        createAgentWiring(
+          config,
+          createRunEventSink(store),
+          {
+            // Fresh history per architect session: landed-attempt cost model from
+            // the runs table, paired with the developer session budget.
+            provider: () => ({
+              model: buildTaskCostModel(
+                store.db
+                  .prepare(
+                    "SELECT * FROM runs WHERE status = 'succeeded' AND kind IN ('implement','merge_gate')",
+                  )
+                  .all() as Run[],
+              ),
+              budget_ms: config.forAgent("developer").ceilings.timeoutMs,
+            }),
+          },
+          createRunAuditSink(store, artifacts, logger),
+          store,
+          adoptedIds,
+        ),
+    );
     return wiredAgents;
   };
 
@@ -191,9 +194,14 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     logger,
     sessionsDir: config.sessionsDir,
     connect: (id) => probeEngine.connect(id),
-    resume: async (run) => {
-      // A FRESH root span for the resumed segment — never the run's old
-      // trace_id: that trace's parent span belongs to a dead process.
+    resume: async (run, signal) => {
+      const role = resumeRole(run.kind);
+      const headSha = run.base_sha ?? run.head_sha ?? "";
+      const excludedModelIds =
+        run.kind === "review" && run.task_id && headSha
+          ? reviewTimeoutModelExclusions(store, run.task_id, headSha)
+          : undefined;
+      let startModelId = run.model_id ?? undefined;
       const resumeSpan = startColonyRunSpan({
         scope_id: run.scope_id,
         task_id: run.task_id,
@@ -202,23 +210,36 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         model_id: run.model_id,
       });
       try {
-        // A resumed run pushes to the provider on its own; the run token
-        // minted before the restart died with that process, so re-mint
-        // under the same deterministic name. Keep the plaintext in scope:
-        // it rides on resumePacket's repo.credentials (the same seam fresh
-        // runs use) because Pi reads it for git/API and the surviving
-        // sandbox remotes may still hold the invalidated pre-restart token.
-        // Revoked in the post-processing finally below, like fresh runs.
+        signal.throwIfAborted();
+        if (
+          excludedModelIds?.length &&
+          (!startModelId || excludedModelIds.includes(startModelId))
+        ) {
+          const slot = pickDispatchSlot({ config, store }, role, {
+            excludedModelIds,
+          });
+          if (!slot.allowed) {
+            throw new Error(
+              slot.exhausted
+                ? "resumed review has exhausted its model candidates"
+                : "resumed review is waiting for model capacity",
+            );
+          }
+          startModelId = slot.startModelId ?? config.forAgent(role).model.id;
+          store.setRunModel(run.id, startModelId);
+          store.appendRunEvent(run.id, "pi_model_fallback", {
+            from: run.model_id,
+            to: startModelId,
+            error: "prior_review_timeout",
+          });
+        }
+
+        // Re-mint the run-scoped credential; adoption owns token cleanup for
+        // every terminal outcome and preserves it only during handoff.
         const scope = store.getScope(run.scope_id);
         let minted: MintedToken | null = null;
-        let resumeRepo: { id: string; path: string } | null = null;
-        if (
-          scope &&
-          (run.kind === "implement" ||
-            run.kind === "architect" ||
-            run.kind === "review")
-        ) {
-          resumeRepo = {
+        if (scope) {
+          const resumeRepo = {
             id: scope.provider_repo_id,
             path: scope.provider_repo_path,
           };
@@ -233,68 +254,56 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
               singleToken: environment.COLONYD_SINGLE_TOKEN,
               fallbackToken: environment.GITLAB_TOKEN || undefined,
             });
+            if (signal.aborted && minted) {
+              // This credential never reached the run row or sandbox.
+              await revokeRunToken(provider, resumeRepo, minted);
+            }
+            signal.throwIfAborted();
             if (minted?.token_id) store.setRunToken(run.id, minted.token_id);
           }
         }
         const agents = await ensureAgents();
+        signal.throwIfAborted();
         const adapter = resumeAdapter(agents, run.kind);
         const metadata = await adapter.resumeRun!(
           resumePacket(store, run, minted?.token ?? null),
           {
-            role: resumeRole(run.kind),
+            role,
             runId: run.id,
             sandboxId: run.sandbox_id!,
             sessionsDir: config.sessionsDir,
             connect: (id) => probeEngine.connect(id),
+            startModelId,
+            excludedModelIds,
             traceContext: resumeSpan?.spanContext,
           },
         );
+        signal.throwIfAborted();
+        if (store.getRun(run.id)?.status !== "running") {
+          resumeSpan?.end("canceled", "run no longer running");
+          return;
+        }
         if (metadata.status !== "succeeded") {
-          throw new Error(
-            `resumed run did not succeed: ${metadata.rejectionReason ?? metadata.status}`,
-          );
+          const status = metadata.status === "canceled" ? "canceled" : "failed";
+          const reason = metadata.rejectionReason ?? metadata.status;
+          store.finishRun(run.id, status, {
+            error: reason,
+            ...(run.kind === "review"
+              ? { evidence_json: JSON.stringify({ head_sha: headSha }) }
+              : {}),
+          });
+          resumeSpan?.end(status, reason);
+          return;
         }
         const output = await adapter.getRunOutput(run.id);
-        try {
-          // Resume success drives the same post-processing a fresh run's
-          // handler runs after startRun: MR open/reuse + mr_open advance
-          // for implement, plan persist for architect, verdict evidence +
-          // requeue reconcile for review. Without it the run row reads
-          // `succeeded` while the task stays `running` and the next tick
-          // requeues or blocks via retryOrFailTask("run_failed").
-          if (run.kind === "implement") {
-            await completeResumedImplement(store, provider, output, run);
-          } else if (run.kind === "architect") {
-            completeResumedArchitect(store, output, run);
-          } else {
-            completeResumedReview({ store }, output, run);
-          }
-        } finally {
-          // The resume path minted above: revoke like every fresh run's
-          // finally so the credential never outlives the segment.
-          if (minted && resumeRepo) {
-            try {
-              await revokeRunToken(provider, resumeRepo, minted);
-              store.audit(SERVICE_ACTOR, "agent_token.revoked", {
-                scope_id: run.scope_id,
-                task_id: run.task_id,
-                run_id: run.id,
-              });
-            } catch (err) {
-              store.audit(SERVICE_ACTOR, "agent_token.revoke_failed", {
-                scope_id: run.scope_id,
-                task_id: run.task_id,
-                run_id: run.id,
-                detail: {
-                  error: err instanceof Error ? err.message : String(err),
-                },
-              });
-            }
-          }
+        signal.throwIfAborted();
+        if (run.kind === "implement") {
+          await completeResumedImplement(store, provider, output, run);
+        } else if (run.kind === "architect") {
+          completeResumedArchitect(store, output, run);
+        } else {
+          completeResumedReview({ store }, output, run);
         }
-        // The resume path's own emitEvent owns this event when the adapter
-        // reports one; adapters without the seam (fake runtime) rely on this
-        // fallback so run_events always records the resumption.
         if (store.listRunEventsByName(run.id, "run_resumed").length === 0) {
           store.appendRunEvent(run.id, "run_resumed", {
             sandbox_id: run.sandbox_id,
@@ -305,11 +314,15 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         resumeSpan?.end("succeeded");
       } catch (err) {
         resumeSpan?.end(
-          "failed",
+          signal.aborted ? "canceled" : "failed",
           err instanceof Error ? err.message : String(err),
         );
         throw err;
       }
+    },
+    cancel: async (run) => {
+      const agents = await ensureAgents();
+      await resumeAdapter(agents, run.kind).cancelRun(run.id);
     },
     resumeLeaseTtlMs: environment.COLONY_RESUME_LEASE_TTL_MS,
   });
@@ -366,8 +379,8 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     // At the drain cap the controller aborts exactly once, here. Partition
     // first: architect/implement/review runs with a session journal and a
     // sandbox are handed to the next boot — lease pushed out, never aborted,
-    // never finished, never token-revoked, `adopted` stays 0 so the boot-time
-    // adoptRun claim wins. Everything else (validate, merge_gate, unqualified)
+    // never finished, never token-revoked, adoption claim released so the next
+    // boot can claim it. Everything else (validate, merge_gate, unqualified)
     // takes today's abort path; handlers record their own canceled result.
     abortAll: async (ids) => {
       for (const id of ids) {
@@ -381,9 +394,9 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
           run.sandbox_id !== null &&
           readSessionHeader(config.sessionsDir, run.id).ok;
         if (resumable) {
-          // heartbeatRun only — NEVER adoptRun: the next boot's claim must be
-          // the one that flips `adopted` and writes the run.adopted audit row.
-          store.heartbeatRun(run.id, environment.COLONY_RESUME_LEASE_TTL_MS);
+          // Release the current claim, including a previous boot's adoption.
+          // The next daemon must claim the run before it resumes execution.
+          store.handoffRun(run.id, environment.COLONY_RESUME_LEASE_TTL_MS);
           // Dropped from the registry, not aborted: the SDK loop dies with
           // the process, and the row stays `running` for the next boot.
           detachRun(run.id);
@@ -485,7 +498,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
 }
 
 /** Map a run kind to the adapter role its resume speaks. */
-function resumeRole(kind: Run["kind"]): AgentRuntimeRole {
+function resumeRole(kind: Run["kind"]): "architect" | "reviewer" | "developer" {
   if (kind === "architect") return "architect";
   if (kind === "review") return "reviewer";
   return "developer";
