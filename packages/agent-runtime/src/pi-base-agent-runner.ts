@@ -1643,22 +1643,26 @@ export class PiBaseAgentRunner implements PiRunner {
 
                 if (promptError !== undefined) {
                   if (state.cancellationTriggered) throw promptError;
-                  // A thrown finalizer prompt is a failed leg, not a dead
-                  // run: fail over like the exhaustion exit below. With no
-                  // candidate left the error propagates so the run keeps
-                  // its provider-failure classification (driveSession
-                  // parity).
-                  if (
-                    !(await advanceAfterFinalizer(
-                      currentCandidate.id,
-                      promptError instanceof Error
-                        ? promptError.message
-                        : String(promptError),
-                    ))
-                  ) {
-                    throw promptError;
-                  }
-                  prompt = MODEL_FAILED_PROMPT;
+                  // Classified here, at detection: the throw is the last
+                  // thing to happen before finalization, and the run has no
+                  // catch between here and executeRun's return. Stop the
+                  // loop instead of throwing - a throw would strand the run
+                  // with no Fault and let the adapter report
+                  // {unknown,unknown}.
+                  const errText =
+                    promptError instanceof Error
+                      ? promptError.message
+                      : String(promptError);
+                  state.failureReason ??= `prompt_failure: ${sanitizeSecret(
+                    errText.replace(/\s+/g, " ").trim(),
+                    runToken,
+                  ).slice(0, 160)}`;
+                  state.failureFault ??= classifyPromptFailure(errText) ?? {
+                    layer: "harness",
+                    code: classifyHarnessFailure(errText),
+                    detail: errText.slice(0, 240),
+                  };
+                  break;
                 } else if (
                   state.timeoutTriggered ||
                   state.cancellationTriggered
