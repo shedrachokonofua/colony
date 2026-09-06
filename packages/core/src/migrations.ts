@@ -330,6 +330,25 @@ function migrateScopePlanDirectives(db: Db): void {
   addColumn(db, "scopes", "plan_directives", "TEXT NOT NULL DEFAULT ''");
 }
 
+/**
+ * Migration 16: repair intents — exactly-once CI-failure repair dispatch.
+ * Mirrors the repair_intents DDL in schema.sql; a fresh database already has
+ * the table, existing ones add it here.
+ */
+const REPAIR_INTENTS_DDL = `
+CREATE TABLE IF NOT EXISTS repair_intents (
+  fingerprint TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('ci_failure','merge_conflict','merge_gate_failure')),
+  trigger_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  claimed_at TEXT,
+  run_id TEXT REFERENCES runs(id),
+  resolved_head_sha TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repair_intents_task ON repair_intents(task_id, created_at);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -404,6 +423,11 @@ export const MIGRATIONS: readonly Migration[] = [
       addColumn(db, "runs", "active_tool_detail", "TEXT");
       addColumn(db, "runs", "active_tool_started_at", "TEXT");
     },
+  },
+  {
+    version: 16,
+    name: "repair-intents",
+    apply: (db) => db.exec(REPAIR_INTENTS_DDL),
   },
 ];
 

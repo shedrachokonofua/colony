@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ArchitectDecompositionV2 } from "./v2.js";
+import { ArchitectDecompositionV2, RepairIntentV1 } from "./v2.js";
 
 function validDecomposition() {
   return {
@@ -120,5 +120,59 @@ describe("ArchitectDecompositionV2", () => {
       extra: "nope",
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("RepairIntentV1", () => {
+  const sha40 = "a".repeat(40);
+
+  it("parses a CI-failure intent with provider metadata and evidence", () => {
+    const parsed = RepairIntentV1.safeParse({
+      kind: "ci_failure",
+      source_head_sha: sha40,
+      provider: {
+        pipeline_id: "77",
+        pipeline_url: "https://gitlab.test/p/-/pipelines/77",
+        job_ids: ["901"],
+        job_names: ["unit"],
+        job_urls: ["https://gitlab.test/p/-/jobs/901"],
+      },
+      evidence: ["unit: FAIL src/a.test.ts"],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("defaults evidence to empty and allows omitting provider metadata", () => {
+    const parsed = RepairIntentV1.parse({
+      kind: "merge_gate_failure",
+      source_head_sha: sha40,
+    });
+    expect(parsed.evidence).toEqual([]);
+    expect(parsed.provider).toBeUndefined();
+  });
+
+  it("rejects an unknown kind and a non-sha source head", () => {
+    expect(
+      RepairIntentV1.safeParse({
+        kind: "pipeline_stalled",
+        source_head_sha: sha40,
+      }).success,
+    ).toBe(false);
+    expect(
+      RepairIntentV1.safeParse({
+        kind: "ci_failure",
+        source_head_sha: "not-a-sha",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects extra keys (strict)", () => {
+    expect(
+      RepairIntentV1.safeParse({
+        kind: "ci_failure",
+        source_head_sha: sha40,
+        raw_log: "huge log blob",
+      }).success,
+    ).toBe(false);
   });
 });
