@@ -161,6 +161,20 @@ async function execInSandbox(
   return { stdout, stderr, exitCode: result.exitCode };
 }
 
+/**
+ * Asserts a sandbox probe succeeded, surfacing both streams when it did
+ * not: a bare exit-code assertion leaves CI failures undiagnosable.
+ */
+function requireExecSuccess(output: ExecOutput, command: string): void {
+  if (output.exitCode !== 0) {
+    throw new Error(
+      `${command} exited with code ${String(output.exitCode)}: ` +
+        `stdout=${JSON.stringify(output.stdout)} ` +
+        `stderr=${JSON.stringify(output.stderr)}`,
+    );
+  }
+}
+
 function lines(text: string): string[] {
   return text
     .split("\n")
@@ -284,11 +298,11 @@ async function checkPinnedVersions(makeEngine: MakeEngine): Promise<void> {
 
   await withSandbox(makeEngine, undefined, async ({ handle }) => {
     const bun = await execInSandbox(handle, "bun --version");
-    expect(bun.exitCode).toBe(0);
+    requireExecSuccess(bun, "bun --version");
     expect(bun.stdout.trim()).toBe(String(expectedBun));
 
     const node = await execInSandbox(handle, "node --version");
-    expect(node.exitCode).toBe(0);
+    requireExecSuccess(node, "node --version");
     expect(node.stdout.trim().replace(/^v/, "")).toBe(
       nodeVersion.replace(/^v/, ""),
     );
