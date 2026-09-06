@@ -791,13 +791,7 @@ export class PiBaseAgentRunner implements PiRunner {
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const code =
-          /session initialization/i.test(msg) ||
-          /replaced during session/i.test(msg)
-            ? "session_init_replaced"
-            : /lifecycle/i.test(msg)
-              ? "sdk_lifecycle"
-              : "plumbing_error";
+        const code = classifyHarnessFailure(msg);
         // Returned, never rethrown: run() has no catch, so a throw here
         // would reach the adapter's finish wrapper and come back as
         // {unknown,unknown}, losing the harness classification the run
@@ -930,7 +924,11 @@ export class PiBaseAgentRunner implements PiRunner {
                   0,
                   160,
                 )}`;
-                state.failureFault ??= classifyPromptFailure(lastError);
+                state.failureFault ??= classifyPromptFailure(lastError) ?? {
+                  layer: "provider",
+                  code: "connection_exhausted",
+                  detail: lastError.slice(0, 240),
+                };
                 return false;
               }
               this.options.logger?.warn?.(
@@ -954,7 +952,11 @@ export class PiBaseAgentRunner implements PiRunner {
                 errText.replace(/\s+/g, " ").trim(),
                 runToken,
               ).slice(0, 160)}`;
-              state.failureFault ??= classifyPromptFailure(errText);
+              state.failureFault ??= classifyPromptFailure(errText) ?? {
+                layer: "provider",
+                code: "connection_exhausted",
+                detail: errText.slice(0, 240),
+              };
               return false;
             }
             this.options.logger?.warn?.(
@@ -1748,7 +1750,11 @@ export class PiBaseAgentRunner implements PiRunner {
               errText.replace(/\s+/g, " ").trim(),
               runToken,
             ).slice(0, 160)}`;
-            state.failureFault ??= classifyPromptFailure(errText);
+            state.failureFault ??= classifyPromptFailure(errText) ?? {
+              layer: "harness",
+              code: classifyHarnessFailure(errText),
+              detail: errText.slice(0, 240),
+            };
             this.options.logger?.warn?.(
               { runId, error: errText },
               "pi_run_continuation_failed",
@@ -1981,6 +1987,21 @@ export function classifyProvisionFailure(message: string): Fault["code"] {
  * would strand exhausted 502/503/529 legs on the generic code while the
  * unreachable arms below held the spec's codes.
  */
+/**
+ * The harness fault code for a throw out of session construction, or out of
+ * a prompt that names no provider condition - an SDK lifecycle break and a
+ * replaced session-init are the harness's own failures, and anything else
+ * is plumbing.
+ */
+export function classifyHarnessFailure(message: string): Fault["code"] {
+  return /session initialization/i.test(message) ||
+    /replaced during session/i.test(message)
+    ? "session_init_replaced"
+    : /lifecycle/i.test(message)
+      ? "sdk_lifecycle"
+      : "plumbing_error";
+}
+
 export function classifyPromptFailure(message: string): Fault | undefined {
   const code = /\b429\b/.test(message)
     ? "http_429"
