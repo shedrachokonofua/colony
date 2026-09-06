@@ -1395,13 +1395,11 @@ export class PiBaseAgentRunner implements PiRunner {
                 0,
                 160,
               )}`;
-              state.failureFault ??=
-                classifyPromptFailure(lastError) ??
-                {
-                  layer: "provider",
-                  code: "connection_exhausted",
-                  detail: lastError.slice(0, 240),
-                };
+              state.failureFault ??= classifyPromptFailure(lastError) ?? {
+                layer: "provider",
+                code: "connection_exhausted",
+                detail: lastError.slice(0, 240),
+              };
               break;
             }
             index = nextIndex;
