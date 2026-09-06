@@ -596,18 +596,16 @@ describe("operator controls", () => {
     // Budgets and notifications read runs.fault_json, never error text:
     // the platform layers requeue free while only the model spends budget.
     expect(
-      parseFault(
-        JSON.stringify({ layer: "colonyd", code: "process_restart" }),
-      )?.layer,
+      parseFault(JSON.stringify({ layer: "colonyd", code: "process_restart" }))
+        ?.layer,
     ).toBe("colonyd");
     expect(
       parseFault(JSON.stringify({ layer: "sandbox", code: "workspace_lost" }))
         ?.layer,
     ).toBe("sandbox");
     expect(
-      parseFault(
-        JSON.stringify({ layer: "provider", code: "quota_exhausted" }),
-      )?.layer,
+      parseFault(JSON.stringify({ layer: "provider", code: "quota_exhausted" }))
+        ?.layer,
     ).toBe("provider");
     expect(
       isModelFault(
@@ -616,10 +614,16 @@ describe("operator controls", () => {
     ).toBe(true);
     expect(
       isModelFault(
-        parseFault(JSON.stringify({ layer: "sandbox", code: "workspace_lost" })),
+        parseFault(
+          JSON.stringify({ layer: "sandbox", code: "workspace_lost" }),
+        ),
       ),
     ).toBe(false);
-    expect(isModelFault(parseFault(JSON.stringify({ layer: "unknown", code: "unknown" })))).toBe(false);
+    expect(
+      isModelFault(
+        parseFault(JSON.stringify({ layer: "unknown", code: "unknown" })),
+      ),
+    ).toBe(false);
     expect(parseFault("envelope invalid")).toBeNull();
     expect(parseFault(null)).toBeNull();
   });

@@ -1905,8 +1905,9 @@ describe("colonyd fake end-to-end loop", () => {
     } finally {
       console.error = originalError;
     }
-    expect(logged.some((args) => args[0] === "[fault] unknown classification"))
-      .toBe(true);
+    expect(
+      logged.some((args) => args[0] === "[fault] unknown classification"),
+    ).toBe(true);
     const task = handle.ctx.store.getTask(taskId)!;
     expect(task.state).toBe("queued");
     expect(task.attempt).toBe(0);
