@@ -499,7 +499,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const rows = ctx.store.listProjectRunning(project.name);
     return c.json(
       rows.map((row) => {
-        if (!row.run) return row;
+        // Every row carries its backend-derived stage, including run-less
+        // ones: the console renders delivery_status and only falls back to
+        // the raw task state when the field is absent. The run fault join
+        // stays gated on row.run.
+        const delivery_status = deliveryStatusFor(ctx.store, row.task_id);
+        if (!row.run) return { ...row, delivery_status };
         const runRow = ctx.store.getRun(row.run.id);
         return {
           ...row,
@@ -507,7 +512,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
             ...row.run,
             fault: runRow ? parseFault(runRow.fault_json) : null,
           },
-          delivery_status: deliveryStatusFor(ctx.store, row.task_id),
+          delivery_status,
         };
       }),
     );

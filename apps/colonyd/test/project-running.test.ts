@@ -247,6 +247,23 @@ describe("GET /projects/:name/running", () => {
     expect(await idle.json()).toEqual([]);
   });
 
+  it("joins delivery_status on rows with no run", async () => {
+    const { store, app } = appWithStore();
+    const { task_ids } = scopeWithTasks(store, "wave", ["NoRun"]);
+    advanceTask(store, task_ids[0]!, "running");
+
+    const res = await getRunning(app, "wave");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as (RunningRow & {
+      delivery_status?: { stage: string };
+    })[];
+    expect(body).toHaveLength(1);
+    expect(body[0]!.run).toBeNull();
+    // The row must still carry the backend-derived stage so the console
+    // never falls back to the raw task state.
+    expect(body[0]!.delivery_status?.stage).toBe("provider_head_pending");
+  });
+
   it("404s an unknown project", async () => {
     const { app } = appWithStore();
     const res = await getRunning(app, "nope");

@@ -202,6 +202,36 @@ describe("scope-sheet wait banner by delivery stage", () => {
     }
   });
 
+  it("prefers a later task's failed CI over an earlier merged task", async () => {
+    const el = makeSheet(
+      detail({
+        scope: { ...SCOPE_CLOSED, status: "active", approvals: "auto" },
+        tasks: [
+          { ...TASKS[0], state: "merged" },
+          { ...TASKS[1], state: "mr_open", mr_iid: 7 },
+        ],
+        delivery_by_task: {
+          "col-x.0": {
+            stage: "merged",
+            since: "2026-09-01T00:00:00.000Z",
+            evidence: [{ kind: "test", text: "fact" }],
+            run_ids: [],
+          },
+          "col-x.1": {
+            stage: "ci_failed",
+            since: "2026-09-01T00:00:00.000Z",
+            evidence: [{ kind: "test", text: "fact" }],
+            run_ids: [],
+          },
+        },
+      }),
+    );
+    await el.updateComplete;
+    const text = el.querySelector(".banner-wait")?.textContent ?? "";
+    expect(text).toContain("CI failed on MR !7");
+    expect(text).not.toContain("is merged");
+  });
+
   it("says CI failed with the MR number, never mr_open", async () => {
     const el = sheetWithStage("ci_failed");
     await el.updateComplete;
