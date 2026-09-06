@@ -738,6 +738,32 @@ describe("fault emission from a real run", () => {
     expect(result.fault?.detail).toContain("ENOTDIR");
   }, 120_000);
 
+  // CONNECTION_ERROR_RE matches \b50[0234]\b, \b529\b, "bad gateway" and
+  // "gateway timeout", and driveSession tested it before the protocol
+  // table, so those arms were unreachable: an exhausted 5xx leg was
+  // reported {provider,connection_exhausted} instead of the spec code.
+  it("classifies an exhausted 5xx leg as {provider, http_5xx}", async () => {
+    const baseUrl = await startGateway((_request, response) => {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: {
+            message: "503 bad gateway from upstream",
+            type: "server_error",
+          },
+        }),
+      );
+    });
+    const result = await runnerOn(baseUrl, 120_000).run({
+      runId: "run-http-5xx",
+      packet: { goal: "Review the change" },
+      environment: { role: "reviewer" },
+    });
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.fault?.layer).toBe("provider");
+    expect(result.fault?.code).toBe("http_5xx");
+  }, 300_000);
+
   it("splits the wall clock: no tool calls is {model, wall_timeout}", async () => {
     const baseUrl = await startGateway(() => {
       // Every request hangs, so only the wall can end this run.

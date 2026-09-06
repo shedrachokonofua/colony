@@ -1389,16 +1389,19 @@ export class PiBaseAgentRunner implements PiRunner {
             const next =
               nextIndex === null ? undefined : resolvedModels[nextIndex];
             if (!next || nextIndex === null) {
-              state.failureReason = `provider_connection_failure: ${(
-                state.lastConnectionError ?? "repeated connection errors"
-              ).slice(0, 160)}`;
-              state.failureFault = {
-                layer: "provider",
-                code: "connection_exhausted",
-                detail: (
-                  state.lastConnectionError ?? "repeated connection errors"
-                ).slice(0, 240),
-              };
+              const lastError =
+                state.lastConnectionError ?? "repeated connection errors";
+              state.failureReason = `provider_connection_failure: ${lastError.slice(
+                0,
+                160,
+              )}`;
+              state.failureFault ??=
+                classifyPromptFailure(lastError) ??
+                {
+                  layer: "provider",
+                  code: "connection_exhausted",
+                  detail: lastError.slice(0, 240),
+                };
               break;
             }
             index = nextIndex;
@@ -1468,11 +1471,17 @@ export class PiBaseAgentRunner implements PiRunner {
             } else {
               state.failureReason = "zero_output_stall";
               const quotaError = lastAssistantQuotaError();
-              state.failureFault = {
-                layer: "provider",
-                code: quotaError ? "quota_exhausted" : "connection_exhausted",
-                detail: quotaError?.slice(0, 240) ?? "zero_output_stall",
-              };
+              state.failureFault ??= quotaError
+                ? {
+                    layer: "provider",
+                    code: "quota_exhausted",
+                    detail: quotaError.slice(0, 240),
+                  }
+                : {
+                    layer: "provider",
+                    code: "connection_exhausted",
+                    detail: "zero_output_stall",
+                  };
               break;
             }
             prompt =
