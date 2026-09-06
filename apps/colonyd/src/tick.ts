@@ -5,7 +5,11 @@ import {
   type ProviderPipeline,
 } from "@colony/provider";
 import { createHash } from "node:crypto";
-import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
+import {
+  retryBackoffMs,
+  TERMINAL_TASK_STATES,
+  type PipelineObservationRow,
+} from "@colony/core";
 import type { Run, Scope, Task } from "@colony/core";
 import { SANDBOX_QUOTA_EXHAUSTED } from "@colony/sandbox";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
@@ -896,6 +900,39 @@ async function repairAfterMergeConflict(
  * no state mutation: the caller must revalidate the MR task after this
  * awaited provider operation before recording a repair or blocking it.
  */
+/** The persisted pipeline statuses; anything else the provider reports is
+ *  not a fact this schema can store, so it is not recorded. */
+const PIPELINE_STATUSES: readonly string[] = [
+  "pending",
+  "running",
+  "success",
+  "failed",
+  "canceled",
+];
+
+/**
+ * Record the pipeline observed for `headSha` so read APIs can derive a
+ * delivery stage without provider I/O. Called only after a successful
+ * getStatus: a failed read leaves the previous observation untouched, so a
+ * status is never guessed from a silence.
+ */
+function recordPipelineObservation(
+  ctx: ColonydContext,
+  task: Task,
+  headSha: string,
+  pipeline: ProviderPipeline,
+): void {
+  if (!PIPELINE_STATUSES.includes(pipeline.status)) return;
+  ctx.store.upsertPipelineObservation({
+    task_id: task.id,
+    head_sha: headSha,
+    status: pipeline.status as PipelineObservationRow["status"],
+    pipeline_id: pipeline.id,
+    web_url: pipeline.metadata.web_url ?? null,
+    observed_at: new Date().toISOString(),
+  });
+}
+
 async function pipelineGate(
   ctx: ColonydContext,
   scope: Scope,
@@ -908,6 +945,7 @@ async function pipelineGate(
       { id: scope.provider_repo_id, path: scope.provider_repo_path },
       headSha,
     );
+    recordPipelineObservation(ctx, task, headSha, pipeline);
     return {
       ready: pipeline.status === "success",
       pipeline,

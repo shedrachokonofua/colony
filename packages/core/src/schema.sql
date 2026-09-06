@@ -155,3 +155,16 @@ CREATE TABLE IF NOT EXISTS repair_intents (
   resolved_head_sha TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_repair_intents_task ON repair_intents(task_id, created_at);
+
+-- The LAST observed provider pipeline for a task's then-current head. The
+-- scheduler is the only writer; read APIs derive delivery status from this
+-- row instead of calling the provider, and a row whose head_sha is not the
+-- task's current MR head proves nothing about the current head.
+CREATE TABLE IF NOT EXISTS pipeline_observations (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+  head_sha TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','canceled')),
+  pipeline_id TEXT,
+  web_url TEXT,
+  observed_at TEXT NOT NULL
+);
