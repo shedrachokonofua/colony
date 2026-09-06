@@ -9,7 +9,7 @@ import { context } from "@opentelemetry/api";
 import type { Scope } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
-import { isTimeoutWithoutEnvelope } from "../run-classification.js";
+import { isTimeoutFault } from "../fault-budget.js";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -312,7 +312,7 @@ export function timedOutPlanReviewModelIds(
   for (const run of runs.slice(proposedAt + 1)) {
     if (
       run.kind !== "plan_review" ||
-      !isTimeoutWithoutEnvelope(run) ||
+      !isTimeoutFault(run) ||
       !run.model_id ||
       (marker !== undefined && run.started_at <= marker) ||
       !run.evidence_json

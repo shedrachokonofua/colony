@@ -334,6 +334,7 @@ async function executeArchitect(
     if (metadata.status !== "succeeded") {
       ctx.store.finishRun(runId, "failed", {
         error: metadata.rejectionReason ?? metadata.status,
+        fault: metadata.fault,
       });
       runSpan?.end("failed", metadata.rejectionReason ?? metadata.status);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {

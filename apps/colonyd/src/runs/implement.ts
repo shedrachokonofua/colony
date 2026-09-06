@@ -4,6 +4,7 @@ import {
   type RepairIntentV1,
 } from "@colony/schemas";
 import type { Scope, Task } from "@colony/core";
+import { isModelFault, type Fault } from "@colony/core";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -16,7 +17,6 @@ import {
   type ImplementExecutionContext,
 } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
-import { isInfraError } from "../run-classification.js";
 import {
   amendBranchWithTrailer,
   buildMergeProvenanceLine,
@@ -255,8 +255,17 @@ async function executeImplement(
 
     if (metadata.status !== "succeeded") {
       const reason = metadata.rejectionReason ?? metadata.status;
+      const fault = faultForFailure(
+        ctx,
+        scope,
+        task,
+        runId,
+        reason,
+        metadata.fault,
+      );
       ctx.store.finishRun(runId, "failed", {
         error: reason,
+        fault,
       });
       runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -266,7 +275,9 @@ async function executeImplement(
         detail: { reason },
       });
       if (repairIntent) {
-        if (!isInfraError(reason)) {
+        // Only a model fault blocks the repair: any other layer requeues
+        // free, so clear run_id and let the retry re-bind the intent.
+        if (isModelFault(fault)) {
           const current = ctx.store.getTask(task.id);
           if (current) {
             ctx.store.transitionTask(
@@ -283,7 +294,6 @@ async function executeImplement(
             );
           }
         } else {
-          // On infra error, clear run_id so the intent can re-bind on retry.
           ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
         }
       }
@@ -299,6 +309,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
+        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -347,6 +358,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
+        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -381,6 +393,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
+        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
       });
       runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -425,6 +438,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
+        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -533,11 +547,20 @@ async function executeImplement(
         ),
       });
       if (mr.iid === undefined) {
+        const reason = "merge request opened without iid";
         ctx.store.finishRun(runId, "failed", {
-          error: "merge request opened without iid",
+          error: reason,
           envelope_json: JSON.stringify(envelope),
+          fault: faultForFailure(
+            ctx,
+            scope,
+            task,
+            runId,
+            reason,
+            metadata.fault,
+          ),
         });
-        runSpan?.end("failed", "merge request opened without iid");
+        runSpan?.end("failed", reason);
         return;
       }
       mrIid = mr.iid;
@@ -606,8 +629,12 @@ async function executeImplement(
     );
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    // startRun may have thrown before metadata existed, and a succeeded
+    // start carries no fault: either way the catch has no runner fault.
+    const fault = faultForFailure(ctx, scope, task, runId, reason, undefined);
     ctx.store.finishRun(runId, "failed", {
       error: reason,
+      fault,
     });
     runSpan?.end("failed", reason);
     ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -617,7 +644,9 @@ async function executeImplement(
       detail: { reason },
     });
     if (repairIntent) {
-      if (!isInfraError(reason)) {
+      // Only a model fault blocks the repair: any other layer requeues
+      // free, so clear run_id and let the retry re-bind the intent.
+      if (isModelFault(fault)) {
         const current = ctx.store.getTask(task.id);
         if (current) {
           ctx.store.transitionTask(
@@ -634,7 +663,6 @@ async function executeImplement(
           );
         }
       } else {
-        // On infra error, clear run_id so the intent can re-bind on retry.
         ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
       }
     }
@@ -750,6 +778,32 @@ interface ReviewRepair {
   /** The latest rejection that has not been superseded by a later approval. */
   rejectedHeadSha?: string;
   historical: ImplementHistoricalEvidence[];
+}
+
+/**
+ * Resolve the fault for a failed implement run. The runner's own fault rides
+ * through untouched; a result without one is unclassified — never re-derived
+ * from its error text. Unclassified failures audit loudly (run.fault_unknown)
+ * and requeue free with backoff under the tick's fault-only budgeting.
+ */
+function faultForFailure(
+  ctx: ColonydContext,
+  scope: Scope,
+  task: Task,
+  runId: string,
+  reason: string,
+  fault: Fault | undefined,
+): Fault {
+  if (fault) return fault;
+  const errorExcerpt = reason.slice(0, 240);
+  console.error("[fault] unknown classification", reason);
+  ctx.store.audit(SERVICE_ACTOR, "run.fault_unknown", {
+    scope_id: scope.id,
+    task_id: task.id,
+    run_id: runId,
+    detail: { errorExcerpt },
+  });
+  return { layer: "unknown", code: "unknown", detail: errorExcerpt };
 }
 
 /** Why a repair run blocked the task: names the trigger kind, not just the

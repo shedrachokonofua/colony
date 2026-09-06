@@ -12,7 +12,7 @@ import {
 } from "@colony/sandbox";
 import type { Fault, Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
-import { isDeferredRunFailure } from "../run-classification.js";
+import { isPlatformFailure } from "../fault-budget.js";
 import { context } from "@opentelemetry/api";
 import type { ProviderMergeRequest, ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -741,9 +741,11 @@ function requeueOrBlockAfterGateFailure(
 
 /**
  * Count consecutive accountable merge_gate failures for this task at
- * `headSha`. Deferred workspace/provider failures and transient merge
- * refusals are evidence for admission but do not consume the code-gate
- * streak; a succeeded gate at the same SHA resets it.
+ * `headSha`. Platform-faulted runs (and restart/lease rows, which carry
+ * colonyd faults) have no accountable head and must not reset a same-head
+ * streak; faultless code-side failures keep counting exactly as the legacy
+ * text fallback counted unclassified errors. A succeeded gate at the same
+ * SHA resets the streak.
  */
 function countConsecutive(
   ctx: ColonydContext,
@@ -756,9 +758,9 @@ function countConsecutive(
     .filter((r) => r.kind === "merge_gate");
   let count = 0;
   for (const run of [...runs].reverse()) {
-    // Deferred runs (including restart/lease-expiry rows with no evidence)
-    // have no accountable head and must not reset a same-head streak.
-    if (isDeferredRunFailure(run)) continue;
+    // Platform rows have no accountable head and must not reset a same-head
+    // streak. Faultless failures carry gate evidence and stay accountable.
+    if (isPlatformFailure(run)) continue;
     let evidence: Record<string, unknown> = {};
     if (run.evidence_json) {
       try {

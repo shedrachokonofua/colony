@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { SCOPE_STATUSES, type ScopeStatus, Store } from "@colony/core";
+import { isModelFault, parseFault } from "@colony/core";
 import { createLocalArtifactStore } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
-import { isInfraError } from "../src/run-classification.js";
 
 const dirs: string[] = [];
 
@@ -592,40 +592,36 @@ describe("operator controls", () => {
     expect(audit.some((r) => r.action === "task.spec_amended")).toBe(true);
   });
 
-  it("classifies infrastructure errors distinctly from agent failures", () => {
-    expect(isInfraError("process_restart")).toBe(true);
-    expect(isInfraError("502 status code (no body)")).toBe(true);
-    expect(isInfraError("fetch failed")).toBe(true);
-    expect(isInfraError("ECONNRESET")).toBe(true);
-    expect(isInfraError("liveness_watchdog_no_progress")).toBe(true);
+  it("classifies fault layers distinctly from agent failures", () => {
+    // Budgets and notifications read runs.fault_json, never error text:
+    // the platform layers requeue free while only the model spends budget.
     expect(
-      isInfraError(
-        "timed out after 300000ms waiting for Sandbox CR colony-a in namespace colony-sandboxes to become ready",
+      parseFault(
+        JSON.stringify({ layer: "colonyd", code: "process_restart" }),
+      )?.layer,
+    ).toBe("colonyd");
+    expect(
+      parseFault(JSON.stringify({ layer: "sandbox", code: "workspace_lost" }))
+        ?.layer,
+    ).toBe("sandbox");
+    expect(
+      parseFault(
+        JSON.stringify({ layer: "provider", code: "quota_exhausted" }),
+      )?.layer,
+    ).toBe("provider");
+    expect(
+      isModelFault(
+        parseFault(JSON.stringify({ layer: "model", code: "syntax_error" })),
       ),
     ).toBe(true);
-    expect(isInfraError("429 model cooldown")).toBe(true);
     expect(
-      isInfraError(
-        'HTTP-Code: 404\nMessage: Unknown API Status Code!\nBody: "{\\"kind\\":\\"Status\\",\\"message\\":\\"sandboxes.agents.x-k8s.io \\\\\\"colony-12ada898\\\\\\" not found\\"}"',
+      isModelFault(
+        parseFault(JSON.stringify({ layer: "sandbox", code: "workspace_lost" })),
       ),
-    ).toBe(true);
-    expect(
-      isInfraError('Agent "Main" was replaced during session initialization.'),
-    ).toBe(true);
-    expect(
-      isInfraError("GitLab POST /projects/49/access_tokens timed out"),
-    ).toBe(true);
-    // A startup reap that times out on a pod the kubelet cannot finish is
-    // the cluster, not the model (three of them exhausted two scopes'
-    // architect budgets, 2026-09-03).
-    expect(
-      isInfraError(
-        "timed out after 300000ms reaping 0 startup-orphaned Sandbox CRs in namespace colony-sandboxes",
-      ),
-    ).toBe(true);
-    expect(isInfraError("envelope invalid")).toBe(false);
-    expect(isInfraError("timeout_without_envelope")).toBe(false);
-    expect(isInfraError(null)).toBe(false);
+    ).toBe(false);
+    expect(isModelFault(parseFault(JSON.stringify({ layer: "unknown", code: "unknown" })))).toBe(false);
+    expect(parseFault("envelope invalid")).toBeNull();
+    expect(parseFault(null)).toBeNull();
   });
 });
 
