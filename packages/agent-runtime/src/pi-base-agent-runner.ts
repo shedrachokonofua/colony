@@ -562,10 +562,30 @@ export class PiBaseAgentRunner implements PiRunner {
         // operate on the scratch dir, not on the pre-restart path.
         handle = resumed.handle;
       } else if (this.options.engine) {
-        handle = await this.options.engine.provision(
-          buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
-          cwd,
-        );
+        // Caught, never rethrown: run() has no catch, so a k8s throw from
+        // here (a CR that never became ready, a CR that failed, a refused
+        // RBAC create) would reach the adapter's finish wrapper and come
+        // back {unknown,unknown}, hiding the sandbox layer at fault. Same
+        // contract as the workspace provision catch above, which only ever
+        // sees local clone errors and never these messages.
+        try {
+          handle = await this.options.engine.provision(
+            buildSandboxLaunchProfile(toSandboxRole(this.profile.role)),
+            cwd,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            sandboxId,
+            envelope: { __unfinished: true },
+            reason: msg,
+            fault: {
+              layer: "sandbox",
+              code: classifyProvisionFailure(msg),
+              detail: msg.slice(0, 240),
+            },
+          };
+        }
         sandboxId = handle.sandboxId;
       }
       if (handle) {
@@ -901,14 +921,16 @@ export class PiBaseAgentRunner implements PiRunner {
               if (state.connectionErrors < MODEL_CONNECTION_ERROR_LIMIT)
                 return true;
               if (!next) {
-                state.failureReason = `provider_connection_failure: ${(
-                  state.lastConnectionError ?? errText
-                ).slice(0, 160)}`;
-                state.failureFault = {
-                  layer: "provider",
-                  code: "connection_exhausted",
-                  detail: (state.lastConnectionError ?? errText).slice(0, 240),
-                };
+                // CONNECTION_ERROR_RE already matches the 5xx and gateway
+                // texts, so the exhausted-leg code is decided by the same
+                // table the protocol path uses: an exhausted 502/503/529 is
+                // {provider,http_5xx}, not a generic connection_exhausted.
+                const lastError = state.lastConnectionError ?? errText;
+                state.failureReason = `provider_connection_failure: ${lastError.slice(
+                  0,
+                  160,
+                )}`;
+                state.failureFault ??= classifyPromptFailure(lastError);
                 return false;
               }
               this.options.logger?.warn?.(
@@ -932,26 +954,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 errText.replace(/\s+/g, " ").trim(),
                 runToken,
               ).slice(0, 160)}`;
-              if (state.failureFault === undefined) {
-                const code = /\b429\b/.test(errText)
-                  ? "http_429"
-                  : /\b50[0234]\b|\b529\b/.test(errText)
-                    ? "http_5xx"
-                    : /quota/i.test(errText)
-                      ? "quota_exhausted"
-                      : /dead leg/i.test(errText)
-                        ? "dead_leg_exhausted"
-                        : /bad gateway|gateway timeout/i.test(errText)
-                          ? "gateway_error"
-                          : /GitLab .* timed out/i.test(errText)
-                            ? "provider_timeout"
-                            : "connection_exhausted";
-                state.failureFault = {
-                  layer: "provider",
-                  code,
-                  detail: errText.slice(0, 240),
-                };
-              }
+              state.failureFault ??= classifyPromptFailure(errText);
               return false;
             }
             this.options.logger?.warn?.(
@@ -1287,15 +1290,19 @@ export class PiBaseAgentRunner implements PiRunner {
                     ? `submission_rejected: ${state.submissionRejectionReason}`
                     : `architect_stage_${stage.name}_no_submission`;
                 // A max_turns guard fault already on state is more precise
-                // than a stage-shaped no-submission: keep it.
+                // than a stage-shaped no-submission: keep it. With no such
+                // fault and no rejection, the stage simply ended without an
+                // envelope, which is the no-submission contract - max_turns
+                // would claim a guard nobody ever tripped.
                 state.failureFault ??= {
                   layer: "model",
                   code:
                     state.lastSubmissionFailure?.kind === "invalid"
                       ? "envelope_invalid"
-                      : state.submissionRejectionReason !== undefined
+                      : state.lastSubmissionFailure !== undefined ||
+                          state.submissionRejectionReason !== undefined
                         ? "envelope_rejected"
-                        : "max_turns",
+                        : "finalize_no_submission",
                   detail: state.failureReason.slice(0, 240),
                 };
               }
@@ -1725,11 +1732,18 @@ export class PiBaseAgentRunner implements PiRunner {
             ) {
               continue;
             }
+            const errText = err instanceof Error ? err.message : String(err);
+            // Classified here, at detection: finalization sees no envelope and
+            // no failureReason, so a throw left unclassified here comes back
+            // {model, finalize_no_submission} - a provider/harness failure
+            // reported as the model never submitting.
+            state.failureReason ??= `prompt_failure: ${sanitizeSecret(
+              errText.replace(/\s+/g, " ").trim(),
+              runToken,
+            ).slice(0, 160)}`;
+            state.failureFault ??= classifyPromptFailure(errText);
             this.options.logger?.warn?.(
-              {
-                runId,
-                error: err instanceof Error ? err.message : String(err),
-              },
+              { runId, error: errText },
               "pi_run_continuation_failed",
             );
             break;
@@ -1945,6 +1959,42 @@ export function classifyProvisionFailure(message: string): Fault["code"] {
     : message.includes("exec transport") || message.includes("exec-transport")
       ? "exec_transport"
       : "sandbox_cr_missing";
+}
+
+/**
+ * The provider fault for a prompt that threw, or undefined when the text
+ * names no provider condition - an SDK/harness fault outlives finalization
+ * as the run's own opaque error rather than wearing a provider code it
+ * never earned.
+ *
+ * Shared by every path that sees a prompt throw: the connection-exhaustion
+ * arm and the protocol arm of `driveSession`, and the continuation steer.
+ * CONNECTION_ERROR_RE matches 5xx and gateway texts too, so the arms that
+ * test it must come through here as well - classifying them on their own
+ * would strand exhausted 502/503/529 legs on the generic code while the
+ * unreachable arms below held the spec's codes.
+ */
+export function classifyPromptFailure(message: string): Fault | undefined {
+  const code = /\b429\b/.test(message)
+    ? "http_429"
+    : /\b50[0234]\b|\b529\b/.test(message)
+      ? "http_5xx"
+      : /quota|insufficient balance|no deployments available/i.test(message)
+        ? "quota_exhausted"
+        : /dead leg/i.test(message)
+          ? "dead_leg_exhausted"
+          : /bad gateway|gateway timeout/i.test(message)
+            ? "gateway_error"
+            : /GitLab .* timed out|\bETIMEDOUT\b/i.test(message)
+              ? "provider_timeout"
+              : /ECONNRESET|ECONNREFUSED|EAI_AGAIN|fetch failed|socket hang up|service unavailable|upstream|no capacity|network error|stream stall|connection\.|timed? ?out|Request timed out/i.test(
+                    message,
+                  )
+                ? "connection_exhausted"
+                : undefined;
+  return code === undefined
+    ? undefined
+    : { layer: "provider", code, detail: message.slice(0, 240) };
 }
 
 function provisionProfileWorkspace(

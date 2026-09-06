@@ -662,7 +662,66 @@ function runnerOn(baseUrl: string, runTimeoutMs: number): PiBaseAgentRunner {
 
 const HEAD_SHA = "a".repeat(40);
 
+/**
+ * A runner whose sandbox engine refuses to provision, the way a k8s engine
+ * does when the Sandbox CR never becomes ready or its create is refused.
+ * The workspace provision succeeds here, so this is the engine path only.
+ */
+function runnerWithFailingProvision(message: string): PiBaseAgentRunner {
+  const scratchDir = mkdtempSync(join(tmpdir(), "colony-fault-provision-"));
+  scratchDirs.push(scratchDir);
+  return new PiBaseAgentRunner(
+    {
+      ...REVIEWER_ROLE_PROFILE,
+      workspaceMode: "scratch",
+      requireRepositoryInspection: false,
+      defaultTools: [],
+    },
+    {
+      model: {
+        id: "primary",
+        name: "primary",
+        provider: "test-gateway",
+        api: "openai-completions",
+        baseUrl: "http://127.0.0.1:1/v1",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      },
+      scratchDir,
+      broker: { resolve: () => "test-key" },
+      engine: {
+        provision: () => Promise.reject(new Error(message)),
+        connect: () => Promise.reject(new Error("unused")),
+      },
+    },
+  );
+}
+
 describe("fault emission from a real run", () => {
+  // engine.provision sits in the outer try/finally, which has no catch: a
+  // k8s throw (CR ready-timeout, CR failed, refused RBAC) escaped run() and
+  // the adapter's finish wrapper reported {unknown,unknown}. The local
+  // workspace-clone catch never sees those messages.
+  it("returns a sandbox fault when engine.provision throws", async () => {
+    const result = await runnerWithFailingProvision(
+      "timed out 60000ms waiting for Sandbox CR sb-1 to become ready",
+    ).run({
+      runId: "run-provision-throw",
+      packet: { goal: "Review the change" },
+      environment: { role: "reviewer" },
+    });
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(SANDBOX_FAULT_CODES).toContain(result.fault?.code ?? "");
+    expect(result.fault).toEqual({
+      layer: "sandbox",
+      code: "sandbox_cr_missing",
+      detail: "timed out 60000ms waiting for Sandbox CR sb-1 to become ready",
+    });
+  }, 120_000);
+
   // The catch around createAgentSession classified the fault and rethrew, and
   // run() has no catch: the throw escaped to PiAgentRuntimeAdapter.startRun,
   // which logged "unknown classification" and returned {unknown, unknown}. A
