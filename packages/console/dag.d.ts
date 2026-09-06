@@ -10,11 +10,15 @@ export interface DagEdge {
   depends_on_task_id: string;
 }
 
+import type { DeliveryStatus } from "./delivery-stage.js";
+
 export interface DagDetail {
   tasks: Array<{ id: string; title: string; state: string }>;
   deps: DagEdge[];
   scope: { plan_json?: string | null };
   runs?: unknown[];
+  /** Backend-derived delivery status per task id (GET /scopes/:id). */
+  delivery_by_task?: Record<string, DeliveryStatus | null>;
 }
 
 export interface DagBox {

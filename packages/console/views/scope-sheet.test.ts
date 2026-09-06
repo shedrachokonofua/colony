@@ -5,6 +5,7 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it } from "bun:test";
 import { sharedDom } from "../elements/test-dom.js";
+import { DELIVERY_STAGES } from "../delivery-stage.js";
 
 sharedDom();
 
@@ -160,6 +161,94 @@ describe("scope-sheet banners", () => {
         t.id === "col-x.1" ? { ...t, state: "mr_open" } : t,
       ),
     };
+    await el.updateComplete;
+    expect(el.querySelector(".banner-wait")?.textContent).toBe(
+      "Merge request !3 is waiting for your approval.",
+    );
+  });
+});
+
+describe("scope-sheet wait banner by delivery stage", () => {
+  /** An active scope whose one mr_open task carries `stage`. */
+  function sheetWithStage(stage) {
+    const el = makeSheet(
+      detail({
+        scope: { ...SCOPE_CLOSED, status: "active", approvals: "auto" },
+        tasks: TASKS.map((task) =>
+          task.id === "col-x.1" ? { ...task, state: "mr_open" } : task,
+        ),
+        delivery_by_task: {
+          "col-x.1": {
+            stage,
+            since: "2026-09-01T00:00:00.000Z",
+            evidence: [{ kind: "test", text: "fact" }],
+            run_ids: [],
+          },
+        },
+      }),
+    );
+    return el;
+  }
+
+  it("renders a banner line for every stage the API can send", async () => {
+    for (const stage of DELIVERY_STAGES) {
+      const el = sheetWithStage(stage);
+      await el.updateComplete;
+      const banner = el.querySelector(".banner-wait");
+      expect(banner, `no banner for stage ${stage}`).toBeTruthy();
+      expect(banner?.textContent?.trim()).toBeTruthy();
+      // The banner is the stage's own read, never the raw task state.
+      expect(banner?.textContent).not.toContain("mr_open");
+    }
+  });
+
+  it("says CI failed with the MR number, never mr_open", async () => {
+    const el = sheetWithStage("ci_failed");
+    await el.updateComplete;
+    const text = el.querySelector(".banner-wait")?.textContent ?? "";
+    expect(text).toContain("CI failed on MR !3");
+    expect(text).not.toContain("mr_open");
+    expect(text.toLowerCase()).not.toContain("awaiting review");
+  });
+
+  it("reports a running repair and a failed repair distinctly", async () => {
+    const running = sheetWithStage("repair_running");
+    await running.updateComplete;
+    expect(running.querySelector(".banner-wait")?.textContent).toContain(
+      "repair running",
+    );
+    const failed = sheetWithStage("repair_failed");
+    await failed.updateComplete;
+    expect(failed.querySelector(".banner-wait")?.textContent).toContain(
+      "repair failed",
+    );
+  });
+
+  it("waits on the provider when the head is not reported yet", async () => {
+    const el = sheetWithStage("provider_head_pending");
+    await el.updateComplete;
+    expect(el.querySelector(".banner-wait")?.textContent).toBe(
+      "Waiting for the provider to report the new head.",
+    );
+  });
+
+  it("keeps the manual-approval line for awaiting_human_approval", async () => {
+    const el = makeSheet(
+      detail({
+        scope: { ...SCOPE_CLOSED, status: "active", approvals: "manual" },
+        tasks: TASKS.map((task) =>
+          task.id === "col-x.1" ? { ...task, state: "mr_open" } : task,
+        ),
+        delivery_by_task: {
+          "col-x.1": {
+            stage: "awaiting_human_approval",
+            since: "2026-09-01T00:00:00.000Z",
+            evidence: [],
+            run_ids: [],
+          },
+        },
+      }),
+    );
     await el.updateComplete;
     expect(el.querySelector(".banner-wait")?.textContent).toBe(
       "Merge request !3 is waiting for your approval.",

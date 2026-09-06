@@ -17,6 +17,12 @@ import {
 import { graphModel, layoutDag } from "../dag.js";
 import { createRunTicker, formatDuration, runDurationMs } from "../duration.js";
 import { KIND_LABEL } from "../kind-label.js";
+import {
+  deliveryStage,
+  deliveryStageLabel,
+} from "../delivery-stage.js";
+
+/** @typedef {import("../delivery-stage.js").DeliveryStatus} DeliveryStatus */
 
 /**
  * The running run for one task, for the node's live label.
@@ -27,6 +33,16 @@ import { KIND_LABEL } from "../kind-label.js";
 function liveRunFor(detail, taskId) {
   const runs = /** @type {any[]} */ (detail?.runs || []);
   return runs.find((run) => run.status === "running" && run.task_id === taskId);
+}
+
+/**
+ * The task's backend-derived delivery status; the browser infers none.
+ * @param {import("../dag.js").DagDetail | null | undefined} detail
+ * @param {string} taskId
+ * @returns {import("../delivery-stage.js").DeliveryStatus | null}
+ */
+function deliveryStatusFor(detail, taskId) {
+  return detail?.delivery_by_task?.[taskId] ?? null;
 }
 
 /** Trailing serial of a task id (`#1`) or plan node (`#1` via `plan:1`). */
@@ -149,6 +165,12 @@ export class TaskDag extends ColonyElement {
         const box = pos.get(node.id);
         if (!box) return svg``;
         const live = liveRunFor(detail, node.id);
+        const status = deliveryStatusFor(detail, node.id);
+        const stage = deliveryStage(status);
+        // With a backend-derived stage the node must not fall back to the
+        // generic task state: "mr_open" tells the operator nothing about a
+        // head whose CI failed.
+        const nodeState = stage ? deliveryStageLabel(status) : node.state;
         const selected = this.selectedTaskId === node.id && this.drawerOpen;
         return svg`<g
           class=${classMap({
@@ -158,6 +180,7 @@ export class TaskDag extends ColonyElement {
             "is-selected": selected,
             "is-live": Boolean(live),
           })}
+          data-stage=${stage || nothing}
           data-state=${node.state}>
           <rect
             class=${classMap({
@@ -170,7 +193,7 @@ export class TaskDag extends ColonyElement {
             <div class="node-html dag-label" xmlns="http://www.w3.org/1999/xhtml">
               <span class="ntitle">${node.title}</span>
               <span class="nstate"
-                >${node.state}${
+                >${nodeState}${
                   live
                     ? ` · ${KIND_LABEL[live.kind] || live.kind}${(() => {
                         const ms = runDurationMs(live, now);

@@ -14,6 +14,8 @@ import {
   parseCostPrediction,
 } from "../cost-prediction.js";
 import { parsePlan } from "../dag.js";
+import { rel } from "../rel-time.js";
+import { deliveryStage, deliveryStageLabel } from "../delivery-stage.js";
 import { renderTaskActions } from "./task-drawer-actions.js";
 import "./run-feed.js";
 import "./run-line.js";
@@ -126,6 +128,50 @@ export class TaskDrawer extends ColonyElement {
     ).value;
   }
 
+  /**
+   * The task's delivery stage with its evidence: the backend-derived answer
+   * to "where is this MR", never an inference from the task state.
+   * @param {Record<string, any> | null} task
+   */
+  #delivery(task) {
+    const status = this.detail?.delivery_by_task?.[task?.id];
+    const stage = deliveryStage(status);
+    if (!stage) return nothing;
+    const evidence = /** @type {any[]} */ (status?.evidence || []);
+    return html`<div class="delivery" data-stage=${stage}>
+      <p class="delivery-line">
+        <span class="badge" data-stage=${stage}>
+          ${deliveryStageLabel(status)}
+        </span>
+        ${status?.since
+          ? html`<span class="delivery-since mono">since ${rel(status.since)}</span>`
+          : nothing}
+      </p>
+      ${evidence.length
+        ? html`<ul class="delivery-evidence">
+            ${evidence.map(
+              (entry) => html`<li class="task-meta">
+                ${entry.url
+                  ? html`<a href=${entry.url}>${entry.text}</a>`
+                  : entry.text}
+              </li>`,
+            )}
+          </ul>`
+        : nothing}
+      ${this.#deliveryRuns(status)}
+    </div>`;
+  }
+
+  /** The runs behind a stage, as links the operator can open. */
+  /** @param {Record<string, any> | null | undefined} status */
+  #deliveryRuns(status) {
+    const ids = /** @type {string[]} */ (status?.run_ids || []);
+    if (!ids.length) return nothing;
+    return html`<p class="delivery-runs mono">
+      ${ids.map((id, index) => html`${index ? " · " : ""}${id}`)}
+    </p>`;
+  }
+
   /** @param {{ state?: string }} task @param {string} [label] */
   #drawerHead(task, label = "Task detail") {
     return html`<div class="drawer-head">
@@ -198,6 +244,7 @@ export class TaskDrawer extends ColonyElement {
             ? `attempt ${task.attempt}`
             : "first attempt"}${retryWait}
         </p>
+        ${this.#delivery(task)}
         ${task.blocked_reason
           ? html`<p class="wait-inline">${task.blocked_reason}</p>`
           : nothing}

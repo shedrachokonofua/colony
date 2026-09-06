@@ -1,5 +1,7 @@
 // Pure helpers for the project surfaces: card text, dedupe, form payloads, tab routing, row models.
 
+/** @typedef {import("./delivery-stage.js").DeliveryStatus} DeliveryStatus */
+
 /** @typedef {"scopes" | "settings" | "running"} ProjectTab */
 
 /** @type {readonly ProjectTab[]} */
@@ -64,6 +66,7 @@ export function serializeProjectTabHref(currentHash, projectName, targetTab) {
  *     started_at?: string | null,
  *     finished_at?: string | null,
  *   } | null,
+ *   delivery_status?: DeliveryStatus | null,
  * }} RunningEntry
  */
 

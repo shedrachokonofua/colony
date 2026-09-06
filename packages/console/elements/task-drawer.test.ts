@@ -6,6 +6,10 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it } from "bun:test";
 import { sharedDom } from "./test-dom.js";
+import {
+  DELIVERY_STAGES,
+  DELIVERY_STAGE_LABEL,
+} from "../delivery-stage.js";
 
 // Element suites share this window and registry (bun runs every suite in one
 // process with one module cache); the shared window must be installed before
@@ -382,6 +386,81 @@ describe("task-drawer events", () => {
     const el = makeDrawer(task("col-x.1", { state: "canceled" }));
     await el.updateComplete;
     expect(el.querySelector("form.feedback")).toBeNull();
+  });
+});
+
+describe("task-drawer delivery status", () => {
+  /** A drawer for one mr_open task whose API status is `stage`. */
+  function drawerWithStage(stage, statusOverrides = {}) {
+    const id = "col-x.1";
+    const status = {
+      stage,
+      since: new Date(Date.now() - 60_000).toISOString(),
+      evidence: [
+        {
+          kind: "pipeline",
+          text: `pipeline ${stage} at head`,
+          url: "https://ci.example/pipelines/1",
+        },
+      ],
+      run_ids: ["run-1"],
+      ...statusOverrides,
+    };
+    return makeDrawer(task(id, { state: "mr_open", mr_iid: 7 }), {
+      scope: SCOPE,
+      runs: [],
+      delivery_by_task: { [id]: status },
+    });
+  }
+
+  it("renders every stage's label with its evidence and links", async () => {
+    for (const stage of DELIVERY_STAGES) {
+      const el = drawerWithStage(stage);
+      await el.updateComplete;
+      const delivery = el.querySelector(".delivery");
+      expect(delivery?.getAttribute("data-stage")).toBe(stage);
+      expect(delivery?.querySelector(".badge")?.textContent?.trim()).toBe(
+        DELIVERY_STAGE_LABEL[stage],
+      );
+      const evidence = delivery?.querySelectorAll(".delivery-evidence li");
+      expect(evidence?.length).toBe(1);
+      expect(
+        delivery?.querySelector(".delivery-evidence a")?.getAttribute("href"),
+      ).toBe("https://ci.example/pipelines/1");
+      expect(delivery?.querySelector(".delivery-runs")?.textContent).toContain(
+        "run-1",
+      );
+    }
+  });
+
+  it("reads CI failed, not mr_open or awaiting review, with the pipeline link", async () => {
+    const el = drawerWithStage("ci_failed");
+    await el.updateComplete;
+    const delivery = el.querySelector(".delivery")!;
+    expect(delivery.textContent).toContain("CI failed");
+    expect(delivery.textContent).not.toContain("mr_open");
+    expect(delivery.textContent?.toLowerCase()).not.toContain(
+      "awaiting review",
+    );
+    expect(
+      delivery.querySelector(".delivery-evidence a")?.getAttribute("href"),
+    ).toBe("https://ci.example/pipelines/1");
+  });
+
+  it("renders evidence without a link when the fact carries no URL", async () => {
+    const el = drawerWithStage("merge_conflict", {
+      evidence: [{ kind: "gate", text: "conflict in src/a.ts" }],
+    });
+    await el.updateComplete;
+    const item = el.querySelector(".delivery-evidence li");
+    expect(item?.textContent).toContain("conflict in src/a.ts");
+    expect(item?.querySelector("a")).toBeNull();
+  });
+
+  it("renders no delivery block when the API sends no status", async () => {
+    const el = makeDrawer(task("col-x.1", { state: "mr_open", mr_iid: 7 }));
+    await el.updateComplete;
+    expect(el.querySelector(".delivery")).toBeNull();
   });
 });
 

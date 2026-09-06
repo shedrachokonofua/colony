@@ -5,6 +5,12 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it } from "bun:test";
 import { sharedDom } from "./test-dom.js";
+// A plain module (no custom element registration), so it is safe to import
+// before the shared window is installed.
+import {
+  DELIVERY_STAGES,
+  DELIVERY_STAGE_LABEL,
+} from "../delivery-stage.js";
 
 sharedDom();
 
@@ -185,6 +191,57 @@ describe("task-dag", () => {
       "No tasks on this sheet yet.",
     );
     expect(el.querySelector("svg.dag")).toBeNull();
+  });
+});
+
+describe("task-dag delivery stage", () => {
+  /** A detail whose one mr_open task carries the given stage. */
+  function detailWithStage(stage, overrides = {}) {
+    return detail({
+      delivery_by_task: {
+        "col-x.1": {
+          stage,
+          since: "2026-09-01T00:00:00.000Z",
+          evidence: [{ kind: "test", text: `evidence for ${stage}` }],
+          run_ids: [],
+          ...overrides,
+        },
+      },
+    });
+  }
+
+  it("renders every stage's label and data-stage on its node", async () => {
+    for (const stage of DELIVERY_STAGES) {
+      const el = makeDag(detailWithStage(stage));
+      await el.updateComplete;
+      const node = [...el.querySelectorAll("g.node.dag-node")][1];
+      expect(node.getAttribute("data-stage")).toBe(stage);
+      expect(node.querySelector(".nstate")?.textContent).toContain(
+        DELIVERY_STAGE_LABEL[stage],
+      );
+    }
+  });
+
+  it("reads CI failed, not mr_open, for an implemented head whose CI failed", async () => {
+    const el = makeDag(detailWithStage("ci_failed"));
+    await el.updateComplete;
+    const node = [...el.querySelectorAll("g.node.dag-node")][1];
+    expect(node.querySelector(".nstate")?.textContent).toContain(
+      "CI failed",
+    );
+    const text = node.querySelector(".nstate")?.textContent ?? "";
+    expect(text).not.toContain("mr_open");
+    expect(text.toLowerCase()).not.toContain("awaiting review");
+    // The existing task-state contract survives: data-state is untouched.
+    expect(node.getAttribute("data-state")).toBe("mr_open");
+  });
+
+  it("falls back to the task state when the API sends no delivery status", async () => {
+    const el = makeDag(detail());
+    await el.updateComplete;
+    const node = [...el.querySelectorAll("g.node.dag-node")][1];
+    expect(node.getAttribute("data-stage")).toBeNull();
+    expect(node.querySelector(".nstate")?.textContent).toContain("mr_open");
   });
 });
 

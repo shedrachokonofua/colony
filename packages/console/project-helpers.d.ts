@@ -28,6 +28,8 @@ export interface RunningEntry {
     started_at?: string | null;
     finished_at?: string | null;
   } | null;
+  /** Backend-derived delivery stage; absent only on an older API. */
+  delivery_status?: DeliveryStatus | null;
 }
 
 export interface RunningRowInput {
