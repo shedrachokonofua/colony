@@ -280,6 +280,19 @@ export interface ProviderHealth {
   readonly version?: string;
 }
 
+export interface ProviderPipelineJob {
+  readonly id: ProviderId;
+  readonly name: string;
+  readonly status: string;
+  readonly web_url?: string;
+  readonly metadata: ProviderMetadata;
+}
+
+export interface ProviderPipelineTrace {
+  readonly job: ProviderPipelineJob;
+  readonly text: string;
+}
+
 export interface ProviderAdapter {
   readonly provider: ProviderName;
   /**
@@ -461,6 +474,14 @@ export interface ProviderAdapter {
   readonly pipelines: {
     getStatus(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderPipeline>;
     trigger(repo: ProviderRepoRef, ref: string): Promise<ProviderPipeline>;
+    listJobs(
+      repo: ProviderRepoRef,
+      pipelineId: ProviderId,
+    ): Promise<readonly ProviderPipelineJob[]>;
+    getTrace(
+      repo: ProviderRepoRef,
+      jobId: ProviderId,
+    ): Promise<ProviderPipelineTrace>;
   };
   readonly users: {
     create(input: CreateProviderUserInput): Promise<ProviderUser>;
@@ -499,6 +520,66 @@ function redactedEnv(env: Readonly<Record<string, string>>): string {
 export function redact(value: string): string {
   if (value.length <= 8) return "***";
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
+// Trace excerpts are operator-facing evidence: bounded to the trailing output
+// (where failures surface), free of control characters and obvious secrets.
+const TRACE_MAX_LINES = 200;
+const TRACE_MAX_BYTES = 8 * 1024;
+
+// eslint-disable-next-line no-control-regex
+const ANSI_REGEX =
+  /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+// C0/C1 controls except \n (LF) and \t (benign whitespace) so lines and
+// column layout survive; ESC-run sequences go first.
+// eslint-disable-next-line no-control-regex
+const CONTROL_REGEX = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
+
+const SECRET_PATTERN =
+  /(?<token>\b(?:glpat-[0-9a-zA-Z_\-]{20,}|xoxb-[0-9a-zA-Z_\-]{10,}|AKIA[0-9A-Z]{16}|sk-[0-9a-zA-Z_\-]{20,})\b)|(?<bearer>Authorization:\s*Bearer\s+\S+)|(?<name>\b[A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|KEY)[A-Za-z0-9_]*\s*[=:]\s*)(?<value>\S+)/gi;
+
+export function sanitizeTrace(text: string): string {
+  const cleaned = text
+    .replace(ANSI_REGEX, "")
+    .replace(CONTROL_REGEX, "")
+    .replace(SECRET_PATTERN, (...args) => {
+      const groups = (args.find((a) => a && typeof a === "object") ?? {}) as {
+        bearer?: string;
+        name?: string;
+        value?: string;
+      };
+      if (groups.bearer !== undefined) {
+        return groups.bearer.replace(
+          /\S+$/,
+          redact(groups.bearer.replace(/^\S+\s+/, "")),
+        );
+      }
+      if (groups.name !== undefined)
+        return `${groups.name}${redact(groups.value ?? "")}`;
+      return redact(String(args[0]));
+    });
+
+  const encoder = new TextEncoder();
+  const lines = cleaned.split("\n");
+  const bounded =
+    lines.length > TRACE_MAX_LINES ? lines.slice(-TRACE_MAX_LINES) : lines;
+  // Keep the trailing lines that fit the byte cap; identifiers and URLs in
+  // them stay intact.
+  let start = bounded.length - 1;
+  let total = encoder.encode(bounded[start]).length;
+  while (
+    start > 0 &&
+    total + encoder.encode(bounded[start - 1]).length + 1 <= TRACE_MAX_BYTES
+  ) {
+    start -= 1;
+    total += encoder.encode(bounded[start]).length + 1;
+  }
+  const joined = bounded.slice(start).join("\n");
+  // A single line can exceed the cap on its own: keep its trailing bytes and
+  // drop any code point the cut splits.
+  if (encoder.encode(joined).length <= TRACE_MAX_BYTES) return joined;
+  const bytes = encoder.encode(joined);
+  return new TextDecoder().decode(bytes.slice(bytes.length - TRACE_MAX_BYTES));
 }
 
 export function redactBootstrapResult(
@@ -824,10 +905,26 @@ export class FakeProviderAdapter implements ProviderAdapter {
     },
   };
 
+  /** Set pipeline status for a commit SHA. */
+  setPipelineStatusForSha(sha: string, status: string): void {
+    this.pipelineStatusBySha.set(sha, status);
+  }
+
+  /** Pipeline status per commit SHA; unset SHAs report success. */
+  readonly pipelineStatusBySha = new Map<string, string>();
+
+  /** Failed/canceled job names per commit SHA; drives listJobs/getTrace. */
+  readonly pipelineJobsBySha = new Map<
+    string,
+    readonly { name: string; status: string }[]
+  >();
+  /** Trace text per job id, sanitized on read. */
+  readonly traceTextByJobId = new Map<string, string>();
+
   readonly pipelines: ProviderAdapter["pipelines"] = {
     getStatus: async (_repo, id) => ({
       id,
-      status: "success",
+      status: this.pipelineStatusBySha.get(id) ?? "success",
       metadata: this.meta(id),
     }),
     trigger: async (repo, ref) => ({
@@ -835,6 +932,30 @@ export class FakeProviderAdapter implements ProviderAdapter {
       status: "pending",
       metadata: this.meta(ref),
     }),
+    listJobs: async (_repo, pipelineId) => {
+      const status = this.pipelineStatusBySha.get(pipelineId) ?? "success";
+      if (status !== "failed" && status !== "canceled") return [];
+      const jobs = this.pipelineJobsBySha.get(pipelineId) ?? [
+        { name: "test", status: "failed" },
+      ];
+      return jobs.map((job) => ({
+        id: `job-${pipelineId}-${job.name}`,
+        name: job.name,
+        status: job.status,
+        web_url: `https://fake.example/${pipelineId}/jobs/${job.name}`,
+        metadata: this.meta(`job-${pipelineId}-${job.name}`),
+      }));
+    },
+    getTrace: async (_repo, jobId) => {
+      const jobText = this.traceTextByJobId.get(jobId) ?? "trace for " + jobId;
+      const job: ProviderPipelineJob = {
+        id: jobId,
+        name: jobId.split("-").slice(-1)[0] ?? jobId,
+        status: "failed",
+        metadata: this.meta(jobId),
+      };
+      return { job, text: sanitizeTrace(jobText) };
+    },
   };
 
   readonly users: ProviderAdapter["users"] = {

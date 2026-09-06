@@ -16,6 +16,7 @@ import {
   type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
+import type { Fault } from "@colony/core";
 import type { SandboxHandle } from "@colony/sandbox";
 import type { CredentialBroker } from "./credential-broker.js";
 import type { RunAuditSink } from "./audit-sink.js";
@@ -143,6 +144,8 @@ function provisionAdvisorAgentDir(
 export interface PiRunState {
   /** Set by the run-timeout guard, the workspace probe, and the guards. */
   failureReason?: string;
+  /** Structured classification of the terminal failure; set at detection. */
+  failureFault?: Fault;
   /** An inspection-class tool call has looked at the repository. */
   repositoryInspected: boolean;
   /** A provider went mute; the run loop owns the jiggle/failover policy. */
@@ -169,6 +172,14 @@ export interface PiRunState {
    * never submitted reports the refusal instead of a generic no-submission.
    */
   submissionRejectionReason?: string;
+  /**
+   * The last terminal-submission failure and whether the envelope was
+   * refused for its shape (`invalid`) or refused after arriving
+   * schema-shaped (`rejected`). Read at finalization; reset per leg.
+   */
+  lastSubmissionFailure?: { kind: "invalid" | "rejected"; message: string };
+  /** Last work tool whose arguments the harness refused before running it. */
+  lastToolArgInvalid?: string;
 }
 
 /** Everything the builder needs that its caller has already resolved. */
@@ -645,6 +656,8 @@ export async function buildPiSession(
     // submission rejection.
     state.zeroOutputStalled = false;
     state.submissionRejectionReason = undefined;
+    state.lastSubmissionFailure = undefined;
+    state.lastToolArgInvalid = undefined;
     const unsubscribeGuards = installRunGuards(target.agent, runId, {
       maxTurns: options.maxTurns,
       logger: options.logger,
@@ -658,8 +671,23 @@ export async function buildPiSession(
         state.submissionRejectionReason =
           detail || "terminal submission was rejected";
       },
-      onFailure: (reason) => {
+      onRejection: (text, kind) => {
+        state.lastSubmissionFailure = { kind, message: text };
+      },
+      onArgumentInvalid: (toolName, message) => {
+        if (toolName === submitName) return;
+        state.lastToolArgInvalid = message.slice(0, 240);
+      },
+      onFailure: (reason, fault) => {
         state.failureReason ??= reason;
+        state.failureFault ??= fault;
+        if (reason.includes("max_turns") || fault?.code === "max_turns") {
+          state.failureFault ??= {
+            layer: "model",
+            code: "max_turns",
+            detail: reason,
+          };
+        }
       },
       abort: abortDeliberate,
       onZeroOutputStall: () => {
@@ -720,6 +748,11 @@ export async function buildPiSession(
             state.zeroOutputStalled = false;
           } else if (verdict.action === "exhausted") {
             state.failureReason = "repair_no_change";
+            state.failureFault ??= {
+              layer: "model",
+              code: "envelope_rejected",
+              detail: "repair resubmitted the rejected head with no change",
+            };
             abortDeliberate();
           }
           return {

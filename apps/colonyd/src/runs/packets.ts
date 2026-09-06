@@ -1,6 +1,13 @@
-import type { ArchitectDecompositionV2 } from "@colony/schemas";
+import type { ArchitectDecompositionV2, RepairIntentV1 } from "@colony/schemas";
 import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
+
+/** Operator-facing section title per repair trigger. */
+const REPAIR_INTENT_TITLE: Record<RepairIntentV1["kind"], string> = {
+  ci_failure: "CI FAILURE",
+  merge_conflict: "MERGE CONFLICT",
+  merge_gate_failure: "MERGE GATE FAILURE",
+};
 
 /**
  * Shared packet assembly for every agent role. A project's operator-authored
@@ -120,7 +127,8 @@ export interface ImplementPacket {
   repo: AgentPacketRepo;
   execution_context: ImplementExecutionContext;
   repair?: {
-    rejected_head_sha: string;
+    rejected_head_sha?: string;
+    intent?: RepairIntentV1;
   };
 }
 
@@ -344,6 +352,8 @@ export interface ImplementContinuity {
   currentGateFailure?: string;
   currentReviewFindings?: string;
   currentRejectedHeadSha?: string;
+  /** Newest unresolved repair intent; rendered as a dedicated body section. */
+  repairIntent?: RepairIntentV1;
   /** Legacy fields are retained as input compatibility for direct callers. */
   interrupted?: string;
   openMr?: string;
@@ -387,6 +397,9 @@ export function buildImplementPacket(
     ...legacyHistoricalEvidence(continuity),
   ];
   const operatorFeedback = continuity.operatorFeedback ?? task.human_feedback;
+  const currentRejectedHeadSha =
+    continuity.currentRejectedHeadSha ?? continuity.rejectedHeadSha;
+  const repairIntent = continuity.repairIntent;
   return {
     kind: "implement_task",
     task_id: task.id,
@@ -398,12 +411,13 @@ export function buildImplementPacket(
         gateFailure: continuity.currentGateFailure ?? continuity.gateFailure,
         reviewFindings:
           continuity.currentReviewFindings ?? continuity.reviewFindings,
-        rejectedHeadSha:
-          continuity.currentRejectedHeadSha ?? continuity.rejectedHeadSha,
+        rejectedHeadSha: currentRejectedHeadSha,
+        repairIntent,
         legacy:
           continuity.currentGateFailure === undefined &&
           continuity.currentReviewFindings === undefined &&
-          continuity.currentRejectedHeadSha === undefined,
+          continuity.currentRejectedHeadSha === undefined &&
+          repairIntent === undefined,
       }),
       projectContextSection(project),
       projectFilesSection(files),
@@ -417,11 +431,13 @@ export function buildImplementPacket(
       base_commit: baseSha,
     },
     execution_context: executionContext,
-    ...((continuity.currentRejectedHeadSha ?? continuity.rejectedHeadSha)
+    ...(currentRejectedHeadSha || repairIntent
       ? {
           repair: {
-            rejected_head_sha:
-              continuity.currentRejectedHeadSha ?? continuity.rejectedHeadSha!,
+            ...(currentRejectedHeadSha
+              ? { rejected_head_sha: currentRejectedHeadSha }
+              : {}),
+            ...(repairIntent ? { intent: repairIntent } : {}),
           },
         }
       : {}),
@@ -542,6 +558,7 @@ function buildImplementBody(
     gateFailure?: string;
     reviewFindings?: string;
     rejectedHeadSha?: string;
+    repairIntent?: RepairIntentV1;
     legacy?: boolean;
   },
 ): string {
@@ -580,6 +597,22 @@ function buildImplementBody(
           current.rejectedHeadSha
             ? `This applies to current head \`${current.rejectedHeadSha}\`; a repair completion MUST submit a different pushed head SHA.`
             : "",
+        ]
+      : []),
+    ...(current.repairIntent && !current.legacy
+      ? [
+          "",
+          `## Repair intent — ${REPAIR_INTENT_TITLE[current.repairIntent.kind]}`,
+          `Trigger: \`${current.repairIntent.kind}\` at source head \`${current.repairIntent.source_head_sha}\`.`,
+          ...(current.repairIntent.target_head_sha
+            ? [
+                `Target head: \`${current.repairIntent.target_head_sha}\` — rebase the task branch onto it and resolve the conflict from that merge base.`,
+              ]
+            : []),
+          ...formatRepairIntentProvider(current.repairIntent.provider),
+          "Sanitized, bounded diagnostic evidence:",
+          ...current.repairIntent.evidence.map((line) => `- ${line}`),
+          "Evidence is excerpted and redacted; fetch nothing beyond it without cause.",
         ]
       : []),
     "",
@@ -662,6 +695,24 @@ function formatFact<T>(
   if (fact.status === "known") return `${label}: ${format(fact.value)}.`;
   if (fact.status === "unknown") return `${label}: UNKNOWN (${fact.reason}).`;
   return `${label}: not requested for this fresh task.`;
+}
+
+function formatRepairIntentProvider(
+  provider: RepairIntentV1["provider"],
+): string[] {
+  if (!provider) return [];
+  const lines: string[] = [];
+  if (provider.pipeline_id)
+    lines.push(`Pipeline: \`${provider.pipeline_id}\`.`);
+  if (provider.pipeline_url)
+    lines.push(`Pipeline URL: ${provider.pipeline_url}`);
+  if (provider.job_ids?.length)
+    lines.push(`Failed job ids: ${provider.job_ids.join(", ")}.`);
+  if (provider.job_names?.length)
+    lines.push(`Failed job names: ${provider.job_names.join(", ")}.`);
+  if (provider.job_urls?.length)
+    lines.push(...provider.job_urls.map((url) => `- ${url}`));
+  return lines;
 }
 
 function buildReviewBody(task: Task, defaultBranch: string): string {

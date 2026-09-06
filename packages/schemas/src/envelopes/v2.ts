@@ -219,3 +219,29 @@ export const PlanReviewVerdictV1 = z
   });
 
 export type PlanReviewVerdictV1 = z.infer<typeof PlanReviewVerdictV1>;
+
+/** Why a repair run was dispatched. Evidence entries are sanitized, bounded
+ *  excerpts and identifiers — never raw logs. */
+export const RepairIntentV1 = z
+  .object({
+    kind: z.enum(["ci_failure", "merge_conflict", "merge_gate_failure"]),
+    source_head_sha: z.string().regex(/^[0-9a-f]{40}$/),
+    target_head_sha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/)
+      .optional(),
+    provider: z
+      .object({
+        pipeline_id: z.string().optional(),
+        pipeline_url: z.string().optional(),
+        job_ids: z.array(z.string()).optional(),
+        job_names: z.array(z.string()).optional(),
+        job_urls: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
+    evidence: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+
+export type RepairIntentV1 = z.infer<typeof RepairIntentV1>;

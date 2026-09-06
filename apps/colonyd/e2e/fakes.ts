@@ -10,6 +10,8 @@ import type { ValidateExecutor } from "../src/runs/validate.js";
 
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
+const SHA_C = "c".repeat(40);
+const SHA_D = "d".repeat(40);
 
 export interface ScriptKnobs {
   architectStall: boolean;
@@ -29,6 +31,8 @@ export interface ScriptKnobs {
   distinctShas?: boolean;
   implementerCalls?: Map<string, number>;
   singleTask?: boolean;
+  /** Last head the fake implementer pushed, per task. */
+  pushedShas?: Map<string, string>;
 }
 
 /**
@@ -299,15 +303,29 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
       : taskId.endsWith(".1")
         ? SHA_A
         : SHA_B;
+    // A repair run never re-pushes the head it was dispatched to fix:
+    // advance to the next head so the repair's no-change guard stays honest.
+    const repairing =
+      packet.repair !== null &&
+      typeof packet.repair === "object" &&
+      "intent" in packet.repair;
+    if (!script.pushedShas) script.pushedShas = new Map<string, string>();
+    const effectiveSha =
+      repairing && script.pushedShas.get(taskId) === headSha
+        ? headSha === SHA_A
+          ? SHA_C
+          : SHA_D
+        : headSha;
+    script.pushedShas.set(taskId, effectiveSha);
     const branch = `colony/${taskId}`;
     // mirror loop test: create branch so envelope verification passes
-    void provider.branches.create({ id: repoId }, branch, headSha);
+    void provider.branches.create({ id: repoId }, branch, effectiveSha);
     return {
       kind: "implementer_completion",
       status: "complete",
       summary: `Implemented ${taskId}.`,
       branch,
-      head_sha: headSha,
+      head_sha: effectiveSha,
       commands: [{ cmd: "npm test", exit_code: 0 }],
     };
   }
@@ -375,6 +393,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
   );
 
   script.implementerCalls = new Map<string, number>();
+  script.pushedShas = new Map<string, string>();
   const adapter = new ScriptedAgentRuntimeAdapter(script, provider);
   // Make *Stall reactive: assigning false unblocks the waiting deferred.
   // This lets tests toggle stall via direct property assignment.
