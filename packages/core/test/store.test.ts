@@ -7,6 +7,7 @@ import { DomainStateError, taskId } from "@colony/domain";
 import { LATEST_SCHEMA_VERSION } from "../src/migrations.js";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
+  deriveDeliveryStatus,
   SCOPE_STATUSES,
   Store,
   TASK_STATES,
@@ -1312,7 +1313,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(16);
+        expect(LATEST_SCHEMA_VERSION).toBe(17);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -1467,7 +1468,7 @@ describe("versioned migrations", () => {
       const migrated = new Store(v15Path);
       const fresh = new Store(join(dir, "fresh.db"));
       try {
-        expect(userVersion(migrated.db)).toBe(16);
+        expect(userVersion(migrated.db)).toBe(17);
         expect(tableColumns(migrated.db, "repair_intents")).toEqual(
           tableColumns(fresh.db, "repair_intents"),
         );
@@ -1495,6 +1496,47 @@ describe("versioned migrations", () => {
         expect(migratedIndexes.map((r) => r.name).sort()).toEqual(
           freshIndexes.map((r) => r.name).sort(),
         );
+      } finally {
+        migrated.close();
+        fresh.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migration 17 adds pipeline_observations to a database stamped at 16", () => {
+    const dir = mkdtempSync(join(tmpdir(), "colony-mig17-"));
+    try {
+      // A version-16 database: created fresh, then downgraded by dropping
+      // the migration-17 table and stamping user_version=16.
+      const v16Path = join(dir, "v16.db");
+      const v16 = new Store(v16Path);
+      v16.close();
+      const downgrade = new Database(v16Path);
+      downgrade.exec(
+        `DROP TABLE IF EXISTS pipeline_observations;
+         PRAGMA user_version = 16;`,
+      );
+      downgrade.close();
+
+      const migrated = new Store(v16Path);
+      const fresh = new Store(join(dir, "fresh.db"));
+      try {
+        expect(userVersion(migrated.db)).toBe(17);
+        // Parity with the fresh path: schema.sql and the migration agree on
+        // the columns, and a fresh database keeps its own copy.
+        expect(tableColumns(migrated.db, "pipeline_observations")).toEqual(
+          tableColumns(fresh.db, "pipeline_observations"),
+        );
+        expect(tableColumns(migrated.db, "pipeline_observations")).toEqual([
+          "head_sha",
+          "observed_at",
+          "pipeline_id",
+          "status",
+          "task_id",
+          "web_url",
+        ]);
       } finally {
         migrated.close();
         fresh.close();
@@ -1611,11 +1653,11 @@ describe("repair intents", () => {
     return { taskId: String(task!.id), runId: run.id };
   }
 
-  it("fresh database stamps at 16 with repair_intents present", () => {
+  it("fresh database stamps at the latest version with repair_intents present", () => {
     const version = (
       store.db.prepare("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(version).toBe(16);
+    expect(version).toBe(LATEST_SCHEMA_VERSION);
     const columns = (
       store.db.prepare("PRAGMA table_info(repair_intents)").all() as {
         name: string;
@@ -1738,6 +1780,224 @@ describe("repair intents", () => {
         trigger_json: "{}",
       }),
     ).toThrow();
+  });
+});
+
+describe("pipeline observations", () => {
+  function seedMrOpenTask(): { taskId: string; runId: string } {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const [task] = store.materializePlan(scopeId, plan(), "svc:colonyd");
+    store.transitionTask(task!.id, 0, "running", "svc:colonyd");
+    store.transitionTask(
+      task!.id,
+      store.getTask(task!.id)!.state_version,
+      "mr_open",
+      "svc:colonyd",
+      { mr_iid: 3 },
+    );
+    const run = store.startRun({
+      scope_id: scopeId,
+      task_id: task!.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    return { taskId: String(task!.id), runId: run.id };
+  }
+
+  it("fresh database stamps at 17 with pipeline_observations present", () => {
+    const version = (
+      store.db.prepare("PRAGMA user_version").get() as { user_version: number }
+    ).user_version;
+    expect(version).toBe(17);
+    expect(LATEST_SCHEMA_VERSION).toBe(17);
+    const columns = (
+      store.db.prepare("PRAGMA table_info(pipeline_observations)").all() as {
+        name: string;
+      }[]
+    ).map((c) => c.name);
+    expect(columns.sort()).toEqual([
+      "head_sha",
+      "observed_at",
+      "pipeline_id",
+      "status",
+      "task_id",
+      "web_url",
+    ]);
+  });
+
+  it("upserts one observation per task and reads it back", () => {
+    const { taskId } = seedMrOpenTask();
+    expect(store.getPipelineObservation(taskId)).toBeNull();
+    const first = {
+      task_id: taskId,
+      head_sha: "a".repeat(40),
+      status: "failed" as const,
+      pipeline_id: "pl-1",
+      web_url: "https://ci.example/pipelines/1",
+      observed_at: "2026-09-01T00:00:00.000Z",
+    };
+    store.upsertPipelineObservation(first);
+    expect(store.getPipelineObservation(taskId)).toEqual(first);
+    // The scheduler observes again after a new push: one row, replaced.
+    store.upsertPipelineObservation({
+      ...first,
+      head_sha: "b".repeat(40),
+      status: "success",
+      observed_at: "2026-09-01T01:00:00.000Z",
+    });
+    const rows = store.db
+      .prepare(`SELECT * FROM pipeline_observations WHERE task_id = ?`)
+      .all(taskId);
+    expect(rows).toHaveLength(1);
+    const updated = store.getPipelineObservation(taskId)!;
+    expect(updated.head_sha).toBe("b".repeat(40));
+    expect(updated.status).toBe("success");
+    expect(updated.observed_at).toBe("2026-09-01T01:00:00.000Z");
+  });
+
+  it("rejects a status the schema does not model", () => {
+    const { taskId } = seedMrOpenTask();
+    expect(() =>
+      store.upsertPipelineObservation({
+        task_id: taskId,
+        head_sha: "a".repeat(40),
+        status: "unknown" as "failed",
+        pipeline_id: null,
+        web_url: null,
+        observed_at: "2026-09-01T00:00:00.000Z",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("deliveryInputsFor", () => {
+  const HEAD = "a".repeat(40);
+  const OLD_HEAD = "b".repeat(40);
+
+  function seedMrOpenTask(): { taskId: string; runId: string } {
+    const scopeId = seededScope();
+    store.setScopeStatus(scopeId, "planning", "svc:colonyd");
+    const [task] = store.materializePlan(scopeId, plan(), "svc:colonyd");
+    store.transitionTask(task!.id, 0, "running", "svc:colonyd");
+    store.transitionTask(
+      task!.id,
+      store.getTask(task!.id)!.state_version,
+      "mr_open",
+      "svc:colonyd",
+      { mr_iid: 3 },
+    );
+    const run = store.startRun({
+      scope_id: scopeId,
+      task_id: task!.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    return { taskId: String(task!.id), runId: run.id };
+  }
+
+  /** A succeeded implement run that pushed `head`: the task's MR head. */
+  function pushHead(taskId: string, runId: string, head: string): void {
+    store.finishRun(runId, "succeeded", { head_sha: head });
+    expect(store.getTask(taskId)!.state).toBe("mr_open");
+  }
+
+  it("assembles every derivation input from the store alone", () => {
+    const { taskId, runId } = seedMrOpenTask();
+    pushHead(taskId, runId, HEAD);
+    const gate = store.startRun({
+      scope_id: store.getTask(taskId)!.scope_id,
+      task_id: taskId,
+      kind: "merge_gate",
+      lease_ttl_ms: 60_000,
+    });
+    const review = store.startRun({
+      scope_id: store.getTask(taskId)!.scope_id,
+      task_id: taskId,
+      kind: "review",
+      lease_ttl_ms: 60_000,
+    });
+
+    const inputs = store.deliveryInputsFor(taskId)!;
+    expect(inputs.task.id).toBe(taskId);
+    expect(inputs.mrHeadSha).toBe(HEAD);
+    expect(inputs.runs.map((run) => run.id)).toContain(gate.id);
+    expect(inputs.latestGate?.id).toBe(gate.id);
+    expect(inputs.reviews.map((run) => run.id)).toEqual([review.id]);
+    expect(inputs.approvalsMode).toBe("auto");
+    expect(inputs.repairIntents).toEqual([]);
+    expect(inputs.pipeline).toBeNull();
+  });
+
+  it("populates pipeline facts only when the observation matches the MR head", () => {
+    const { taskId, runId } = seedMrOpenTask();
+    pushHead(taskId, runId, HEAD);
+    store.upsertPipelineObservation({
+      task_id: taskId,
+      head_sha: OLD_HEAD,
+      status: "failed",
+      pipeline_id: "pl-1",
+      web_url: "https://ci.example/pipelines/1",
+      observed_at: "2026-09-01T00:00:00.000Z",
+    });
+    // A pipeline observed at another head proves nothing about this one.
+    expect(store.deliveryInputsFor(taskId)!.pipeline).toBeNull();
+
+    store.upsertPipelineObservation({
+      task_id: taskId,
+      head_sha: HEAD,
+      status: "failed",
+      pipeline_id: "pl-2",
+      web_url: "https://ci.example/pipelines/2",
+      observed_at: "2026-09-01T02:00:00.000Z",
+    });
+    const inputs = store.deliveryInputsFor(taskId)!;
+    expect(inputs.pipeline).toEqual({
+      status: "failed",
+      pipelineUrl: "https://ci.example/pipelines/2",
+      observedAt: "2026-09-01T02:00:00.000Z",
+    });
+  });
+
+  it("omits the pipeline URL when the provider reported none", () => {
+    const { taskId, runId } = seedMrOpenTask();
+    pushHead(taskId, runId, HEAD);
+    store.upsertPipelineObservation({
+      task_id: taskId,
+      head_sha: HEAD,
+      status: "running",
+      pipeline_id: null,
+      web_url: null,
+      observed_at: "2026-09-01T00:00:00.000Z",
+    });
+    expect(store.deliveryInputsFor(taskId)!.pipeline).toEqual({
+      status: "running",
+      observedAt: "2026-09-01T00:00:00.000Z",
+    });
+  });
+
+  it("returns null for an unknown task", () => {
+    expect(store.deliveryInputsFor("col-nope.1")).toBeNull();
+  });
+
+  it("derives ci_failed for a succeeded implement run with a failed pipeline", () => {
+    const { taskId, runId } = seedMrOpenTask();
+    pushHead(taskId, runId, HEAD);
+    store.upsertPipelineObservation({
+      task_id: taskId,
+      head_sha: HEAD,
+      status: "failed",
+      pipeline_id: "pl-9",
+      web_url: "https://ci.example/pipelines/9",
+      observed_at: "2026-09-01T00:00:00.000Z",
+    });
+    const status = deriveDeliveryStatus(store.deliveryInputsFor(taskId)!);
+    expect(status.stage).toBe("ci_failed");
+    expect(
+      status.evidence.some(
+        (entry) => entry.url === "https://ci.example/pipelines/9",
+      ),
+    ).toBe(true);
   });
 });
 
