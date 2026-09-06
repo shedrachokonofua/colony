@@ -563,7 +563,13 @@ async function advanceMrOpenTasks(
     // A conflicted MR cannot merge; reviewing or gating it wastes a full
     // run. Dispatch one bounded rebase repair per (task, source, target).
     if (mr.has_conflicts === true) {
-      await repairAfterMergeConflict(ctx, scope, task, mr);
+      await repairAfterMergeConflict(
+        ctx,
+        scope,
+        task,
+        mr,
+        providerHeadLagging,
+      );
       continue;
     }
 
@@ -783,6 +789,7 @@ async function repairAfterMergeConflict(
   scope: Scope,
   task: Task,
   mr: ProviderMergeRequest,
+  providerHeadLagging: boolean,
 ): Promise<void> {
   const sourceSha = mr.head_commit_sha;
   if (!sourceSha) return;
@@ -791,6 +798,11 @@ async function repairAfterMergeConflict(
     task_id: task.id,
     detail: { mr_iid: task.mr_iid, head_sha: sourceSha },
   });
+
+  // The MR still reports the head the implementer replaced. Rebasing that
+  // stale SHA races the push that has not appeared on the MR yet, and the
+  // intent is keyed on it, so the real head would never be repaired.
+  if (providerHeadLagging) return;
 
   let targetSha: string;
   try {

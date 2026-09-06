@@ -584,6 +584,29 @@ describe("merge conflict repair dispatch", () => {
     expect(task.blocked_reason).toContain("merge_conflict repair");
   });
 
+  it("a provider head that lags the push claims nothing", async () => {
+    const h = await createHarness();
+    // The implementer pushed SHA_C; the provider still reports SHA_A on the
+    // MR. Rebasing that stale head would mint an intent nobody can resolve.
+    const pushed = h.store.startRun({
+      scope_id: h.scope.id,
+      task_id: h.task.id,
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    h.store.finishRun(pushed.id, "succeeded", { head_sha: SHA_C });
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    expect(h.store.listRepairIntents(h.task.id)).toHaveLength(0);
+    expect(h.store.getTask(h.task.id)!.state).toBe("mr_open");
+    expect(h.store.getTask(h.task.id)!.attempt).toBe(0);
+    expect(auditActions(h.store, h.task.id)).not.toContain(
+      "gate.repair_dispatched",
+    );
+  });
+
   it("a non-conflicted MR claims nothing", async () => {
     const h = await createHarness({ conflicted: false });
 
