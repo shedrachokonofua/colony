@@ -9,13 +9,14 @@ import { html, nothing } from "../base.js";
  * @param {Record<string, any>} task
  * @param {{
  *   approvals?: unknown,
+ *   headSha?: string | null,
  *   confirm?: string | null,
  *   onAction: (action: string) => void,
  *   onConfirm: (kind: string) => void,
  * }} options
  */
 export function renderTaskActions(task, options) {
-  const { approvals, confirm, onAction, onConfirm } = options;
+  const { approvals, headSha, confirm, onAction, onConfirm } = options;
   const buttons = [];
   if (task.state === "blocked") {
     buttons.push(
@@ -26,7 +27,7 @@ export function renderTaskActions(task, options) {
   }
   if (task.state === "mr_open" && approvals === "manual") {
     buttons.push(
-      task.merge_approved_sha
+      headSha && task.merge_approved_sha === headSha
         ? html`<button class="btn" disabled>
             Merge approved — gate pending
           </button>`
@@ -41,7 +42,9 @@ export function renderTaskActions(task, options) {
               class="btn btn-solid"
               @click=${() => onConfirm("merge")}
             >
-              Approve merge
+              ${task.merge_approved_sha
+                ? "Approve updated changes"
+                : "Approve merge"}
             </button>`,
     );
   }

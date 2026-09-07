@@ -446,6 +446,8 @@ afterEach(async () => {
     servers.splice(0).map(
       (server) =>
         new Promise<void>((resolve) => {
+          // Bun clears the underlying server on close(), so stop requests first.
+          server.closeAllConnections();
           server.close(() => resolve());
         }),
     ),

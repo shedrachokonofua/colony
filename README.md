@@ -559,6 +559,10 @@ spec, merge request, and run history with reviewer findings and a live
 event feed, plus the task actions: unblock, stop and retry, run now,
 request changes, amend spec, cancel, restore, approve merge.
 
+Merge approval is tied to a commit. After a repair pushes a new head, the
+task drawer offers **Approve updated changes**; confirmation records approval
+for the new head instead of treating the old approval as current.
+
 **TUI.** `colony` with no arguments: live scopes and tasks in the terminal.
 
 **CLI.** Scope, task, run, and project operations as subcommands, `--json`

@@ -308,22 +308,87 @@ describe("task-drawer events", () => {
     ]);
   });
 
-  it("an already merge-approved task shows the gate-pending note instead", async () => {
-    const el = makeDrawer(
-      task("col-x.g", { state: "mr_open", merge_approved_sha: "abc" }),
-      { scope: SCOPE, runs: [] },
-    );
+  it("keeps approval disabled for the latest successful implement head", async () => {
+    const currentHead = "a".repeat(40);
+    const t = task("col-x.g", {
+      state: "mr_open",
+      mr_iid: 4,
+      merge_approved_sha: currentHead,
+    });
+    const el = makeDrawer(t, {
+      scope: SCOPE,
+      runs: [
+        {
+          id: "pushed",
+          task_id: t.id,
+          kind: "implement",
+          status: "succeeded",
+          head_sha: currentHead,
+        },
+        {
+          id: "failed",
+          task_id: t.id,
+          kind: "implement",
+          status: "failed",
+          head_sha: "b".repeat(40),
+        },
+      ],
+    });
+    const seen = eventsOf(el);
     await el.updateComplete;
-    expect(
-      [...el.querySelectorAll(".task-actions button")].some((b) =>
-        b.textContent.includes("gate pending"),
-      ),
-    ).toBe(true);
-    expect(
-      [...el.querySelectorAll(".task-actions button")].some(
-        (b) => b.textContent.trim() === "Approve merge",
-      ),
-    ).toBe(false);
+    const approval = el.querySelector(".task-actions button");
+    expect(approval.disabled).toBe(true);
+    approval.click();
+    expect(seen).toEqual([]);
+  });
+
+  it("allows confirmed reapproval after a repair changes the head", async () => {
+    const oldHead = "a".repeat(40);
+    const repairedHead = "b".repeat(40);
+    const t = task("col-x.repaired", {
+      state: "mr_open",
+      mr_iid: 4,
+      merge_approved_sha: oldHead,
+    });
+    const pushed = {
+      id: "original",
+      task_id: t.id,
+      kind: "implement",
+      status: "succeeded",
+      head_sha: oldHead,
+    };
+    const el = makeDrawer(t, { scope: SCOPE, runs: [pushed] });
+    const seen = eventsOf(el);
+    await el.updateComplete;
+    expect(el.querySelector(".task-actions button").disabled).toBe(true);
+
+    el.detail = {
+      scope: SCOPE,
+      runs: [
+        pushed,
+        { ...pushed, id: "repair", head_sha: repairedHead },
+        { ...pushed, id: "old-review", kind: "review" },
+        { ...pushed, id: "other-task", task_id: "col-x.other" },
+      ],
+    };
+    await el.updateComplete;
+    const approve = el.querySelector(".task-actions button");
+    expect(approve.disabled).toBe(false);
+    approve.click();
+    expect(seen).toEqual([["colony-confirm", { kind: "merge" }]]);
+
+    el.confirm = "merge";
+    await el.updateComplete;
+    el.querySelector(".task-actions button").click();
+    expect(seen[1]).toEqual([
+      "colony-task-action",
+      { taskId: t.id, action: "approve-merge" },
+    ]);
+
+    el.task = { ...t, merge_approved_sha: repairedHead };
+    el.confirm = null;
+    await el.updateComplete;
+    expect(el.querySelector(".task-actions button").disabled).toBe(true);
   });
 
   it("cancel is two-step for any live task and hides for merged/canceled", async () => {
