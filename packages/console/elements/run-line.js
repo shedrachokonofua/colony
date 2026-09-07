@@ -28,6 +28,52 @@ function parseEvidence(raw) {
   }
 }
 
+/**
+ * Review-run envelope summary from persisted evidence: one line per review
+ * dimension plus the challenged reviewed/dropped counts. Guards on shape so
+ * older rows (verdict-only evidence) render exactly as before.
+ * @param {any} evidence
+ */
+function reviewDimensionsAndChallenged(evidence) {
+  const dimensions = Array.isArray(evidence?.dimensions)
+    ? /** @type {any[]} */ (evidence.dimensions).filter(
+        /** @param {any} dimension */
+        (dimension) =>
+          dimension &&
+          typeof dimension?.name === "string" &&
+          typeof dimension?.findings === "number",
+      )
+    : [];
+  const challenged = evidence?.challenged;
+  const challengedLine =
+    challenged &&
+    typeof challenged?.reviewed === "number" &&
+    typeof challenged?.dropped === "number"
+      ? html`<p class="challenged">
+          challenged reviewed ${challenged.reviewed} · dropped
+          ${challenged.dropped}
+        </p>`
+      : nothing;
+  if (dimensions.length === 0) return challengedLine;
+  return html`<ul class="dimensions">
+      ${dimensions.map(
+        /** @param {any} dimension */
+        (dimension) =>
+          html`<li>
+            ${dimension.name}${dimension.spec_blind
+              ? html` <span class="badge">spec-blind</span>`
+              : nothing}
+            · ${dimension.findings}
+            ${Array.isArray(dimension.target_files) &&
+            dimension.target_files.length > 0
+              ? ` (${dimension.target_files.join(", ")})`
+              : nothing}
+          </li>`,
+      )}
+    </ul>
+    ${challengedLine}`;
+}
+
 export class RunLine extends ColonyElement {
   static properties = {
     run: { type: Object },
@@ -65,6 +111,8 @@ export class RunLine extends ColonyElement {
         </ul>`
       : nothing;
     const verdict = evidence?.verdict ? ` · ${evidence.verdict}` : "";
+    const reviewExtras =
+      run.kind === "review" ? reviewDimensionsAndChallenged(evidence) : nothing;
     const prediction = parseCostPrediction(this.task ?? {});
     const predictionLine = prediction
       ? costPredictionLines(prediction)[0]
@@ -117,7 +165,7 @@ export class RunLine extends ColonyElement {
               >Trace</a
             >`
           : nothing}
-        ${findings}
+        ${findings} ${reviewExtras}
       </div>
     </div>`;
   }

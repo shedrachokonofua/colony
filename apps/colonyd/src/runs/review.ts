@@ -294,6 +294,8 @@ async function executeReview(
         evidence_json: JSON.stringify({
           verdict: "approve",
           head_sha: headSha,
+          dimensions: envelope.dimensions,
+          challenged: envelope.challenged,
         }),
       });
       runSpan?.end("succeeded");
@@ -301,7 +303,11 @@ async function executeReview(
         scope_id: scope.id,
         task_id: task.id,
         run_id: runId,
-        detail: { head_sha: headSha },
+        detail: {
+          head_sha: headSha,
+          dimensions: envelope.dimensions,
+          challenged: envelope.challenged,
+        },
       });
       return;
     }
@@ -313,6 +319,8 @@ async function executeReview(
         verdict: "request_changes",
         head_sha: headSha,
         findings: envelope.findings,
+        dimensions: envelope.dimensions,
+        challenged: envelope.challenged,
       }),
     });
     runSpan?.end("succeeded");
@@ -320,7 +328,12 @@ async function executeReview(
       scope_id: scope.id,
       task_id: task.id,
       run_id: runId,
-      detail: { head_sha: headSha, findings_count: envelope.findings.length },
+      detail: {
+        head_sha: headSha,
+        findings_count: envelope.findings.length,
+        dimensions: envelope.dimensions,
+        challenged: envelope.challenged,
+      },
     });
     reconcileRejectedReview(ctx, task);
   } catch (err) {
