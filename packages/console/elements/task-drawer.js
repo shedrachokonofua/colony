@@ -371,8 +371,23 @@ export class TaskDrawer extends ColonyElement {
 
   /** @param {Record<string, any>} task */
   #actionButtons(task) {
+    const runs = /** @type {any[]} */ (this.detail?.runs || []);
+    let headSha = null;
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const run = runs[i];
+      if (
+        run.task_id === task.id &&
+        run.kind === "implement" &&
+        run.status === "succeeded" &&
+        run.head_sha
+      ) {
+        headSha = run.head_sha;
+        break;
+      }
+    }
     return renderTaskActions(task, {
       approvals: this.detail?.scope?.approvals,
+      headSha,
       confirm: this.confirm,
       onAction: (action) => this.#action(action),
       onConfirm: (kind) => this.#emit("colony-confirm", { kind }),
