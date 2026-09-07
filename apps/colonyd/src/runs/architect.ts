@@ -10,6 +10,7 @@ import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
+import { faultForFailure, modelFault } from "../fault-budget.js";
 import { trackRun } from "./registry.js";
 import {
   buildArchitectExtensionPacket,
@@ -332,9 +333,15 @@ async function executeArchitect(
     }
 
     if (metadata.status !== "succeeded") {
+      const reason = metadata.rejectionReason ?? metadata.status;
       ctx.store.finishRun(runId, "failed", {
-        error: metadata.rejectionReason ?? metadata.status,
-        fault: metadata.fault,
+        error: reason,
+        fault: faultForFailure(
+          ctx.store,
+          { scope_id: scope.id, run_id: runId },
+          reason,
+          metadata.fault,
+        ),
       });
       runSpan?.end("failed", metadata.rejectionReason ?? metadata.status);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -355,6 +362,7 @@ async function executeArchitect(
       ctx.store.finishRun(runId, "failed", {
         error: "envelope invalid",
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
+        fault: modelFault("envelope_invalid", "envelope invalid"),
       });
       runSpan?.end("failed", "envelope invalid");
       return;
@@ -374,6 +382,7 @@ async function executeArchitect(
       ctx.store.finishRun(runId, "failed", {
         error: "decomposition dependency graph is cyclic",
         envelope_json: JSON.stringify(decomposition),
+        fault: modelFault("cyclic_graph", "decomposition dependency graph is cyclic"),
       });
       runSpan?.end("failed", "decomposition dependency graph is cyclic");
       return;
@@ -393,6 +402,12 @@ async function executeArchitect(
     const reason = err instanceof Error ? err.message : String(err);
     ctx.store.finishRun(runId, "failed", {
       error: reason,
+      fault: faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, run_id: runId },
+        reason,
+        undefined,
+      ),
     });
     runSpan?.end("failed", reason);
     ctx.store.audit(SERVICE_ACTOR, "run.failed", {

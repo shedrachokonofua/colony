@@ -6,10 +6,10 @@ import { z } from "zod";
 import { formatPlanReviewFeedback } from "@colony/agent-runtime";
 import { createHash } from "node:crypto";
 import { context } from "@opentelemetry/api";
-import type { Scope } from "@colony/core";
+import type { Fault, Scope } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
-import { isTimeoutFault } from "../fault-budget.js";
+import { faultForFailure, isTimeoutFault, modelFault } from "../fault-budget.js";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
@@ -181,6 +181,12 @@ async function executePlanReview(
         planHashValue,
         baseSha,
         reason,
+        faultForFailure(
+          ctx.store,
+          { scope_id: scope.id, run_id: runId },
+          reason,
+          metadata.fault,
+        ),
       );
       runSpan?.end("failed", reason);
       return;
@@ -197,6 +203,7 @@ async function executePlanReview(
         planHashValue,
         baseSha,
         "envelope invalid",
+        modelFault("envelope_invalid", "envelope invalid"),
         output ? JSON.stringify(output.envelope) : undefined,
       );
       runSpan?.end("failed", "envelope invalid");
@@ -247,7 +254,20 @@ async function executePlanReview(
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    finishPlanReviewFailure(ctx, scope, runId, planHashValue, baseSha, reason);
+    finishPlanReviewFailure(
+      ctx,
+      scope,
+      runId,
+      planHashValue,
+      baseSha,
+      reason,
+      faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, run_id: runId },
+        reason,
+        undefined,
+      ),
+    );
     runSpan?.end("failed", reason);
   } finally {
     if (minted) {
@@ -270,10 +290,12 @@ function finishPlanReviewFailure(
   planHashValue: string,
   baseSha: string | undefined,
   error: string,
+  fault: Fault,
   envelopeJson?: string,
 ): void {
   ctx.store.finishRun(runId, "failed", {
     error,
+    fault,
     envelope_json: envelopeJson,
     evidence_json: JSON.stringify({
       plan_hash: planHashValue,

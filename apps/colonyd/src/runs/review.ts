@@ -8,8 +8,10 @@ import {
   type Task,
 } from "@colony/core";
 import {
+  faultForFailure,
   isModelFailure,
   isTimeoutFault,
+  modelFault,
   retryResetAt,
 } from "../fault-budget.js";
 import { context } from "@opentelemetry/api";
@@ -150,6 +152,7 @@ async function executeReview(
   if (!reviewer) {
     failReview(ctx, scope, task, runId, headSha, "reviewer agent missing", {
       runSpan,
+      fault: { layer: "colonyd", code: "reviewer_missing" },
     });
     return;
   }
@@ -213,15 +216,16 @@ async function executeReview(
     }
 
     if (metadata.status !== "succeeded") {
-      failReview(
-        ctx,
-        scope,
-        task,
-        runId,
-        headSha,
-        metadata.rejectionReason ?? metadata.status,
-        { runSpan, fault: metadata.fault },
-      );
+      const reason = metadata.rejectionReason ?? metadata.status;
+      failReview(ctx, scope, task, runId, headSha, reason, {
+        runSpan,
+        fault: faultForFailure(
+          ctx.store,
+          { scope_id: scope.id, task_id: task.id, run_id: runId },
+          reason,
+          metadata.fault,
+        ),
+      });
       return;
     }
 
@@ -233,6 +237,7 @@ async function executeReview(
       failReview(ctx, scope, task, runId, headSha, "envelope invalid", {
         runSpan,
         envelopeJson: output ? JSON.stringify(output.envelope) : undefined,
+        fault: modelFault("envelope_invalid", "envelope invalid"),
       });
       return;
     }
@@ -269,7 +274,14 @@ async function executeReview(
           runId,
           headSha,
           "envelope facts unverified: reviewed head_sha mismatch",
-          { runSpan, envelopeJson: JSON.stringify(envelope) },
+          {
+            runSpan,
+            envelopeJson: JSON.stringify(envelope),
+            fault: modelFault(
+              "envelope_unverified",
+              "reviewed head_sha mismatch",
+            ),
+          },
         );
         return;
       }
@@ -312,15 +324,16 @@ async function executeReview(
     });
     reconcileRejectedReview(ctx, task);
   } catch (err) {
-    failReview(
-      ctx,
-      scope,
-      task,
-      runId,
-      headSha,
-      err instanceof Error ? err.message : String(err),
-      { runSpan },
-    );
+    const reason = err instanceof Error ? err.message : String(err);
+    failReview(ctx, scope, task, runId, headSha, reason, {
+      runSpan,
+      fault: faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, task_id: task.id, run_id: runId },
+        reason,
+        undefined,
+      ),
+    });
   } finally {
     if (minted) {
       try {
@@ -346,8 +359,8 @@ function failReview(
   options: {
     runSpan?: ColonyRunSpan;
     envelopeJson?: string;
-    fault?: Fault;
-  } = {},
+    fault: Fault;
+  },
 ): void {
   const finished = ctx.store.finishRun(runId, "failed", {
     error,
