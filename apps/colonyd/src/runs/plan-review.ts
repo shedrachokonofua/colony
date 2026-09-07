@@ -9,7 +9,11 @@ import { context } from "@opentelemetry/api";
 import type { Fault, Scope } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
-import { faultForFailure, isTimeoutFault, modelFault } from "../fault-budget.js";
+import {
+  faultForFailure,
+  isTimeoutFault,
+  modelFault,
+} from "../fault-budget.js";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
