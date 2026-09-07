@@ -115,6 +115,11 @@ async function harness(
       inspected: [
         { file: "src/change.ts", note: "Checked the complete change." },
       ],
+      dimensions: [
+        { name: "spec-compliance", spec_blind: false, target_files: ["src/change.ts"], findings: 0 },
+        { name: "defect-scan", spec_blind: true, target_files: ["src/change.ts"], findings: 0 },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: packet.head_sha,
     }),
   });

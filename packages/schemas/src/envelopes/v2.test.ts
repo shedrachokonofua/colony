@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { ArchitectDecompositionV2, RepairIntentV1 } from "./v2.js";
+import {
+  ArchitectDecompositionV2,
+  RepairIntentV1,
+  ReviewerVerdictV2,
+} from "./v2.js";
 
 function validDecomposition() {
   return {
@@ -120,6 +124,60 @@ describe("ArchitectDecompositionV2", () => {
       extra: "nope",
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe("ReviewerVerdictV2", () => {
+  const sha40 = "a".repeat(40);
+  const longSummary =
+    "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.";
+
+  function validApprove() {
+    return {
+      kind: "reviewer_verdict",
+      verdict: "approve",
+      summary: longSummary,
+      findings: [],
+      inspected: [{ file: "src/main.ts", note: "checked against the task spec" }],
+      dimensions: [
+        { name: "spec-compliance", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
+        { name: "adversarial-defect-scan", spec_blind: true, target_files: ["src/main.ts"], findings: 0 },
+      ],
+      challenged: { reviewed: 2, dropped: 1 },
+      head_sha: sha40,
+    };
+  }
+
+  it("accepts a valid adversarial approve envelope", () => {
+    expect(ReviewerVerdictV2.safeParse(validApprove()).success).toBe(true);
+  });
+
+  it("rejects an approve with no spec_blind dimension", () => {
+    const parsed = ReviewerVerdictV2.safeParse({
+      ...validApprove(),
+      dimensions: [
+        { name: "spec-compliance", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
+        { name: "style", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
+      ],
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((i) => i.message).join(" ")).toContain("spec_blind");
+    }
+  });
+
+  it("rejects a verdict whose challenged.reviewed is below the findings total", () => {
+    const parsed = ReviewerVerdictV2.safeParse({
+      ...validApprove(),
+      verdict: "request_changes",
+      summary: "Missing test.",
+      findings: [{ severity: "major", note: "no test for the 404 branch" }],
+      challenged: { reviewed: 0, dropped: 0 },
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((i) => i.message).join(" ")).toContain("challenged.reviewed");
+    }
   });
 });
 

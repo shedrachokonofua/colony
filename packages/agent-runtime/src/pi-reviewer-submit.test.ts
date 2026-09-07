@@ -3,6 +3,12 @@ import { createReviewerSubmitTool } from "./pi-runner-common.js";
 
 const HEAD = "a".repeat(40);
 
+const VALID_DIMENSIONS = [
+  { name: "spec-compliance", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
+  { name: "defect-scan", spec_blind: true, target_files: ["src/http.ts"], findings: 0 },
+];
+const VALID_CHALLENGED = { reviewed: 0, dropped: 0 };
+
 describe("reviewer submit tool", () => {
   // 123 of 123 approvals in one 48h window (2026-09-02) carried zero findings
   // and a summary under 80 chars: the schema permitted "LGTM". An approve is a
@@ -21,6 +27,8 @@ describe("reviewer submit tool", () => {
           summary: "LGTM",
           findings: [],
           inspected: [],
+          dimensions: VALID_DIMENSIONS,
+          challenged: VALID_CHALLENGED,
           head_sha: HEAD,
         },
         undefined,
@@ -37,6 +45,8 @@ describe("reviewer submit tool", () => {
           summary: "Looks good.",
           findings: [],
           inspected: [{ file: "src/main.ts", note: "matches the spec" }],
+          dimensions: VALID_DIMENSIONS,
+          challenged: VALID_CHALLENGED,
           head_sha: HEAD,
         },
         undefined,
@@ -44,6 +54,61 @@ describe("reviewer submit tool", () => {
         undefined as never,
       ),
     ).rejects.toThrow(/substantive summary/);
+    expect(captured).toBeUndefined();
+  });
+
+  it("rejects an approve without a spec_blind dimension", async () => {
+    let captured: unknown;
+    const tool = createReviewerSubmitTool((value) => {
+      captured = value;
+    });
+    await expect(
+      tool.execute(
+        "t-blind",
+        {
+          kind: "reviewer_verdict",
+          verdict: "approve",
+          summary:
+            "The endpoint returns the build SHA as JSON and the acceptance test asserts on it; error branches are covered.",
+          findings: [],
+          inspected: [{ file: "src/http.ts", note: "route shape matches the spec" }],
+          dimensions: [
+            { name: "spec-compliance", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
+            { name: "style", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
+          ],
+          challenged: VALID_CHALLENGED,
+          head_sha: HEAD,
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow(/spec_blind/);
+    expect(captured).toBeUndefined();
+  });
+
+  it("rejects a verdict whose challenged.reviewed is below the findings total", async () => {
+    let captured: unknown;
+    const tool = createReviewerSubmitTool((value) => {
+      captured = value;
+    });
+    await expect(
+      tool.execute(
+        "t-challenged",
+        {
+          kind: "reviewer_verdict",
+          verdict: "request_changes",
+          summary: "Missing test.",
+          findings: [{ severity: "major", note: "no test for the 404 branch" }],
+          dimensions: VALID_DIMENSIONS,
+          challenged: { reviewed: 0, dropped: 0 },
+          head_sha: HEAD,
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow(/challenged.reviewed/);
     expect(captured).toBeUndefined();
   });
 
@@ -64,6 +129,11 @@ describe("reviewer submit tool", () => {
           { file: "src/http.ts", note: "route shape matches the spec" },
           { file: "test/version.test.ts", note: "asserts the JSON body" },
         ],
+        dimensions: [
+          { name: "spec-compliance", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
+          { name: "adversarial-defect-scan", spec_blind: true, target_files: ["src/http.ts", "test/version.test.ts"], findings: 0 },
+        ],
+        challenged: { reviewed: 2, dropped: 1 },
         head_sha: HEAD,
       },
       undefined,
@@ -77,6 +147,8 @@ describe("reviewer submit tool", () => {
         verdict: "request_changes",
         summary: "Missing test.",
         findings: [{ severity: "major", note: "no test for the 404 branch" }],
+        dimensions: VALID_DIMENSIONS,
+        challenged: { reviewed: 1, dropped: 0 },
         head_sha: HEAD,
       },
       undefined,
