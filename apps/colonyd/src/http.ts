@@ -506,24 +506,24 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(
       rows.map((row) => {
         // A task with no stage to report (never-dispatched, canceled) omits
-        // the key entirely: the console falls back to the raw task state,
-        // which is the honest answer. The run fault join stays gated on
-        // row.run.
+        // the key entirely: the console then falls back to the raw task
+        // state, which is the honest answer. The run fault join stays gated
+        // on row.run.
         const delivery_status = deliveryStatusFor(
           ctx.store,
           row.task_id,
           ctx.config.reviewMode,
         );
-        const runRow = row.run ? ctx.store.getRun(row.run.id) : null;
+        const withStatus = delivery_status ? { delivery_status } : {};
+        if (!row.run) return { ...row, ...withStatus };
+        const runRow = ctx.store.getRun(row.run.id);
         return {
           ...row,
-          run: row.run
-            ? {
-                ...row.run,
-                fault: runRow ? parseFault(runRow.fault_json) : null,
-              }
-            : null,
-          ...(delivery_status ? { delivery_status } : {}),
+          run: {
+            ...row.run,
+            fault: runRow ? parseFault(runRow.fault_json) : null,
+          },
+          ...withStatus,
         };
       }),
     );
