@@ -13,7 +13,7 @@ import {
 } from "@colony/sandbox";
 import { inProcessEngine } from "@colony/sandbox-in-process";
 import type { Fault, Scope } from "@colony/core";
-import { faultForFailure } from "../fault-budget.js";
+import { faultForFailure, modelFault } from "../fault-budget.js";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -364,10 +364,20 @@ async function executeValidate(
       engine: ctx.validateEngine,
     });
   } catch (err) {
+    // An unexpected throw (or unparseable acceptance criteria) is a colonyd
+    // failure, never a verdict: faultForFailure audits the unclassified
+    // reason so every validate failure carries a Fault.
+    const error = err instanceof Error ? err.message : String(err);
     result = {
       results: [],
       passed: false,
-      error: err instanceof Error ? err.message : String(err),
+      error,
+      fault: faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, run_id: runId },
+        error,
+        undefined,
+      ),
     };
   }
 
@@ -515,7 +525,16 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       });
       if (exitCode !== 0) passed = false;
     }
-    return { results, passed };
+    return {
+      results,
+      passed,
+      // Commands ran and failed: that is the agent's verdict, so it carries
+      // a model fault. Without one the run lands faultless, notifications
+      // call it infra, and the tick re-runs instead of replanning.
+      ...(passed
+        ? {}
+        : { fault: modelFault("acceptance_failed") }),
+    };
   } catch (err) {
     return {
       results: [],

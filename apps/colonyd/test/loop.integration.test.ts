@@ -2117,6 +2117,21 @@ describe("colonyd fake end-to-end loop", () => {
       passed: boolean;
     };
     expect(failedEvidence.passed).toBe(false);
+    // A verdict is the agent's failure: it must carry a model fault so
+    // notifications classify it as an agent failure, not infra.
+    expect(JSON.parse(failedRun!.fault_json!)).toMatchObject({
+      layer: "model",
+      code: "acceptance_failed",
+    });
+    const finished = handle.ctx.store
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .events.filter(
+        (row) => row.action === "run.finished" && row.run_id === failedRun!.id,
+      );
+    expect(finished).toHaveLength(1);
+    expect(
+      JSON.parse(finished[0]!.detail_json) as { fault?: { layer: string } },
+    ).toMatchObject({ fault: { layer: "model" } });
 
     // Audit records the failure.
     const failedAudit = handle.ctx.store
