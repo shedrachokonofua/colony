@@ -777,16 +777,6 @@ interface ReviewRepair {
   historical: ImplementHistoricalEvidence[];
 }
 
-/**
- * The fault a colonyd-side rejection of the agent's output carries. The run
- * succeeded at the runner and then failed a colonyd contract check, so the
- * runner supplied no fault and there is nothing to forward: the model
- * produced the rejected output and owns it. Spec (d)'s {unknown,unknown} is
- * for a failed runner result with no fault, not for a succeeded run that
- * colonyd refused — otherwise a consistently bad envelope would requeue free
- * forever and never reach maxAttempts.
- */
-
 /** Why a repair run blocked the task: names the trigger kind, not just the
  *  head, so the operator can tell a conflict rebase from a gate command. */
 function repairFailureReason(
