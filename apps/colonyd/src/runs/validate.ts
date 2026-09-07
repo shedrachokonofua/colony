@@ -13,6 +13,7 @@ import {
 } from "@colony/sandbox";
 import { inProcessEngine } from "@colony/sandbox-in-process";
 import type { Fault, Scope } from "@colony/core";
+import { faultForFailure } from "../fault-budget.js";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -223,6 +224,7 @@ async function dispatchValidation(
     });
     ctx.store.finishRun(run.id, "failed", {
       error: "no acceptance criteria",
+      fault: { layer: "colonyd", code: "no_acceptance_criteria" },
       evidence_json: JSON.stringify({
         head_sha: "unknown",
         results: [],
@@ -294,6 +296,12 @@ async function dispatchValidation(
     ctx.store.finishRun(run.id, "failed", {
       head_sha: baseSha !== "unknown" ? baseSha : undefined,
       error,
+      fault: faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, run_id: run.id },
+        error,
+        undefined,
+      ),
       evidence_json: JSON.stringify({
         head_sha: baseSha,
         results: [],

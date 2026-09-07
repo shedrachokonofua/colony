@@ -414,6 +414,9 @@ async function executeMergeGate(
       };
       ctx.store.finishRun(runId, "failed", {
         evidence_json: JSON.stringify(evidence),
+        // A refusal is the provider answering, not the agent failing: it
+        // keeps the gate's re-gate deferral without charging a repair.
+        fault: { layer: "provider", code: "merge_refused" },
       });
       runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "gate.fail", {
