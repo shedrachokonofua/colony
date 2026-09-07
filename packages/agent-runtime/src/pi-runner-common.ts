@@ -1452,6 +1452,25 @@ export const reviewerVerdictEnvelopeTypeBox = Type.Object(
         },
       ),
     ),
+    dimensions: Type.Array(
+      Type.Object(
+        {
+          name: Type.String({ minLength: 1 }),
+          spec_blind: Type.Boolean(),
+          target_files: Type.Array(Type.String({ minLength: 1 })),
+          findings: Type.Integer({ minimum: 0 }),
+        },
+        { additionalProperties: false },
+      ),
+      { minItems: 1, maxItems: 6 },
+    ),
+    challenged: Type.Object(
+      {
+        reviewed: Type.Integer({ minimum: 0 }),
+        dropped: Type.Integer({ minimum: 0 }),
+      },
+      { additionalProperties: false },
+    ),
     head_sha: Type.String({ pattern: "^[0-9a-f]{40}$" }),
   },
   { additionalProperties: false },

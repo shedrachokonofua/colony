@@ -377,6 +377,15 @@ function defaultEnvelope(
       inspected: [
         { file: "src/main.ts", note: "checked against the task spec" },
       ],
+      dimensions: [
+        {
+          name: "fallback",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha:
         typeof packet.head_sha === "string" ? packet.head_sha : "a".repeat(40),
     });

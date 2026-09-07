@@ -163,6 +163,32 @@ export const ReviewerVerdictV2 = z
         }),
       )
       .default([]),
+    // Auditable review coverage: which review dimensions were exercised and
+    // whether at least one was judged without the task spec in view. The
+    // fallback approve below carries a single entry; human/model verdicts
+    // carry 2..6. The schema admits 1..6 so the fallback parses; the lower
+    // bound for real reviews is doctrine, enforced by the reviewer prompt.
+    dimensions: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1),
+            spec_blind: z.boolean(),
+            target_files: z.array(z.string().min(1)),
+            findings: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(6),
+    // How many candidate findings the reviewer challenged before submitting:
+    // reviewed must cover every submitted finding.
+    challenged: z
+      .object({
+        reviewed: z.number().int().nonnegative(),
+        dropped: z.number().int().nonnegative(),
+      })
+      .strict(),
     // the SHA the reviewer actually inspected; colonyd rejects a mismatch
     head_sha: z.string().regex(/^[0-9a-f]{40}$/),
   })
@@ -177,7 +203,25 @@ export const ReviewerVerdictV2 = z
   .refine((v) => v.verdict !== "approve" || v.summary.trim().length >= 80, {
     message:
       "approve requires a substantive summary (>= 80 chars): what the change does and why it satisfies the spec",
-  });
+  })
+  .refine(
+    (v) =>
+      v.verdict !== "approve" && v.verdict !== "request_changes"
+        ? true
+        : v.dimensions.some((d) => d.spec_blind),
+    {
+      message: "verdict requires at least one spec_blind review dimension",
+    },
+  )
+  .refine(
+    (v) =>
+      v.verdict !== "approve" && v.verdict !== "request_changes"
+        ? true
+        : v.challenged.reviewed >= v.findings.length,
+    {
+      message: "challenged.reviewed must cover every submitted finding",
+    },
+  );
 
 export type ReviewerVerdictV2 = z.infer<typeof ReviewerVerdictV2>;
 
