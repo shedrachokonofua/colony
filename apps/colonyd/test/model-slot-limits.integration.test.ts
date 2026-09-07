@@ -15,6 +15,7 @@ import {
   type AgentRunEnvironment,
   type AgentRuntimePacket,
 } from "@colony/agent-runtime";
+import type { Fault } from "@colony/core";
 import { FakeProviderAdapter } from "@colony/provider";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { boot, type ColonydHandle } from "../src/main.js";
@@ -53,36 +54,79 @@ let repoId: string;
 /** Every daemon booted here, shut down after the last case. */
 const bootedHandles: ColonydHandle[] = [];
 
+/**
+ * A namespace ResourceQuota refusal: the sandbox was never provisioned, so
+ * the failure is a sandbox-layer scheduling condition, not an agent verdict.
+ */
+function quotaRefused(reason: string): ScriptedFailure {
+  return { reason, fault: { layer: "provider", code: "quota_exhausted" } };
+}
+
+/**
+ * A scripted runner failure: PiRunResult's reason plus its structured fault.
+ * Budgeting reads the fault alone, so a scenario that omits it is
+ * unclassified rather than silently agent-blamed.
+ */
+interface ScriptedFailure {
+  readonly reason: string;
+  readonly fault?: Fault;
+}
+
 /** Scripted fake runtime state shared with the scenarios. */
 const script = {
   /** task id -> implementer run invocations observed */
   implementerCalls: new Map<string, number>(),
   reviewerCalls: 0,
-  /** Error the developer adapter raises instead of returning an envelope. */
-  implementerError: undefined as string | undefined,
-  /** Error the reviewer adapter raises instead of returning a verdict. */
-  reviewerError: undefined as string | undefined,
-  /** Error the architect adapter raises instead of returning a plan. */
-  architectError: undefined as string | undefined,
+  /** Failure the developer adapter reports instead of returning an envelope. */
+  implementerFailure: undefined as ScriptedFailure | undefined,
+  /** Failure the reviewer adapter reports instead of returning a verdict. */
+  reviewerFailure: undefined as ScriptedFailure | undefined,
+  /** Failure the architect adapter reports instead of returning a plan. */
+  architectFailure: undefined as ScriptedFailure | undefined,
 };
+
+/** Count one adapter invocation: a scripted failure counts as one too. */
+function countRun(
+  packet: AgentRuntimePacket,
+  environment: AgentRunEnvironment,
+): void {
+  if (environment.role === "reviewer") {
+    script.reviewerCalls += 1;
+    return;
+  }
+  if (environment.role !== "developer") return;
+  const taskId = String(packet.task_id);
+  script.implementerCalls.set(
+    taskId,
+    (script.implementerCalls.get(taskId) ?? 0) + 1,
+  );
+}
 
 function fakeAgents(): FakeAgentRuntimeAdapter {
   return new FakeAgentRuntimeAdapter({
+    failureForRun: (
+      packet: AgentRuntimePacket,
+      environment: AgentRunEnvironment,
+    ) => {
+      const failure =
+        environment.role === "architect"
+          ? script.architectFailure
+          : environment.role === "reviewer"
+            ? script.reviewerFailure
+            : script.implementerFailure;
+      if (failure === undefined) return undefined;
+      countRun(packet, environment);
+      return failure;
+    },
     envelopeForRun: (
       packet: AgentRuntimePacket,
       environment: AgentRunEnvironment,
     ) => {
       if (environment.role === "architect") {
-        if (script.architectError !== undefined) {
-          throw new Error(script.architectError);
-        }
         return PLAN;
       }
       if (environment.role === "reviewer") {
-        script.reviewerCalls += 1;
-        if (script.reviewerError !== undefined) {
-          throw new Error(script.reviewerError);
-        }
+        countRun(packet, environment);
         return {
           kind: "reviewer_verdict",
           verdict: "approve",
@@ -95,14 +139,8 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
           head_sha: SHA_A,
         };
       }
+      countRun(packet, environment);
       const taskId = String(packet.task_id);
-      script.implementerCalls.set(
-        taskId,
-        (script.implementerCalls.get(taskId) ?? 0) + 1,
-      );
-      if (script.implementerError !== undefined) {
-        throw new Error(script.implementerError);
-      }
       const branch = `colony/${taskId}`;
       // The fake provider needs the branch to exist so envelope fact
       // verification (branch head == head_sha) passes.
@@ -334,9 +372,9 @@ beforeEach(async () => {
   for (const booted of bootedHandles.splice(0)) await booted.shutdown();
   script.implementerCalls.clear();
   script.reviewerCalls = 0;
-  script.implementerError = undefined;
-  script.reviewerError = undefined;
-  script.architectError = undefined;
+  script.implementerFailure = undefined;
+  script.reviewerFailure = undefined;
+  script.architectFailure = undefined;
   provider = new FakeProviderAdapter();
   const repo = await provider.repos.create({
     name: "fake-slots",
@@ -346,17 +384,20 @@ beforeEach(async () => {
 });
 
 /**
- * A quota refusal is a scheduling condition, not a failure: the task must
- * come back with its attempt budget and its eligibility untouched.
+ * A quota refusal is a scheduling condition, not a failure: the task comes
+ * back with its attempt budget untouched, on the standard infra backoff the
+ * other platform layers share.
  */
 describe("namespace quota deferral", () => {
-  it("requeues a quota-refused task with its attempt untouched and no backoff", async () => {
+  it("requeues a quota-refused task with its attempt untouched", async () => {
     const h = await harness(writeConfig("no-limits.yaml"));
     const { taskId } = h.activeScopeWithTask("quota refused");
 
     // The engine never got its sandbox: the namespace ResourceQuota refused
     // the CR, so the run fails fast carrying the marker.
-    script.implementerError = `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`;
+    script.implementerFailure = quotaRefused(
+      `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`,
+    );
 
     await h.tick();
     await h.settle();
@@ -366,14 +407,14 @@ describe("namespace quota deferral", () => {
     expect(failed.status).toBe("failed");
     expect(failed.error).toContain(SANDBOX_QUOTA_EXHAUSTED);
 
-    // No backoff means the very next tick both requeues and redispatches:
-    // the task never sits still waiting for capacity to return.
-    script.implementerError = undefined;
+    // Free, not charged: the refusal is a provider fault, so the attempt
+    // budget is untouched and the retry rides the shared infra backoff
+    // instead of skipping it.
+    script.implementerFailure = undefined;
     await h.tick();
     const task = h.store.getTask(taskId)!;
     expect(task.attempt).toBe(0);
-    expect(task.next_retry_at).toBeNull();
-    expect(script.implementerCalls.get(taskId)).toBe(2);
+    expect(task.next_retry_at).toBeTruthy();
 
     // The requeue still happened: it is in the audit trail even though the
     // same tick handed the task straight back to the developer.
@@ -398,7 +439,10 @@ describe("namespace quota deferral", () => {
     const h = await harness(writeConfig("no-limits.yaml"));
     const { taskId } = h.activeScopeWithTask("agent failure");
 
-    script.implementerError = "envelope invalid";
+    script.implementerFailure = {
+      reason: "envelope invalid",
+      fault: { layer: "model", code: "envelope_invalid" },
+    };
 
     await h.tick();
     await h.settle();
@@ -415,7 +459,9 @@ describe("namespace quota deferral", () => {
   it("never exhausts the architect budget on quota refusals", async () => {
     const h = await harness(writeConfig("no-limits.yaml"));
     const scopeId = h.draftScope("refused planning");
-    script.architectError = `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`;
+    script.architectFailure = quotaRefused(
+      `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`,
+    );
 
     // More refusals than the budget allows: three non-quota failures would
     // have blocked the scope by now.
@@ -434,7 +480,9 @@ describe("namespace quota deferral", () => {
     );
     const { taskId } = h.activeScopeWithTask("refused review");
     await h.driveToMrOpen(taskId);
-    script.reviewerError = `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`;
+    script.reviewerFailure = quotaRefused(
+      `${SANDBOX_QUOTA_EXHAUSTED}: request did not admit (namespace colony-sandboxes)`,
+    );
 
     // More refusals than the review budget allows: three real review
     // failures would have blocked the task by now.
@@ -446,7 +494,7 @@ describe("namespace quota deferral", () => {
     expect(h.store.getTask(taskId)!.state).toBe("mr_open");
     // Clearing the refusal lets the review through: the task was deferred,
     // never condemned.
-    script.reviewerError = undefined;
+    script.reviewerFailure = undefined;
     await h.tick();
     await h.settle();
     expect(script.reviewerCalls).toBeGreaterThan(0);
@@ -630,12 +678,15 @@ describe("per-model dispatch slots", () => {
     const { taskId } = h.activeScopeWithTask("review timeout fallback");
     await h.driveToMrOpen(taskId);
 
-    script.reviewerError = "timeout_without_envelope";
+    script.reviewerFailure = {
+      reason: "timeout_without_envelope",
+      fault: { layer: "model", code: "timeout_without_envelope" },
+    };
     await h.tick();
     await h.settle();
     expect(h.store.getTask(taskId)!.state).toBe("mr_open");
 
-    script.reviewerError = undefined;
+    script.reviewerFailure = undefined;
     await h.tick();
     const fallbackReviews = h.store
       .runsForTask(taskId)
@@ -659,7 +710,10 @@ describe("per-model dispatch slots", () => {
     );
     const target = h.activeScopeWithTask("review timeout saturated");
     await h.driveToMrOpen(target.taskId);
-    script.reviewerError = "timeout_without_envelope";
+    script.reviewerFailure = {
+      reason: "timeout_without_envelope",
+      fault: { layer: "model", code: "timeout_without_envelope" },
+    };
 
     const holder = h.activeScopeWithTask("fallback capacity holder");
     await h.driveToMrOpen(holder.taskId);
@@ -675,7 +729,7 @@ describe("per-model dispatch slots", () => {
 
     await h.tick();
     await h.settle();
-    script.reviewerError = undefined;
+    script.reviewerFailure = undefined;
     await h.tick();
     expect(
       h.store.runsForTask(target.taskId).filter((run) => run.kind === "review"),
