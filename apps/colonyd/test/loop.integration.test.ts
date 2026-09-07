@@ -67,6 +67,8 @@ const script = {
   validateFail: false,
   /** The first validation never runs (sandbox provision failure). */
   validateInfraFailOnce: false,
+  /** The executor itself throws: no verdict, and no fault of its own. */
+  validateThrows: false,
   reviewerAdvancesHead: false,
 };
 
@@ -309,6 +311,9 @@ function syncMrHead(adapter: FakeProviderAdapter): void {
 
 function fakeValidateExecutor(): ValidateExecutor {
   return async () => {
+    if (script.validateThrows) {
+      throw new Error("validate executor exploded");
+    }
     if (script.validateInfraFailOnce) {
       script.validateInfraFailOnce = false;
       return {
@@ -489,6 +494,7 @@ beforeEach(async () => {
   script.pushedShas.clear();
   script.validateFail = false;
   script.validateInfraFailOnce = false;
+  script.validateThrows = false;
   script.reviewerAdvancesHead = false;
   provider = new FakeProviderAdapter();
   const repo = await provider.repos.create({
@@ -2164,6 +2170,33 @@ describe("colonyd fake end-to-end loop", () => {
       .runsForScope(scopeId)
       .filter((r) => r.kind === "validate" && r.status === "succeeded");
     expect(succeededRuns.length).toBeGreaterThanOrEqual(1);
+  }, 30_000);
+
+  it("a throwing validate executor never lands a faultless failed run", async () => {
+    // The executor throw is an unexpected colonyd-side failure, not a
+    // verdict: it must still carry a Fault (and be audited) so the run is
+    // never classified infra-by-omission.
+    script.validateThrows = true;
+    const scopeId = await createScope("throwing validate");
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      if (
+        handle.ctx.store
+          .runsForScope(scopeId)
+          .some((r) => r.kind === "validate" && r.status === "failed")
+      )
+        break;
+    }
+    const failed = handle.ctx.store
+      .runsForScope(scopeId)
+      .find((r) => r.kind === "validate" && r.status === "failed")!;
+    expect(failed.fault_json).not.toBeNull();
+    expect(JSON.parse(failed.fault_json!)).toMatchObject({
+      layer: "unknown",
+      code: "unknown",
+    });
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("validating");
+    script.validateThrows = false;
   }, 30_000);
 
   it("a restart-killed validation replan is retried, and agent-failed replans block the scope", async () => {
