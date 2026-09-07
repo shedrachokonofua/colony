@@ -151,7 +151,9 @@ describe("reviewer coordinator prompt", () => {
     // The coordinator does not review the diff for findings itself: every
     // finding comes from a subagent and it only synthesizes.
     expect(prompt).toContain("You do NOT read the diff for findings yourself");
-    expect(prompt).toContain("All finding work belongs to the dimension subagents");
+    expect(prompt).toContain(
+      "All finding work belongs to the dimension subagents",
+    );
     expect(prompt).not.toContain("Hunt systematically");
   });
 

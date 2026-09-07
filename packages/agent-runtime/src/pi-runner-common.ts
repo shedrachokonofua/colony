@@ -1520,7 +1520,10 @@ export function planReviewDimensions(request: {
     readonly context_files?: readonly string[];
   }[];
 }): {
-  readonly prompts: readonly { readonly name: string; readonly prompt: string }[];
+  readonly prompts: readonly {
+    readonly name: string;
+    readonly prompt: string;
+  }[];
   /** Envelope-ready `dimensions` entries, before any findings exist. */
   readonly audit: readonly {
     readonly name: string;
@@ -1532,10 +1535,7 @@ export function planReviewDimensions(request: {
   const clamped = request.dimensions.slice(0, MAX_REVIEW_DIMENSIONS);
   const conformanceIndex = clamped.findIndex((d) => !d.spec_blind);
   const conformance = clamped[conformanceIndex === -1 ? 0 : conformanceIndex]!;
-  const ordered = [
-    conformance,
-    ...clamped.filter((d) => d !== conformance),
-  ];
+  const ordered = [conformance, ...clamped.filter((d) => d !== conformance)];
   const inputs = ordered.map((d, index) => ({
     ...d,
     // Only the first dimension is the spec-conformance lens; a caller that

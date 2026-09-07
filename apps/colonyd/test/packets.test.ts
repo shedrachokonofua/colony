@@ -1075,9 +1075,7 @@ describe("review packet instructions", () => {
     expect(body).toContain("`dimensions`");
     expect(body).toContain("spec_blind: true");
     expect(body).toContain("`challenged`");
-    expect(body).toContain(
-      "reviewed >= the number of findings you submit",
-    );
+    expect(body).toContain("reviewed >= the number of findings you submit");
   });
 
   it("carries the task spec the review dimensions are judged against", async () => {
