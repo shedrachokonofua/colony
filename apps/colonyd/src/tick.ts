@@ -45,6 +45,7 @@ import {
   consecutiveModelFailures,
   isModelFailure,
   isPlatformFailure,
+  retryOrFailTaskWithBudget,
   retryResetAt,
 } from "./fault-budget.js";
 import { abortRunsAndWait, activeTrackedRunIds } from "./runs/registry.js";
@@ -326,63 +327,7 @@ function retryOrFailTask(
   taskId: string,
   reason: string,
 ): void {
-  const task = ctx.store.getTask(taskId);
-  if (!task || task.state !== "running") return;
-  // Only the model spends the task's attempt budget: a canceled run, a
-  // platform fault, an unknown fault, or a faultless legacy row requeues
-  // free with the standard infra backoff. Quota ({provider,quota_exhausted})
-  // is a provider fault, so it shares that path — never a special case.
-  const last = lastImplementRun(ctx, taskId);
-  const consumes = isModelFailure(last);
-  const deferred =
-    last?.status === "canceled" || (last?.status === "failed" && !consumes);
-  const since = retryResetAt(ctx.store, "task", task.id);
-  const failures = consecutiveModelFailures(
-    ctx.store
-      .runsForTask(task.id)
-      .filter((run) => !since || run.started_at > since),
-  );
-  const attempt = consumes ? task.attempt + 1 : task.attempt;
-  if (deferred) {
-    // If this task was running an unresolved repair intent, unbind its run_id
-    // so the retry can rebind and thread the repair traces.
-    const unresolvedRepair = ctx.store
-      .listRepairIntents(task.id)
-      .filter((r) => r.resolved_head_sha === null)
-      .at(-1);
-    if (unresolvedRepair) {
-      ctx.store.clearRepairIntentRunId(unresolvedRepair.fingerprint);
-    }
-    ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
-      scope_id: task.scope_id,
-      task_id: task.id,
-      detail: { reason },
-    });
-  }
-  if (!deferred && failures >= ctx.env.maxAttempts) {
-    ctx.store.transitionTask(
-      task.id,
-      task.state_version,
-      "blocked",
-      SERVICE_ACTOR,
-      {
-        blocked_reason: `${failures} consecutive implementation failures: ${reason}`,
-      },
-    );
-    return;
-  }
-  ctx.store.transitionTask(
-    task.id,
-    task.state_version,
-    "queued",
-    SERVICE_ACTOR,
-    {
-      attempt,
-      next_retry_at: new Date(
-        Date.now() + retryBackoffMs(Math.max(1, failures)),
-      ).toISOString(),
-    },
-  );
+  retryOrFailTaskWithBudget(ctx, taskId, reason);
 }
 
 function retryOrFailScope(
@@ -1182,6 +1127,29 @@ async function dispatchCiRepair(
     return;
   }
   const attempt = current.attempt + 1;
+  if (attempt >= ctx.env.maxAttempts) {
+    ctx.store.transitionTask(
+      current.id,
+      current.state_version,
+      "blocked",
+      SERVICE_ACTOR,
+      {
+        blocked_reason: `ci_failure repair attempts exhausted (${attempt}/${ctx.env.maxAttempts}) at head ${intent.source_head_sha}`,
+      },
+    );
+    ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_blocked", {
+      scope_id: scope.id,
+      task_id: task.id,
+      detail: {
+        outcome: "blocked",
+        reason: "ci_failure repair attempts exhausted",
+        attempt,
+        head_sha: intent.source_head_sha,
+        fingerprint,
+      },
+    });
+    return;
+  }
   ctx.store.transitionTask(
     current.id,
     current.state_version,

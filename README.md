@@ -166,8 +166,9 @@ flowchart LR
    repair tasks to the graph); then the scope blocks and asks you.
 
 Implementation execution failures are bounded (`COLONYD_MAX_ATTEMPTS`,
-default 3) with exponential backoff. That budget counts failed executions,
-not operator revisions or CI/conflict repair cycles; a successful execution
+default 3) with exponential backoff. That budget counts failed executions
+and CI repair cycles (via `dispatchCiRepair`'s attempt increment),
+not operator revisions or conflict repair cycles; a successful execution
 or explicit operator unblock starts a new execution budget. Infrastructure
 failures (daemon restart or expired lease, provider `429`/`5xx`, sandbox
 provisioning failure) and cancellations do not consume it. Structured fault

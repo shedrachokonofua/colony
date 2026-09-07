@@ -1,11 +1,12 @@
 import {
   isModelFault,
   parseFault,
+  retryBackoffMs,
   type Fault,
   type Run,
   type Store,
 } from "@colony/core";
-import { SERVICE_ACTOR } from "./context.js";
+import { SERVICE_ACTOR, type ColonydContext } from "./context.js";
 import { sanitizeTrace } from "@colony/provider";
 import { z } from "zod";
 
@@ -168,3 +169,99 @@ export function retryResetAt(
     beforeId = page.oldest_id;
   }
 }
+
+/**
+ * Shared attempt-budget and retry helper for implementer execution and
+ * repair-intent failures.
+ *
+ * Precondition: task must exist and be in "running". Returns early without
+ * transition if not.
+ *
+ * Model-layer faults consume the attempt budget and increment consecutive
+ * model failures. If failures >= maxAttempts, transitions the task to blocked.
+ * Non-model faults (infra/platform/unknown/canceled) requeue free without
+ * consuming the budget, clear any active repair intent run_id, and audit
+ * task.infra_retry.
+ */
+export function retryOrFailTaskWithBudget(
+  ctx: Pick<ColonydContext, "store" | "env">,
+  taskId: string,
+  reason: string,
+  options?: {
+    readonly fault?: Fault;
+    readonly blockedReason?: (failures: number, maxAttempts: number) => string;
+  },
+): void {
+  const task = ctx.store.getTask(taskId);
+  if (!task || task.state !== "running") return;
+
+  const last = ctx.store
+    .runsForTask(taskId)
+    .filter((r) => r.kind === "implement")
+    .at(-1);
+
+  // If explicit fault passed, check that; otherwise inspect last implement run.
+  const consumes = options?.fault
+    ? isModelFault(options.fault)
+    : isModelFailure(last);
+
+  const deferred = options?.fault
+    ? !consumes
+    : last?.status === "canceled" || (last?.status === "failed" && !consumes);
+
+  const since = retryResetAt(ctx.store, "task", task.id);
+  const failures = consecutiveModelFailures(
+    ctx.store
+      .runsForTask(task.id)
+      .filter((run) => !since || run.started_at > since),
+  );
+
+  const attempt = consumes ? task.attempt + 1 : task.attempt;
+
+  if (deferred) {
+    // If this task was running an unresolved repair intent, unbind its run_id
+    // so the retry can rebind and thread the repair traces.
+    const unresolvedRepair = ctx.store
+      .listRepairIntents(task.id)
+      .filter((r) => r.resolved_head_sha === null)
+      .at(-1);
+    if (unresolvedRepair) {
+      ctx.store.clearRepairIntentRunId(unresolvedRepair.fingerprint);
+    }
+    ctx.store.audit(SERVICE_ACTOR, "task.infra_retry", {
+      scope_id: task.scope_id,
+      task_id: task.id,
+      detail: { reason },
+    });
+  }
+
+  if (!deferred && failures >= ctx.env.maxAttempts) {
+    const defaultBlockedReason = `${failures} consecutive implementation failures: ${reason}`;
+    const blocked_reason = options?.blockedReason
+      ? options.blockedReason(failures, ctx.env.maxAttempts)
+      : defaultBlockedReason;
+
+    ctx.store.transitionTask(
+      task.id,
+      task.state_version,
+      "blocked",
+      SERVICE_ACTOR,
+      { blocked_reason },
+    );
+    return;
+  }
+
+  ctx.store.transitionTask(
+    task.id,
+    task.state_version,
+    "queued",
+    SERVICE_ACTOR,
+    {
+      attempt,
+      next_retry_at: new Date(
+        Date.now() + retryBackoffMs(Math.max(1, failures)),
+      ).toISOString(),
+    },
+  );
+}
+
