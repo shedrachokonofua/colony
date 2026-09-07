@@ -800,7 +800,11 @@ export class PiBaseAgentRunner implements PiRunner {
           sandboxId,
           envelope: { __unfinished: true },
           reason: code,
-          fault: { layer: "harness", code, detail: sanitizeSecret(msg, runToken).slice(0, 240) },
+          fault: {
+            layer: "harness",
+            code,
+            detail: sanitizeSecret(msg, runToken).slice(0, 240),
+          },
         };
       }
       session = built.session;
@@ -955,7 +959,10 @@ export class PiBaseAgentRunner implements PiRunner {
                 errText.replace(/\s+/g, " ").trim(),
                 runToken,
               ).slice(0, 160)}`;
-              state.failureFault ??= classifyPromptFailure(errText, runToken) ?? {
+              state.failureFault ??= classifyPromptFailure(
+                errText,
+                runToken,
+              ) ?? {
                 layer: "harness",
                 code: classifyHarnessFailure(errText),
                 detail: sanitizeSecret(errText, runToken).slice(0, 240),
@@ -1403,7 +1410,10 @@ export class PiBaseAgentRunner implements PiRunner {
                 lastError.replace(/\s+/g, " ").trim(),
                 runToken,
               ).slice(0, 160)}`;
-              state.failureFault ??= classifyPromptFailure(lastError, runToken) ?? {
+              state.failureFault ??= classifyPromptFailure(
+                lastError,
+                runToken,
+              ) ?? {
                 layer: "provider",
                 code: "connection_exhausted",
                 detail: sanitizeSecret(lastError, runToken).slice(0, 240),
