@@ -1021,3 +1021,67 @@ describe("project context HTTP contract", () => {
     expect(scoped.project).toMatchObject({ name: "p1", context_doc: "doc 1" });
   });
 });
+
+/** A scope with one materialized task, reduced to its review packet body. */
+async function reviewBody(taskSpec: string): Promise<string> {
+  const { store, app } = appWithStore();
+  const created = await createScope(app, {
+    goal: "review contract",
+    title: "review contract",
+    repo: { path: "so/demo" },
+  });
+  store.setScopeStatus(created.id, "planning", "human:op-1");
+  store.materializePlan(
+    created.id,
+    {
+      kind: "architect_decomposition",
+      summary: "test",
+      requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+      journey: [{ after_task: 0, working_state: "goal holds" }],
+      acceptance: [{ description: "d", command: "true" }],
+      tasks: [
+        {
+          title: "task1",
+          spec: taskSpec,
+          depends_on: [],
+          files: ["src/task1.ts"],
+          evidence: ["true"],
+        },
+      ],
+    },
+    "human:op-1",
+  );
+  const task = store.listTasks(created.id)[0]!;
+  return buildReviewPacket(
+    task,
+    store.getScope(created.id)!,
+    null,
+    [],
+    { id: "1", path: "so/demo" },
+    "base",
+  ).body;
+}
+
+describe("review packet instructions", () => {
+  it("states the spec/guarantee precedence and the review audit fields", async () => {
+    const body = await reviewBody("Add the endpoint.");
+    // Precedence: a repository guarantee outranks a spec that asks for a
+    // guard removal, a test weakening, or a budget bypass.
+    expect(body).toContain("spec contradicts repository guarantee");
+    expect(body).toContain("removing a guard");
+    expect(body).toContain("weakening or deleting a test");
+    expect(body).toContain("bypassing a budget");
+    // The audit fields the verdict envelope must carry.
+    expect(body).toContain("`dimensions`");
+    expect(body).toContain("spec_blind: true");
+    expect(body).toContain("`challenged`");
+    expect(body).toContain(
+      "reviewed >= the number of findings you submit",
+    );
+  });
+
+  it("carries the task spec the review dimensions are judged against", async () => {
+    const spec = "Add the endpoint that returns the build SHA.";
+    expect(await reviewBody(spec)).toContain(spec);
+  });
+});
