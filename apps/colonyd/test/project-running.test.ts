@@ -7,6 +7,8 @@ import { createLocalArtifactStore } from "@colony/core";
 import type { ColonydContext } from "../src/context.js";
 import { buildApp } from "../src/http.js";
 
+const HEAD = "a".repeat(40);
+
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -247,11 +249,12 @@ describe("GET /projects/:name/running", () => {
     expect(await idle.json()).toEqual([]);
   });
 
-  it("joins delivery_status on rows with no run", async () => {
+  it("omits delivery_status when the task has no stage to report", async () => {
     const { store, app } = appWithStore();
-    const { task_ids } = scopeWithTasks(store, "wave", ["NoRun"]);
+    const { task_ids } = scopeWithTasks(store, "wave", ["NotDispatched"]);
     advanceTask(store, task_ids[0]!, "running");
-
+    // A running task with no live implement run has no head, no pipeline
+    // and no gate: the row must not invent a provider_head_pending stage.
     const res = await getRunning(app, "wave");
     expect(res.status).toBe(200);
     const body = (await res.json()) as (RunningRow & {
@@ -259,9 +262,49 @@ describe("GET /projects/:name/running", () => {
     })[];
     expect(body).toHaveLength(1);
     expect(body[0]!.run).toBeNull();
-    // The row must still carry the backend-derived stage so the console
-    // never falls back to the raw task state.
-    expect(body[0]!.delivery_status?.stage).toBe("provider_head_pending");
+    expect(body[0]!.delivery_status).toBeUndefined();
+    expect("delivery_status" in body[0]!).toBe(false);
+  });
+
+  it("joins delivery_status on rows whose task has a stage", async () => {
+    const { store, app } = appWithStore();
+    const { scope_id, task_ids } = scopeWithTasks(store, "wave", ["Pushed"]);
+    const running = store.transitionTask(
+      task_ids[0]!,
+      0,
+      "running",
+      "svc:test",
+    );
+    store.transitionTask(
+      task_ids[0]!,
+      running.state_version,
+      "mr_open",
+      "svc:test",
+      { mr_iid: 12 },
+    );
+    const implement = store.startRun({
+      scope_id,
+      task_id: task_ids[0],
+      kind: "implement",
+      lease_ttl_ms: 60_000,
+    });
+    store.finishRun(implement.id, "succeeded", { head_sha: HEAD });
+    store.upsertPipelineObservation({
+      task_id: String(task_ids[0]),
+      head_sha: HEAD,
+      status: "failed",
+      pipeline_id: "1",
+      web_url: "https://ci.example/pipelines/1",
+      observed_at: "2026-09-01T00:00:00.000Z",
+    });
+
+    const res = await getRunning(app, "wave");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as (RunningRow & {
+      delivery_status?: { stage: string };
+    })[];
+    expect(body).toHaveLength(1);
+    expect(body[0]!.delivery_status?.stage).toBe("ci_failed");
   });
 
   it("404s an unknown project", async () => {

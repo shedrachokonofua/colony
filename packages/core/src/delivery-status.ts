@@ -183,6 +183,11 @@ function triggerHead(intent: RepairIntentRow): string | null {
  * Derive one task's delivery stage. Pure: no I/O, no clock, deterministic in
  * its input, shared by every read surface so the browser never guesses.
  *
+ * Returns null when the task has no stage to report: a never-dispatched
+ * queued task has no head, no pipeline and no gate, so every stage would be
+ * a guess, and a canceled task is terminal, so any in-flight stage would
+ * contradict it. Callers omit the field rather than inventing a stage.
+ *
  * Precedence: terminal states, then the repair the task is living, then the
  * provider head, then the persisted pipeline facts for the CURRENT head (an
  * absent or stale-head observation degrades to the head-independent ladder
@@ -190,7 +195,7 @@ function triggerHead(intent: RepairIntentRow): string | null {
  */
 export function deriveDeliveryStatus(
   input: DeriveDeliveryStatusInput,
-): DeliveryStatus {
+): DeliveryStatus | null {
   const task = input.task;
   const runs = input.runs ?? [];
   const reviews = input.reviews ?? [];
@@ -222,6 +227,10 @@ export function deriveDeliveryStatus(
       [],
     );
   }
+
+  // Canceled is terminal (state-machine.ts): no head, pipeline or gate fact
+  // can make it in-flight again, so there is nothing honest to report.
+  if (task.state === "canceled") return null;
 
   // --- Repair ladder: an intent outlives the run it dispatched -----------
   const intent = newestIntent(intents);
@@ -292,6 +301,12 @@ export function deriveDeliveryStatus(
       [liveImplement.id],
     );
   }
+
+  // A task that has not pushed yet has no head because nothing has been
+  // pushed: waiting on a provider head would blame the provider for work
+  // that has not started. An mr_open task without a head is a different
+  // case — the push happened, so the provider owes us the head.
+  if (task.state === "queued" || task.state === "running") return null;
 
   // --- Provider head ------------------------------------------------------
   // A lagging head means the provider has not caught up with the push; an
