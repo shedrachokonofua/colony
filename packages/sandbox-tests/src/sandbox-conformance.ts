@@ -280,11 +280,20 @@ async function checkGitWorkflow(
 }
 
 /**
- * The sandbox image must carry the pinned toolchain: a run that shells out to
- * a different bun or node than the repo pins fails in ways that look like
- * application bugs.
+ * The sandbox image must carry the pinned bun: a run that shells out to a
+ * different bun than the repo pins fails in ways that look like application
+ * bugs.
+ *
+ * Node is checked only when `shipsPinnedNode` says the engine's image makes it
+ * part of the contract. Colony and the in-process engine are Bun-only, so a
+ * universal Node assertion measures the host running the suite, not the
+ * engine — and it cannot be satisfied by installing Node (see the no-op rule
+ * below).
  */
-async function checkPinnedVersions(makeEngine: MakeEngine): Promise<void> {
+async function checkPinnedVersions(
+  makeEngine: MakeEngine,
+  opts: EngineTestOptions,
+): Promise<void> {
   const pinned = JSON.parse(await readFile(VERSIONS_FILE, "utf8")) as {
     bun?: unknown;
     node?: unknown;
@@ -292,19 +301,21 @@ async function checkPinnedVersions(makeEngine: MakeEngine): Promise<void> {
   const expectedBun = pinned.bun;
   const expectedNode = pinned.node;
   expect(typeof expectedBun).toBe("string");
-  expect(typeof expectedNode).toBe("string");
-  const nodeVersion = String(expectedNode);
-  expect(nodeVersion.startsWith("v")).toBe(true);
+  if (opts.shipsPinnedNode) {
+    expect(typeof expectedNode).toBe("string");
+    expect(String(expectedNode).startsWith("v")).toBe(true);
+  }
 
   await withSandbox(makeEngine, undefined, async ({ handle }) => {
     const bun = await execInSandbox(handle, "bun --version");
     requireExecSuccess(bun, "bun --version");
     expect(bun.stdout.trim()).toBe(String(expectedBun));
 
+    if (!opts.shipsPinnedNode) return;
     const node = await execInSandbox(handle, "node --version");
     requireExecSuccess(node, "node --version");
     expect(node.stdout.trim().replace(/^v/, "")).toBe(
-      nodeVersion.replace(/^v/, ""),
+      String(expectedNode).replace(/^v/, ""),
     );
   });
 }
@@ -477,8 +488,10 @@ export function describeSandboxConformance(
       timeout,
     );
     it(
-      "ships the pinned bun and node versions",
-      () => checkPinnedVersions(makeEngine),
+      opts.shipsPinnedNode
+        ? "ships the pinned bun and node versions"
+        : "ships the pinned bun version",
+      () => checkPinnedVersions(makeEngine, opts),
       timeout,
     );
     it(
