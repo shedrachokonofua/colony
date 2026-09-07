@@ -505,24 +505,25 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const rows = ctx.store.listProjectRunning(project.name);
     return c.json(
       rows.map((row) => {
-        // Every row carries its backend-derived stage, including run-less
-        // ones: the console renders delivery_status and only falls back to
-        // the raw task state when the field is absent. The run fault join
-        // stays gated on row.run.
+        // A task with no stage to report (never-dispatched, canceled) omits
+        // the key entirely: the console falls back to the raw task state,
+        // which is the honest answer. The run fault join stays gated on
+        // row.run.
         const delivery_status = deliveryStatusFor(
           ctx.store,
           row.task_id,
           ctx.config.reviewMode,
         );
-        if (!row.run) return { ...row, delivery_status };
-        const runRow = ctx.store.getRun(row.run.id);
+        const runRow = row.run ? ctx.store.getRun(row.run.id) : null;
         return {
           ...row,
-          run: {
-            ...row.run,
-            fault: runRow ? parseFault(runRow.fault_json) : null,
-          },
-          delivery_status,
+          run: row.run
+            ? {
+                ...row.run,
+                fault: runRow ? parseFault(runRow.fault_json) : null,
+              }
+            : null,
+          ...(delivery_status ? { delivery_status } : {}),
         };
       }),
     );
@@ -1249,15 +1250,18 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.get("/tasks/:id", (c) => {
     const task = ctx.store.getTask(c.req.param("id"));
     if (!task) return notFound(c, "task");
+    const delivery_status = deliveryStatusFor(
+      ctx.store,
+      task.id,
+      ctx.config.reviewMode,
+    );
     return c.json({
       task,
       runs: ctx.store.runsForTask(task.id).map(serializeRun),
       deps: ctx.store.taskDeps(task.id),
-      delivery_status: deliveryStatusFor(
-        ctx.store,
-        task.id,
-        ctx.config.reviewMode,
-      ),
+      // Same convention as delivery_by_task: no stage means no key, never a
+      // null the console has to second-guess.
+      ...(delivery_status ? { delivery_status } : {}),
     });
   });
 
