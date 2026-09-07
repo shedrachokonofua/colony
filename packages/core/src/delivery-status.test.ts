@@ -94,6 +94,7 @@ function derive(overrides: {
     readonly pipelineUrl?: string;
     readonly observedAt?: string;
   } | null;
+  readonly reviewMode?: "off" | "required";
 }) {
   return deriveDeliveryStatus({
     task: overrides.task ?? task(),
@@ -109,6 +110,7 @@ function derive(overrides: {
     repairIntents: overrides.repairIntents ?? [],
     providerHeadLagging: overrides.providerHeadLagging ?? false,
     pipeline: overrides.pipeline ?? null,
+    reviewMode: overrides.reviewMode ?? "off",
   });
 }
 
@@ -345,6 +347,36 @@ describe("review ladder", () => {
     });
     const status = derive({ runs: [review], reviews: [review] });
     expect(status.stage).toBe("awaiting_review");
+  });
+
+  it("required review mode with no review run yet is awaiting_review", () => {
+    const implemented = run({
+      id: "run-impl",
+      kind: "implement",
+      status: "succeeded",
+      head_sha: HEAD,
+    });
+    const status = derive({
+      runs: [implemented],
+      reviews: [],
+      reviewMode: "required",
+    });
+    expect(status.stage).toBe("awaiting_review");
+  });
+
+  it("required review mode is satisfied by an approval at the head", () => {
+    const review = run({
+      id: "run-rev",
+      kind: "review",
+      status: "succeeded",
+      evidence_json: JSON.stringify({ verdict: "approve", head_sha: HEAD }),
+    });
+    const status = derive({
+      runs: [review],
+      reviews: [review],
+      reviewMode: "required",
+    });
+    expect(status.stage).toBe("ready_to_merge");
   });
 
   it("an approval at the head clears the review ladder", () => {

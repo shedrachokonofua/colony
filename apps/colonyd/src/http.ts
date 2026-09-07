@@ -15,7 +15,12 @@ import {
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import { ArchitectExtensionEnvelope as architectExtensionEnvelopeSchema } from "@colony/agent-runtime";
 import { parseFault, type Fault, FAULT_LAYERS, type Run } from "@colony/core";
-import { deriveDeliveryStatus, type Store } from "@colony/core";
+import {
+  deriveDeliveryStatus,
+  type DeliveryStatus,
+  type ReviewMode,
+  type Store,
+} from "@colony/core";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
@@ -135,9 +140,10 @@ function serializeRun(run: Run): Run & { fault: Fault | null } {
 function deliveryStatusFor(
   store: Store,
   taskId: string,
-): ReturnType<typeof deriveDeliveryStatus> | null {
+  reviewMode: ReviewMode,
+): DeliveryStatus | null {
   const inputs = store.deliveryInputsFor(taskId);
-  return inputs ? deriveDeliveryStatus(inputs) : null;
+  return inputs ? deriveDeliveryStatus({ ...inputs, reviewMode }) : null;
 }
 
 const scopesQuery = z.object({
@@ -503,7 +509,11 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         // ones: the console renders delivery_status and only falls back to
         // the raw task state when the field is absent. The run fault join
         // stays gated on row.run.
-        const delivery_status = deliveryStatusFor(ctx.store, row.task_id);
+        const delivery_status = deliveryStatusFor(
+          ctx.store,
+          row.task_id,
+          ctx.config.reviewMode,
+        );
         if (!row.run) return { ...row, delivery_status };
         const runRow = ctx.store.getRun(row.run.id);
         return {
@@ -760,7 +770,10 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       delivery_by_task: Object.fromEntries(
         ctx.store
           .listTasks(scope.id)
-          .map((task) => [task.id, deliveryStatusFor(ctx.store, task.id)])
+          .map((task) => [
+            task.id,
+            deliveryStatusFor(ctx.store, task.id, ctx.config.reviewMode),
+          ])
           .filter(([, status]) => status !== null),
       ),
     });
@@ -1240,7 +1253,11 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       task,
       runs: ctx.store.runsForTask(task.id).map(serializeRun),
       deps: ctx.store.taskDeps(task.id),
-      delivery_status: deliveryStatusFor(ctx.store, task.id),
+      delivery_status: deliveryStatusFor(
+        ctx.store,
+        task.id,
+        ctx.config.reviewMode,
+      ),
     });
   });
 

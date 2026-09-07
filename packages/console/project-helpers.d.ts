@@ -1,3 +1,5 @@
+import type { DeliveryStatus } from "./delivery-stage.js";
+
 export type ProjectTab = "scopes" | "settings" | "running";
 
 export const VALID_PROJECT_TABS: readonly ProjectTab[];

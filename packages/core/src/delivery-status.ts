@@ -2,6 +2,9 @@ import type { Run, Task } from "./store.js";
 import type { RepairIntentRow } from "./store.js";
 import type { ScopeApprovals } from "./store.js";
 
+/** How the scheduler treats review, mirroring the config value. */
+export type ReviewMode = "off" | "required";
+
 /**
  * The delivery stage of one task: where its MR actually is on the way to
  * `merged`. The scheduler owns the facts; every consumer renders this value
@@ -86,6 +89,8 @@ export interface DeriveDeliveryStatusInput {
   readonly repairIntents?: readonly RepairIntentRow[];
   readonly providerHeadLagging?: boolean;
   readonly pipeline?: DeliveryPipelineFacts | null;
+  /** Configured review mode; defaults to "off" like the config default. */
+  readonly reviewMode?: ReviewMode;
 }
 
 /** Evidence is bounded so a task's status stays a summary, never a log. */
@@ -193,6 +198,7 @@ export function deriveDeliveryStatus(
   const latestGate = input.latestGate ?? null;
   const mrHeadSha = input.mrHeadSha ?? input.providerHeadSha ?? null;
   const approvalsMode = input.approvalsMode ?? "auto";
+  const reviewMode = input.reviewMode ?? "off";
 
   if (task.state === "merged") {
     return status(
@@ -399,9 +405,10 @@ export function deriveDeliveryStatus(
       parseEvidence(run.evidence_json).verdict === "approve" &&
       parseEvidence(run.evidence_json).head_sha === mrHeadSha,
   );
-  // Review is required when the task has any review history; a task that has
-  // never been reviewed is not silently exempt.
-  if (reviews.length > 0 && !approvedAtHead) {
+  // Review is required by config, or the task already has review history: a
+  // task that has never been reviewed is not silently exempt. The window
+  // before the first review dispatch is awaiting_review, not ready_to_merge.
+  if ((reviewMode === "required" || reviews.length > 0) && !approvedAtHead) {
     return status(
       "awaiting_review",
       newest([latestReview?.finished_at, task.updated_at]),

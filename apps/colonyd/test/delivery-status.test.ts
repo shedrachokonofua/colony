@@ -228,11 +228,13 @@ describe("GET /tasks/:id delivery_status", () => {
     );
   });
 
-  it("derives a head-independent stage when no pipeline was observed", async () => {
+  it("waits for the first review when review is required", async () => {
     const h = await harness();
     const body = await getJson(buildApp(h.ctx), `/tasks/${h.task.id}`);
+    // reviewMode=required and no review run yet: the scheduler is about to
+    // dispatch one, so the stage is awaiting_review, never ready_to_merge.
     expect((body.delivery_status as { stage: string }).stage).toBe(
-      "ready_to_merge",
+      "awaiting_review",
     );
   });
 
