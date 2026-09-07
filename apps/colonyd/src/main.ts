@@ -293,7 +293,11 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
               ? {
                   fault: faultForFailure(
                     store,
-                    { scope_id: run.scope_id, task_id: run.task_id, run_id: run.id },
+                    {
+                      scope_id: run.scope_id,
+                      task_id: run.task_id,
+                      run_id: run.id,
+                    },
                     reason,
                     metadata.fault,
                   ),
@@ -791,10 +795,7 @@ function completeResumedReview(
       error: "envelope facts unverified: reviewed head_sha mismatch",
       envelope_json: JSON.stringify(envelope),
       evidence_json: JSON.stringify({ head_sha: headSha }),
-      fault: modelFault(
-        "envelope_unverified",
-        "reviewed head_sha mismatch",
-      ),
+      fault: modelFault("envelope_unverified", "reviewed head_sha mismatch"),
     });
     throw new Error("resumed review head_sha mismatch");
   }

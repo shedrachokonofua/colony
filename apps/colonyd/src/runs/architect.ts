@@ -382,7 +382,10 @@ async function executeArchitect(
       ctx.store.finishRun(runId, "failed", {
         error: "decomposition dependency graph is cyclic",
         envelope_json: JSON.stringify(decomposition),
-        fault: modelFault("cyclic_graph", "decomposition dependency graph is cyclic"),
+        fault: modelFault(
+          "cyclic_graph",
+          "decomposition dependency graph is cyclic",
+        ),
       });
       runSpan?.end("failed", "decomposition dependency graph is cyclic");
       return;
