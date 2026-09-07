@@ -55,14 +55,6 @@ let repoId: string;
 const bootedHandles: ColonydHandle[] = [];
 
 /**
- * A namespace ResourceQuota refusal: the sandbox was never provisioned, so
- * the failure is a sandbox-layer scheduling condition, not an agent verdict.
- */
-function quotaRefused(reason: string): ScriptedFailure {
-  return { reason, fault: { layer: "provider", code: "quota_exhausted" } };
-}
-
-/**
  * A scripted runner failure: PiRunResult's reason plus its structured fault.
  * Budgeting reads the fault alone, so a scenario that omits it is
  * unclassified rather than silently agent-blamed.
@@ -70,6 +62,15 @@ function quotaRefused(reason: string): ScriptedFailure {
 interface ScriptedFailure {
   readonly reason: string;
   readonly fault?: Fault;
+}
+
+/**
+ * A namespace ResourceQuota refusal: the sandbox was never provisioned, so
+ * the failure is a scheduling condition, not an agent verdict. It rides the
+ * same infra backoff as every other platform layer, never skipping it.
+ */
+function quotaRefused(reason: string): ScriptedFailure {
+  return { reason, fault: { layer: "provider", code: "quota_exhausted" } };
 }
 
 /** Scripted fake runtime state shared with the scenarios. */
