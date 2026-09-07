@@ -143,6 +143,8 @@ flowchart LR
    exact merge request head and approves or requests changes with findings.
    Changes requested requeue the developer with the findings; approvals are
    tied to the SHA, so a new push is re-reviewed.
+   Each task has at most one active review. Independent tasks in the same
+   scope can review concurrently, subject to per-model limits.
 6. **Gate and merge.** If the merge request head has a CI pipeline, it must
    have succeeded. Failed CI at the current head schedules bounded developer
    repair with feedback and backoff; exhausted attempts block the task.
