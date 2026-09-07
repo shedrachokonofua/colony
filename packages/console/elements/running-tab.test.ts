@@ -4,6 +4,7 @@
 // @ts-nocheck
 import { afterEach, describe, expect, it } from "bun:test";
 import { sharedDom } from "./test-dom.js";
+import { DELIVERY_STAGES, DELIVERY_STAGE_LABEL } from "../delivery-stage.js";
 
 // Element modules self-register into globalThis.customElements at import
 // time (a static import would hoist above this setup), so the shared
@@ -229,6 +230,50 @@ describe("running-tab rows", () => {
     expect(rows[0].querySelector(".badge").getAttribute("data-state")).toBe(
       "mr_open",
     );
+  });
+});
+
+describe("running-tab delivery stage", () => {
+  function status(stage) {
+    return {
+      stage,
+      since: "2026-09-01T00:00:00.000Z",
+      evidence: [{ kind: "test", text: `evidence for ${stage}` }],
+      run_ids: [],
+    };
+  }
+
+  it("renders every stage's label and data-stage on its row", async () => {
+    for (const stage of DELIVERY_STAGES) {
+      const el = makeTab([
+        entry({ task_state: "mr_open", delivery_status: status(stage) }),
+      ]);
+      await el.updateComplete;
+      const badge = el.querySelector(".running-row .badge");
+      expect(badge?.getAttribute("data-stage")).toBe(stage);
+      expect(badge?.textContent?.trim()).toBe(DELIVERY_STAGE_LABEL[stage]);
+      // The task-state contract the rest of the console relies on survives.
+      expect(badge?.getAttribute("data-state")).toBe("mr_open");
+    }
+  });
+
+  it("reads CI failed, not mr_open or awaiting review, on the row", async () => {
+    const el = makeTab([
+      entry({ task_state: "mr_open", delivery_status: status("ci_failed") }),
+    ]);
+    await el.updateComplete;
+    const badge = el.querySelector(".running-row .badge");
+    expect(badge?.textContent?.trim()).toBe("CI failed");
+    expect(badge?.textContent).not.toContain("mr_open");
+    expect(badge?.textContent?.toLowerCase()).not.toContain("awaiting review");
+  });
+
+  it("falls back to the task state only when the field is absent", async () => {
+    const el = makeTab([entry({ task_state: "mr_open" })]);
+    await el.updateComplete;
+    const badge = el.querySelector(".running-row .badge");
+    expect(badge?.getAttribute("data-stage")).toBeNull();
+    expect(badge?.textContent?.trim()).toBe("mr_open");
   });
 });
 

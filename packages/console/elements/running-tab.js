@@ -14,6 +14,7 @@
 // refreshes instead of restarting from zero.
 import { ColonyElement, classMap, html, nothing, repeat } from "../base.js";
 import { KIND_LABEL } from "../kind-label.js";
+import { deliveryStage, deliveryStageLabel } from "../delivery-stage.js";
 import {
   deriveRunningRow,
   formatRunningEmptyTallies,
@@ -117,6 +118,12 @@ export class RunningTab extends ColonyElement {
       row.hasRun && row.run && runMs !== null
         ? durationAriaLabel(row.run, nowMs)
         : null;
+    // The backend-derived stage, falling back to the task state only when
+    // the API sent no delivery status at all.
+    const stage = deliveryStage(entry.delivery_status);
+    const stageLabel = stage
+      ? deliveryStageLabel(entry.delivery_status)
+      : row.taskState;
     const runKind = row.runKind ? (KIND_LABEL[row.runKind] ?? row.runKind) : "";
     const runInfo = [runKind, row.runModel].filter(Boolean).join(" · ");
     const openTask = () =>
@@ -151,7 +158,12 @@ export class RunningTab extends ColonyElement {
         <span class="running-task-title">${row.taskTitle}</span>
       </div>
       <div class="running-meta">
-        <span class="badge" data-state=${row.taskState}>${row.taskState}</span>
+        <span
+          class="badge"
+          data-stage=${stage || nothing}
+          data-state=${row.taskState}
+          >${stageLabel}</span
+        >
         <span class="running-attempt mono">${row.attemptText}</span>
         ${runInfo
           ? html`<span class="running-run-info">${runInfo}</span>`

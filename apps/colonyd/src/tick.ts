@@ -5,9 +5,12 @@ import {
   type ProviderPipeline,
 } from "@colony/provider";
 import { createHash } from "node:crypto";
-import { retryBackoffMs, TERMINAL_TASK_STATES } from "@colony/core";
+import {
+  retryBackoffMs,
+  TERMINAL_TASK_STATES,
+  type PipelineObservationRow,
+} from "@colony/core";
 import type { Run, Scope, Task } from "@colony/core";
-import { SANDBOX_QUOTA_EXHAUSTED } from "@colony/sandbox";
 import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import { startTickSpan } from "@colony/observability";
 import type { ColonydContext } from "./context.js";
@@ -39,11 +42,12 @@ import {
 } from "./runs/validate.js";
 import { MAX_EXTENSION_ROUNDS } from "./runs/extend.js";
 import {
-  consecutiveImplementationFailures,
-  isDeferredRunFailure,
+  consecutiveModelFailures,
+  isModelFailure,
+  isPlatformFailure,
   retryResetAt,
-} from "./run-classification.js";
-import { abortRunsAndWait } from "./runs/registry.js";
+} from "./fault-budget.js";
+import { abortRunsAndWait, activeTrackedRunIds } from "./runs/registry.js";
 
 /** How long after a push the provider's MR head may still report the previous commit. */
 const PROVIDER_HEAD_LAG_MS = 3 * 60_000;
@@ -108,18 +112,58 @@ async function phase(
   name: string,
   body: () => Promise<void> | void,
 ): Promise<void> {
+  let err: unknown;
   try {
     await body();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    ctx.logger.error({ phase: name, error: message }, "tick.phase_error");
-    try {
-      ctx.store.audit(SERVICE_ACTOR, "tick.phase_error", {
-        detail: { phase: name, error: message },
-      });
-    } catch {
-      // audit failure must not break the tick
-    }
+  } catch (caught) {
+    err = caught;
+  }
+  if (err === undefined) return;
+  const message = err instanceof Error ? err.message : String(err);
+  ctx.logger.error({ phase: name, error: message }, "tick.phase_error");
+  try {
+    ctx.store.audit(SERVICE_ACTOR, "tick.phase_error", {
+      detail: { phase: name, error: message },
+    });
+  } catch {
+    // audit failure must not break the tick
+  }
+  reapUnownedRuns(ctx, name, message);
+}
+
+/**
+ * Fail the `running` rows no live handler owns. The registry is the source of
+ * truth for work this process can still settle, so an untracked running row is
+ * one whose handler already returned without recording a terminal result —
+ * nobody will ever finish it, and it would otherwise sit `running`, holding its
+ * task and carrying no fault, until the lease reaper got to it.
+ *
+ * They take the tick's own colonyd fault, which requeues free: the tick broke,
+ * not the agent. Runs still executing are untouched — a live handler owns its
+ * own outcome.
+ */
+function reapUnownedRuns(
+  ctx: ColonydContext,
+  phaseName: string,
+  message: string,
+): void {
+  const owned = new Set(activeTrackedRunIds());
+  for (const run of ctx.store.activeRuns()) {
+    if (owned.has(run.id)) continue;
+    ctx.store.finishRun(run.id, "failed", {
+      error: `tick_error: ${phaseName}`,
+      fault: {
+        layer: "colonyd",
+        code: "tick_error",
+        detail: message.slice(0, 240),
+      },
+    });
+    ctx.store.audit(SERVICE_ACTOR, "run.failed", {
+      scope_id: run.scope_id,
+      task_id: run.task_id,
+      run_id: run.id,
+      detail: { reason: `tick_error: ${phaseName}` },
+    });
   }
 }
 
@@ -169,15 +213,6 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
       retryOrFailTask(ctx, task.id, "run_failed");
     }
   }
-}
-
-/**
- * A quota rejection is a scheduling condition, not a failure: the work stays
- * eligible and the next tick retries it once capacity exists. Detection is
- * textual because run errors cross the database boundary as strings.
- */
-function isQuotaDeferred(error: string | null | undefined): boolean {
-  return typeof error === "string" && error.includes(SANDBOX_QUOTA_EXHAUSTED);
 }
 
 interface DispatchSlotOptions {
@@ -293,18 +328,21 @@ function retryOrFailTask(
 ): void {
   const task = ctx.store.getTask(taskId);
   if (!task || task.state !== "running") return;
-  // Deferred failures are the platform's fault, not the agent's: the
-  // platform broke underneath the run, or the cluster refused to schedule
-  // it. Neither may consume the task's attempt budget.
+  // Only the model spends the task's attempt budget: a canceled run, a
+  // platform fault, an unknown fault, or a faultless legacy row requeues
+  // free with the standard infra backoff. Quota ({provider,quota_exhausted})
+  // is a provider fault, so it shares that path — never a special case.
   const last = lastImplementRun(ctx, taskId);
-  const deferred = last?.status === "canceled" || isDeferredRunFailure(last);
+  const consumes = isModelFailure(last);
+  const deferred =
+    last?.status === "canceled" || (last?.status === "failed" && !consumes);
   const since = retryResetAt(ctx.store, "task", task.id);
-  const failures = consecutiveImplementationFailures(
+  const failures = consecutiveModelFailures(
     ctx.store
       .runsForTask(task.id)
       .filter((run) => !since || run.started_at > since),
   );
-  const attempt = deferred ? task.attempt : task.attempt + 1;
+  const attempt = consumes ? task.attempt + 1 : task.attempt;
   if (deferred) {
     // If this task was running an unresolved repair intent, unbind its run_id
     // so the retry can rebind and thread the repair traces.
@@ -333,22 +371,17 @@ function retryOrFailTask(
     );
     return;
   }
-  // A saturated cluster is immediately eligible again once capacity exists,
-  // so a quota deferral carries no backoff penalty.
-  const quotaDeferred = isQuotaDeferred(last?.error);
   ctx.store.transitionTask(
     task.id,
     task.state_version,
     "queued",
     SERVICE_ACTOR,
-    quotaDeferred
-      ? { attempt }
-      : {
-          attempt,
-          next_retry_at: new Date(
-            Date.now() + retryBackoffMs(Math.max(1, failures)),
-          ).toISOString(),
-        },
+    {
+      attempt,
+      next_retry_at: new Date(
+        Date.now() + retryBackoffMs(Math.max(1, failures)),
+      ).toISOString(),
+    },
   );
 }
 
@@ -370,9 +403,8 @@ function retryOrFailScope(
 
 /**
  * Failed architect runs that count against the scope's attempt budget.
- * Infra-classified failures are the environment's fault, not the plan's -
- * the same exemption the task path applies (2026-08-31: a probe bug killed
- * three architects per scope with workspace_lost and blocked every scope).
+ * Only model faults count: the platform (or an unclassified legacy row)
+ * never parks a scope — the same exemption the task path applies.
  */
 function architectAttempts(ctx: ColonydContext, scopeId: string): number {
   const since = retryResetAt(ctx.store, "scope", scopeId);
@@ -381,9 +413,8 @@ function architectAttempts(ctx: ColonydContext, scopeId: string): number {
     .filter(
       (r) =>
         r.kind === "architect" &&
-        r.status === "failed" &&
         (!since || r.started_at > since) &&
-        !isDeferredRunFailure(r),
+        isModelFailure(r),
     ).length;
 }
 
@@ -695,7 +726,7 @@ async function advanceMrOpenTasks(
     if (
       lastGate?.status === "failed" &&
       lastGate.finished_at &&
-      (isDeferredRunFailure(lastGate) ||
+      (isPlatformFailure(lastGate) ||
         (parseEvidence(lastGate.evidence_json)?.head_sha === headSha &&
           isTransientMergeRefusal(
             parseEvidence(lastGate.evidence_json)?.reason,
@@ -891,9 +922,42 @@ async function repairAfterMergeConflict(
   });
 }
 
+/** The persisted pipeline statuses; anything else the provider reports is
+ *  not a fact this schema can store, so it is not recorded. */
+const PIPELINE_STATUSES: readonly string[] = [
+  "pending",
+  "running",
+  "success",
+  "failed",
+  "canceled",
+];
+
 /**
- * Read the provider pipeline for the MR head. This helper intentionally has
- * no state mutation: the caller must revalidate the MR task after this
+ * Record the pipeline observed for `headSha` so read APIs can derive a
+ * delivery stage without provider I/O. Called only after a successful
+ * getStatus: a failed read leaves the previous observation untouched, so a
+ * status is never guessed from a silence.
+ */
+function recordPipelineObservation(
+  ctx: ColonydContext,
+  task: Task,
+  headSha: string,
+  pipeline: ProviderPipeline,
+): void {
+  if (!PIPELINE_STATUSES.includes(pipeline.status)) return;
+  ctx.store.upsertPipelineObservation({
+    task_id: task.id,
+    head_sha: headSha,
+    status: pipeline.status as PipelineObservationRow["status"],
+    pipeline_id: pipeline.id,
+    web_url: pipeline.metadata.web_url ?? null,
+    observed_at: new Date().toISOString(),
+  });
+}
+
+/**
+ * Read the provider pipeline for the MR head. This helper records the
+ * observation it fetched; the caller must revalidate the MR task after this
  * awaited provider operation before recording a repair or blocking it.
  */
 async function pipelineGate(
@@ -908,6 +972,7 @@ async function pipelineGate(
       { id: scope.provider_repo_id, path: scope.provider_repo_path },
       headSha,
     );
+    recordPipelineObservation(ctx, task, headSha, pipeline);
     return {
       ready: pipeline.status === "success",
       pipeline,
@@ -1285,9 +1350,9 @@ async function advanceScopePlanning(
       }
 
       if (lastArchitect && lastArchitect.status === "failed") {
-        // A saturated cluster refused the sandbox before the architect ran,
-        // so that run is a scheduling condition, not an attempt: counting it
-        // would park the scope on infrastructure capacity.
+        // A platform fault (or an unclassified legacy row) is a scheduling
+        // condition, not an attempt: counting it would park the scope on
+        // infrastructure capacity.
         const attempts = architectAttempts(ctx, scope.id);
         if (attempts >= ctx.env.maxAttempts) {
           ctx.store.setScopeStatus(scope.id, "blocked", SERVICE_ACTOR, {
@@ -1446,7 +1511,7 @@ async function validateScopes(
     // unreachable) has no verdict for an architect to diagnose; re-run it.
     // col-7064acc1 (2026-09-03): an etcd stall failed the sandbox create and
     // the scope spent an extension round asking an architect to explain it.
-    if (isDeferredRunFailure(lastValidate)) {
+    if (isPlatformFailure(lastValidate)) {
       const slot = pickDispatchSlot(ctx, "developer");
       if (!slot.allowed) continue;
       dispatch(runValidation(ctx, fresh));
@@ -1467,8 +1532,8 @@ async function validateScopes(
     // the architect and nothing blocked the scope (col-3a0319cc sat seven
     // hours behind a restart-killed replan, 2026-09-01). Infra deaths are
     // free; agent failures are budgeted like every other retry.
-    const agentFailures = architectsSince.filter(
-      (run) => run.status === "failed" && !isDeferredRunFailure(run),
+    const agentFailures = architectsSince.filter((run) =>
+      isModelFailure(run),
     ).length;
     if (agentFailures >= MAX_VALIDATION_REPLAN_FAILURES) {
       ctx.store.setScopeStatus(fresh.id, "blocked", SERVICE_ACTOR, {

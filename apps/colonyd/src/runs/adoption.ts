@@ -105,9 +105,12 @@ export async function adoptOrExpireRuns(
   const classification = await classifyRuns(deps, active);
 
   for (const orphan of classification.orphans) {
+    // The crash reaped these: the run was in flight when the process died
+    // and nothing survived to resume it. Distinct from process_restart
+    // below, where the run WAS adopted and its resume broke.
     deps.store.finishRun(orphan.id, "failed", {
-      error: "process_restart",
-      fault: { layer: "colonyd", code: "process_restart" },
+      error: "crash_reaped",
+      fault: { layer: "colonyd", code: "crash_reaped" },
     });
     await revokeTokensForRuns(deps.store, deps.provider, [orphan]);
   }

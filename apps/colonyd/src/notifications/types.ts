@@ -2,6 +2,7 @@ import type { NotificationSeverity } from "@colony/config";
 
 export type NotificationClass =
   | "action_needed"
+  | "agent"
   | "blocked"
   | "infra"
   | "progress";

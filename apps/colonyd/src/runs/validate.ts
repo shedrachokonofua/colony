@@ -12,7 +12,8 @@ import {
   type SandboxHandle,
 } from "@colony/sandbox";
 import { inProcessEngine } from "@colony/sandbox-in-process";
-import type { Scope } from "@colony/core";
+import type { Fault, Scope } from "@colony/core";
+import { faultForFailure, modelFault } from "../fault-budget.js";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -76,6 +77,12 @@ export interface ValidateResult {
   readonly results: readonly ValidateResultEntry[];
   readonly passed: boolean;
   readonly error?: string;
+  /**
+   * Structured fault for a failed validation. A run that never produced a
+   * verdict (provisioning, provider) carries a platform fault so the tick
+   * re-runs it; a verdict (failing commands) carries a model fault.
+   */
+  readonly fault?: Fault;
 }
 
 /**
@@ -217,6 +224,7 @@ async function dispatchValidation(
     });
     ctx.store.finishRun(run.id, "failed", {
       error: "no acceptance criteria",
+      fault: { layer: "colonyd", code: "no_acceptance_criteria" },
       evidence_json: JSON.stringify({
         head_sha: "unknown",
         results: [],
@@ -288,6 +296,12 @@ async function dispatchValidation(
     ctx.store.finishRun(run.id, "failed", {
       head_sha: baseSha !== "unknown" ? baseSha : undefined,
       error,
+      fault: faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, run_id: run.id },
+        error,
+        undefined,
+      ),
       evidence_json: JSON.stringify({
         head_sha: baseSha,
         results: [],
@@ -350,10 +364,20 @@ async function executeValidate(
       engine: ctx.validateEngine,
     });
   } catch (err) {
+    // An unexpected throw (or unparseable acceptance criteria) is a colonyd
+    // failure, never a verdict: faultForFailure audits the unclassified
+    // reason so every validate failure carries a Fault.
+    const error = err instanceof Error ? err.message : String(err);
     result = {
       results: [],
       passed: false,
-      error: err instanceof Error ? err.message : String(err),
+      error,
+      fault: faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, run_id: runId },
+        error,
+        undefined,
+      ),
     };
   }
 
@@ -394,6 +418,7 @@ async function executeValidate(
     // lives on the run so the tick can tell "never ran" from "ran and
     // failed" - only the latter is a verdict worth an architect's time.
     error: result.error ?? undefined,
+    fault: result.fault,
   });
   runSpan?.end("failed", result.error ?? "validation failed");
   const failing = result.results.find((r) => r.exit_code !== 0);
@@ -453,6 +478,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       error: `workspace_provision_failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      fault: { layer: "sandbox", code: "workspace_transfer_failed" },
     };
   }
 
@@ -475,6 +501,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       error: `workspace_provision_failed: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      fault: { layer: "sandbox", code: "workspace_transfer_failed" },
     };
   }
 
@@ -498,12 +525,20 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       });
       if (exitCode !== 0) passed = false;
     }
-    return { results, passed };
+    return {
+      results,
+      passed,
+      // Commands ran and failed: that is the agent's verdict, so it carries
+      // a model fault. Without one the run lands faultless, notifications
+      // call it infra, and the tick re-runs instead of replanning.
+      ...(passed ? {} : { fault: modelFault("acceptance_failed") }),
+    };
   } catch (err) {
     return {
       results: [],
       passed: false,
       error: err instanceof Error ? err.message : String(err),
+      fault: { layer: "colonyd", code: "process_restart" },
     };
   } finally {
     await handle?.destroy().catch(() => {});

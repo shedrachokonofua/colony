@@ -15,7 +15,12 @@ import {
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import { ArchitectExtensionEnvelope as architectExtensionEnvelopeSchema } from "@colony/agent-runtime";
 import { parseFault, type Fault, FAULT_LAYERS, type Run } from "@colony/core";
-import type { Store } from "@colony/core";
+import {
+  deriveDeliveryStatus,
+  type DeliveryStatus,
+  type ReviewMode,
+  type Store,
+} from "@colony/core";
 import type { ColonydContext } from "./context.js";
 import { createOidcVerifier } from "./oidc.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
@@ -125,6 +130,20 @@ function serializeRun(run: Run): Run & { fault: Fault | null } {
     ...run,
     fault: parseFault(run.fault_json),
   };
+}
+
+/**
+ * The derived delivery status for one task, or null for an unknown task.
+ * Store-only: the pipeline facts behind it were persisted by the scheduler,
+ * so a poll never pays a provider round-trip.
+ */
+function deliveryStatusFor(
+  store: Store,
+  taskId: string,
+  reviewMode: ReviewMode,
+): DeliveryStatus | null {
+  const inputs = store.deliveryInputsFor(taskId);
+  return inputs ? deriveDeliveryStatus({ ...inputs, reviewMode }) : null;
 }
 
 const scopesQuery = z.object({
@@ -486,7 +505,16 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     const rows = ctx.store.listProjectRunning(project.name);
     return c.json(
       rows.map((row) => {
-        if (!row.run) return row;
+        // Every row carries its backend-derived stage, including run-less
+        // ones: the console renders delivery_status and only falls back to
+        // the raw task state when the field is absent. The run fault join
+        // stays gated on row.run.
+        const delivery_status = deliveryStatusFor(
+          ctx.store,
+          row.task_id,
+          ctx.config.reviewMode,
+        );
+        if (!row.run) return { ...row, delivery_status };
         const runRow = ctx.store.getRun(row.run.id);
         return {
           ...row,
@@ -494,6 +522,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
             ...row.run,
             fault: runRow ? parseFault(runRow.fault_json) : null,
           },
+          delivery_status,
         };
       }),
     );
@@ -738,6 +767,15 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       tasks: ctx.store.listTasks(scope.id),
       deps: ctx.store.scopeDeps(scope.id),
       runs: ctx.store.runsForScope(scope.id).map(serializeRun),
+      delivery_by_task: Object.fromEntries(
+        ctx.store
+          .listTasks(scope.id)
+          .map((task) => [
+            task.id,
+            deliveryStatusFor(ctx.store, task.id, ctx.config.reviewMode),
+          ])
+          .filter(([, status]) => status !== null),
+      ),
     });
   });
 
@@ -1215,6 +1253,11 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       task,
       runs: ctx.store.runsForTask(task.id).map(serializeRun),
       deps: ctx.store.taskDeps(task.id),
+      delivery_status: deliveryStatusFor(
+        ctx.store,
+        task.id,
+        ctx.config.reviewMode,
+      ),
     });
   });
 

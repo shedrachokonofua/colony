@@ -134,9 +134,13 @@ test.describe("console project running tab", () => {
       });
       await expect(row).toHaveCount(1, { timeout: 15000 });
       await expect(row).toContainText(runningTaskTitle);
-      await expect(row.locator('span[data-state="running"]')).toContainText(
-        "running",
-      );
+      // The badge carries the backend-derived delivery stage, not an echo of
+      // the task state: an implement run that has not pushed yet has no head
+      // for CI to run against, so its stage is pipeline_pending. The
+      // data-state contract the rest of the console keys off survives.
+      const rowBadge = row.locator('span.badge[data-state="running"]');
+      await expect(rowBadge).toHaveAttribute("data-stage", "pipeline_pending");
+      await expect(rowBadge).toContainText("CI queued");
       // Click the row body (not the scope chip, which stopPropagation-navigates
       // to the scope alone) so the task selection deep-link is exercised.
       await row.locator(".running-main").click();

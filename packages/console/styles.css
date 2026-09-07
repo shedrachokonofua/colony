@@ -2114,6 +2114,113 @@ pre.runlog {
   color: var(--danger);
 }
 
+/* ---------- Delivery stage ---------- */
+/*
+ * One ramp for every surface that renders a backend-derived stage: the DAG
+ * node, the drawer line, the running row, and the sheet banner. Blues carry
+ * the in-flight stages, green the merged ones, and red the ones that need a
+ * human or a repair.
+ */
+
+.delivery {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--r-chip);
+  background: var(--wash);
+}
+
+.delivery-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.delivery-since {
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
+.delivery-evidence {
+  margin: 0.35rem 0 0;
+  padding-left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.delivery-evidence a {
+  color: var(--navy);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.delivery-runs {
+  margin: 0.35rem 0 0;
+  font-size: 0.7rem;
+  color: var(--faint);
+}
+
+[data-stage="ci_failed"].delivery,
+[data-stage="repair_failed"].delivery,
+[data-stage="merge_gate_failed"].delivery,
+[data-stage="merge_conflict"].delivery {
+  border-left-color: var(--danger);
+}
+
+.badge[data-stage="ci_failed"],
+.badge[data-stage="repair_failed"],
+.badge[data-stage="merge_gate_failed"],
+.badge[data-stage="merge_conflict"],
+.node[data-stage="ci_failed"] .nstate,
+.node[data-stage="repair_failed"] .nstate,
+.node[data-stage="merge_gate_failed"] .nstate,
+.node[data-stage="merge_conflict"] .nstate {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
+}
+
+.node[data-stage="ci_failed"] .node-bar,
+.node[data-stage="repair_failed"] .node-bar,
+.node[data-stage="merge_gate_failed"] .node-bar,
+.node[data-stage="merge_conflict"] .node-bar {
+  fill: var(--danger);
+}
+
+.badge[data-stage="merged"],
+.badge[data-stage="merging"],
+.node[data-stage="merged"] .nstate,
+.node[data-stage="merging"] .nstate {
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+  color: var(--ok);
+}
+
+.node[data-stage="merged"] .node-bar,
+.node[data-stage="merging"] .node-bar {
+  fill: var(--ok);
+}
+
+.badge[data-stage="awaiting_human_approval"],
+.badge[data-stage="changes_requested"],
+.badge[data-stage="blocked"],
+.node[data-stage="awaiting_human_approval"] .nstate,
+.node[data-stage="changes_requested"] .nstate,
+.node[data-stage="blocked"] .nstate {
+  background: var(--live-soft);
+  border-color: color-mix(in srgb, var(--live) 30%, transparent);
+  color: var(--live);
+}
+
+.node[data-stage="awaiting_human_approval"] .node-bar,
+.node[data-stage="changes_requested"] .node-bar,
+.node[data-stage="blocked"] .node-bar {
+  fill: var(--live);
+}
+
 .project-census {
   margin-top: 2rem;
   padding-top: 1.5rem;

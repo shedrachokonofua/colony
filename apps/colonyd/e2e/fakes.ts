@@ -468,6 +468,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
             failures: [],
           },
         ],
+        fault: { layer: "model", code: "acceptance_failed" },
       };
     }
     const scopeId = input.scopeId;
@@ -487,6 +488,7 @@ export function createScriptedBoundary(): ScriptedBoundary {
               failures: [],
             },
           ],
+          fault: { layer: "model", code: "acceptance_failed" },
         };
       }
     }

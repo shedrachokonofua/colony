@@ -8,6 +8,7 @@
 // the shell's handleEvent routes.
 import { ColonyElement, html, nothing } from "../base.js";
 import { rel } from "../rel-time.js";
+import { deliveryStage } from "../delivery-stage.js";
 import "../elements/activity-card.js";
 import "../elements/goal-card.js";
 import "../elements/plan-card.js";
@@ -38,7 +39,88 @@ function latestValidateRun(detail) {
     .pop();
 }
 
+/**
+ * The banner line for one task's backend-derived stage. The browser adds no
+ * inference: each line is the operator's read of the stage the API sent.
+ * @param {Record<string, any>} task
+ * @param {import("../delivery-stage.js").DeliveryStage} stage
+ */
+function waitLineForStage(task, stage) {
+  const mr = task.mr_iid ? `MR !${task.mr_iid}` : "its merge request";
+  switch (stage) {
+    case "ci_failed":
+      return `CI failed on ${mr} — repair queued.`;
+    case "repair_pending":
+      return `CI failed on ${mr} — repair queued.`;
+    case "repair_running":
+      return `CI failed on ${mr} — repair running.`;
+    case "repair_failed":
+      return `CI repair failed on ${mr}.`;
+    case "provider_head_pending":
+      return "Waiting for the provider to report the new head.";
+    case "merge_conflict":
+      return `${mr} conflicts with the target branch — repair queued.`;
+    case "awaiting_human_approval":
+      return `Merge request !${task.mr_iid} is waiting for your approval.`;
+    case "pipeline_pending":
+      return `CI is queued on ${mr}.`;
+    case "pipeline_running":
+      return `CI is running on ${mr}.`;
+    case "awaiting_review":
+      return `${mr} is awaiting review.`;
+    case "reviewing":
+      return `Reviewing ${mr}.`;
+    case "changes_requested":
+      return `Review requested changes on ${mr}.`;
+    case "merge_gate_pending":
+      return `Merge gate is waiting to run on ${mr}.`;
+    case "merge_gate_running":
+      return `Merge gate is running on ${mr}.`;
+    case "merge_gate_failed":
+      return `Merge gate failed on ${mr}.`;
+    case "ready_to_merge":
+      return `${mr} is ready to merge.`;
+    case "merging":
+      return `Merging ${mr}.`;
+    case "merged":
+      return `${mr} is merged.`;
+    case "blocked":
+      return `${mr} is blocked.`;
+    default:
+      return "";
+  }
+}
+
 /** The monolith's waitingOnYou (app.js): the banner line for the sheet. */
+/**
+ * How urgently a stage needs the operator. The banner answers "what is
+ * waiting on you", so an attention-worthy stage (failed CI, a repair, a
+ * conflict, a review verdict, a missing head) outranks an in-progress stage,
+ * which outranks the terminal merged line — a merged task never shadows a
+ * later task that still needs work.
+ * @type {Record<import("../delivery-stage.js").DeliveryStage, number>}
+ */
+const WAITING_STAGE_PRIORITY = {
+  ci_failed: 0,
+  repair_pending: 0,
+  repair_running: 0,
+  repair_failed: 0,
+  merge_conflict: 0,
+  blocked: 0,
+  changes_requested: 0,
+  merge_gate_failed: 0,
+  awaiting_review: 1,
+  awaiting_human_approval: 1,
+  provider_head_pending: 1,
+  pipeline_pending: 2,
+  pipeline_running: 2,
+  reviewing: 2,
+  merge_gate_pending: 2,
+  merge_gate_running: 2,
+  ready_to_merge: 3,
+  merging: 3,
+  merged: 4,
+};
 /** @param {Record<string, any> | null | undefined} scope @param {any[]} tasks @param {Record<string, any> | null | undefined} detail */
 function waitingOnYou(scope, tasks, detail) {
   if (!scope) return "";
@@ -59,6 +141,22 @@ function waitingOnYou(scope, tasks, detail) {
   if (scope.status === "blocked") {
     return scope.blocked_reason || "Scope is blocked.";
   }
+  // A task's delivery stage outranks the task-state fallbacks below: it is
+  // the backend's answer, where "mr_open" is only its coarse state. The
+  // manual-approval line is unchanged, so this reads as it always did. The
+  // scan prefers attention-worthy stages over in-progress ones and merged
+  // last, so task .0's merged line never shadows task .1's failed CI.
+  const byTask = detail?.delivery_by_task ?? {};
+  const candidates = [];
+  for (const task of tasks || []) {
+    const stage = deliveryStage(byTask[task.id]);
+    if (!stage) continue;
+    const line = waitLineForStage(task, stage);
+    if (line)
+      candidates.push({ priority: WAITING_STAGE_PRIORITY[stage], line });
+  }
+  candidates.sort((a, b) => a.priority - b.priority);
+  if (candidates.length > 0) return candidates[0].line;
   if (scope.approvals === "manual") {
     const awaiting = (tasks || []).filter(
       (task) => task.state === "mr_open" && !task.merge_approved_sha,
