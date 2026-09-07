@@ -164,6 +164,21 @@ describe("pi reviewer per-leg finalizer", () => {
         "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
       inspected: [{ file: "source.ts", note: "checked against spec" }],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const warnings: { fields: Record<string, unknown>; message: string }[] = [];
@@ -447,6 +462,21 @@ describe("pi reviewer per-leg finalizer", () => {
         "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
       inspected: [{ file: "source.ts", note: "checked against spec" }],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const invalidEnvelope = {

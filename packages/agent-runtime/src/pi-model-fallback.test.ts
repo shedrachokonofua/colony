@@ -311,6 +311,21 @@ describe("Pi model fallback", () => {
       inspected: [
         { file: "src/main.ts", note: "checked against the task spec" },
       ],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const server = createServer((request, response) => {
@@ -484,6 +499,21 @@ describe("Pi model fallback", () => {
         "The eligible fallback completed the review and verified that the requested change satisfies the task specification end to end.",
       findings: [],
       inspected: [{ file: "src/main.ts", note: "checked against the task" }],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -653,6 +683,21 @@ describe("Pi model fallback", () => {
         "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
       inspected: [{ file: "src/main.ts", note: "checked" }],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -720,6 +765,21 @@ describe("Pi model fallback", () => {
         "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
       inspected: [{ file: "src/main.ts", note: "checked" }],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -836,6 +896,21 @@ describe("Pi model fallback", () => {
         "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
       inspected: [{ file: "src/main.ts", note: "checked" }],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     let primaryRequests = 0;
@@ -910,6 +985,21 @@ describe("Pi model fallback", () => {
         "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
       findings: [],
       inspected: [{ file: "src/main.ts", note: "checked" }],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     let fallbackRequests = 0;
@@ -1070,6 +1160,21 @@ describe("Pi model fallback", () => {
       inspected: [
         { file: "src/main.ts", note: "checked against the specification" },
       ],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     let secondTurns = 0;
@@ -1132,6 +1237,21 @@ describe("Pi model fallback", () => {
       inspected: [
         { file: "src/main.ts", note: "checked against the specification" },
       ],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     let recoveryAt: number | undefined;
@@ -1187,6 +1307,21 @@ describe("Pi model fallback", () => {
       inspected: [
         { file: "src/main.ts", note: "checked against the task spec" },
       ],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -1256,6 +1391,21 @@ describe("Pi model fallback", () => {
       inspected: [
         { file: "src/main.ts", note: "checked against the task spec" },
       ],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -1375,6 +1525,21 @@ describe("Pi model fallback", () => {
       inspected: [
         { file: "src/main.ts", note: "checked against the task spec" },
       ],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const { baseUrl, requestedModels } = await startGateway(
@@ -1623,6 +1788,21 @@ describe("Pi model fallback", () => {
           summary: "too short",
           findings: [],
           inspected: [],
+          dimensions: [
+            {
+              name: "spec-compliance",
+              spec_blind: false,
+              target_files: ["src/main.ts"],
+              findings: 0,
+            },
+            {
+              name: "defect-scan",
+              spec_blind: true,
+              target_files: ["src/main.ts"],
+              findings: 0,
+            },
+          ],
+          challenged: { reviewed: 0, dropped: 0 },
           head_sha: "f".repeat(40),
         });
         return;

@@ -134,6 +134,21 @@ describe("sandbox tool wiring", () => {
       inspected: [
         { file: "src/main.ts", note: "checked against the task spec" },
       ],
+      dimensions: [
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+      ],
+      challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
     };
     const handle = new RecordingHandle("sandbox-wiring-1");
