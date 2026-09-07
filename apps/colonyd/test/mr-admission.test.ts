@@ -569,7 +569,7 @@ describe("MR-derived dispatch admission", () => {
     expect(h.store.runsForTask(h.task.id)).toHaveLength(1);
   });
 
-  it("dispatches repair for a failed pipeline at attempt limit (attempts tracked per run, not gate)", async () => {
+  it("blocks task when failed pipeline repair attempts are exhausted", async () => {
     const h = await harness();
     let current = h.store.getTask(h.task.id)!;
     current = h.store.transitionTask(
@@ -602,11 +602,15 @@ describe("MR-derived dispatch admission", () => {
     await awaitPendingRuns();
 
     const task = h.store.getTask(h.task.id)!;
-    expect(task.state).toBe("queued");
-    expect(task.attempt).toBe(3);
+    expect(task.state).toBe("blocked");
+    expect(task.blocked_reason).toContain("ci_failure repair");
+    expect(task.blocked_reason).toContain("exhausted");
+    expect(task.attempt).toBe(2);
     const intents = h.store.listRepairIntents(h.task.id);
     expect(intents).toHaveLength(1);
-    expect(intents[0]!.trigger_kind).toBe("ci_failure");
+    expect(intents[0]!.run_id).toBeNull();
+    const audits = h.store.listAudit({ task_id: h.task.id }).events;
+    expect(audits.some((e) => e.action === "gate.pipeline_blocked")).toBe(true);
   });
 
   it.each(["pending", "running", "unknown"] as const)(

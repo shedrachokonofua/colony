@@ -568,6 +568,21 @@ describe("merge conflict repair dispatch", () => {
         fault: { layer: "model", code: "test_failure" },
       },
     });
+    // Task attempt budget is capped at maxAttempts (default 3); start at cap - 1
+    h.store.db
+      .prepare("UPDATE tasks SET attempt = ? WHERE id = ?")
+      .run(h.ctx.env.maxAttempts - 1, h.task.id);
+    for (let i = 0; i < h.ctx.env.maxAttempts - 1; i++) {
+      const run = h.store.startRun({
+        scope_id: h.scope.id,
+        task_id: h.task.id,
+        kind: "implement",
+        lease_ttl_ms: 60_000,
+      });
+      h.store.finishRun(run.id, "failed", {
+        fault: { layer: "model", code: "test_failure" },
+      });
+    }
 
     await tick(h.ctx);
     await awaitPendingRuns();
@@ -586,6 +601,21 @@ describe("merge conflict repair dispatch", () => {
     const h = await createHarness({
       developerCompletion: { head_sha: SHA_A },
     });
+    // Task attempt budget is capped at maxAttempts (default 3); start at cap - 1
+    h.store.db
+      .prepare("UPDATE tasks SET attempt = ? WHERE id = ?")
+      .run(h.ctx.env.maxAttempts - 1, h.task.id);
+    for (let i = 0; i < h.ctx.env.maxAttempts - 1; i++) {
+      const run = h.store.startRun({
+        scope_id: h.scope.id,
+        task_id: h.task.id,
+        kind: "implement",
+        lease_ttl_ms: 60_000,
+      });
+      h.store.finishRun(run.id, "failed", {
+        fault: { layer: "model", code: "repair_no_change" },
+      });
+    }
 
     await tick(h.ctx);
     await awaitPendingRuns();

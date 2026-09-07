@@ -10,7 +10,11 @@ import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
-import { faultForFailure, modelFault, retryOrFailTaskWithBudget } from "../fault-budget.js";
+import {
+  faultForFailure,
+  modelFault,
+  retryOrFailTaskWithBudget,
+} from "../fault-budget.js";
 import { trackRun } from "./registry.js";
 import {
   buildImplementPacket,
