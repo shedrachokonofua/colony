@@ -1,3 +1,5 @@
+import type { DeliveryStatus } from "./delivery-stage.js";
+
 export type ProjectTab = "scopes" | "settings" | "running";
 
 export const VALID_PROJECT_TABS: readonly ProjectTab[];
@@ -28,6 +30,8 @@ export interface RunningEntry {
     started_at?: string | null;
     finished_at?: string | null;
   } | null;
+  /** Backend-derived delivery stage; absent only on an older API. */
+  delivery_status?: DeliveryStatus | null;
 }
 
 export interface RunningRowInput {

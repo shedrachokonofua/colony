@@ -212,6 +212,37 @@ export interface RepairIntentRow {
   readonly resolved_head_sha: string | null;
 }
 
+/** Everything `deriveDeliveryStatus` needs, assembled by the store. */
+export interface DeliveryInputs {
+  readonly task: Task;
+  readonly runs: readonly Run[];
+  readonly latestGate: Run | null;
+  readonly reviews: readonly Run[];
+  readonly mrHeadSha: string | null;
+  readonly approvalsMode: ScopeApprovals;
+  readonly mergeApprovedSha: string | null;
+  readonly repairIntents: readonly RepairIntentRow[];
+  readonly providerHeadLagging: boolean;
+  readonly pipeline: {
+    readonly status: PipelineObservationRow["status"];
+    readonly pipelineUrl?: string;
+    readonly observedAt: string;
+  } | null;
+}
+
+/** The last provider pipeline observed for a task, at the head it was
+ *  observed for. Written only by the scheduler after a successful read; a
+ *  row whose head_sha is not the task's current head is stale by definition.
+ */
+export interface PipelineObservationRow {
+  readonly task_id: string;
+  readonly head_sha: string;
+  readonly status: "pending" | "running" | "success" | "failed" | "canceled";
+  readonly pipeline_id: string | null;
+  readonly web_url: string | null;
+  readonly observed_at: string;
+}
+
 export interface AuditRow {
   readonly id: number;
   readonly at: string;
@@ -1656,6 +1687,42 @@ export class Store {
       .run(resolved_head_sha, fingerprint);
   }
 
+  /** Record the pipeline observed for a task's current head. Scheduler-only
+   *  writer: one row per task, so a new observation replaces the old one
+   *  rather than accumulating history. */
+  upsertPipelineObservation(row: PipelineObservationRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO pipeline_observations
+           (task_id, head_sha, status, pipeline_id, web_url, observed_at)
+         VALUES (@task_id, @head_sha, @status, @pipeline_id, @web_url, @observed_at)
+         ON CONFLICT(task_id) DO UPDATE SET
+           head_sha = excluded.head_sha,
+           status = excluded.status,
+           pipeline_id = excluded.pipeline_id,
+           web_url = excluded.web_url,
+           observed_at = excluded.observed_at`,
+      )
+      .run(
+        named({
+          task_id: row.task_id,
+          head_sha: row.head_sha,
+          status: row.status,
+          pipeline_id: row.pipeline_id,
+          web_url: row.web_url,
+          observed_at: row.observed_at,
+        }),
+      );
+  }
+
+  getPipelineObservation(
+    taskId: TaskId | string,
+  ): PipelineObservationRow | null {
+    return (this.db
+      .prepare(`SELECT * FROM pipeline_observations WHERE task_id = ?`)
+      .get(taskId) ?? null) as PipelineObservationRow | null;
+  }
+
   /** Persist the minted provider token id so crash-reap can revoke it. */
   setRunToken(runId: string, tokenId: string): void {
     this.db
@@ -2193,6 +2260,59 @@ export class Store {
         `SELECT * FROM audit WHERE id > @afterId ORDER BY id ASC LIMIT @limit`,
       )
       .all(named({ afterId: afterId ?? 0, limit })) as AuditRow[];
+  }
+
+  /**
+   * The full derivation input for one task's delivery status: runs, gate,
+   * reviews, repair intents, approvals, and the persisted pipeline facts —
+   * store-only, so a read endpoint never touches the provider.
+   *
+   * `pipeline` is populated ONLY when the observation's head_sha is the
+   * task's current MR head. The store holds no provider fact, so the MR head
+   * is the newest succeeded implement run's pushed head; an observation at
+   * any other head is dropped rather than shown, because a pipeline at
+   * another head proves nothing about this one.
+   *
+   * `providerHeadLagging` is always false here: detecting the lag needs the
+   * provider's own head, and a read path performs no provider I/O. The
+   * scheduler owns that fact and simply does not dispatch while it holds.
+   */
+  deliveryInputsFor(taskId: TaskId | string): DeliveryInputs | null {
+    const task = this.getTask(taskId);
+    if (!task) return null;
+    const scope = this.getScope(task.scope_id);
+    const runs = this.runsForTask(task.id);
+    const reviews = runs.filter((run) => run.kind === "review");
+    const gates = runs.filter((run) => run.kind === "merge_gate");
+    const latestGate = gates.length > 0 ? gates[gates.length - 1]! : null;
+    const implementRuns = runs.filter((run) => run.kind === "implement");
+    const pushed = [...implementRuns]
+      .reverse()
+      .find((run) => run.status === "succeeded" && !!run.head_sha);
+    const mrHeadSha = task.mr_iid !== null ? (pushed?.head_sha ?? null) : null;
+    const observation = this.getPipelineObservation(task.id);
+    const pipeline =
+      observation && mrHeadSha && observation.head_sha === mrHeadSha
+        ? {
+            status: observation.status,
+            ...(observation.web_url
+              ? { pipelineUrl: observation.web_url }
+              : {}),
+            observedAt: observation.observed_at,
+          }
+        : null;
+    return {
+      task,
+      runs,
+      latestGate,
+      reviews,
+      mrHeadSha,
+      approvalsMode: scope?.approvals ?? "auto",
+      mergeApprovedSha: task.merge_approved_sha,
+      repairIntents: this.listRepairIntents(task.id),
+      providerHeadLagging: false,
+      pipeline,
+    };
   }
 
   /** Read a `meta` row; null when the key is absent. */

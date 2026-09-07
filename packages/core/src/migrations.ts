@@ -349,6 +349,23 @@ CREATE TABLE IF NOT EXISTS repair_intents (
 CREATE INDEX IF NOT EXISTS idx_repair_intents_task ON repair_intents(task_id, created_at);
 `;
 
+/**
+ * Migration 17: pipeline observations — the last provider pipeline status
+ * seen for a task's head, so delivery status is derived from stored facts
+ * instead of a provider read per poll. Mirrors the pipeline_observations
+ * DDL in schema.sql; a fresh database already has the table.
+ */
+const PIPELINE_OBSERVATIONS_DDL = `
+CREATE TABLE IF NOT EXISTS pipeline_observations (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+  head_sha TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','canceled')),
+  pipeline_id TEXT,
+  web_url TEXT,
+  observed_at TEXT NOT NULL
+);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -428,6 +445,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 16,
     name: "repair-intents",
     apply: (db) => db.exec(REPAIR_INTENTS_DDL),
+  },
+  {
+    version: 17,
+    name: "pipeline-observations",
+    apply: (db) => db.exec(PIPELINE_OBSERVATIONS_DDL),
   },
 ];
 
