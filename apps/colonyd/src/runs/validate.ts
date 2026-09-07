@@ -531,9 +531,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
       // Commands ran and failed: that is the agent's verdict, so it carries
       // a model fault. Without one the run lands faultless, notifications
       // call it infra, and the tick re-runs instead of replanning.
-      ...(passed
-        ? {}
-        : { fault: modelFault("acceptance_failed") }),
+      ...(passed ? {} : { fault: modelFault("acceptance_failed") }),
     };
   } catch (err) {
     return {
