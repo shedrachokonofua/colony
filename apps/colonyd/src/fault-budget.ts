@@ -6,6 +6,7 @@ import {
   type Store,
 } from "@colony/core";
 import { SERVICE_ACTOR } from "./context.js";
+import { sanitizeTrace } from "@colony/provider";
 import { z } from "zod";
 
 /** Detail retained on a synthesized fault; long enough to be actionable. */
@@ -92,8 +93,9 @@ export function faultForFailure(
   fault: Fault | undefined,
 ): Fault {
   if (fault) return fault;
-  const errorExcerpt = reason.slice(0, FAULT_DETAIL_LIMIT);
-  console.error("[fault] unknown classification", reason);
+  const clean = sanitizeTrace(reason);
+  const errorExcerpt = clean.slice(0, FAULT_DETAIL_LIMIT);
+  console.error("[fault] unknown classification", clean);
   store.audit(SERVICE_ACTOR, "run.fault_unknown", {
     ...refs,
     detail: { errorExcerpt },

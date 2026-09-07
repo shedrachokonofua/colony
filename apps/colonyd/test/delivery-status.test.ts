@@ -255,6 +255,48 @@ describe("GET /tasks/:id delivery_status", () => {
   });
 });
 
+describe("tasks with no stage to report", () => {
+  it("omits delivery_status on GET /tasks/:id for a canceled task", async () => {
+    const h = await harness();
+    h.store.transitionTask(
+      String(h.task.id),
+      h.task.state_version,
+      "canceled",
+      "svc:test",
+    );
+    const body = await getJson(buildApp(h.ctx), `/tasks/${h.task.id}`);
+    // Canceled is terminal and the task still has a head and a gate: a
+    // stage would contradict the state, so the key is gone entirely.
+    expect("delivery_status" in body).toBe(false);
+  });
+
+  it("omits delivery_status on GET /tasks/:id for a queued task", async () => {
+    const h = await harness();
+    h.store.transitionTask(
+      String(h.task.id),
+      h.task.state_version,
+      "queued",
+      "svc:test",
+    );
+    const body = await getJson(buildApp(h.ctx), `/tasks/${h.task.id}`);
+    expect("delivery_status" in body).toBe(false);
+  });
+
+  it("leaves a stageless task out of delivery_by_task", async () => {
+    const h = await harness();
+    observePipeline(h.store, String(h.task.id), "failed");
+    h.store.transitionTask(
+      String(h.task.id),
+      h.task.state_version,
+      "queued",
+      "svc:test",
+    );
+    const body = await getJson(buildApp(h.ctx), `/scopes/${h.scopeId}`);
+    const byTask = body.delivery_by_task as Record<string, { stage: string }>;
+    expect(Object.keys(byTask)).not.toContain(String(h.task.id));
+  });
+});
+
 describe("GET /scopes/:id delivery_by_task", () => {
   it("carries a delivery status for every task in the scope", async () => {
     const h = await harness();

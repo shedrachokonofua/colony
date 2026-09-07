@@ -262,6 +262,68 @@ describe("scope-sheet wait banner by delivery stage", () => {
     );
   });
 
+  it("never blames the provider for a queued task that has not pushed", async () => {
+    const el = makeSheet(
+      detail({
+        scope: { ...SCOPE_CLOSED, status: "active", approvals: "auto" },
+        tasks: TASKS.map((task) =>
+          task.id === "col-x.1" ? { ...task, state: "queued" } : task,
+        ),
+        delivery_by_task: {
+          "col-x.1": {
+            stage: "provider_head_pending",
+            since: "2026-09-01T00:00:00.000Z",
+            evidence: [{ kind: "test", text: "fact" }],
+            run_ids: [],
+          },
+        },
+      }),
+    );
+    await el.updateComplete;
+    const text = el.querySelector(".banner-wait")?.textContent ?? "";
+    expect(text).not.toContain("Waiting for the provider");
+    expect(el.querySelector(".banner-wait")).toBeNull();
+  });
+
+  it("shows the blocked task's own reason", async () => {
+    const el = makeSheet(
+      detail({
+        scope: { ...SCOPE_CLOSED, status: "active", approvals: "auto" },
+        tasks: TASKS.map((task) =>
+          task.id === "col-x.1"
+            ? {
+                ...task,
+                state: "blocked",
+                blocked_reason: "review model exhausted",
+              }
+            : task,
+        ),
+        delivery_by_task: {
+          "col-x.1": {
+            stage: "blocked",
+            since: "2026-09-01T00:00:00.000Z",
+            evidence: [
+              { kind: "blocked_reason", text: "review model exhausted" },
+            ],
+            run_ids: [],
+          },
+        },
+      }),
+    );
+    await el.updateComplete;
+    expect(el.querySelector(".banner-wait")?.textContent).toBe(
+      "MR !3 is blocked: review model exhausted.",
+    );
+  });
+
+  it("falls back to the MR-only line for a blocked task with no reason", async () => {
+    const el = sheetWithStage("blocked");
+    await el.updateComplete;
+    expect(el.querySelector(".banner-wait")?.textContent).toBe(
+      "MR !3 is blocked.",
+    );
+  });
+
   it("keeps the manual-approval line for awaiting_human_approval", async () => {
     const el = makeSheet(
       detail({

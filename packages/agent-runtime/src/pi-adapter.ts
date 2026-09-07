@@ -175,7 +175,13 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
           ? truncate(failureReason, 800)
           : parsed.ok
             ? undefined
-            : truncate(describeRejection(result.envelope, parsed.reason), 800),
+            : truncate(
+                redactPacketSecret(
+                  describeRejection(result.envelope, parsed.reason),
+                  packet,
+                ),
+                800,
+              ),
         fault: result.fault,
       };
       let finalMetadata: AgentRunMetadata = metadata;
@@ -188,7 +194,10 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
             layer: "model",
             code: "envelope_invalid",
             detail: truncate(
-              metadata.rejectionReason ?? "envelope failed schema parse",
+              redactPacketSecret(
+                metadata.rejectionReason ?? "envelope failed schema parse",
+                packet,
+              ),
               240,
             ),
           },
@@ -218,7 +227,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
           : {
               layer: "unknown",
               code: "unknown",
-              detail: truncate(excerpt, 240),
+              detail: truncate(redactPacketSecret(excerpt, packet), 240),
             },
       };
       this.runs.set(runId, metadata);
@@ -366,7 +375,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
               runResult.fault ?? {
                 layer: "model",
                 code: "envelope_invalid",
-                detail: truncate(rejection, 240),
+                detail: truncate(redactPacketSecret(rejection, packet), 240),
               },
             );
           }
@@ -385,7 +394,7 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
       return record("failed", excerpt, undefined, {
         layer: "unknown",
         code: "unknown",
-        detail: truncate(excerpt, 240),
+        detail: truncate(redactPacketSecret(excerpt, packet), 240),
       });
     }
   }

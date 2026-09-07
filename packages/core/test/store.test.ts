@@ -1992,9 +1992,11 @@ describe("deliveryInputsFor", () => {
       observed_at: "2026-09-01T00:00:00.000Z",
     });
     const status = deriveDeliveryStatus(store.deliveryInputsFor(taskId)!);
-    expect(status.stage).toBe("ci_failed");
+    // An mr_open task with a pipeline observation always has a stage; a
+    // null here is the failure this test is watching for.
+    expect(status?.stage).toBe("ci_failed");
     expect(
-      status.evidence.some(
+      status?.evidence.some(
         (entry) => entry.url === "https://ci.example/pipelines/9",
       ),
     ).toBe(true);

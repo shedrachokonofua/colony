@@ -336,7 +336,7 @@ export class PiBaseAgentRunner implements PiRunner {
           fault: {
             layer: "sandbox",
             code: classifyProvisionFailure(msg),
-            detail: msg.slice(0, 240),
+            detail: sanitizeSecret(msg, runToken).slice(0, 240),
           },
         };
       }
@@ -582,7 +582,7 @@ export class PiBaseAgentRunner implements PiRunner {
             fault: {
               layer: "sandbox",
               code: classifyProvisionFailure(msg),
-              detail: msg.slice(0, 240),
+              detail: sanitizeSecret(msg, runToken).slice(0, 240),
             },
           };
         }
@@ -800,7 +800,11 @@ export class PiBaseAgentRunner implements PiRunner {
           sandboxId,
           envelope: { __unfinished: true },
           reason: code,
-          fault: { layer: "harness", code, detail: msg.slice(0, 240) },
+          fault: {
+            layer: "harness",
+            code,
+            detail: sanitizeSecret(msg, runToken).slice(0, 240),
+          },
         };
       }
       session = built.session;
@@ -920,14 +924,17 @@ export class PiBaseAgentRunner implements PiRunner {
                 // table the protocol path uses: an exhausted 502/503/529 is
                 // {provider,http_5xx}, not a generic connection_exhausted.
                 const lastError = state.lastConnectionError ?? errText;
-                state.failureReason = `provider_connection_failure: ${lastError.slice(
-                  0,
-                  160,
-                )}`;
-                state.failureFault ??= classifyPromptFailure(lastError) ?? {
+                state.failureReason = `provider_connection_failure: ${sanitizeSecret(
+                  lastError.replace(/\s+/g, " ").trim(),
+                  runToken,
+                ).slice(0, 160)}`;
+                state.failureFault ??= classifyPromptFailure(
+                  lastError,
+                  runToken,
+                ) ?? {
                   layer: "provider",
                   code: "connection_exhausted",
-                  detail: lastError.slice(0, 240),
+                  detail: sanitizeSecret(lastError, runToken).slice(0, 240),
                 };
                 return false;
               }
@@ -952,10 +959,13 @@ export class PiBaseAgentRunner implements PiRunner {
                 errText.replace(/\s+/g, " ").trim(),
                 runToken,
               ).slice(0, 160)}`;
-              state.failureFault ??= classifyPromptFailure(errText) ?? {
+              state.failureFault ??= classifyPromptFailure(
+                errText,
+                runToken,
+              ) ?? {
                 layer: "harness",
                 code: classifyHarnessFailure(errText),
-                detail: errText.slice(0, 240),
+                detail: sanitizeSecret(errText, runToken).slice(0, 240),
               };
               return false;
             }
@@ -1305,7 +1315,10 @@ export class PiBaseAgentRunner implements PiRunner {
                           state.submissionRejectionReason !== undefined
                         ? "envelope_rejected"
                         : "finalize_no_submission",
-                  detail: state.failureReason.slice(0, 240),
+                  detail: sanitizeSecret(state.failureReason, runToken).slice(
+                    0,
+                    240,
+                  ),
                 };
               }
               return;
@@ -1393,14 +1406,17 @@ export class PiBaseAgentRunner implements PiRunner {
             if (!next || nextIndex === null) {
               const lastError =
                 state.lastConnectionError ?? "repeated connection errors";
-              state.failureReason = `provider_connection_failure: ${lastError.slice(
-                0,
-                160,
-              )}`;
-              state.failureFault ??= classifyPromptFailure(lastError) ?? {
+              state.failureReason = `provider_connection_failure: ${sanitizeSecret(
+                lastError.replace(/\s+/g, " ").trim(),
+                runToken,
+              ).slice(0, 160)}`;
+              state.failureFault ??= classifyPromptFailure(
+                lastError,
+                runToken,
+              ) ?? {
                 layer: "provider",
                 code: "connection_exhausted",
-                detail: lastError.slice(0, 240),
+                detail: sanitizeSecret(lastError, runToken).slice(0, 240),
               };
               break;
             }
@@ -1475,7 +1491,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 ? {
                     layer: "provider",
                     code: "quota_exhausted",
-                    detail: quotaError.slice(0, 240),
+                    detail: sanitizeSecret(quotaError, runToken).slice(0, 240),
                   }
                 : {
                     layer: "provider",
@@ -1657,10 +1673,13 @@ export class PiBaseAgentRunner implements PiRunner {
                     errText.replace(/\s+/g, " ").trim(),
                     runToken,
                   ).slice(0, 160)}`;
-                  state.failureFault ??= classifyPromptFailure(errText) ?? {
+                  state.failureFault ??= classifyPromptFailure(
+                    errText,
+                    runToken,
+                  ) ?? {
                     layer: "harness",
                     code: classifyHarnessFailure(errText),
-                    detail: errText.slice(0, 240),
+                    detail: sanitizeSecret(errText, runToken).slice(0, 240),
                   };
                   break;
                 } else if (
@@ -1754,10 +1773,10 @@ export class PiBaseAgentRunner implements PiRunner {
               errText.replace(/\s+/g, " ").trim(),
               runToken,
             ).slice(0, 160)}`;
-            state.failureFault ??= classifyPromptFailure(errText) ?? {
+            state.failureFault ??= classifyPromptFailure(errText, runToken) ?? {
               layer: "harness",
               code: classifyHarnessFailure(errText),
-              detail: errText.slice(0, 240),
+              detail: sanitizeSecret(errText, runToken).slice(0, 240),
             };
             this.options.logger?.warn?.(
               { runId, error: errText },
@@ -1797,9 +1816,10 @@ export class PiBaseAgentRunner implements PiRunner {
               state.lastSubmissionFailure?.kind === "invalid"
                 ? "envelope_invalid"
                 : "envelope_rejected",
-            detail: (
+            detail: sanitizeSecret(
               state.lastSubmissionFailure?.message ??
-              state.submissionRejectionReason
+                state.submissionRejectionReason,
+              runToken,
             ).slice(0, 240),
           };
         } else if (
@@ -1827,13 +1847,16 @@ export class PiBaseAgentRunner implements PiRunner {
                   state.lastSubmissionFailure.kind === "invalid"
                     ? "envelope_invalid"
                     : "envelope_rejected",
-                detail: state.lastSubmissionFailure.message.slice(0, 240),
+                detail: sanitizeSecret(
+                  state.lastSubmissionFailure.message,
+                  runToken,
+                ).slice(0, 240),
               };
             } else if (state.lastToolArgInvalid !== undefined) {
               state.failureFault = {
                 layer: "harness",
                 code: "tool_arg_invalid",
-                detail: state.lastToolArgInvalid,
+                detail: sanitizeSecret(state.lastToolArgInvalid, runToken),
               };
             } else {
               state.failureFault = {
@@ -2006,7 +2029,10 @@ export function classifyHarnessFailure(message: string): Fault["code"] {
       : "plumbing_error";
 }
 
-export function classifyPromptFailure(message: string): Fault | undefined {
+export function classifyPromptFailure(
+  message: string,
+  secret?: string,
+): Fault | undefined {
   const code = /\b429\b/.test(message)
     ? "http_429"
     : /\b50[0234]\b|\b529\b/.test(message)
@@ -2026,7 +2052,11 @@ export function classifyPromptFailure(message: string): Fault | undefined {
                 : undefined;
   return code === undefined
     ? undefined
-    : { layer: "provider", code, detail: message.slice(0, 240) };
+    : {
+        layer: "provider",
+        code,
+        detail: sanitizeSecret(message, secret).slice(0, 240),
+      };
 }
 
 function provisionProfileWorkspace(
