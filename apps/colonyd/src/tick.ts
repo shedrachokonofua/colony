@@ -43,7 +43,7 @@ import {
   isPlatformFailure,
   retryResetAt,
 } from "./fault-budget.js";
-import { abortRunsAndWait } from "./runs/registry.js";
+import { abortRunsAndWait, activeTrackedRunIds } from "./runs/registry.js";
 
 /** How long after a push the provider's MR head may still report the previous commit. */
 const PROVIDER_HEAD_LAG_MS = 3 * 60_000;
@@ -108,18 +108,51 @@ async function phase(
   name: string,
   body: () => Promise<void> | void,
 ): Promise<void> {
+  const runningBefore = new Set(ctx.store.activeRuns().map((run) => run.id));
+  let err: unknown;
   try {
     await body();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    ctx.logger.error({ phase: name, error: message }, "tick.phase_error");
-    try {
-      ctx.store.audit(SERVICE_ACTOR, "tick.phase_error", {
-        detail: { phase: name, error: message },
-      });
-    } catch {
-      // audit failure must not break the tick
-    }
+  } catch (caught) {
+    err = caught;
+  }
+  if (err === undefined) return;
+  const message = err instanceof Error ? err.message : String(err);
+  ctx.logger.error({ phase: name, error: message }, "tick.phase_error");
+  try {
+    ctx.store.audit(SERVICE_ACTOR, "tick.phase_error", {
+      detail: { phase: name, error: message },
+    });
+  } catch {
+    // audit failure must not break the tick
+  }
+  reapPhaseOrphans(ctx, name, message, runningBefore);
+}
+
+/**
+ * Fail the runs this phase dispatched whose handler has already settled
+ * without recording a terminal result: nobody will ever finish them, so they
+ * would otherwise sit `running` — faultless, holding their task — until the
+ * lease reaper got to them. They carry the tick's own colonyd fault, which
+ * requeues free. Runs still executing (or already terminal, or started by an
+ * earlier phase) are untouched: a live handler owns its own outcome.
+ */
+function reapPhaseOrphans(
+  ctx: ColonydContext,
+  phaseName: string,
+  message: string,
+  runningBefore: ReadonlySet<string>,
+): void {
+  const tracked = new Set(activeTrackedRunIds());
+  for (const run of ctx.store.activeRuns()) {
+    if (runningBefore.has(run.id) || tracked.has(run.id)) continue;
+    ctx.store.finishRun(run.id, "failed", {
+      error: `tick_error: ${phaseName}`,
+      fault: {
+        layer: "colonyd",
+        code: "tick_error",
+        detail: message.slice(0, 240),
+      },
+    });
   }
 }
 

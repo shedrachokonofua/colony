@@ -393,7 +393,7 @@ describe("restart resume integration", () => {
     expect(result.orphans.map((r) => r.id)).toEqual([runId]);
     const run = store.getRun(runId)!;
     expect(run.status).toBe("failed");
-    expect(run.error).toBe("process_restart");
+    expect(run.error).toBe("crash_reaped");
     expect(
       provider.listAccessTokens().some((token) => token.id === minted.id),
     ).toBe(false);

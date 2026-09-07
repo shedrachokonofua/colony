@@ -294,6 +294,46 @@ describe("adoptOrExpireRuns", () => {
     ).toBe(true);
   });
 
+  it("crash-reaped runs carry the colonyd crash_reaped fault", async () => {
+    const run = seedRun({ kind: "validate" });
+    await adoptOrExpireRuns({
+      ...deps("ok", 200),
+      resume: async () => {
+        throw new Error("must not resume an orphan");
+      },
+      resumeLeaseTtlMs: 60_000,
+    });
+
+    const after = store.getRun(run.id)!;
+    expect(after.error).toBe("crash_reaped");
+    expect(JSON.parse(after.fault_json!)).toMatchObject({
+      layer: "colonyd",
+      code: "crash_reaped",
+    });
+  });
+
+  it("a broken resume carries process_restart, not crash_reaped", async () => {
+    // Both are colonyd faults and both requeue free; only the reap that
+    // never got to run is 'reaped', while a resume that threw is a
+    // 'restart'. Conflating them would hide which recovery path fired.
+    const run = seedRun();
+    await adoptOrExpireRuns({
+      ...deps(),
+      resume: async () => {
+        throw new Error("resume exploded");
+      },
+      resumeLeaseTtlMs: 60_000,
+    });
+    await awaitPendingRuns();
+
+    const after = store.getRun(run.id)!;
+    expect(after.error).toBe("process_restart");
+    expect(JSON.parse(after.fault_json!)).toMatchObject({
+      layer: "colonyd",
+      code: "process_restart",
+    });
+  });
+
   it("orphans take today's fail+revoke path", async () => {
     const run = seedRun({ kind: "validate" });
     const minted = await mintInto({ id: "repo-1", path: "so/adoption" }, "x");
@@ -311,7 +351,7 @@ describe("adoptOrExpireRuns", () => {
     expect(resumeCalls).toEqual([]);
     const after = store.getRun(run.id)!;
     expect(after.status).toBe("failed");
-    expect(after.error).toBe("process_restart");
+    expect(after.error).toBe("crash_reaped");
     expect(
       provider.listAccessTokens().some((token) => token.id === minted.id),
     ).toBe(false);
