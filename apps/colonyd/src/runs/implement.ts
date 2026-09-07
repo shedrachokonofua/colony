@@ -308,7 +308,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
-        fault: rejectionFault("envelope_invalid", reason),
+        fault: modelFault("envelope_invalid", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -357,7 +357,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
-        fault: rejectionFault("no_command_evidence", reason),
+        fault: modelFault("no_command_evidence", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -392,7 +392,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
-        fault: rejectionFault("repair_no_change", reason),
+        fault: modelFault("repair_no_change", reason),
       });
       runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -437,7 +437,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
-        fault: rejectionFault("envelope_unverified", reason),
+        fault: modelFault("envelope_unverified", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -550,7 +550,7 @@ async function executeImplement(
         ctx.store.finishRun(runId, "failed", {
           error: reason,
           envelope_json: JSON.stringify(envelope),
-          fault: rejectionFault("mr_open_without_iid", reason),
+          fault: modelFault("mr_open_without_iid", reason),
         });
         runSpan?.end("failed", reason);
         return;
@@ -786,9 +786,6 @@ interface ReviewRepair {
  * colonyd refused — otherwise a consistently bad envelope would requeue free
  * forever and never reach maxAttempts.
  */
-function rejectionFault(code: string, reason: string): Fault {
-  return modelFault(code, reason);
-}
 
 /** Why a repair run blocked the task: names the trigger kind, not just the
  *  head, so the operator can tell a conflict rebase from a gate command. */

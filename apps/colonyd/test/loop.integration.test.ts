@@ -44,6 +44,9 @@ const script = {
   /** Fault attached to scripted implementer failures. Undefined means the
    *  default model fault; null means the runner result carries no fault. */
   implementerFault: undefined as Fault | null | undefined,
+  /** Submit a completion with no command evidence: a colonyd-side
+   *  rejection of a run that succeeded at the runner. */
+  implementerNoCommandEvidence: false,
   /** task id -> implementer run invocations observed */
   implementerCalls: new Map<string, number>(),
   gateFailOnceFor: undefined as string | undefined,
@@ -236,7 +239,9 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         summary: `Implemented ${taskId}.`,
         branch,
         head_sha: effectiveSha,
-        commands: [{ cmd: "npm test", exit_code: 0 }],
+        commands: script.implementerNoCommandEvidence
+          ? []
+          : [{ cmd: "npm test", exit_code: 0 }],
       };
     },
     failureForRun: (
@@ -1926,6 +1931,38 @@ describe("colonyd fake end-to-end loop", () => {
     expect(JSON.parse(audits[0]!.detail_json)).toMatchObject({
       errorExcerpt: expect.any(String),
     });
+  }, 30_000);
+
+  it("fault: a colonyd-side rejection of a succeeded run is a model fault", async () => {
+    // Envelope invalid, no command evidence, repair_no_change and company
+    // are colonyd's verdict ON a succeeded run: the runner supplies no
+    // fault, but the model produced the output. Routing them to the
+    // {unknown,unknown} fallback requeued them free forever, so a
+    // consistently bad envelope never reached maxAttempts.
+    script.singleTask = true;
+    const scopeId = await createScope("rejection fault");
+    const taskId = `${scopeId}.1`;
+    script.implementerNoCommandEvidence = true;
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch (no evidence)
+    await tickAndSettle(); // reconciler charges one attempt
+
+    const task = handle.ctx.store.getTask(taskId)!;
+    expect(task.attempt).toBe(1);
+    const implementRuns = handle.ctx.store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement");
+    expect(implementRuns[0]!.status).toBe("failed");
+    expect(JSON.parse(implementRuns[0]!.fault_json!)).toMatchObject({
+      layer: "model",
+    });
+    // Unclassified is for a runner result with no fault, not for a colonyd
+    // verdict: auditing it here would double-report a classified failure.
+    const unknown = handle.ctx.store
+      .listAudit({ task_id: taskId, limit: 100 })
+      .events.filter((row) => row.action === "run.fault_unknown");
+    expect(unknown).toHaveLength(0);
+    script.implementerNoCommandEvidence = false;
   }, 30_000);
 
   it("POST /scopes/:id/unblock returns an architect-exhausted scope to planning", async () => {

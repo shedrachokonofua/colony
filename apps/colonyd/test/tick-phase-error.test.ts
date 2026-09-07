@@ -16,7 +16,8 @@ const stores: Store[] = [];
 afterEach(async () => {
   await awaitPendingRuns();
   for (const store of stores.splice(0)) store.close();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0))
+    rmSync(dir, { recursive: true, force: true });
 });
 
 function harness(): { ctx: ColonydContext; store: Store } {
