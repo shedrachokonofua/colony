@@ -108,7 +108,6 @@ async function phase(
   name: string,
   body: () => Promise<void> | void,
 ): Promise<void> {
-  const runningBefore = new Set(ctx.store.activeRuns().map((run) => run.id));
   let err: unknown;
   try {
     await body();
@@ -125,26 +124,28 @@ async function phase(
   } catch {
     // audit failure must not break the tick
   }
-  reapPhaseOrphans(ctx, name, message, runningBefore);
+  reapUnownedRuns(ctx, name, message);
 }
 
 /**
- * Fail the runs this phase dispatched whose handler has already settled
- * without recording a terminal result: nobody will ever finish them, so they
- * would otherwise sit `running` — faultless, holding their task — until the
- * lease reaper got to them. They carry the tick's own colonyd fault, which
- * requeues free. Runs still executing (or already terminal, or started by an
- * earlier phase) are untouched: a live handler owns its own outcome.
+ * Fail the `running` rows no live handler owns. The registry is the source of
+ * truth for work this process can still settle, so an untracked running row is
+ * one whose handler already returned without recording a terminal result —
+ * nobody will ever finish it, and it would otherwise sit `running`, holding its
+ * task and carrying no fault, until the lease reaper got to it.
+ *
+ * They take the tick's own colonyd fault, which requeues free: the tick broke,
+ * not the agent. Runs still executing are untouched — a live handler owns its
+ * own outcome.
  */
-function reapPhaseOrphans(
+function reapUnownedRuns(
   ctx: ColonydContext,
   phaseName: string,
   message: string,
-  runningBefore: ReadonlySet<string>,
 ): void {
-  const tracked = new Set(activeTrackedRunIds());
+  const owned = new Set(activeTrackedRunIds());
   for (const run of ctx.store.activeRuns()) {
-    if (runningBefore.has(run.id) || tracked.has(run.id)) continue;
+    if (owned.has(run.id)) continue;
     ctx.store.finishRun(run.id, "failed", {
       error: `tick_error: ${phaseName}`,
       fault: {
@@ -152,6 +153,12 @@ function reapPhaseOrphans(
         code: "tick_error",
         detail: message.slice(0, 240),
       },
+    });
+    ctx.store.audit(SERVICE_ACTOR, "run.failed", {
+      scope_id: run.scope_id,
+      task_id: run.task_id,
+      run_id: run.id,
+      detail: { reason: `tick_error: ${phaseName}` },
     });
   }
 }
