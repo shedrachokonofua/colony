@@ -193,7 +193,30 @@ describe("classifyAuditRow", () => {
   });
 
   describe("run.finished", () => {
-    it("returns infra event on infra failure", () => {
+    it("returns agent event on inline model fault", () => {
+      const row = makeRow({
+        action: "run.finished",
+        scope_id: "col-scope-1",
+        task_id: "col-scope-1.0",
+        detail_json: JSON.stringify({
+          status: "failed",
+          error: "syntax error in submission",
+          fault: { layer: "model", code: "syntax_error" },
+        }),
+      });
+      const res = classifyAuditRow(row, mockCtx);
+      expect(res).toEqual({
+        class: "agent",
+        severity: "warning",
+        scope_id: "col-scope-1",
+        task_id: "col-scope-1.0",
+        title: "Agent failure in col-scope-1",
+        body: "syntax error in submission",
+        count: 1,
+      });
+    });
+
+    it("returns infra event on inline platform fault", () => {
       const row = makeRow({
         action: "run.finished",
         scope_id: "col-scope-1",
@@ -201,6 +224,7 @@ describe("classifyAuditRow", () => {
         detail_json: JSON.stringify({
           status: "failed",
           error: "process_restart",
+          fault: { layer: "colonyd", code: "process_restart" },
         }),
       });
       const res = classifyAuditRow(row, mockCtx);
@@ -215,7 +239,30 @@ describe("classifyAuditRow", () => {
       });
     });
 
-    it("returns null on non-infra failure", () => {
+    it("falls back to the stored run fault when the detail carries none", () => {
+      const row = makeRow({
+        action: "run.finished",
+        scope_id: "col-scope-1",
+        run_id: "run-9",
+        detail_json: JSON.stringify({
+          run_id: "run-9",
+          status: "failed",
+          error: "workspace_lost",
+        }),
+      });
+      const ctx: ClassifyContext = {
+        ...mockCtx,
+        runFaultJson: (runId) =>
+          runId === "run-9"
+            ? JSON.stringify({ layer: "sandbox", code: "workspace_lost" })
+            : null,
+      };
+      const res = classifyAuditRow(row, ctx);
+      expect(res?.class).toBe("infra");
+      expect(res?.body).toBe("workspace_lost");
+    });
+
+    it("returns infra event on unknown or missing fault", () => {
       const row = makeRow({
         action: "run.finished",
         scope_id: "col-scope-1",
@@ -224,7 +271,16 @@ describe("classifyAuditRow", () => {
           error: "Assertion failed: expected 1 to be 2",
         }),
       });
-      expect(classifyAuditRow(row, mockCtx)).toBeNull();
+      const res = classifyAuditRow(row, mockCtx);
+      expect(res).toEqual({
+        class: "infra",
+        severity: "warning",
+        scope_id: "col-scope-1",
+        task_id: "col-scope-1.0",
+        title: "Infrastructure failure in col-scope-1",
+        body: "Assertion failed: expected 1 to be 2",
+        count: 1,
+      });
     });
 
     it("returns null on successful run", () => {

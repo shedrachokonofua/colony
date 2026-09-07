@@ -8,6 +8,7 @@ import { FakeAgentRuntimeAdapter } from "@colony/agent-runtime";
 import {
   createLocalArtifactStore,
   Store,
+  type Fault,
   type Scope,
   type Task,
 } from "@colony/core";
@@ -80,6 +81,8 @@ interface HarnessOptions {
     readonly status?: "complete" | "blocked";
     readonly blocked_reason?: string;
     readonly throwError?: string;
+    /** Fault for a scripted failure; a throw without one is unknown. */
+    readonly fault?: Fault;
   };
 }
 
@@ -152,10 +155,18 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const task = store.getTask(created.id)!;
 
   const developer = new FakeAgentRuntimeAdapter({
-    envelopeForRun: (packet) => {
-      if (options.developerCompletion?.throwError) {
-        throw new Error(options.developerCompletion.throwError);
+    failureForRun: () => {
+      if (options.developerCompletion?.throwError === undefined) {
+        return undefined;
       }
+      return {
+        reason: options.developerCompletion.throwError,
+        ...(options.developerCompletion.fault === undefined
+          ? {}
+          : { fault: options.developerCompletion.fault }),
+      };
+    },
+    envelopeForRun: (packet) => {
       const completionHead = options.developerCompletion?.head_sha ?? SHA_C;
       const { repo: packetRepo } = packet as unknown as ImplementPacketShape;
       void provider.branches.create(repoRef, packetRepo.branch, completionHead);
@@ -551,7 +562,11 @@ describe("merge conflict repair dispatch", () => {
 
   it("a failed repair blocks with an actionable reason", async () => {
     const h = await createHarness({
-      developerCompletion: { throwError: "deterministic failure" },
+      developerCompletion: {
+        throwError: "deterministic failure",
+        // A model fault is the agent's failure: the repair blocks.
+        fault: { layer: "model", code: "test_failure" },
+      },
     });
 
     await tick(h.ctx);

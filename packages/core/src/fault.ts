@@ -64,8 +64,8 @@ function isFaultLayer(value: string): value is FaultLayer {
   return (FAULT_LAYERS as readonly string[]).includes(value);
 }
 
-// One-time inline copy of the old INFRA_FAILURE regex (apps/colonyd
-// run-classification.ts), partitioned by the layer at fault so the v13
+// One-time inline copy of the old colonyd error-text classifier (the deleted
+// colonyd helper), partitioned by the layer at fault so the v13
 // backfill can map historical error strings onto the fault contract.
 
 const COLONYD_FAULT_RE =

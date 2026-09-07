@@ -75,6 +75,7 @@ import {
   formatColonyModelsTrailer,
 } from "./runs/model-provenance.js";
 import { adoptOrExpireRuns } from "./runs/adoption.js";
+import { faultForFailure, modelFault } from "./fault-budget.js";
 import { pickDispatchSlot, tick } from "./tick.js";
 
 export interface BootOptions {
@@ -288,6 +289,20 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
           const reason = metadata.rejectionReason ?? metadata.status;
           store.finishRun(run.id, status, {
             error: reason,
+            ...(status === "failed"
+              ? {
+                  fault: faultForFailure(
+                    store,
+                    {
+                      scope_id: run.scope_id,
+                      task_id: run.task_id,
+                      run_id: run.id,
+                    },
+                    reason,
+                    metadata.fault,
+                  ),
+                }
+              : {}),
             ...(run.kind === "review"
               ? { evidence_json: JSON.stringify({ head_sha: headSha }) }
               : {}),
@@ -524,6 +539,7 @@ async function completeResumedImplement(
     store.finishRun(run.id, "failed", {
       error: "envelope invalid",
       envelope_json: output ? JSON.stringify(output.envelope) : undefined,
+      fault: modelFault("envelope_invalid", "envelope invalid"),
     });
     throw new Error("resumed implement envelope invalid");
   }
@@ -534,6 +550,7 @@ async function completeResumedImplement(
     store.finishRun(run.id, "failed", {
       error: "resumed implement task or scope missing",
       envelope_json: JSON.stringify(envelope),
+      fault: { layer: "colonyd", code: "resume_task_missing" },
     });
     throw new Error("resumed implement task or scope missing");
   }
@@ -559,6 +576,10 @@ async function completeResumedImplement(
     store.finishRun(run.id, "failed", {
       error: "envelope has no command evidence",
       envelope_json: JSON.stringify(envelope),
+      fault: modelFault(
+        "no_command_evidence",
+        "envelope has no command evidence",
+      ),
     });
     throw new Error("resumed implement envelope has no command evidence");
   }
@@ -573,6 +594,7 @@ async function completeResumedImplement(
     store.finishRun(run.id, "failed", {
       error: reason,
       envelope_json: JSON.stringify(envelope),
+      fault: modelFault("envelope_unverified", reason),
     });
     throw new Error(reason);
   }
@@ -641,6 +663,10 @@ async function completeResumedImplement(
       store.finishRun(run.id, "failed", {
         error: "merge request opened without iid",
         envelope_json: JSON.stringify(envelope),
+        fault: modelFault(
+          "mr_open_without_iid",
+          "merge request opened without iid",
+        ),
       });
       throw new Error("merge request opened without iid");
     }
@@ -709,6 +735,7 @@ function completeResumedArchitect(
     store.finishRun(run.id, "failed", {
       error: "envelope invalid",
       envelope_json: output ? JSON.stringify(output.envelope) : undefined,
+      fault: modelFault("envelope_invalid", "envelope invalid"),
     });
     throw new Error("resumed architect envelope invalid");
   }
@@ -717,6 +744,10 @@ function completeResumedArchitect(
     store.finishRun(run.id, "failed", {
       error: "decomposition dependency graph is cyclic",
       envelope_json: JSON.stringify(decomposition),
+      fault: modelFault(
+        "cyclic_graph",
+        "decomposition dependency graph is cyclic",
+      ),
     });
     throw new Error("resumed architect decomposition is cyclic");
   }
@@ -753,6 +784,7 @@ function completeResumedReview(
       evidence_json: JSON.stringify({
         head_sha: run.base_sha ?? run.head_sha ?? "",
       }),
+      fault: modelFault("envelope_invalid", "envelope invalid"),
     });
     throw new Error("resumed review envelope invalid");
   }
@@ -763,6 +795,7 @@ function completeResumedReview(
       error: "envelope facts unverified: reviewed head_sha mismatch",
       envelope_json: JSON.stringify(envelope),
       evidence_json: JSON.stringify({ head_sha: headSha }),
+      fault: modelFault("envelope_unverified", "reviewed head_sha mismatch"),
     });
     throw new Error("resumed review head_sha mismatch");
   }

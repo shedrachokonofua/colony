@@ -4,11 +4,13 @@ import {
   type RepairIntentV1,
 } from "@colony/schemas";
 import type { Scope, Task } from "@colony/core";
+import { isModelFault, type Fault } from "@colony/core";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
+import { faultForFailure, modelFault } from "../fault-budget.js";
 import { trackRun } from "./registry.js";
 import {
   buildImplementPacket,
@@ -16,7 +18,6 @@ import {
   type ImplementExecutionContext,
 } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
-import { isInfraError } from "../run-classification.js";
 import {
   amendBranchWithTrailer,
   buildMergeProvenanceLine,
@@ -255,8 +256,15 @@ async function executeImplement(
 
     if (metadata.status !== "succeeded") {
       const reason = metadata.rejectionReason ?? metadata.status;
+      const fault = faultForFailure(
+        ctx.store,
+        { scope_id: scope.id, task_id: task.id, run_id: runId },
+        reason,
+        metadata.fault,
+      );
       ctx.store.finishRun(runId, "failed", {
         error: reason,
+        fault,
       });
       runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -266,7 +274,9 @@ async function executeImplement(
         detail: { reason },
       });
       if (repairIntent) {
-        if (!isInfraError(reason)) {
+        // Only a model fault blocks the repair: any other layer requeues
+        // free, so clear run_id and let the retry re-bind the intent.
+        if (isModelFault(fault)) {
           const current = ctx.store.getTask(task.id);
           if (current) {
             ctx.store.transitionTask(
@@ -283,7 +293,6 @@ async function executeImplement(
             );
           }
         } else {
-          // On infra error, clear run_id so the intent can re-bind on retry.
           ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
         }
       }
@@ -299,6 +308,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
+        fault: modelFault("envelope_invalid", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -347,6 +357,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
+        fault: modelFault("no_command_evidence", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -381,6 +392,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
+        fault: modelFault("repair_no_change", reason),
       });
       runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -425,6 +437,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
+        fault: modelFault("envelope_unverified", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -533,11 +546,13 @@ async function executeImplement(
         ),
       });
       if (mr.iid === undefined) {
+        const reason = "merge request opened without iid";
         ctx.store.finishRun(runId, "failed", {
-          error: "merge request opened without iid",
+          error: reason,
           envelope_json: JSON.stringify(envelope),
+          fault: modelFault("mr_open_without_iid", reason),
         });
-        runSpan?.end("failed", "merge request opened without iid");
+        runSpan?.end("failed", reason);
         return;
       }
       mrIid = mr.iid;
@@ -606,8 +621,17 @@ async function executeImplement(
     );
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    // startRun may have thrown before metadata existed, and a succeeded
+    // start carries no fault: either way the catch has no runner fault.
+    const fault = faultForFailure(
+      ctx.store,
+      { scope_id: scope.id, task_id: task.id, run_id: runId },
+      reason,
+      undefined,
+    );
     ctx.store.finishRun(runId, "failed", {
       error: reason,
+      fault,
     });
     runSpan?.end("failed", reason);
     ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -617,7 +641,9 @@ async function executeImplement(
       detail: { reason },
     });
     if (repairIntent) {
-      if (!isInfraError(reason)) {
+      // Only a model fault blocks the repair: any other layer requeues
+      // free, so clear run_id and let the retry re-bind the intent.
+      if (isModelFault(fault)) {
         const current = ctx.store.getTask(task.id);
         if (current) {
           ctx.store.transitionTask(
@@ -634,7 +660,6 @@ async function executeImplement(
           );
         }
       } else {
-        // On infra error, clear run_id so the intent can re-bind on retry.
         ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
       }
     }

@@ -15,7 +15,7 @@ import {
   type AgentRunEnvironment,
   type AgentRuntimePacket,
 } from "@colony/agent-runtime";
-import type { AuditRow } from "@colony/core";
+import type { AuditRow, Fault } from "@colony/core";
 import { registerInMemorySpanExporter } from "@colony/observability";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
@@ -41,13 +41,21 @@ let reviewConfigPath: string;
 const script = {
   /** task id -> number of remaining forced implementer failures */
   implementerFailures: new Map<string, number>(),
+  /** Fault attached to scripted implementer failures. Undefined means the
+   *  default model fault; null means the runner result carries no fault. */
+  implementerFault: undefined as Fault | null | undefined,
+  /** Submit a completion with no command evidence: a colonyd-side
+   *  rejection of a run that succeeded at the runner. */
+  implementerNoCommandEvidence: false,
   /** task id -> implementer run invocations observed */
   implementerCalls: new Map<string, number>(),
   gateFailOnceFor: undefined as string | undefined,
   gateCalls: new Map<string, number>(),
   reviewerCalls: 0,
-  /** Error the reviewer adapter raises instead of returning a verdict. */
+  /** Failure the reviewer adapter returns instead of a verdict. */
   reviewerError: undefined as string | undefined,
+  /** Fault attached to scripted reviewer failures (default: none). */
+  reviewerFault: undefined as Fault | undefined,
   reviewerRejectFirst: false,
   reviewerAlwaysReject: false,
   planReviewRejectFirst: false,
@@ -59,6 +67,8 @@ const script = {
   validateFail: false,
   /** The first validation never runs (sandbox provision failure). */
   validateInfraFailOnce: false,
+  /** The executor itself throws: no verdict, and no fault of its own. */
+  validateThrows: false,
   reviewerAdvancesHead: false,
 };
 
@@ -147,9 +157,6 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         const headSha =
           typeof packet.head_sha === "string" ? packet.head_sha : SHA_A;
         script.reviewerCalls += 1;
-        if (script.reviewerError !== undefined) {
-          throw new Error(script.reviewerError);
-        }
         if (
           script.reviewerAlwaysReject ||
           (script.reviewerRejectFirst && script.reviewerCalls === 1)
@@ -200,11 +207,6 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         };
       }
       const taskId = String(packet.task_id);
-      const remaining = script.implementerFailures.get(taskId) ?? 0;
-      if (remaining > 0) {
-        script.implementerFailures.set(taskId, remaining - 1);
-        throw new Error("simulated implementer failure");
-      }
       const calls = (script.implementerCalls.get(taskId) ?? 0) + 1;
       script.implementerCalls.set(taskId, calls);
       const headSha = script.distinctShas
@@ -239,8 +241,43 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         summary: `Implemented ${taskId}.`,
         branch,
         head_sha: effectiveSha,
-        commands: [{ cmd: "npm test", exit_code: 0 }],
+        commands: script.implementerNoCommandEvidence
+          ? []
+          : [{ cmd: "npm test", exit_code: 0 }],
       };
+    },
+    failureForRun: (
+      packet: AgentRuntimePacket,
+      environment: AgentRunEnvironment,
+    ) => {
+      if (environment.role === "reviewer") {
+        if (script.reviewerError === undefined) return undefined;
+        script.reviewerCalls += 1;
+        return {
+          reason: script.reviewerError,
+          ...(script.reviewerFault === undefined
+            ? {}
+            : { fault: script.reviewerFault }),
+        };
+      }
+      if (environment.role === "developer") {
+        const taskId = String(packet.task_id);
+        const remaining = script.implementerFailures.get(taskId) ?? 0;
+        if (remaining <= 0) return undefined;
+        script.implementerFailures.set(taskId, remaining - 1);
+        return {
+          reason: "simulated implementer failure",
+          ...(script.implementerFault === null
+            ? {}
+            : {
+                fault: script.implementerFault ?? {
+                  layer: "model",
+                  code: "simulated_failure",
+                },
+              }),
+        };
+      }
+      return undefined;
     },
   });
 }
@@ -274,12 +311,16 @@ function syncMrHead(adapter: FakeProviderAdapter): void {
 
 function fakeValidateExecutor(): ValidateExecutor {
   return async () => {
+    if (script.validateThrows) {
+      throw new Error("validate executor exploded");
+    }
     if (script.validateInfraFailOnce) {
       script.validateInfraFailOnce = false;
       return {
         passed: false,
         results: [],
         error: "workspace_provision_failed: etcdserver: request timed out",
+        fault: { layer: "sandbox", code: "workspace_transfer_failed" },
       };
     }
     if (script.validateFail) {
@@ -295,6 +336,7 @@ function fakeValidateExecutor(): ValidateExecutor {
             failures: [],
           },
         ],
+        fault: { layer: "model", code: "acceptance_failed" },
       };
     }
     return {
@@ -441,6 +483,8 @@ beforeEach(async () => {
   script.gateCalls.clear();
   script.reviewerCalls = 0;
   script.reviewerError = undefined;
+  script.reviewerFault = undefined;
+  script.implementerFault = undefined;
   script.reviewerRejectFirst = false;
   script.reviewerAlwaysReject = false;
   script.planReviewRejectFirst = false;
@@ -450,6 +494,7 @@ beforeEach(async () => {
   script.pushedShas.clear();
   script.validateFail = false;
   script.validateInfraFailOnce = false;
+  script.validateThrows = false;
   script.reviewerAdvancesHead = false;
   provider = new FakeProviderAdapter();
   const repo = await provider.repos.create({
@@ -870,7 +915,11 @@ describe("colonyd fake end-to-end loop", () => {
         kind: "architect",
         lease_ttl_ms: 60_000,
       });
-      store.finishRun(failed.id, "failed", { error: "finalize_no_submission" });
+      // Agent failures carry model faults; only those spend the budget.
+      store.finishRun(failed.id, "failed", {
+        error: "finalize_no_submission",
+        fault: { layer: "model", code: "finalize_no_submission" },
+      });
     }
     const canceled = store.startRun({
       scope_id: scopeId,
@@ -1278,15 +1327,15 @@ describe("colonyd fake end-to-end loop", () => {
 
     a = handle.ctx.store.getTask(taskA.id)!;
     expect(a.state).toBe("queued");
-    // process_restart is an infrastructure failure: the task requeues but
+    // crash_reaped is an infrastructure failure: the task requeues but
     // does NOT consume an attempt (only agent-caused failures do).
     expect(a.attempt).toBe(0);
     // Exactly one transition out of running (state_version bumped once).
     expect(a.state_version).toBe(versionBefore + 1);
-    // The expired run failed; no new implement run was minted.
+    // The reaped run failed; no new implement run was minted.
     const expired = handle.ctx.store.getRun(liveRun.id)!;
     expect(expired.status).toBe("failed");
-    expect(expired.error).toBe("process_restart");
+    expect(expired.error).toBe("crash_reaped");
     expect(handle.ctx.store.runsForTask(taskA.id)).toHaveLength(runsBefore);
     expect(provider.listAccessTokens().map((t) => t.id)).not.toContain(
       minted.id,
@@ -1704,7 +1753,7 @@ describe("colonyd fake end-to-end loop", () => {
 
   it("infra-failed architect runs never spend the scope's attempt budget", async () => {
     const scopeId = await createScope("infra architect");
-    // Three infra-classified architect corpses recorded before any tick.
+    // Three sandbox-faulted architect corpses recorded before any tick.
     for (let i = 0; i < 3; i += 1) {
       const run = handle.ctx.store.startRun({
         id: crypto.randomUUID(),
@@ -1715,6 +1764,7 @@ describe("colonyd fake end-to-end loop", () => {
       });
       handle.ctx.store.finishRun(run.id, "failed", {
         error: "workspace_lost",
+        fault: { layer: "sandbox", code: "workspace_lost" },
       });
     }
     handle.ctx.store.setScopeStatus(scopeId, "planning", ACTOR);
@@ -1776,6 +1826,13 @@ describe("colonyd fake end-to-end loop", () => {
     expect(task.state).toBe("mr_open");
 
     script.reviewerError = "timeout_without_envelope";
+    // Production pairs this reason with a model wall-timeout fault; the
+    // exclusion list keys on the fault code, not the reason text.
+    script.reviewerFault = {
+      layer: "model",
+      code: "wall_timeout",
+      detail: "run timeout exceeded",
+    };
     await tickAndSettle(); // first candidate times out
     expect(handle.ctx.store.getTask(task.id)!.state).toBe("mr_open");
     const timedOut = handle.ctx.store
@@ -1790,6 +1847,128 @@ describe("colonyd fake end-to-end loop", () => {
       `review models exhausted after timeout_without_envelope at ${SHA_A}`,
     );
     script.reviewerError = undefined;
+    script.reviewerFault = undefined;
+  }, 30_000);
+
+  it("fault: sandbox failure requeues without spending the attempt budget", async () => {
+    script.singleTask = true;
+    const scopeId = await createScope("sandbox fault");
+    const taskId = `${scopeId}.1`;
+    script.implementerFailures.set(taskId, 1);
+    script.implementerFault = { layer: "sandbox", code: "workspace_lost" };
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch A (sandbox fails)
+    await tickAndSettle(); // reconciler requeues free
+    const task = handle.ctx.store.getTask(taskId)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(0);
+    expect(task.next_retry_at).not.toBeNull();
+    const implementRuns = handle.ctx.store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement");
+    expect(implementRuns).toHaveLength(1);
+    expect(implementRuns[0]!.status).toBe("failed");
+    expect(JSON.parse(implementRuns[0]!.fault_json!)).toMatchObject({
+      layer: "sandbox",
+      code: "workspace_lost",
+    });
+  }, 30_000);
+
+  it("fault: model failure spends one attempt with backoff", async () => {
+    script.singleTask = true;
+    const scopeId = await createScope("model fault");
+    const taskId = `${scopeId}.1`;
+    script.implementerFailures.set(taskId, 1);
+    script.implementerFault = { layer: "model", code: "simulated_failure" };
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch A (model fails)
+    await tickAndSettle(); // reconciler charges one attempt
+    const task = handle.ctx.store.getTask(taskId)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(1);
+    expect(task.next_retry_at).not.toBeNull();
+    const implementRuns = handle.ctx.store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement");
+    expect(implementRuns).toHaveLength(1);
+    expect(JSON.parse(implementRuns[0]!.fault_json!)).toMatchObject({
+      layer: "model",
+    });
+  }, 30_000);
+
+  it("fault: unknown failure requeues free and audits run.fault_unknown", async () => {
+    script.singleTask = true;
+    const scopeId = await createScope("unknown fault");
+    const taskId = `${scopeId}.1`;
+    // Null implementerFault: the runner result carries no fault, so the run
+    // is unclassified, never agent-blamed.
+    script.implementerFailures.set(taskId, 1);
+    script.implementerFault = null;
+    const logged: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      await tickAndSettle(); // draft -> planning
+      await tickAndSettle(); // planning -> active; dispatch A (fails faultless)
+      await tickAndSettle(); // reconciler requeues free
+    } finally {
+      console.error = originalError;
+    }
+    expect(
+      logged.some((args) => args[0] === "[fault] unknown classification"),
+    ).toBe(true);
+    const task = handle.ctx.store.getTask(taskId)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(0);
+    const implementRuns = handle.ctx.store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement");
+    expect(implementRuns).toHaveLength(1);
+    expect(JSON.parse(implementRuns[0]!.fault_json!)).toMatchObject({
+      layer: "unknown",
+      code: "unknown",
+    });
+    const audits = handle.ctx.store
+      .listAudit({ task_id: taskId, limit: 100 })
+      .events.filter((row) => row.action === "run.fault_unknown");
+    expect(audits).toHaveLength(1);
+    expect(JSON.parse(audits[0]!.detail_json)).toMatchObject({
+      errorExcerpt: expect.any(String),
+    });
+  }, 30_000);
+
+  it("fault: a colonyd-side rejection of a succeeded run is a model fault", async () => {
+    // Envelope invalid, no command evidence, repair_no_change and company
+    // are colonyd's verdict ON a succeeded run: the runner supplies no
+    // fault, but the model produced the output. Routing them to the
+    // {unknown,unknown} fallback requeued them free forever, so a
+    // consistently bad envelope never reached maxAttempts.
+    script.singleTask = true;
+    const scopeId = await createScope("rejection fault");
+    const taskId = `${scopeId}.1`;
+    script.implementerNoCommandEvidence = true;
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch (no evidence)
+    await tickAndSettle(); // reconciler charges one attempt
+
+    const task = handle.ctx.store.getTask(taskId)!;
+    expect(task.attempt).toBe(1);
+    const implementRuns = handle.ctx.store
+      .runsForTask(taskId)
+      .filter((r) => r.kind === "implement");
+    expect(implementRuns[0]!.status).toBe("failed");
+    expect(JSON.parse(implementRuns[0]!.fault_json!)).toMatchObject({
+      layer: "model",
+    });
+    // Unclassified is for a runner result with no fault, not for a colonyd
+    // verdict: auditing it here would double-report a classified failure.
+    const unknown = handle.ctx.store
+      .listAudit({ task_id: taskId, limit: 100 })
+      .events.filter((row) => row.action === "run.fault_unknown");
+    expect(unknown).toHaveLength(0);
+    script.implementerNoCommandEvidence = false;
   }, 30_000);
 
   it("POST /scopes/:id/unblock returns an architect-exhausted scope to planning", async () => {
@@ -1808,6 +1987,8 @@ describe("colonyd fake end-to-end loop", () => {
       });
       handle.ctx.store.finishRun(run.id, "failed", {
         error: "finalize_no_submission",
+        // Agent failures carry model faults; only those spend the budget.
+        fault: { layer: "model", code: "finalize_no_submission" },
       });
     }
     handle.ctx.store.setScopeStatus(scopeId, "blocked", ACTOR, {
@@ -1851,6 +2032,8 @@ describe("colonyd fake end-to-end loop", () => {
         });
         handle.ctx.store.finishRun(run.id, "failed", {
           error: "timeout_without_envelope",
+          // Agent failures carry model faults; only those spend the budget.
+          fault: { layer: "model", code: "wall_timeout" },
         });
       }
       handle.ctx.store.setScopeStatus(scopeId, "blocked", ACTOR, {
@@ -1940,6 +2123,21 @@ describe("colonyd fake end-to-end loop", () => {
       passed: boolean;
     };
     expect(failedEvidence.passed).toBe(false);
+    // A verdict is the agent's failure: it must carry a model fault so
+    // notifications classify it as an agent failure, not infra.
+    expect(JSON.parse(failedRun!.fault_json!)).toMatchObject({
+      layer: "model",
+      code: "acceptance_failed",
+    });
+    const finished = handle.ctx.store
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .events.filter(
+        (row) => row.action === "run.finished" && row.run_id === failedRun!.id,
+      );
+    expect(finished).toHaveLength(1);
+    expect(
+      JSON.parse(finished[0]!.detail_json) as { fault?: { layer: string } },
+    ).toMatchObject({ fault: { layer: "model" } });
 
     // Audit records the failure.
     const failedAudit = handle.ctx.store
@@ -1974,6 +2172,33 @@ describe("colonyd fake end-to-end loop", () => {
     expect(succeededRuns.length).toBeGreaterThanOrEqual(1);
   }, 30_000);
 
+  it("a throwing validate executor never lands a faultless failed run", async () => {
+    // The executor throw is an unexpected colonyd-side failure, not a
+    // verdict: it must still carry a Fault (and be audited) so the run is
+    // never classified infra-by-omission.
+    script.validateThrows = true;
+    const scopeId = await createScope("throwing validate");
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      if (
+        handle.ctx.store
+          .runsForScope(scopeId)
+          .some((r) => r.kind === "validate" && r.status === "failed")
+      )
+        break;
+    }
+    const failed = handle.ctx.store
+      .runsForScope(scopeId)
+      .find((r) => r.kind === "validate" && r.status === "failed")!;
+    expect(failed.fault_json).not.toBeNull();
+    expect(JSON.parse(failed.fault_json!)).toMatchObject({
+      layer: "unknown",
+      code: "unknown",
+    });
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("validating");
+    script.validateThrows = false;
+  }, 30_000);
+
   it("a restart-killed validation replan is retried, and agent-failed replans block the scope", async () => {
     // col-3a0319cc, 2026-09-01: validate failed, the replanning architect
     // died to a restart, and the scope sat seven hours - nothing retried
@@ -2003,7 +2228,10 @@ describe("colonyd fake end-to-end loop", () => {
       kind: "architect",
       lease_ttl_ms: 60_000,
     });
-    store.finishRun(dead.id, "failed", { error: "process_restart" });
+    store.finishRun(dead.id, "failed", {
+      error: "process_restart",
+      fault: { layer: "colonyd", code: "process_restart" },
+    });
 
     await tickAndSettle();
     const architectsAfter = store
@@ -2021,7 +2249,10 @@ describe("colonyd fake end-to-end loop", () => {
         kind: "architect",
         lease_ttl_ms: 60_000,
       });
-      store.finishRun(run.id, "failed", { error: "finalize_no_submission" });
+      store.finishRun(run.id, "failed", {
+        error: "finalize_no_submission",
+        fault: { layer: "model", code: "finalize_no_submission" },
+      });
     }
     // The retried replan may still be settling into a fresh (failing)
     // validate; give the loop a few ticks to reach the budget check.

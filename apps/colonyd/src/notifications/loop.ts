@@ -43,6 +43,9 @@ export function createNotifierLoop(deps: {
       const task = deps.store.getTask(taskId);
       return task?.blocked_reason ?? null;
     },
+    runFaultJson: (runId: string) => {
+      return deps.store.getRun(runId)?.fault_json ?? null;
+    },
   };
 
   const deliverEvent = async (event: NotificationEvent): Promise<void> => {

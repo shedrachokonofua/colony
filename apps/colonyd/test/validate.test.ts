@@ -86,6 +86,7 @@ describe("defaultValidateExecutor", () => {
     });
     expect(result.passed).toBe(true);
     expect(result.error).toBeUndefined();
+    expect(result.fault).toBeUndefined();
     expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({
       index: 0,
@@ -109,6 +110,11 @@ describe("defaultValidateExecutor", () => {
     expect(result.results).toHaveLength(1);
     expect(result.results[0]!.exit_code).not.toBe(0);
     expect(Array.isArray(result.results[0]!.tail)).toBe(true);
+    // Commands ran and failed: a verdict, so it carries a model fault.
+    expect(result.fault).toEqual({
+      layer: "model",
+      code: "acceptance_failed",
+    });
   });
 
   it("surfaces failure-marker lines from the full output, not just the tail", async () => {

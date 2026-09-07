@@ -8,6 +8,7 @@ import { FakeAgentRuntimeAdapter } from "@colony/agent-runtime";
 import {
   createLocalArtifactStore,
   Store,
+  type Fault,
   type Scope,
   type Task,
 } from "@colony/core";
@@ -80,6 +81,8 @@ async function createHarness(
         readonly exit_code: number;
       }[];
       readonly throwError?: string;
+      /** Fault for a scripted failure; a throw without one is unknown. */
+      readonly fault?: Fault;
     };
   } = {},
 ): Promise<Harness> {
@@ -138,10 +141,18 @@ async function createHarness(
   const task = store.getTask(created.id)!;
 
   const developer = new FakeAgentRuntimeAdapter({
-    envelopeForRun: () => {
-      if (options.developerCompletion?.throwError) {
-        throw new Error(options.developerCompletion.throwError);
+    failureForRun: () => {
+      if (options.developerCompletion?.throwError === undefined) {
+        return undefined;
       }
+      return {
+        reason: options.developerCompletion.throwError,
+        ...(options.developerCompletion.fault === undefined
+          ? {}
+          : { fault: options.developerCompletion.fault }),
+      };
+    },
+    envelopeForRun: () => {
       const completionHead = options.developerCompletion?.head_sha ?? SHA_C;
       void provider.branches.create(
         { id: repo.id, path: repo.path },
@@ -522,6 +533,8 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
       headSha: SHA_A,
       developerCompletion: {
         throwError: "deterministic test failure",
+        // A model fault is the agent's failure: the repair blocks.
+        fault: { layer: "model", code: "test_failure" },
       },
     });
     h.provider.setPipelineStatusForSha(SHA_A, "failed");
