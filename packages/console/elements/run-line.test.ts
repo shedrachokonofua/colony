@@ -196,4 +196,78 @@ describe("run-line", () => {
       "predicted 1m 30s · budget 10m",
     );
   });
+
+  it("expands a review run's dimensions with spec-blind badge, targets, and findings", async () => {
+    const el = makeLine({
+      kind: "review",
+      evidence_json: JSON.stringify({
+        verdict: "request_changes",
+        head_sha: "abcdef1234567890",
+        findings: [
+          { severity: "major", note: "missing case", file: "src/a.ts" },
+        ],
+        dimensions: [
+          {
+            name: "spec-compliance",
+            spec_blind: false,
+            target_files: ["src/a.ts"],
+            findings: 1,
+          },
+          {
+            name: "defect-scan",
+            spec_blind: true,
+            target_files: ["src/a.ts", "src/b.ts"],
+            findings: 0,
+          },
+        ],
+        challenged: { reviewed: 2, dropped: 1 },
+      }),
+    });
+    await el.updateComplete;
+    const rows = [...el.querySelectorAll(".dimensions li")].map((row) =>
+      row.textContent?.replace(/\s+/g, " ").trim(),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("spec-compliance");
+    expect(rows[0]).toContain("src/a.ts");
+    expect(rows[1]).toContain("defect-scan");
+    expect(rows[1]).toContain("spec-blind");
+    expect(rows[1]).toContain("src/a.ts, src/b.ts");
+    expect(
+      el.querySelector(".challenged")?.textContent?.replace(/\s+/g, " "),
+    ).toContain("challenged reviewed 2 · dropped 1");
+  });
+
+  it("leaves older verdict-only review rows and non-review rows untouched", async () => {
+    const review = makeLine({
+      kind: "review",
+      evidence_json: JSON.stringify({
+        verdict: "request_changes",
+        head_sha: "abcdef1234567890",
+        findings: [{ severity: "major", note: "missing case" }],
+      }),
+    });
+    await review.updateComplete;
+    expect(review.querySelector(".dimensions")).toBeNull();
+    expect(review.querySelector(".challenged")).toBeNull();
+    review.remove();
+
+    const build = makeLine({
+      evidence_json: JSON.stringify({
+        verdict: "pass",
+        dimensions: [
+          {
+            name: "defect-scan",
+            spec_blind: true,
+            target_files: ["src/a.ts"],
+            findings: 0,
+          },
+        ],
+        challenged: { reviewed: 1, dropped: 0 },
+      }),
+    });
+    await build.updateComplete;
+    expect(build.querySelector(".dimensions")).toBeNull();
+    expect(build.querySelector(".challenged")).toBeNull();
+  });
 });

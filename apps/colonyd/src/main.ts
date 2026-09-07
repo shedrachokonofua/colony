@@ -805,13 +805,22 @@ function completeResumedReview(
     store.finishRun(run.id, "succeeded", {
       head_sha: headRef,
       envelope_json: JSON.stringify(envelope),
-      evidence_json: JSON.stringify({ verdict: "approve", head_sha: headRef }),
+      evidence_json: JSON.stringify({
+        verdict: "approve",
+        head_sha: headRef,
+        dimensions: envelope.dimensions,
+        challenged: envelope.challenged,
+      }),
     });
     store.audit(SERVICE_ACTOR, "review.approved", {
       scope_id: run.scope_id,
       task_id: run.task_id,
       run_id: run.id,
-      detail: { head_sha: headRef },
+      detail: {
+        head_sha: headRef,
+        dimensions: envelope.dimensions,
+        challenged: envelope.challenged,
+      },
     });
     return;
   }
@@ -822,13 +831,20 @@ function completeResumedReview(
       verdict: "request_changes",
       head_sha: headRef,
       findings: envelope.findings,
+      dimensions: envelope.dimensions,
+      challenged: envelope.challenged,
     }),
   });
   store.audit(SERVICE_ACTOR, "review.changes_requested", {
     scope_id: run.scope_id,
     task_id: run.task_id,
     run_id: run.id,
-    detail: { head_sha: headRef, findings_count: envelope.findings.length },
+    detail: {
+      head_sha: headRef,
+      findings_count: envelope.findings.length,
+      dimensions: envelope.dimensions,
+      challenged: envelope.challenged,
+    },
   });
   const task = run.task_id ? (store.getTask(run.task_id) ?? null) : null;
   if (task) {
