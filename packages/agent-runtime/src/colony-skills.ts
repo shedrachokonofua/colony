@@ -119,56 +119,83 @@ exactly; make the change look like the repository wrote it.
 
 const CODE_REVIEW = `# Review playbook
 
+Read this as a dimension subagent or as the adversary: your delegating
+prompt names your dimension and the files you own, and this is the doctrine
+behind them. Where the two disagree, the prompt wins.
+
+## Your mandate
+- Dimension subagent: judge ONLY your files through ONLY your
+  dimension. Other agents own the other lenses and the spec.
+- Spec-blind dimension: you were deliberately NOT given the task spec. Do
+  not ask for it and do not infer it. The spec tells you what the author
+  intended; you are here for what the code does.
+- Adversary: you do not find new defects. You kill weak findings and name
+  the ground no dimension covered.
+
 ## Risk triage (never triage by size - famous CVEs were two lines)
 Deepest read for hunks touching: authn/authz, crypto, secrets handling,
 input validation, external calls, money, migrations, and anything
 concurrency. A "pure refactor" in those areas is high-risk until proven
 otherwise - refactors break invariants.
-- Removed checks/guards/validation: run \`git log -S '<removed code>'\` -
-  if it arrived in a fix commit, its removal is a regression until the diff
-  proves the protection lives elsewhere.
 - High-risk change with no test touching it: elevate the severity of
   whatever you find there.
 - Blast radius: for every changed exported symbol, count and read callers.
   Wide-radius changes get proportionally deeper review.
 
-## The two axes (report both, never let one mask the other)
-1. Spec fidelity: requirements missing or partial; behavior nobody asked
-   for (scope creep); requirements implemented but wrong.
+## The axes (spec-conformance judges the first; spec-blind judges the rest)
+1. Spec fidelity (spec-conformance dimension only): requirements missing or
+   partial; behavior nobody asked for (scope creep); requirements
+   implemented but wrong.
 2. Codebase health: does it look like the repository wrote it? Departures
    from established patterns/helpers/naming are findings (minor unless they
    break behavior). Skip anything a formatter or linter already enforces.
 
 ## Smell baseline (judgment calls, always minor, repo conventions override)
-Mysterious names; duplicated logic shapes across hunks; the same few
-params travelling together (a type wanting to be born); primitives standing
-in for domain concepts; one logical change scattered across many files;
-speculative generality (hooks and params for needs the spec does not have);
-a class that mostly delegates onward; slop comments (narration of what the
-code plainly does, change-log comments like "// added X", commented-out
-code) - noise a maintainer must now carry.
+Mysterious names; duplicated logic shapes; the same few params travelling
+together (a type wanting to be born); primitives standing in for domain
+concepts; one logical change scattered across many files; speculative
+generality; a class that mostly delegates onward; slop comments (narration
+of what the code plainly does, change-log comments like "// added X",
+commented-out code) - noise a maintainer must now carry.
 
 ## Tests as contracts
-- Mentally delete the feature: does some test go red? If not - finding.
+- Name a plausible bug in this change: which test fails? Mentally delete
+  the feature: does some test go red? If not - finding.
 - A test asserting only that a mock was called, or restating the
   implementation, is a defect, not coverage.
-- Weakened, skipped, or deleted tests to get green: blocker.
+- Weakened, skipped, renamed, pinned, or deleted tests to get green:
+  blocker. A rename that drops an assertion is a weakening.
 
-## False-positive discipline (you are biased toward over-reporting)
-Before any blocker/major enters the envelope:
-1. Restate the defect precisely - claim, root cause, trigger, impact. Half
-   of false positives collapse at restatement.
-2. Trace the actual data flow from where the bad value enters to where it
-   bites. "This pattern looks dangerous" is not analysis - upstream
-   validation may already cover it. Similar code being vulnerable elsewhere
-   proves nothing about this instance.
+## Mandatory ground (report each, even when you found nothing)
+- Removed guards: \`git log -S '<removed code>'\` - if it arrived in a fix
+  commit, its removal is a regression until the diff proves the protection
+  lives elsewhere.
+- Error, edge, and concurrency paths: failure, empty input, concurrent
+  modification. The happy path is usually right.
+- Secrets and persisted error text: no credential, token, or raw upstream
+  error body may reach logs, envelopes, or persisted state.
+- Blast radius: for every changed exported symbol, read the call sites the
+  diff did not update.
+
+## False-positive discipline (the adversary formalizes this)
+You are biased toward over-reporting. Before any blocker/major is reported,
+and again as the adversary for every candidate finding:
+1. Restate it precisely - claim, root cause, trigger, impact. Half of false
+   positives collapse at restatement.
+2. Trace the data flow from where the bad value enters to where it bites,
+   hunting the upstream validation, guard, or test that already covers it.
+   "This pattern looks dangerous" is not analysis; similar code being
+   vulnerable elsewhere proves nothing about this instance.
 3. Devil's advocate your own claim: what would make this a non-issue?
-A finding you could not defend to the implementer does not get submitted.
+You are the finding's defense lawyer, not a second prosecutor: kill the weak
+ones. Then name the ground no dimension covered - uncovered high-risk ground
+is itself a gap worth reporting. A finding you could not defend to the
+implementer does not get submitted.
 
 ## Verdict standard
-The bar is the spec plus codebase health, not perfection. An imperfect
-change that satisfies the spec, is tested, and leaves the code no worse is
-approvable. Reject only for findings that matter; never inflate a minor.
+The bar is what your dimension can prove, not perfection. An imperfect
+change that holds up under your lens is not a finding. Never inflate a
+minor.
 `;
 
 const TASK_SPECS = `# Spec-writing playbook
