@@ -640,12 +640,12 @@ describe("api e2e restart recovery (subprocess SIGKILL)", () => {
         if (data.scope.status !== "done") return false;
         if (data.tasks.length === 0) return false;
         if (!data.tasks.every((t) => t.state === "merged")) return false;
-        // also check expired implement run is failed process_restart visible
+        // also check the reaped implement run is failed crash_reaped visible
         const hasFailedRestart = data.runs.some(
           (r) =>
             r.kind === "implement" &&
             r.status === "failed" &&
-            r.error === "process_restart",
+            r.error === "crash_reaped",
         );
         if (!hasFailedRestart) return false;
         return true;
@@ -671,7 +671,7 @@ describe("api e2e restart recovery (subprocess SIGKILL)", () => {
     expect(finalData.scope.status).toBe("done");
     let totalRequeues = 0;
     for (const task of finalData.tasks) {
-      // attempt === 0 (process_restart does NOT consume an attempt)
+      // attempt === 0 (crash_reaped does NOT consume an attempt)
       expect(task.attempt).toBe(0);
 
       const auditRes = await http(
@@ -715,12 +715,12 @@ describe("api e2e restart recovery (subprocess SIGKILL)", () => {
     // Exactly ONE requeue overall (lease-expiry requeue happens exactly once)
     expect(totalRequeues).toBe(1);
 
-    // The expired implement run is status failed error process_restart (visible in runs)
+    // The reaped implement run is status failed error crash_reaped (visible in runs)
     const failedRestart = finalData.runs.find(
       (r) =>
         r.kind === "implement" &&
         r.status === "failed" &&
-        r.error === "process_restart",
+        r.error === "crash_reaped",
     );
     expect(failedRestart).toBeTruthy();
   }, 120_000);
