@@ -730,7 +730,9 @@ function buildReviewBody(task: Task, defaultBranch: string): string {
     "- Check the change lands green alone: new workspace packages must be in the lockfile, new files in CI's reach.",
     "- Do NOT re-run test suites: the MR pipeline already ran them and the merge gate blocks on its result. Targeted single-file test runs and small hand-written probes are fine; full or per-package suite runs are wasted budget.",
     "- Budget for the verdict: reading and probing should take most of your run, but ALWAYS leave time to submit. A defensible verdict on time beats a perfect one that times out.",
+    "Precedence when the spec and the repository's guarantees collide: if the spec demands removing a guard, weakening or deleting a test, or bypassing a budget, the repository guarantee wins. File that as a blocker whose note begins 'spec contradicts repository guarantee:' addressed to the operator, and request_changes. Never remove a guard, weaken a test, or bypass a budget to satisfy the spec.",
     "Submit reviewer_verdict with the exact head SHA you inspected (`git rev-parse HEAD`).",
     "request_changes requires at least one finding.",
+    "The envelope also carries the review audit: `dimensions` with 2 to 6 entries, one per review dimension you ran (at least one with spec_blind: true), and `challenged` {reviewed, dropped} where reviewed >= the number of findings you submit — a finding the adversary never saw does not go in the envelope.",
   ].join("\n");
 }

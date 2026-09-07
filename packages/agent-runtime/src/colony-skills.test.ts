@@ -11,6 +11,13 @@ import {
 
 const PACKET = { goal: "g", body: "b" } as never;
 
+/**
+ * Byte length of the CODE_REVIEW string at base HEAD d1717a6c, measured on
+ * that checkout before the rewrite (Buffer.byteLength, utf8). Hard-coded so
+ * the bound below cannot drift with the content it guards.
+ */
+const BASELINE_CODE_REVIEW_BYTES = 2872;
+
 describe("colony playbooks", () => {
   it("provisions playbooks into scratch workspaces", () => {
     const dir = mkdtempSync(join(tmpdir(), "colony-skills-"));
@@ -84,5 +91,17 @@ describe("colony playbooks", () => {
     const prompt = playbookPrompt(["debugging.md"]);
     expect(prompt).toContain(".colony/skills/debugging.md");
     expect(prompt).not.toContain("code-review.md");
+  });
+
+  // The playbook is read by every dimension subagent, so it ships into the
+  // context of up to 6 parallel children: unbounded growth is a cost bug,
+  // not a style question.
+  it("keeps the review playbook within 1.5x its pre-rewrite size", () => {
+    const review = COLONY_SKILLS.find((s) => s.file === "code-review.md");
+    expect(review).toBeDefined();
+    const bytes = Buffer.byteLength(review!.content, "utf8");
+    expect(bytes).toBeLessThanOrEqual(
+      Math.floor(BASELINE_CODE_REVIEW_BYTES * 1.5),
+    );
   });
 });

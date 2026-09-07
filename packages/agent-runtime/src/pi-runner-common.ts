@@ -1329,46 +1329,296 @@ export function createImplementerSubmitTool(
   };
 }
 
+/** Hard cap on review dimensions; matches the envelope schema's maxItems. */
+const MAX_REVIEW_DIMENSIONS = 6;
+
+/**
+ * Everything one review dimension subagent needs in its prompt. The
+ * coordinator builds one of these per planned dimension and hands it to the
+ * matching builder — the builders, not the caller, decide whether the spec
+ * text ships.
+ */
+export interface ReviewDimensionInput {
+  readonly name: string;
+  /** The task spec. Spec-blind dimensions never receive it. */
+  readonly spec: string;
+  /** Files this dimension owns; 2-4, drawn from the diff. */
+  readonly target_files: readonly string[];
+  /** Files the subagent may read for context. */
+  readonly context_files?: readonly string[];
+  /** The Phase 1 anatomy that applies to these files. */
+  readonly anatomy: string;
+}
+
+const FINDING_SCHEMA = [
+  "## Report format",
+  "Findings only. One block per finding:",
+  "`SEVERITY (blocker|major|minor) — <file>[:line] — <precise defect, why it",
+  "matters, how you verified it>`",
+  "If you found none, say so and name what you checked — never pad the report.",
+];
+
+function dimensionHeader(
+  input: ReviewDimensionInput,
+  mandate: string,
+): string[] {
+  const files = input.context_files?.length
+    ? [
+        "## Files",
+        `Target: ${input.target_files.join(", ")}`,
+        `Context: ${input.context_files.join(", ")}`,
+        "Read ONLY these files. You do not delegate, and you do not sweep the",
+        "repository.",
+      ]
+    : [
+        "## Files",
+        `Target: ${input.target_files.join(", ")}`,
+        "Read ONLY these files. You do not delegate, and you do not sweep the",
+        "repository.",
+      ];
+  return [
+    `# Delegated review — dimension: ${input.name}`,
+    "",
+    mandate,
+    "",
+    ...files,
+    "",
+    "## Anatomy from the coordinator",
+    input.anatomy,
+    "",
+  ];
+}
+
+/**
+ * Prompt for the spec-conformance dimension subagent: the only lens that
+ * sees the task spec. It proves the spec was implemented, nothing more.
+ */
+export function buildSpecConformanceDimensionPrompt(
+  input: ReviewDimensionInput,
+): string {
+  return [
+    ...dimensionHeader(
+      input,
+      [
+        "Judge this change ONLY against the task spec below. Other agents are",
+        "judging the same diff without it; do not duplicate their work.",
+      ].join("\n"),
+    ),
+    "## Task spec (your success criteria)",
+    input.spec,
+    "",
+    "## What to prove",
+    "- Every requirement in the spec is actually implemented — read the code,",
+    "  never trust a diff comment or a summary that claims it is.",
+    "- Nothing the spec did not ask for was built (scope creep is a finding).",
+    "- Requirements implemented but wrong: the shape matches and the behavior",
+    "  does not.",
+    "- The spec's required evidence commands: where they are cheap, run them",
+    "  and report the observed exit code.",
+    "",
+    ...FINDING_SCHEMA,
+    "End with `FINDINGS: <n>`.",
+  ].join("\n");
+}
+
+/**
+ * Prompt for a spec-blind dimension subagent: it judges the diff as a
+ * defect hunt with the task spec deliberately withheld, so it cannot
+ * inherit the spec's framing or its blind spots. `input.spec` is dropped
+ * here on purpose — passing it would defeat the dimension.
+ */
+export function buildSpecBlindDimensionPrompt(
+  input: ReviewDimensionInput,
+): string {
+  return [
+    ...dimensionHeader(
+      input,
+      [
+        "You are judging this diff WITHOUT the task spec. That is deliberate:",
+        "the spec tells you what the author intended, and you are here to find",
+        "what the code actually does. Never ask for the spec and never guess",
+        "at it.",
+      ].join("\n"),
+    ),
+    "## What to prove (every one is mandatory; report each explicitly)",
+    "- Removed guards: when the diff REMOVES a check, guard, or validation,",
+    "  run `git log -S '<removed code>'` and read the commit that introduced",
+    "  it. If it arrived in a fix commit, its removal is a regression until",
+    "  the diff proves the protection lives elsewhere — that is a blocker.",
+    "- Tests as contracts: would a plausible bug in this change fail any test?",
+    "  Mentally delete the feature: does some test go red? A test that only",
+    "  asserts a mock was called, or restates the implementation, is a defect,",
+    "  not coverage. A test weakened, renamed, or otherwise pinned, or deleted",
+    "  to get green, is a blocker.",
+    "- Error, edge, and concurrency paths: for every changed behavior, what",
+    "  happens on failure, empty input, and concurrent modification? The happy",
+    "  path is usually right.",
+    "- Secrets and persisted error text: no credential, token, or raw upstream",
+    "  error body may reach logs, envelopes, or persisted state.",
+    "- Input paths that skip validation: trace every way a value enters to",
+    "  where it is checked.",
+    "- Substrate assumptions that do not hold: process trees vs single",
+    "  processes, pipe ordering, path resolution, lockfile/CI sync.",
+    "- Blast radius: for every changed exported symbol, grep for call sites the",
+    "  diff missed. An incomplete change is a defect.",
+    "",
+    ...FINDING_SCHEMA,
+    "End with `FINDINGS: <n>` and one line naming the ground you did NOT cover.",
+  ].join("\n");
+}
+
+/**
+ * Prompt for the adversary subagent: it tries to falsify each candidate
+ * finding and names the ground no dimension covered.
+ */
+export function buildAdversaryPrompt(): string {
+  return [
+    "# Delegated review — adversary",
+    "",
+    "You are the last check before a verdict is submitted. Your job is to",
+    "destroy weak findings, not to find new ones.",
+    "",
+    "## For each candidate finding",
+    "1. Restate it precisely: claim, root cause, trigger, impact. Half of false",
+    "   positives collapse here.",
+    "2. Try to falsify it: read the code path end to end and look for the",
+    "   upstream validation, guard, or test that already covers it. 'This",
+    "   pattern looks dangerous' is not a finding.",
+    "3. Verdict per finding: `SURVIVES` or `DROP — <the evidence that killed",
+    "   it>`.",
+    "",
+    "## Then",
+    "Name the ground no dimension covered: files, behaviors, or paths in this",
+    "diff that no finding touches. Uncovered high-risk ground is itself a",
+    "reportable gap.",
+    "",
+    "End with `REVIEWED: <n>` and `DROPPED: <n>`. A finding you could not",
+    "defend to the implementer does not survive.",
+  ].join("\n");
+}
+
+/**
+ * Plans the dimensions for one review and renders their delegation prompts.
+ *
+ * The coordinator names 2..6 lenses; this is the single place that shape is
+ * enforced, so the prompts it renders and the `dimensions` audit entries it
+ * returns can never disagree:
+ * - exactly one spec-conformance dimension (the only one that sees the spec),
+ * - every other dimension spec-blind,
+ * - more than 6 requested dimensions clamps to the first 6,
+ * - the output always satisfies the envelope guards (2..6 entries, at least
+ *   one `spec_blind: true`), or the review never gets off the ground.
+ */
+export function planReviewDimensions(request: {
+  readonly spec: string;
+  readonly anatomy: string;
+  /** Requested lenses; the spec-conformance one is identified by `spec_blind: false`. */
+  readonly dimensions: readonly {
+    readonly name: string;
+    readonly spec_blind: boolean;
+    readonly target_files: readonly string[];
+    readonly context_files?: readonly string[];
+  }[];
+}): {
+  readonly prompts: readonly {
+    readonly name: string;
+    readonly prompt: string;
+  }[];
+  /** Envelope-ready `dimensions` entries, before any findings exist. */
+  readonly audit: readonly {
+    readonly name: string;
+    readonly spec_blind: boolean;
+    readonly target_files: readonly string[];
+    readonly findings: number;
+  }[];
+} {
+  const clamped = request.dimensions.slice(0, MAX_REVIEW_DIMENSIONS);
+  const conformanceIndex = clamped.findIndex((d) => !d.spec_blind);
+  const conformance = clamped[conformanceIndex === -1 ? 0 : conformanceIndex]!;
+  const ordered = [conformance, ...clamped.filter((d) => d !== conformance)];
+  const inputs = ordered.map((d, index) => ({
+    ...d,
+    // Only the first dimension is the spec-conformance lens; a caller that
+    // marked several as spec-aware gets one conformance review and the rest
+    // run blind.
+    spec_blind: index !== 0,
+  }));
+  return {
+    prompts: inputs.map((input) => ({
+      name: input.name,
+      prompt: input.spec_blind
+        ? buildSpecBlindDimensionPrompt({
+            ...input,
+            spec: request.spec,
+            anatomy: request.anatomy,
+          })
+        : buildSpecConformanceDimensionPrompt({
+            ...input,
+            spec: request.spec,
+            anatomy: request.anatomy,
+          }),
+    })),
+    audit: inputs.map((input) => ({
+      name: input.name,
+      spec_blind: input.spec_blind,
+      target_files: [...input.target_files],
+      findings: 0,
+    })),
+  };
+}
+
 export function buildReviewerSystemPrompt(): string {
   return [
     "# Role",
-    "You are the Colony Reviewer: the adversarial evaluator between an autonomous implementer and the merge gate. Your verdict is the only human-independent defense against defects — review to REJECT, and approve only when you fail to find a reason not to.",
+    "You are the Colony Review Coordinator: the adversarial evaluator between an autonomous implementer and the merge gate. Your verdict is the only human-independent defense against defects — review to REJECT, and approve only when you fail to find a reason not to. You coordinate: you do not read the diff for findings yourself, you delegate that work to subagents and synthesize what they report.",
     "",
     "# Environment",
     "The repository is cloned at the head SHA of a merge request. The task spec is in the packet body; sections titled 'Spec amendment (operator...)' are authoritative and supersede earlier spec text they contradict. You are read-only: do NOT edit files or push.",
     "Project reference files listed in the packet are available read-only at `.colony/project/<filename>` — read the ones relevant to the task before acting; never modify, move, or delete anything under `.colony/project/`.",
+    "The `task` tool is your ONLY delegation tool: it runs a subagent in this same workspace with your work tools and no submission authority. Never use any other mechanism to spawn work.",
     "",
-    "# Workflow",
-    "1. Read the spec and its required evidence — that is your success criteria, not your taste.",
+    "# Workflow — four phases, in order",
+    "## Phase 1 — ANATOMY (you do this yourself, once)",
+    "1. Read the spec and its required evidence — that is the success criteria for one dimension, not for all of them.",
     "2. Run `git diff origin/<target_branch>...HEAD` (target branch is in the packet) and read every changed hunk. Read enough surrounding code to judge each change in context — never review a diff in isolation when it touches shared behavior.",
-    "3. Triage hunks by RISK, never by size (two-line changes have caused famous CVEs): auth/authz, crypto, secrets, input validation, external calls, money, and migrations get the deepest read; a 'pure refactor' touching those is high-risk until proven otherwise. When the diff REMOVES a check, guard, or validation, `git log -S` the removed code — if it arrived in a fix, its removal is a regression until the diff proves the protection lives elsewhere. A high-risk change with no test touching it: elevate the severity of whatever you find.",
-    "4. Hunt systematically, in order of severity:",
-    "   - Spec claims not actually implemented (dead UI, broken wiring, stubs).",
-    "   - Input paths that skip validation: trace EVERY way a value enters (config file, env var, override parameter, API body) to where it is checked; a value accepted on one path but rejected on another is a finding.",
-    "   - Substrate assumptions that do not hold: process trees vs single processes, pipe/stream ordering, path resolution, concurrency, lockfile/CI sync.",
-    "   - Shared contracts (schemas, wire protocols, exported test suites): over-specification is as much a defect as under-specification — flag guarantees no implementation can honestly provide. Contract mistakes are permanent.",
-    "   - The change must land green alone: new workspace packages in the lockfile, new files reachable by CI.",
-    "   - Error and edge paths: for every changed behavior ask what happens on failure, empty input, and concurrent modification — the happy path is usually right; defects live in the paths nobody exercised.",
-    "5. Review what the diff does NOT contain. Grep every changed exported symbol, signature, and copied pattern for call sites and duplicates the diff missed — an incomplete change is a defect even when every present hunk is correct. Check that docs, config, and CI the spec touches moved with the code.",
-    "6. Judge the tests as contracts:",
-    "   - Every new observable behavior the spec demands needs a test that would FAIL if that behavior broke. Mentally delete the feature: does some test go red? If not, that is a finding.",
-    "   - A test that only asserts a mock was called, restates the implementation, or cannot fail is a defect, not coverage.",
-    "   - Any test weakened, skipped, or deleted to get green is a blocker unless the spec explicitly demanded it.",
-    "7. Consistency with the codebase is a review axis of its own: the change should look like the repository wrote it. Departures from established patterns, helpers, and naming are findings (minor unless they break behavior); anything a formatter or linter already enforces is not.",
-    "8. Where the spec's evidence commands are cheap, run them yourself rather than trusting the implementer's claims. Ground every judgment in what you observed, not what the diff comments assert.",
+    "3. Build the anatomy every dimension subagent will start from:",
+    "   - The diff against the target branch, and the clusters it falls into (auth/authz, crypto, secrets, input validation, external calls, money, migrations, concurrency, plus everything else).",
+    "   - Every removed check, guard, or validation, each with the `git log -S '<removed code>'` line for it and the subject of the commit that introduced it. A guard that arrived in a fix commit is a regression suspect.",
+    "   - Every changed exported symbol, and for each one the call sites OUTSIDE the diff that the diff did not update.",
+    "4. Triage clusters by RISK, never by size (two-line changes have caused famous CVEs). A 'pure refactor' in a high-risk cluster is high-risk until proven otherwise. A high-risk change with no test touching it: elevate the severity of whatever is found there.",
+    "",
+    "## Phase 2 — PLAN DIMENSIONS (you do this yourself, once)",
+    "Plan 2 to 6 review dimensions from the anatomy. Each dimension is one lens over the diff with its own target files.",
+    "- EXACTLY ONE dimension is `spec_conformance` — it alone sees the task spec.",
+    "- Every other dimension is SPEC-BLIND: its prompt must contain NO spec text, no spec summary, and no paraphrase of a requirement. Spec-blind dimensions find the defects the spec's own framing hides.",
+    "- More than 6 dimensions is a planning failure: clamp to the 6 highest-risk ones. Fewer than 2 is not a review.",
+    "- Give each dimension the 2-4 target files it owns, plus the context files it needs to judge them. Target files MUST come from the diff.",
+    "",
+    "## Phase 3 — DELEGATE DIMENSIONS (one `task` call per dimension, ALL IN ONE TURN)",
+    "Issue one `task` call per dimension in a SINGLE turn — they run concurrently. Each prompt carries: the dimension's name, its spec-blind or spec-conformance mandate, its target and context files, the anatomy that applies to them, and the finding schema it must report in.",
+    "- You do NOT read the diff for findings yourself in this phase. All finding work belongs to the dimension subagents; you synthesize their reports.",
+    "- A subagent reads ONLY its target and context files — no nesting, no sub-delegation, no whole-repo sweeps.",
+    "",
+    "## Phase 4 — DELEGATE THE ADVERSARY (exactly one `task` call, after the dimensions report)",
+    "Issue exactly ONE adversary `task` call. Its prompt carries every candidate finding from Phase 3. It must attempt to falsify each one and name the ground no dimension covered.",
+    "Then you synthesize: DROP every finding the adversary falsified, keep the survivors, and carry their severity. Uncovered high-risk ground the adversary names is itself a finding.",
     "",
     "# Verdict discipline",
     "- Severity calibration: blocker = wrong or unsafe behavior on a reachable path, broken/permanent contract, data loss, weakened tests; major = a spec requirement not met, or a bug on a plausible path; minor = real but would not justify blocking the merge alone. Never inflate a minor into a rejection.",
     "- The standard is the spec plus the health of the codebase, not perfection: an imperfect change that satisfies the spec, is tested, and leaves the code no worse than it found it is approvable. Reject only for findings that matter.",
     "- Every finding must name the defect precisely (file where applicable) and be actionable — the implementer will fix exactly what you write and nothing more.",
     "- Do not reject for style, taste, or scope the spec never demanded. Do not approve out of momentum: an unverified guarantee is a finding.",
-    "- Verify every blocker and major before submitting it: restate the defect precisely (half of false positives collapse at restatement), trace the actual data flow from where the bad value enters to where it bites, and play devil's advocate against your own claim. 'This pattern looks dangerous' is not analysis — upstream validation may already cover it. You are biased toward over-reporting; a finding you could not defend to the implementer does not go in the envelope.",
     "- request_changes requires at least one finding.",
+    "- Precedence when the spec and the repository's guarantees collide: if the spec demands removing a guard, weakening or deleting a test, or bypassing a budget, the repository guarantee WINS. File that as a blocker whose note begins 'spec contradicts repository guarantee:' addressed to the operator, and request_changes. Never weaken a guard, a test, or a budget to satisfy the spec.",
     "",
     playbookPrompt(["code-review.md"]),
     "",
     "# Completion contract",
     "Finish by calling submit_reviewer_verdict exactly once with verdict, findings (severity + note, file where applicable), `inspected` (every file you read for the verdict, each with the spec requirement you checked it against), and the exact head_sha you inspected (`git rev-parse HEAD`). An approve with an empty `inspected` list or a one-line summary is rejected: a verdict is a claim about the diff and must name what it rests on. Your run does not exist until that call — never finish with plain text. Never include secrets in the envelope.",
+    "The envelope also carries the audit of how this review was run:",
+    "- `dimensions`: one entry per dimension you actually ran — `{name, spec_blind, target_files, findings}`. 2 to 6 entries, and at least one MUST have `spec_blind: true`. `target_files` are the files that dimension owned; `findings` is how many findings it returned.",
+    "- `challenged`: `{reviewed, dropped}` — how many candidate findings the adversary reviewed and how many it falsified. `challenged.reviewed` MUST be >= the total number of findings you submit; a finding the adversary never saw does not go in the envelope.",
+    "Findings dropped by the adversary are not submitted, so they are not counted in `findings` — but they ARE counted in `challenged`.",
   ].join("\n");
 }
 
@@ -1407,6 +1657,8 @@ export function buildReviewerFinalizerPrompt(
     "- findings is an array; each finding has severity (blocker|major|minor), note, and optional file.",
     "- request_changes requires at least one finding.",
     "- head_sha must be the exact 40-hex SHA you inspected (`git rev-parse HEAD`).",
+    "- dimensions has 2 to 6 entries, one per review dimension you actually ran: {name, spec_blind, target_files, findings}. At least one entry MUST have spec_blind: true — a review where every lens saw the spec is rejected.",
+    "- challenged is {reviewed, dropped}: how many candidate findings the adversary reviewed and how many it falsified. challenged.reviewed MUST be >= the number of findings you submit — a finding the adversary never saw is rejected.",
     "- Do not add wrapper keys such as envelope, arguments, or data. The tool arguments are the envelope object.",
     "",
     `Task: ${typeof packet.goal === "string" ? packet.goal : "(see packet.body)"}`,
@@ -1483,7 +1735,7 @@ export function createReviewerSubmitTool(
     name: "submit_reviewer_verdict",
     label: "Submit reviewer verdict",
     description:
-      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. request_changes requires at least one finding; approve requires `inspected` (the files you read, each with what you checked) and a summary of at least 80 chars.",
+      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. request_changes requires at least one finding; approve requires `inspected` (the files you read, each with what you checked) and a summary of at least 80 chars. The envelope also carries the review audit: `dimensions` with 2 to 6 entries (one per dimension you ran, at least one with spec_blind: true) and `challenged` {reviewed, dropped} where reviewed >= the number of findings submitted.",
     parameters: reviewerVerdictEnvelopeTypeBox,
     execute: async (_toolCallId, rawParams) => {
       const params = parseEnvelopeArguments(reviewerVerdictV2Schema, rawParams);
