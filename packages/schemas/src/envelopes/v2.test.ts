@@ -138,10 +138,22 @@ describe("ReviewerVerdictV2", () => {
       verdict: "approve",
       summary: longSummary,
       findings: [],
-      inspected: [{ file: "src/main.ts", note: "checked against the task spec" }],
+      inspected: [
+        { file: "src/main.ts", note: "checked against the task spec" },
+      ],
       dimensions: [
-        { name: "spec-compliance", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
-        { name: "adversarial-defect-scan", spec_blind: true, target_files: ["src/main.ts"], findings: 0 },
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "adversarial-defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
       ],
       challenged: { reviewed: 2, dropped: 1 },
       head_sha: sha40,
@@ -156,13 +168,25 @@ describe("ReviewerVerdictV2", () => {
     const parsed = ReviewerVerdictV2.safeParse({
       ...validApprove(),
       dimensions: [
-        { name: "spec-compliance", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
-        { name: "style", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "style",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
       ],
     });
     expect(parsed.success).toBe(false);
     if (!parsed.success) {
-      expect(parsed.error.issues.map((i) => i.message).join(" ")).toContain("spec_blind");
+      expect(parsed.error.issues.map((i) => i.message).join(" ")).toContain(
+        "spec_blind",
+      );
     }
   });
 
@@ -176,7 +200,9 @@ describe("ReviewerVerdictV2", () => {
     });
     expect(parsed.success).toBe(false);
     if (!parsed.success) {
-      expect(parsed.error.issues.map((i) => i.message).join(" ")).toContain("challenged.reviewed");
+      expect(parsed.error.issues.map((i) => i.message).join(" ")).toContain(
+        "challenged.reviewed",
+      );
     }
   });
 });

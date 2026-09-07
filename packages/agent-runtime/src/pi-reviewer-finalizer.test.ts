@@ -165,8 +165,18 @@ describe("pi reviewer per-leg finalizer", () => {
       findings: [],
       inspected: [{ file: "source.ts", note: "checked against spec" }],
       dimensions: [
-        { name: "spec-compliance", spec_blind: false, target_files: ["source.ts"], findings: 0 },
-        { name: "defect-scan", spec_blind: true, target_files: ["source.ts"], findings: 0 },
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
       ],
       challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
@@ -453,8 +463,18 @@ describe("pi reviewer per-leg finalizer", () => {
       findings: [],
       inspected: [{ file: "source.ts", note: "checked against spec" }],
       dimensions: [
-        { name: "spec-compliance", spec_blind: false, target_files: ["source.ts"], findings: 0 },
-        { name: "defect-scan", spec_blind: true, target_files: ["source.ts"], findings: 0 },
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["source.ts"],
+          findings: 0,
+        },
       ],
       challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,

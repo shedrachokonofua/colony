@@ -147,8 +147,18 @@ describe("Pi advisor wiring", () => {
         { file: "src/main.ts", note: "checked against the requested behavior" },
       ],
       dimensions: [
-        { name: "spec-compliance", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
-        { name: "defect-scan", spec_blind: true, target_files: ["src/main.ts"], findings: 0 },
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
       ],
       challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,
@@ -262,8 +272,18 @@ describe("Pi advisor wiring", () => {
         { file: "src/main.ts", note: "checked by the primary reviewer" },
       ],
       dimensions: [
-        { name: "spec-compliance", spec_blind: false, target_files: ["src/main.ts"], findings: 0 },
-        { name: "defect-scan", spec_blind: true, target_files: ["src/main.ts"], findings: 0 },
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/main.ts"],
+          findings: 0,
+        },
       ],
       challenged: { reviewed: 0, dropped: 0 },
       head_sha: headSha,

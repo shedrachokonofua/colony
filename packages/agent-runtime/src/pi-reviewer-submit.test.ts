@@ -4,8 +4,18 @@ import { createReviewerSubmitTool } from "./pi-runner-common.js";
 const HEAD = "a".repeat(40);
 
 const VALID_DIMENSIONS = [
-  { name: "spec-compliance", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
-  { name: "defect-scan", spec_blind: true, target_files: ["src/http.ts"], findings: 0 },
+  {
+    name: "spec-compliance",
+    spec_blind: false,
+    target_files: ["src/http.ts"],
+    findings: 0,
+  },
+  {
+    name: "defect-scan",
+    spec_blind: true,
+    target_files: ["src/http.ts"],
+    findings: 0,
+  },
 ];
 const VALID_CHALLENGED = { reviewed: 0, dropped: 0 };
 
@@ -71,10 +81,22 @@ describe("reviewer submit tool", () => {
           summary:
             "The endpoint returns the build SHA as JSON and the acceptance test asserts on it; error branches are covered.",
           findings: [],
-          inspected: [{ file: "src/http.ts", note: "route shape matches the spec" }],
+          inspected: [
+            { file: "src/http.ts", note: "route shape matches the spec" },
+          ],
           dimensions: [
-            { name: "spec-compliance", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
-            { name: "style", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
+            {
+              name: "spec-compliance",
+              spec_blind: false,
+              target_files: ["src/http.ts"],
+              findings: 0,
+            },
+            {
+              name: "style",
+              spec_blind: false,
+              target_files: ["src/http.ts"],
+              findings: 0,
+            },
           ],
           challenged: VALID_CHALLENGED,
           head_sha: HEAD,
@@ -130,8 +152,18 @@ describe("reviewer submit tool", () => {
           { file: "test/version.test.ts", note: "asserts the JSON body" },
         ],
         dimensions: [
-          { name: "spec-compliance", spec_blind: false, target_files: ["src/http.ts"], findings: 0 },
-          { name: "adversarial-defect-scan", spec_blind: true, target_files: ["src/http.ts", "test/version.test.ts"], findings: 0 },
+          {
+            name: "spec-compliance",
+            spec_blind: false,
+            target_files: ["src/http.ts"],
+            findings: 0,
+          },
+          {
+            name: "adversarial-defect-scan",
+            spec_blind: true,
+            target_files: ["src/http.ts", "test/version.test.ts"],
+            findings: 0,
+          },
         ],
         challenged: { reviewed: 2, dropped: 1 },
         head_sha: HEAD,

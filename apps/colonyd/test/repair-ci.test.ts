@@ -177,12 +177,23 @@ async function createHarness(
     envelopeForRun: (packet) => ({
       kind: "reviewer_verdict",
       verdict: "approve",
-      summary: "Approved: the repaired change satisfies the task specification end to end; acceptance checks pass with no regressions.",
+      summary:
+        "Approved: the repaired change satisfies the task specification end to end; acceptance checks pass with no regressions.",
       findings: [],
       inspected: [{ file: "src/code.ts", note: "ok" }],
       dimensions: [
-        { name: "spec-compliance", spec_blind: false, target_files: ["src/code.ts"], findings: 0 },
-        { name: "defect-scan", spec_blind: true, target_files: ["src/code.ts"], findings: 0 },
+        {
+          name: "spec-compliance",
+          spec_blind: false,
+          target_files: ["src/code.ts"],
+          findings: 0,
+        },
+        {
+          name: "defect-scan",
+          spec_blind: true,
+          target_files: ["src/code.ts"],
+          findings: 0,
+        },
       ],
       challenged: { reviewed: 0, dropped: 0 },
       head_sha: packet.head_sha,
