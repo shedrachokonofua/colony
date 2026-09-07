@@ -59,12 +59,16 @@ interface Harness {
   readonly provider: FakeProviderAdapter;
   readonly scope: Scope;
   readonly task: Task;
+  readonly tasks: readonly Task[];
   readonly mr: ProviderMergeRequest;
   readonly draining: { value: boolean };
 }
 
 async function harness(
-  options: { readonly approvals?: "auto" | "manual" } = {},
+  options: {
+    readonly approvals?: "auto" | "manual";
+    readonly taskCount?: number;
+  } = {},
 ): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "colonyd-mr-admission-"));
   dirs.push(dir);
@@ -95,7 +99,23 @@ async function harness(
     provider_repo_path: repo.path,
   });
   store.setScopeStatus(scope.id, "planning", "test");
-  const [created] = store.materializePlan(scope.id, PLAN, "test");
+  const taskSpecs = Array.from(
+    { length: options.taskCount ?? 1 },
+    () => PLAN.tasks[0]!,
+  );
+  const createdTasks = store.materializePlan(
+    scope.id,
+    {
+      ...PLAN,
+      tasks: taskSpecs,
+      requirements: [
+        { ...PLAN.requirements[0]!, tasks: taskSpecs.map((_, index) => index) },
+      ],
+      journey: [{ ...PLAN.journey[0]!, after_task: taskSpecs.length - 1 }],
+    },
+    "test",
+  );
+  const [created] = createdTasks;
   if (!created) throw new Error("fixture task missing");
   store.transitionTask(created.id, created.state_version, "running", "test", {
     branch: "colony/review-task",
@@ -105,6 +125,40 @@ async function harness(
     mr_iid: mr.iid,
   });
   const task = store.getTask(created.id)!;
+  const tasks = [task];
+  for (const sibling of createdTasks.slice(1)) {
+    const branch = `colony/${sibling.id}`;
+    await provider.branches.create(
+      { id: repo.id, path: repo.path },
+      branch,
+      SHA,
+    );
+    const siblingMr = await provider.mergeRequests.open(
+      { id: repo.id, path: repo.path },
+      {
+        title: sibling.title,
+        description: "independent review",
+        source_branch: branch,
+        target_branch: "main",
+      },
+    );
+    const runningSibling = store.transitionTask(
+      sibling.id,
+      sibling.state_version,
+      "running",
+      "test",
+      { branch },
+    );
+    tasks.push(
+      store.transitionTask(
+        runningSibling.id,
+        runningSibling.state_version,
+        "mr_open",
+        "test",
+        { mr_iid: siblingMr.iid },
+      ),
+    );
+  }
   const reviewer = new FakeAgentRuntimeAdapter({
     envelopeForRun: (packet) => ({
       kind: "reviewer_verdict",
@@ -182,7 +236,7 @@ async function harness(
     validateExecutor: async () => ({ passed: true, results: [] }),
     requestTick() {},
   };
-  return { ctx, store, provider, scope, task, mr, draining };
+  return { ctx, store, provider, scope, task, tasks, mr, draining };
 }
 
 async function deferSecondProviderGet(
@@ -704,6 +758,76 @@ describe("MR-derived dispatch admission", () => {
     expect(task.human_feedback).toBe("operator context");
     expect(task.merge_approved_sha).toBe(SHA);
     expect(h.store.runsForTask(h.task.id)).toHaveLength(0);
+  });
+
+  it("reviews independent tasks in one scope without duplicate dispatch", async () => {
+    const h = await harness({ approvals: "manual", taskCount: 2 });
+    const reviewer = h.ctx.agents.reviewer!;
+    const startRun = reviewer.startRun.bind(reviewer);
+    const held = Promise.withResolvers<void>();
+    reviewer.startRun = async (packet, environment) => {
+      await held.promise;
+      return startRun(packet, environment);
+    };
+
+    try {
+      await tick(h.ctx);
+      const reviews = h.store.activeRuns("review");
+      expect(reviews.map((run) => run.task_id).sort()).toEqual(
+        h.tasks.map((task) => task.id).sort(),
+      );
+
+      await tick(h.ctx);
+      expect(
+        h.store
+          .activeRuns("review")
+          .map((run) => run.id)
+          .sort(),
+      ).toEqual(reviews.map((run) => run.id).sort());
+    } finally {
+      held.resolve();
+      await awaitPendingRuns();
+    }
+
+    for (const task of h.tasks) {
+      expect(h.store.runsForTask(task.id)).toMatchObject([
+        { kind: "review", status: "succeeded", head_sha: SHA },
+      ]);
+    }
+  });
+
+  it("defers a sibling review until its model slot is free", async () => {
+    const h = await harness({ approvals: "manual", taskCount: 2 });
+    const ctx = {
+      ...h.ctx,
+      config: {
+        ...h.ctx.config,
+        modelParallelLimit: () => 1,
+      } as ColonyConfig,
+    };
+    const sibling = h.tasks[1]!;
+    const occupied = h.store.startRun({
+      scope_id: h.scope.id,
+      task_id: h.task.id,
+      kind: "review",
+      base_sha: SHA,
+      model_id: "review-model",
+      lease_ttl_ms: 60_000,
+    });
+
+    await tick(ctx);
+    await awaitPendingRuns();
+    expect(h.store.runsForTask(sibling.id)).toEqual([]);
+
+    h.store.finishRun(occupied.id, "succeeded", {
+      head_sha: SHA,
+      evidence_json: JSON.stringify({ verdict: "approve", head_sha: SHA }),
+    });
+    await tick(ctx);
+    await awaitPendingRuns();
+    expect(h.store.runsForTask(sibling.id)).toMatchObject([
+      { kind: "review", status: "succeeded", head_sha: SHA },
+    ]);
   });
 
   it("continues dispatching valid current work after provider facts settle", async () => {

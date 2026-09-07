@@ -57,7 +57,11 @@ function waitLineForStage(task, stage) {
     case "repair_failed":
       return `CI repair failed on ${mr}.`;
     case "provider_head_pending":
-      return "Waiting for the provider to report the new head.";
+      // A queued task has not pushed yet, so there is no head the provider
+      // owes us: only a task that already pushed can wait on one.
+      return task.state === "queued"
+        ? ""
+        : "Waiting for the provider to report the new head.";
     case "merge_conflict":
       return `${mr} conflicts with the target branch — repair queued.`;
     case "awaiting_human_approval":
@@ -85,7 +89,11 @@ function waitLineForStage(task, stage) {
     case "merged":
       return `${mr} is merged.`;
     case "blocked":
-      return `${mr} is blocked.`;
+      // The task carries its own reason; the MR-only line is the fallback
+      // for a task that was blocked without one.
+      return task.blocked_reason
+        ? `${mr} is blocked: ${task.blocked_reason}.`
+        : `${mr} is blocked.`;
     default:
       return "";
   }

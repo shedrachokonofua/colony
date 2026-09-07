@@ -4,6 +4,8 @@ import {
   DELIVERY_STAGES,
   deriveDeliveryStatus,
   type DeliveryStage,
+  type DeliveryStatus,
+  type DeriveDeliveryStatusInput,
 } from "./delivery-status.js";
 import type { RepairIntentRow, Run, Task } from "./store.js";
 
@@ -77,26 +79,12 @@ function intent(overrides: Partial<RepairIntentRow> = {}): RepairIntentRow {
   };
 }
 
+/** The facts a test supplies; everything else defaults to "not known". */
+type Overrides = Partial<DeriveDeliveryStatusInput>;
+
 /** Input with every optional field defaulted to "no facts known". */
-function derive(overrides: {
-  readonly task?: Task;
-  readonly runs?: readonly Run[];
-  readonly latestGate?: Run | null;
-  readonly reviews?: readonly Run[];
-  readonly providerHeadSha?: string | null;
-  readonly mrHeadSha?: string | null;
-  readonly approvalsMode?: "auto" | "manual";
-  readonly mergeApprovedSha?: string | null;
-  readonly repairIntents?: readonly RepairIntentRow[];
-  readonly providerHeadLagging?: boolean;
-  readonly pipeline?: {
-    readonly status: "pending" | "running" | "success" | "failed" | "canceled";
-    readonly pipelineUrl?: string;
-    readonly observedAt?: string;
-  } | null;
-  readonly reviewMode?: "off" | "required";
-}) {
-  return deriveDeliveryStatus({
+function input(overrides: Overrides): DeriveDeliveryStatusInput {
+  return {
     task: overrides.task ?? task(),
     runs: overrides.runs ?? [],
     latestGate:
@@ -111,7 +99,19 @@ function derive(overrides: {
     providerHeadLagging: overrides.providerHeadLagging ?? false,
     pipeline: overrides.pipeline ?? null,
     reviewMode: overrides.reviewMode ?? "off",
-  });
+  };
+}
+
+/** Derives without assuming an outcome: null is a legal result. */
+function deriveOrNull(overrides: Overrides): DeliveryStatus | null {
+  return deriveDeliveryStatus(input(overrides));
+}
+
+/** Derives a task that has a stage; a null outcome fails the caller. */
+function derive(overrides: Overrides): DeliveryStatus {
+  const status = deriveOrNull(overrides);
+  if (!status) throw new Error("expected a delivery status, got null");
+  return status;
 }
 
 describe("DELIVERY_STAGES", () => {
@@ -155,7 +155,83 @@ describe("terminal and blocked stages", () => {
       }),
     });
     expect(status.stage).toBe("blocked");
+    expect(status.evidence[0]?.kind).toBe("blocked_reason");
     expect(status.evidence[0]?.text).toContain("review model exhausted");
+  });
+
+  it("blocked without a reason carries the generic blocked line", () => {
+    const status = derive({ task: task({ state: "blocked" }) });
+    expect(status.stage).toBe("blocked");
+    expect(status.evidence[0]?.text).toBe("Task is blocked.");
+  });
+});
+
+describe("tasks with no delivery facts have no stage", () => {
+  it("a never-run queued task is null, never provider_head_pending", () => {
+    expect(deriveOrNull({ task: task({ state: "queued" }) })).toBeNull();
+  });
+
+  it("a queued task with a head and pipeline facts is still null", () => {
+    const implemented = run({ kind: "implement", status: "succeeded" });
+    expect(
+      deriveOrNull({
+        task: task({ state: "queued" }),
+        runs: [implemented],
+        mrHeadSha: HEAD,
+        pipeline: { status: "success" },
+      }),
+    ).toBeNull();
+  });
+
+  it("a running task with no live run is null", () => {
+    expect(
+      deriveOrNull({
+        task: task({ state: "running" }),
+        runs: [run({ kind: "implement", status: "failed" })],
+      }),
+    ).toBeNull();
+  });
+
+  it("a canceled task is null, whatever its head, pipeline and gate say", () => {
+    const gate = run({
+      id: "run-gate",
+      status: "succeeded",
+      evidence_json: JSON.stringify({
+        reason: "merge_accepted",
+        head_sha: HEAD,
+      }),
+    });
+    for (const facts of [
+      {},
+      { mrHeadSha: HEAD, pipeline: { status: "failed" as const } },
+      { latestGate: gate, runs: [gate], reviews: [gate] },
+    ]) {
+      expect(
+        deriveOrNull({ task: task({ state: "canceled" }), ...facts }),
+      ).toBeNull();
+    }
+  });
+
+  it("a queued task with a repair intent is repair_pending", () => {
+    const status = derive({
+      task: task({ state: "queued" }),
+      repairIntents: [intent()],
+    });
+    expect(status?.stage).toBe("repair_pending");
+  });
+
+  it("a running task with a live implement run is pipeline_pending", () => {
+    const implement = run({
+      id: "run-impl",
+      kind: "implement",
+      status: "running",
+    });
+    const status = derive({
+      task: task({ state: "running" }),
+      runs: [implement],
+    });
+    expect(status?.stage).toBe("pipeline_pending");
+    expect(status?.run_ids).toEqual(["run-impl"]);
   });
 });
 

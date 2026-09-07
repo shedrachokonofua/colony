@@ -673,12 +673,7 @@ async function advanceMrOpenTasks(
           reconcileRejectedReview(ctx, task);
           continue;
         }
-        if (latest?.status === "running") continue;
-        if (
-          ctx.store.activeRuns("review").some((r) => r.scope_id === scope.id)
-        ) {
-          continue;
-        }
+        if (reviews.some((run) => run.status === "running")) continue;
         // Only review dispatch waits on a lagging provider head; a verdict
         // that matches the provider's current head is authoritative above.
         if (providerHeadLagging) continue;
