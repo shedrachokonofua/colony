@@ -10,6 +10,7 @@ import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
+import { faultForFailure, modelFault } from "../fault-budget.js";
 import { trackRun } from "./registry.js";
 import {
   buildImplementPacket,
@@ -256,10 +257,8 @@ async function executeImplement(
     if (metadata.status !== "succeeded") {
       const reason = metadata.rejectionReason ?? metadata.status;
       const fault = faultForFailure(
-        ctx,
-        scope,
-        task,
-        runId,
+        ctx.store,
+        { scope_id: scope.id, task_id: task.id, run_id: runId },
         reason,
         metadata.fault,
       );
@@ -309,7 +308,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: output ? JSON.stringify(output.envelope) : undefined,
-        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
+        fault: rejectionFault("envelope_invalid", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -358,7 +357,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
-        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
+        fault: rejectionFault("no_command_evidence", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -393,7 +392,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
-        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
+        fault: rejectionFault("repair_no_change", reason),
       });
       runSpan?.end("failed", reason);
       ctx.store.audit(SERVICE_ACTOR, "run.failed", {
@@ -438,7 +437,7 @@ async function executeImplement(
       ctx.store.finishRun(runId, "failed", {
         error: reason,
         envelope_json: JSON.stringify(envelope),
-        fault: faultForFailure(ctx, scope, task, runId, reason, metadata.fault),
+        fault: rejectionFault("envelope_unverified", reason),
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
@@ -551,14 +550,7 @@ async function executeImplement(
         ctx.store.finishRun(runId, "failed", {
           error: reason,
           envelope_json: JSON.stringify(envelope),
-          fault: faultForFailure(
-            ctx,
-            scope,
-            task,
-            runId,
-            reason,
-            metadata.fault,
-          ),
+          fault: rejectionFault("mr_open_without_iid", reason),
         });
         runSpan?.end("failed", reason);
         return;
@@ -631,7 +623,12 @@ async function executeImplement(
     const reason = err instanceof Error ? err.message : String(err);
     // startRun may have thrown before metadata existed, and a succeeded
     // start carries no fault: either way the catch has no runner fault.
-    const fault = faultForFailure(ctx, scope, task, runId, reason, undefined);
+    const fault = faultForFailure(
+      ctx.store,
+      { scope_id: scope.id, task_id: task.id, run_id: runId },
+      reason,
+      undefined,
+    );
     ctx.store.finishRun(runId, "failed", {
       error: reason,
       fault,
@@ -781,29 +778,16 @@ interface ReviewRepair {
 }
 
 /**
- * Resolve the fault for a failed implement run. The runner's own fault rides
- * through untouched; a result without one is unclassified — never re-derived
- * from its error text. Unclassified failures audit loudly (run.fault_unknown)
- * and requeue free with backoff under the tick's fault-only budgeting.
+ * The fault a colonyd-side rejection of the agent's output carries. The run
+ * succeeded at the runner and then failed a colonyd contract check, so the
+ * runner supplied no fault and there is nothing to forward: the model
+ * produced the rejected output and owns it. Spec (d)'s {unknown,unknown} is
+ * for a failed runner result with no fault, not for a succeeded run that
+ * colonyd refused — otherwise a consistently bad envelope would requeue free
+ * forever and never reach maxAttempts.
  */
-function faultForFailure(
-  ctx: ColonydContext,
-  scope: Scope,
-  task: Task,
-  runId: string,
-  reason: string,
-  fault: Fault | undefined,
-): Fault {
-  if (fault) return fault;
-  const errorExcerpt = reason.slice(0, 240);
-  console.error("[fault] unknown classification", reason);
-  ctx.store.audit(SERVICE_ACTOR, "run.fault_unknown", {
-    scope_id: scope.id,
-    task_id: task.id,
-    run_id: runId,
-    detail: { errorExcerpt },
-  });
-  return { layer: "unknown", code: "unknown", detail: errorExcerpt };
+function rejectionFault(code: string, reason: string): Fault {
+  return modelFault(code, reason);
 }
 
 /** Why a repair run blocked the task: names the trigger kind, not just the

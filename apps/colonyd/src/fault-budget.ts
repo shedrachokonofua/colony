@@ -1,6 +1,15 @@
-import { isModelFault, parseFault, type Run, type Store } from "@colony/core";
+import {
+  isModelFault,
+  parseFault,
+  type Fault,
+  type Run,
+  type Store,
+} from "@colony/core";
 import { SERVICE_ACTOR } from "./context.js";
 import { z } from "zod";
+
+/** Detail retained on a synthesized fault; long enough to be actionable. */
+const FAULT_DETAIL_LIMIT = 240;
 
 const taskRetryResetDetail = z.object({
   from: z.enum(["blocked", "canceled"]),
@@ -45,6 +54,51 @@ export function isPlatformFailure(
   if (run?.status !== "failed") return false;
   const fault = parseFault(run.fault_json);
   return fault !== null && !isModelFault(fault);
+}
+
+/**
+ * The fault a colonyd-side rejection of the agent's own output carries: the
+ * run succeeded at the runner and then failed a colonyd contract check (an
+ * unparseable envelope, an unprovable head, a repair that moved nothing).
+ * The model produced that output, so the model is accountable — the
+ * {unknown,unknown} fallback below is reserved for a runner result that
+ * carries no fault at all.
+ */
+export function modelFault(code: string, detail?: string): Fault {
+  return {
+    layer: "model",
+    code,
+    ...(detail === undefined
+      ? {}
+      : { detail: detail.slice(0, FAULT_DETAIL_LIMIT) }),
+  };
+}
+
+/**
+ * Resolve the fault for a failed run. The runner's own fault rides through
+ * untouched; a failure with no fault at all — a runner result that predates
+ * the contract, or a throw before any metadata existed — is unclassified,
+ * never re-derived from its error text. It audits loudly (run.fault_unknown)
+ * and requeues free under the tick's fault-only budgeting.
+ */
+export function faultForFailure(
+  store: Pick<Store, "audit">,
+  refs: {
+    readonly scope_id?: string | null;
+    readonly task_id?: string | null;
+    readonly run_id?: string | null;
+  },
+  reason: string,
+  fault: Fault | undefined,
+): Fault {
+  if (fault) return fault;
+  const errorExcerpt = reason.slice(0, FAULT_DETAIL_LIMIT);
+  console.error("[fault] unknown classification", reason);
+  store.audit(SERVICE_ACTOR, "run.fault_unknown", {
+    ...refs,
+    detail: { errorExcerpt },
+  });
+  return { layer: "unknown", code: "unknown", detail: errorExcerpt };
 }
 
 /** True when a failed run died to a model timeout rather than a verdict. */
