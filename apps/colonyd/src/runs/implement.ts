@@ -10,7 +10,11 @@ import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
-import { faultForFailure, modelFault } from "../fault-budget.js";
+import {
+  faultForFailure,
+  modelFault,
+  retryOrFailTaskWithBudget,
+} from "../fault-budget.js";
 import { trackRun } from "./registry.js";
 import {
   buildImplementPacket,
@@ -274,27 +278,13 @@ async function executeImplement(
         detail: { reason },
       });
       if (repairIntent) {
-        // Only a model fault blocks the repair: any other layer requeues
-        // free, so clear run_id and let the retry re-bind the intent.
-        if (isModelFault(fault)) {
-          const current = ctx.store.getTask(task.id);
-          if (current) {
-            ctx.store.transitionTask(
-              current.id,
-              current.state_version,
-              "blocked",
-              SERVICE_ACTOR,
-              {
-                blocked_reason: repairFailureReason(
-                  repairIntent,
-                  `failed: ${reason}`,
-                ),
-              },
-            );
-          }
-        } else {
-          ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
-        }
+        handleRepairIntentFailure(
+          ctx,
+          task.id,
+          repairIntent,
+          `failed: ${reason}`,
+          fault,
+        );
       }
       return;
     }
@@ -312,21 +302,13 @@ async function executeImplement(
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
-        const current = ctx.store.getTask(task.id);
-        if (current) {
-          ctx.store.transitionTask(
-            current.id,
-            current.state_version,
-            "blocked",
-            SERVICE_ACTOR,
-            {
-              blocked_reason: repairFailureReason(
-                repairIntent,
-                `failed: ${reason}`,
-              ),
-            },
-          );
-        }
+        handleRepairIntentFailure(
+          ctx,
+          task.id,
+          repairIntent,
+          `failed: ${reason}`,
+          modelFault("envelope_invalid", reason),
+        );
       }
       return;
     }
@@ -361,21 +343,13 @@ async function executeImplement(
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
-        const current = ctx.store.getTask(task.id);
-        if (current) {
-          ctx.store.transitionTask(
-            current.id,
-            current.state_version,
-            "blocked",
-            SERVICE_ACTOR,
-            {
-              blocked_reason: repairFailureReason(
-                repairIntent,
-                `failed: ${reason}`,
-              ),
-            },
-          );
-        }
+        handleRepairIntentFailure(
+          ctx,
+          task.id,
+          repairIntent,
+          `failed: ${reason}`,
+          modelFault("no_command_evidence", reason),
+        );
       }
       return;
     }
@@ -406,21 +380,13 @@ async function executeImplement(
         },
       });
       if (repairIntent) {
-        const current = ctx.store.getTask(task.id);
-        if (current) {
-          ctx.store.transitionTask(
-            current.id,
-            current.state_version,
-            "blocked",
-            SERVICE_ACTOR,
-            {
-              blocked_reason: repairFailureReason(
-                repairIntent,
-                "pushed no new head (repair_no_change)",
-              ),
-            },
-          );
-        }
+        handleRepairIntentFailure(
+          ctx,
+          task.id,
+          repairIntent,
+          "pushed no new head (repair_no_change)",
+          modelFault("repair_no_change", reason),
+        );
       }
       return;
     }
@@ -441,21 +407,13 @@ async function executeImplement(
       });
       runSpan?.end("failed", reason);
       if (repairIntent) {
-        const current = ctx.store.getTask(task.id);
-        if (current) {
-          ctx.store.transitionTask(
-            current.id,
-            current.state_version,
-            "blocked",
-            SERVICE_ACTOR,
-            {
-              blocked_reason: repairFailureReason(
-                repairIntent,
-                `failed: ${reason}`,
-              ),
-            },
-          );
-        }
+        handleRepairIntentFailure(
+          ctx,
+          task.id,
+          repairIntent,
+          `failed: ${reason}`,
+          modelFault("envelope_unverified", reason),
+        );
       }
       return;
     }
@@ -641,27 +599,13 @@ async function executeImplement(
       detail: { reason },
     });
     if (repairIntent) {
-      // Only a model fault blocks the repair: any other layer requeues
-      // free, so clear run_id and let the retry re-bind the intent.
-      if (isModelFault(fault)) {
-        const current = ctx.store.getTask(task.id);
-        if (current) {
-          ctx.store.transitionTask(
-            current.id,
-            current.state_version,
-            "blocked",
-            SERVICE_ACTOR,
-            {
-              blocked_reason: repairFailureReason(
-                repairIntent,
-                `failed: ${reason}`,
-              ),
-            },
-          );
-        }
-      } else {
-        ctx.store.clearRepairIntentRunId(repairIntent.fingerprint);
-      }
+      handleRepairIntentFailure(
+        ctx,
+        task.id,
+        repairIntent,
+        `failed: ${reason}`,
+        fault,
+      );
     }
   } finally {
     if (minted) {
@@ -784,6 +728,19 @@ function repairFailureReason(
   outcome: string,
 ): string {
   return `${repairIntent.kind} repair at ${repairIntent.source_head_sha} ${outcome}`;
+}
+
+function handleRepairIntentFailure(
+  ctx: ColonydContext,
+  taskId: string,
+  repairIntent: RepairIntentV1 & { readonly fingerprint: string },
+  outcome: string,
+  fault?: Fault,
+): void {
+  retryOrFailTaskWithBudget(ctx, taskId, outcome, {
+    fault,
+    blockedReason: () => repairFailureReason(repairIntent, outcome),
+  });
 }
 
 /** The stored trigger_json is authoritative; a missing or unparseable row is

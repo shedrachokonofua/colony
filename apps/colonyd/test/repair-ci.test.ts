@@ -553,6 +553,18 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
         fault: { layer: "model", code: "test_failure" },
       },
     });
+    // Seed preceding model failures so consecutiveModelFailures reaches maxAttempts
+    for (let i = 0; i < h.ctx.env.maxAttempts - 1; i++) {
+      const run = h.store.startRun({
+        scope_id: h.scope.id,
+        task_id: h.task.id,
+        kind: "implement",
+        lease_ttl_ms: 60_000,
+      });
+      h.store.finishRun(run.id, "failed", {
+        fault: { layer: "model", code: "test_failure" },
+      });
+    }
     h.provider.setPipelineStatusForSha(SHA_A, "failed");
 
     await tick(h.ctx);
@@ -579,6 +591,19 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
         head_sha: SHA_A, // Same head!
       },
     });
+    // Task attempt starts at 0; dispatching repair increments attempt to 1 (< maxAttempts=3).
+    // Seed preceding model failures so consecutiveModelFailures reaches maxAttempts
+    for (let i = 0; i < h.ctx.env.maxAttempts - 1; i++) {
+      const run = h.store.startRun({
+        scope_id: h.scope.id,
+        task_id: h.task.id,
+        kind: "implement",
+        lease_ttl_ms: 60_000,
+      });
+      h.store.finishRun(run.id, "failed", {
+        fault: { layer: "model", code: "repair_no_change" },
+      });
+    }
     h.provider.setPipelineStatusForSha(SHA_A, "failed");
 
     await tick(h.ctx);
