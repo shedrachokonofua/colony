@@ -1313,7 +1313,7 @@ describe("versioned migrations", () => {
       const fresh = new Store(join(dir, "fresh.db"));
       try {
         expect(userVersion(migrated.db)).toBe(LATEST_SCHEMA_VERSION);
-        expect(LATEST_SCHEMA_VERSION).toBe(17);
+        expect(LATEST_SCHEMA_VERSION).toBe(18);
         for (const table of ["scopes", "tasks", "runs", "projects"]) {
           expect(tableColumns(migrated.db, table)).toEqual(
             tableColumns(fresh.db, table),
@@ -1468,7 +1468,7 @@ describe("versioned migrations", () => {
       const migrated = new Store(v15Path);
       const fresh = new Store(join(dir, "fresh.db"));
       try {
-        expect(userVersion(migrated.db)).toBe(17);
+        expect(userVersion(migrated.db)).toBe(18);
         expect(tableColumns(migrated.db, "repair_intents")).toEqual(
           tableColumns(fresh.db, "repair_intents"),
         );
@@ -1523,7 +1523,7 @@ describe("versioned migrations", () => {
       const migrated = new Store(v16Path);
       const fresh = new Store(join(dir, "fresh.db"));
       try {
-        expect(userVersion(migrated.db)).toBe(17);
+        expect(userVersion(migrated.db)).toBe(18);
         // Parity with the fresh path: schema.sql and the migration agree on
         // the columns, and a fresh database keeps its own copy.
         expect(tableColumns(migrated.db, "pipeline_observations")).toEqual(
@@ -1805,12 +1805,12 @@ describe("pipeline observations", () => {
     return { taskId: String(task!.id), runId: run.id };
   }
 
-  it("fresh database stamps at 17 with pipeline_observations present", () => {
+  it("fresh database stamps at 18 with pipeline_observations present", () => {
     const version = (
       store.db.prepare("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(version).toBe(17);
-    expect(LATEST_SCHEMA_VERSION).toBe(17);
+    expect(version).toBe(18);
+    expect(LATEST_SCHEMA_VERSION).toBe(18);
     const columns = (
       store.db.prepare("PRAGMA table_info(pipeline_observations)").all() as {
         name: string;
