@@ -144,6 +144,7 @@
       "name": "@colony/sandbox-tests",
       "version": "0.0.0",
       "dependencies": {
+        "@colony/agent-runtime": "*",
         "@colony/sandbox": "*",
       },
       "devDependencies": {

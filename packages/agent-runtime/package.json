@@ -10,6 +10,7 @@
     "./pi-architect-runner": "./src/pi-architect-runner.ts",
     "./pi-reviewer-runner": "./src/pi-reviewer-runner.ts",
     "./pi-plan-reviewer-runner": "./src/pi-plan-reviewer-runner.ts",
+    "./sandbox-tools": "./src/sandbox-tools.ts",
     "./session-store": "./src/session-store.ts"
   },
   "scripts": {

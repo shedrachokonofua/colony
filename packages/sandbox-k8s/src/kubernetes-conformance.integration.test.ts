@@ -1,5 +1,8 @@
 import { describe } from "bun:test";
-import { describeEngineTests } from "@colony/sandbox-tests";
+import {
+  describeEngineTests,
+  describeSandboxConformance,
+} from "@colony/sandbox-tests";
 import { createKubernetesEngine } from "./index.js";
 
 // This suite talks to a real cluster, so it is gated behind
@@ -28,6 +31,23 @@ const PER_TEST_TIMEOUT_MS = 180_000;
         // are not visible in the pod. The in-process engine does not have this
         // constraint because it reads from the host filesystem directly.
         seesPostProvisionLocalWrites: false,
+        timeoutMs: PER_TEST_TIMEOUT_MS,
+      },
+    );
+    // The sandbox image is built FROM node:<major> (docker/sandbox/Dockerfile),
+    // so the pinned node is part of THIS image's contract — unlike colony and
+    // the in-process engine, which are Bun-only.
+    describeSandboxConformance(
+      "kubernetes",
+      () =>
+        createKubernetesEngine({
+          namespace: process.env.COLONY_K8S_SANDBOX_NAMESPACE,
+          image: process.env.COLONY_K8S_SANDBOX_IMAGE,
+          apiVersionOverride: process.env.COLONY_K8S_SANDBOX_API_VERSION,
+        }),
+      {
+        seesPostProvisionLocalWrites: false,
+        shipsPinnedNode: true,
         timeoutMs: PER_TEST_TIMEOUT_MS,
       },
     );

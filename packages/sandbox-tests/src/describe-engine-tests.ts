@@ -122,12 +122,19 @@ async function checkExecRoundTrip(makeEngine: MakeEngine): Promise<void> {
  * transfer the workspace snapshot inside `provision()` (e.g. the k8s engine
  * streams tar into the pod before returning the handle) cannot see local
  * writes that happen after the handle is handed back. Defaults to true.
+ *
+ * `shipsPinnedNode`: whether the engine's image promises the pinned Node from
+ * colony-versions.json. Colony and the in-process engine are Bun-only, so the
+ * conformance suite checks Node only for an engine whose image makes it part
+ * of the contract (the k8s sandbox image is built FROM node:<major>).
+ * Defaults to false (Bun-only).
  */
 export interface EngineTestOptions {
   readonly enforcesExecIsolation?: boolean;
   readonly seesPostProvisionLocalWrites?: boolean;
   /** Per-test timeout in ms for engines that provision real infrastructure. */
   readonly timeoutMs?: number;
+  readonly shipsPinnedNode?: boolean;
 }
 
 async function checkApiContainment(makeEngine: MakeEngine): Promise<void> {
