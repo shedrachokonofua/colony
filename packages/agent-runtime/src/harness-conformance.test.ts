@@ -354,7 +354,7 @@ describe("harness conformance audit seam", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 60_000); // budget is real time spent, not a race with it. // Each model in the chain gets one request against a closed port; the
+  }, 60_000); // so the budget is time actually worked, not a race against the clock. // Each model in the chain spends one real request against a closed port,
 
   it("throws instead of reporting an empty table when no credential exists", async () => {
     const saved = process.env.COLONY_OPENAI_COMPATIBLE_API_KEY;
