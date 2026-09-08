@@ -1,7 +1,7 @@
 import { titleFromGoal } from "./scope-title.js";
 import { readFileSync } from "node:fs";
 import { Database } from "./sqlite-compat.js";
-import { classifyBackfillFromError } from "./fault.js";
+import { classifyBackfillFromError, parseFault, type Fault } from "./fault.js";
 
 /**
  * Schema lifecycle.
@@ -322,6 +322,46 @@ function truncate(text: string | null | undefined, max: number): string {
 }
 
 /**
+ * Migration 18: repair fault backfill by error text. Migration 13 left
+ * known error classes as unknown; re-classify failed runs whose fault is
+ * missing or still unknown via the corrected classifyBackfillFromError
+ * table. Still-unmappable rows stay {unknown, unknown} with the stored
+ * error kept in detail. Rows already carrying a real fault are untouched.
+ */
+function migrateFaultBackfillRemap(db: Db): void {
+  const hasRuns = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'`)
+    .get();
+  if (!hasRuns) return;
+  // runs has only error TEXT and fault_json TEXT: no SQL predicate over
+  // JSON exists, so unknown-fault filtering happens in JS via parseFault.
+  // A literal deep-equality would miss real backfilled rows, which carry a
+  // detail field alongside layer/code.
+  const rows = db
+    .prepare(`SELECT id, error, fault_json FROM runs WHERE status = 'failed'`)
+    .all() as { id: string; error: string | null; fault_json: string | null }[];
+  const update = db.prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`);
+  for (const row of rows) {
+    const fault = parseFault(row.fault_json);
+    if (
+      fault !== null &&
+      !(fault.layer === "unknown" && fault.code === "unknown")
+    ) {
+      continue;
+    }
+    const detail = truncate(row.error, FAULT_DETAIL_MAX_CHARS);
+    const remapped: Fault = classifyBackfillFromError(row.error) ?? {
+      layer: "unknown",
+      code: "unknown",
+    };
+    update.run(
+      JSON.stringify({ ...remapped, detail, backfilled: true }),
+      row.id,
+    );
+  }
+}
+
+/**
  * Migration 14: keep operator-authored planning directives separate from
  * ephemeral plan-review findings so repeated review rounds cannot erase scope
  * requirements.
@@ -450,6 +490,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 17,
     name: "pipeline-observations",
     apply: (db) => db.exec(PIPELINE_OBSERVATIONS_DDL),
+  },
+  {
+    version: 18,
+    name: "fault-backfill-remap",
+    apply: migrateFaultBackfillRemap,
   },
 ];
 

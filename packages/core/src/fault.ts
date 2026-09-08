@@ -81,14 +81,54 @@ const HARNESS_FAULT_RE =
   /Agent "Main" was replaced during session initialization/i;
 
 /**
- * Map a historical run error string onto the fault contract for the v13
- * backfill, or null when the error is not an infra failure (it stays
- * unclassified — most such runs are model faults).
+ * Map a historical run error string onto the fault contract for the fault
+ * backfills (v13, v18), or null when the error matches no known class (the
+ * caller falls back to the unknown layer with the error kept in detail).
  */
 export function classifyBackfillFromError(
   err: string | null | undefined,
 ): Fault | null {
   if (typeof err !== "string" || err.length === 0) return null;
+  // Known error classes the v13 backfill left as unknown. Every code below
+  // is already emitted by the runner today — this table mints no taxonomy.
+  if (err.includes("finalize_no_submission")) {
+    return { layer: "model", code: "finalize_no_submission" };
+  }
+  if (err.includes("max_turns_exhausted_without_envelope")) {
+    return { layer: "model", code: "max_turns" };
+  }
+  if (err.includes("timeout_without_envelope")) {
+    // wall_timeout is the withRunTimeout fault (pi-runner-common.ts); the
+    // refinement to timeout_no_envelope happens only with observed tool
+    // activity (pi-base-agent-runner.ts), which a bare historical string
+    // cannot evidence.
+    return { layer: "model", code: "wall_timeout" };
+  }
+  if (/^architect_stage_\w+_no_submission$/.test(err)) {
+    // failureReason template architect_stage_${stage.name}_no_submission
+    // (pi-base-agent-runner.ts:1303); the runner emits finalize_no_submission
+    // on the no-rejection branch, and historical rows carry only the reason
+    // string with no rejection evidence.
+    return { layer: "model", code: "finalize_no_submission" };
+  }
+  if (err.startsWith("liveness_watchdog_no_progress")) {
+    // Same watchdog mapping as the colonyd layer regex below.
+    return { layer: "colonyd", code: "watchdog" };
+  }
+  if (err.includes("envelope facts unverified")) {
+    // DIVERGENCE NOTE: historical 'envelope facts unverified' rows read
+    // {colonyd,envelope_unverified} while the live producer emits
+    // modelFault(...) i.e. {model,envelope_unverified} at
+    // apps/colonyd/src/main.ts:597, main.ts:798, runs/review.ts:281,
+    // runs/implement.ts:406 — nobody must later 'fix' the layer;
+    // faults_by_layer must not be mis-read as a regression.
+    return { layer: "colonyd", code: "envelope_unverified" };
+  }
+  // 'This operation was aborted' is DELIBERATELY UNMAPPED: operation_aborted
+  // occurs nowhere in the repo and minting it would be new taxonomy. The
+  // abort path finishes the run as canceled with error 'aborted' and no
+  // fault (runs/adoption.ts), so historical failed rows with that text fall
+  // through to the documented unknown+detail fallback.
   if (COLONYD_FAULT_RE.test(err)) {
     if (/^process_restart$/i.test(err)) {
       return { layer: "colonyd", code: "process_restart" };
