@@ -8,6 +8,7 @@
 stages:
   - prepare
   - validate
+  - unit
   - test
   - build
 
@@ -139,3 +140,75 @@ build:sandbox:
     IMAGE: $CI_REGISTRY_IMAGE/sandbox
     DOCKERFILE: docker/sandbox/Dockerfile
     CONTEXT: docker/sandbox
+
+# Nightly model-harness + sandbox conformance against the live LiteLLM route
+# and the kubernetes engine. Scheduled on main only: it spends real provider
+# quota and provisions Kata pods, neither of which belongs on an MR pipeline.
+#
+# jq is absent from the .#ci shell, so every version read is a bun/node
+# one-liner over colony-versions.json (the file that pins both runtimes).
+#
+# The harness suite writes harness-conformance-table.md in the job's cwd; the
+# artifact is kept even on failure (when: always) because a red nightly is
+# exactly when someone needs to read which model failed which capability.
+nightly-conformance:
+  stage: unit
+  extends: .with-deps
+  variables:
+    COLONY_SHELL: ".#ci"
+    COLONY_K8S_ENGINE_TESTS: "1"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - when: never
+  script:
+    # The pinned runtimes come from the one file that owns them; a nightly
+    # that ran a different bun would report model failures that are really
+    # toolchain drift.
+    - |
+      BUN_PINNED=$(bun -e 'console.log(JSON.parse(require("node:fs").readFileSync("colony-versions.json", "utf8")).bun)')
+      NODE_PINNED=$(node -p 'require("./colony-versions.json").node')
+      echo "pinned bun=${BUN_PINNED} node=${NODE_PINNED}; running bun=$(bun --version) node=$(node --version)"
+      [ "$(bun --version)" = "$BUN_PINNED" ] || { echo "bun is $(bun --version), colony-versions.json pins ${BUN_PINNED}"; exit 1; }
+      [ "$(node --version)" = "$NODE_PINNED" ] || { echo "node is $(node --version), colony-versions.json pins ${NODE_PINNED}"; exit 1; }
+    - |
+      if [ -z "$COLONY_LIVE_GATEWAY" ]; then
+        echo "COLONY_LIVE_GATEWAY is required: nightly conformance drives real models through the live LiteLLM gateway"
+        exit 1
+      fi
+    - timeout -k 15 300 bun test packages/agent-runtime/src/submit-tool-schema-shape.test.ts
+    - timeout -k 15 1800 bun test packages/agent-runtime/src/harness-conformance.test.ts
+    - timeout -k 15 1800 bun test packages/sandbox-k8s/src/sandbox-conformance.kubernetes.integration.test.ts
+    - |
+      # The suite prints FAIL lines as it runs; re-derive them from the table
+      # so the job log names every failing model/role/capability even when
+      # the earlier output has scrolled. No jq in .#ci, so this is node.
+      if [ -f harness-conformance-table.md ]; then
+        cat harness-conformance-table.md
+        node -e '
+          const fs = require("node:fs");
+          const lines = fs.readFileSync("harness-conformance-table.md", "utf8")
+            .split("\n")
+            .filter((line) => line.startsWith("|"));
+          const columns = lines[0].split("|").slice(1, -1).slice(1)
+            .map((cell) => cell.trim().replace(/`/g, ""));
+          for (const line of lines.slice(2)) {
+            const cells = line.split("|").map((cell) => cell.trim());
+            const capability = cells[1];
+            if (!capability || capability === "turns") continue;
+            cells.slice(2, -1).forEach((cell, index) => {
+              if (cell !== "FAIL") return;
+              const parsed = /^(.*) \((.*)\)$/.exec(columns[index] ?? "");
+              console.log(
+                "FAIL model=" + (parsed ? parsed[1] : columns[index]) +
+                " role=" + (parsed ? parsed[2] : "unknown") +
+                " capability=" + capability,
+              );
+            });
+          }
+        '
+      fi
+  artifacts:
+    paths:
+      - harness-conformance-table.md
+    when: always
+    expire_in: 30 days
