@@ -8,6 +8,7 @@
 stages:
   - prepare
   - validate
+  - unit
   - test
   - build
 
@@ -151,7 +152,7 @@ build:sandbox:
 # artifact is kept even on failure (when: always) because a red nightly is
 # exactly when someone needs to read which model failed which capability.
 nightly-conformance:
-  stage: test
+  stage: unit
   extends: .with-deps
   variables:
     COLONY_SHELL: ".#ci"
@@ -178,8 +179,33 @@ nightly-conformance:
     - timeout -k 15 1800 bun test packages/agent-runtime/src/harness-conformance.test.ts
     - timeout -k 15 1800 bun test packages/sandbox-k8s/src/sandbox-conformance.kubernetes.integration.test.ts
     - |
+      # The suite prints FAIL lines as it runs; re-derive them from the table
+      # so the job log names every failing model/role/capability even when
+      # the earlier output has scrolled. No jq in .#ci, so this is node.
       if [ -f harness-conformance-table.md ]; then
         cat harness-conformance-table.md
+        node -e '
+          const fs = require("node:fs");
+          const lines = fs.readFileSync("harness-conformance-table.md", "utf8")
+            .split("\n")
+            .filter((line) => line.startsWith("|"));
+          const columns = lines[0].split("|").slice(1, -1).slice(1)
+            .map((cell) => cell.trim().replace(/`/g, ""));
+          for (const line of lines.slice(2)) {
+            const cells = line.split("|").map((cell) => cell.trim());
+            const capability = cells[1];
+            if (!capability || capability === "turns") continue;
+            cells.slice(2, -1).forEach((cell, index) => {
+              if (cell !== "FAIL") return;
+              const parsed = /^(.*) \((.*)\)$/.exec(columns[index] ?? "");
+              console.log(
+                "FAIL model=" + (parsed ? parsed[1] : columns[index]) +
+                " role=" + (parsed ? parsed[2] : "unknown") +
+                " capability=" + capability,
+              );
+            });
+          }
+        '
       fi
   artifacts:
     paths:

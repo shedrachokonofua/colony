@@ -333,40 +333,36 @@ export async function readPinnedVersions(): Promise<PinnedVersions> {
 export function writeConformanceTable(
   rows: readonly ModelConformanceRow[],
 ): string {
-  // Insertion order of a Map keyed on first appearance keeps the sweep's own
-  // order: roles in config order, models in failover order.
-  const columns = new Map<string, { model: string; role: string }>();
+  // Column order is first appearance, which is the sweep's own order: roles
+  // in config order, models in failover order within each role.
+  const columns: string[] = [];
+  const passOf = new Map<string, boolean>();
+  const turnsOf = new Map<string, number>();
   for (const row of rows) {
-    const key = `${row.model} (${row.role})`;
-    if (!columns.has(key))
-      columns.set(key, { model: row.model, role: row.role });
+    const column = `${row.model} (${row.role})`;
+    if (!turnsOf.has(column)) {
+      columns.push(column);
+      turnsOf.set(column, row.turns);
+    }
+    passOf.set(`${column}|${row.capability}`, row.pass);
   }
-  const passOf = new Map(
-    rows.map((row) => [
-      `${row.model} (${row.role})|${row.capability}`,
-      row.pass,
-    ]),
-  );
-  const turnsOf = new Map(
-    rows.map((row) => [`${row.model} (${row.role})`, row.turns]),
-  );
-  const header = [
-    "capability",
-    ...[...columns.keys()].map((key) => `\`${key}\``),
-  ];
+  const header = ["capability", ...columns.map((column) => `\`${column}\``)];
   const lines = [
     `| ${header.join(" | ")} |`,
     `| ${header.map(() => "---").join(" | ")} |`,
   ];
   for (const capability of HARNESS_CAPABILITIES) {
-    const cells = [...columns.keys()].map((key) => {
-      const pass = passOf.get(`${key}|${capability}`);
+    const cells = columns.map((column) => {
+      const pass = passOf.get(`${column}|${capability}`);
       return pass === undefined ? "n/a" : pass ? "PASS" : "FAIL";
     });
     lines.push(`| ${[capability, ...cells].join(" | ")} |`);
   }
   lines.push(
-    `| ${["turns", ...[...columns.keys()].map((key) => String(turnsOf.get(key) ?? "n/a"))].join(" | ")} |`,
+    `| ${[
+      "turns",
+      ...columns.map((column) => String(turnsOf.get(column) ?? "n/a")),
+    ].join(" | ")} |`,
   );
   return `${lines.join("\n")}\n`;
 }
@@ -728,7 +724,6 @@ async function runMiniTask(
             isError: false,
             timestamp: Date.now(),
           });
-          if (call.name === submitTool.name) captured ??= true;
         } catch (err) {
           results.push({
             role: "toolResult",
