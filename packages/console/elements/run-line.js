@@ -163,8 +163,9 @@ function evidenceCoverage(evidence) {
  * findings array length — never reviewed-minus-dropped.
  * @param {Record<string, any>} envelope
  * @param {Record<string, any> | null} evidence
+ * @param {string} verdict the recorded verdict: evidence wins over envelope.
  */
-function reviewBrief(envelope, evidence) {
+function reviewBrief(envelope, evidence, verdict) {
   const findings = Array.isArray(envelope.findings) ? envelope.findings : [];
   const count = envelope.findings?.length ?? 0;
   const summary =
@@ -175,7 +176,7 @@ function reviewBrief(envelope, evidence) {
     inspectedRows(envelope.inspected),
   ].filter((block) => block !== nothing);
   return html`<div class="review-detail">
-    <p class="review-verdict">verdict: ${envelope.verdict}</p>
+    <p class="review-verdict">verdict: ${verdict}</p>
     ${summary === nothing
       ? nothing
       : html`<p class="review-summary">${summary}</p>`}
@@ -308,8 +309,10 @@ export class RunLine extends ColonyElement {
               >Trace</a
             >`
           : nothing}
-        ${envelope ? reviewBrief(envelope, evidence) : nothing} ${findings}
-        ${coverage} ${unavailable} ${notAccepted}
+        ${envelope && verdict
+          ? reviewBrief(envelope, evidence, verdict)
+          : nothing}
+        ${findings} ${coverage} ${unavailable} ${notAccepted}
       </div>
     </div>`;
   }
