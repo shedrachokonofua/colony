@@ -338,14 +338,15 @@ function migrateFaultBackfillRemap(db: Db): void {
   // A literal deep-equality would miss real backfilled rows, which carry a
   // detail field alongside layer/code.
   const rows = db
-    .prepare(
-      `SELECT id, error, fault_json FROM runs WHERE status = 'failed'`,
-    )
+    .prepare(`SELECT id, error, fault_json FROM runs WHERE status = 'failed'`)
     .all() as { id: string; error: string | null; fault_json: string | null }[];
   const update = db.prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`);
   for (const row of rows) {
     const fault = parseFault(row.fault_json);
-    if (fault !== null && !(fault.layer === "unknown" && fault.code === "unknown")) {
+    if (
+      fault !== null &&
+      !(fault.layer === "unknown" && fault.code === "unknown")
+    ) {
       continue;
     }
     const detail = truncate(row.error, FAULT_DETAIL_MAX_CHARS);

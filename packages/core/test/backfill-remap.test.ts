@@ -39,12 +39,13 @@ describe("migration 18 fault backfill remap", () => {
         }).id;
         v17.finishRun(id, "failed", error === null ? {} : { error });
         if (fault === "missing") {
-          v17.db.prepare(`UPDATE runs SET fault_json = NULL WHERE id = ?`).run(id);
+          v17.db
+            .prepare(`UPDATE runs SET fault_json = NULL WHERE id = ?`)
+            .run(id);
         } else {
-          v17.db.prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`).run(
-            JSON.stringify({ ...fault, backfilled: true }),
-            id,
-          );
+          v17.db
+            .prepare(`UPDATE runs SET fault_json = ? WHERE id = ?`)
+            .run(JSON.stringify({ ...fault, backfilled: true }), id);
         }
         return id;
       };
@@ -55,15 +56,9 @@ describe("migration 18 fault backfill remap", () => {
       };
       const ids = {
         finalize: mkFailed("finalize_no_submission", unknownSeed),
-        maxTurns: mkFailed(
-          "max_turns_exhausted_without_envelope",
-          unknownSeed,
-        ),
+        maxTurns: mkFailed("max_turns_exhausted_without_envelope", unknownSeed),
         timeout: mkFailed("timeout_without_envelope", unknownSeed),
-        architect: mkFailed(
-          "architect_stage_plan_no_submission",
-          unknownSeed,
-        ),
+        architect: mkFailed("architect_stage_plan_no_submission", unknownSeed),
         watchdog: mkFailed("liveness_watchdog_no_progress: stuck", unknownSeed),
         envelope: mkFailed(
           "envelope facts unverified: reviewed head_sha mismatch",
