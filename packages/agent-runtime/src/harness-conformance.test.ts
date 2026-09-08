@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
+import type { RunAuditSink } from "./audit-sink.js";
 import {
   HARNESS_CAPABILITIES,
   MAX_HARNESS_TURNS,
@@ -69,7 +70,10 @@ describe("harness conformance config parsing", () => {
       fallbackModels: ["qwen3.8-max", "kimi-k3"],
     });
     // Quoted and empty forms must parse the same way as the bare ones.
-    expect(chains.architect).toEqual({ model: "muse-spark", fallbackModels: [] });
+    expect(chains.architect).toEqual({
+      model: "muse-spark",
+      fallbackModels: [],
+    });
     expect(chains.memory_consolidator).toEqual({
       model: "muse-spark",
       fallbackModels: [],
@@ -120,25 +124,73 @@ describe("harness conformance pinned versions", () => {
 
 describe("writeConformanceTable", () => {
   const rows: ModelConformanceRow[] = [
-    { model: "m1", role: "developer", capability: "read", pass: true, turns: 6 },
-    { model: "m1", role: "developer", capability: "grep", pass: true, turns: 6 },
-    { model: "m1", role: "developer", capability: "edit", pass: false, turns: 6 },
-    { model: "m1", role: "developer", capability: "write", pass: true, turns: 6 },
-    { model: "m1", role: "developer", capability: "bash", pass: true, turns: 6 },
-    { model: "m1", role: "developer", capability: "submit", pass: true, turns: 6 },
+    {
+      model: "m1",
+      role: "developer",
+      capability: "read",
+      pass: true,
+      turns: 6,
+    },
+    {
+      model: "m1",
+      role: "developer",
+      capability: "grep",
+      pass: true,
+      turns: 6,
+    },
+    {
+      model: "m1",
+      role: "developer",
+      capability: "edit",
+      pass: false,
+      turns: 6,
+    },
+    {
+      model: "m1",
+      role: "developer",
+      capability: "write",
+      pass: true,
+      turns: 6,
+    },
+    {
+      model: "m1",
+      role: "developer",
+      capability: "bash",
+      pass: true,
+      turns: 6,
+    },
+    {
+      model: "m1",
+      role: "developer",
+      capability: "submit",
+      pass: true,
+      turns: 6,
+    },
     { model: "m2", role: "reviewer", capability: "read", pass: true, turns: 9 },
     { model: "m2", role: "reviewer", capability: "grep", pass: true, turns: 9 },
     { model: "m2", role: "reviewer", capability: "edit", pass: true, turns: 9 },
-    { model: "m2", role: "reviewer", capability: "write", pass: true, turns: 9 },
+    {
+      model: "m2",
+      role: "reviewer",
+      capability: "write",
+      pass: true,
+      turns: 9,
+    },
     { model: "m2", role: "reviewer", capability: "bash", pass: true, turns: 9 },
-    { model: "m2", role: "reviewer", capability: "submit", pass: false, turns: 9 },
+    {
+      model: "m2",
+      role: "reviewer",
+      capability: "submit",
+      pass: false,
+      turns: 9,
+    },
   ];
 
-  it("renders one column per model and one row per capability", () => {
+  it("renders one column per model x role and one row per capability", () => {
     const table = writeConformanceTable(rows);
     const lines = table.trimEnd().split("\n");
-    expect(lines[0]).toContain("`m1`");
-    expect(lines[0]).toContain("`m2`");
+    expect(lines[0]).toContain("`m1 (developer)`");
+    expect(lines[0]).toContain("`m2 (reviewer)`");
     for (const capability of HARNESS_CAPABILITIES) {
       expect(table).toContain(`| ${capability} `);
     }
@@ -150,15 +202,43 @@ describe("writeConformanceTable", () => {
     expect(submitRow?.split("|")[3]?.trim()).toBe("FAIL");
   });
 
-  it("carries the role and turn count of each model's mini-task", () => {
-    const table = writeConformanceTable(rows);
-    const roleRow = table
+  it("gives a model measured under two roles its own column each", () => {
+    // muse-spark leads the architect chain and falls back for the developer,
+    // and the two rows carry different results. Collapsing them into one
+    // column would report whichever row landed last.
+    const shared: ModelConformanceRow[] = HARNESS_CAPABILITIES.map(
+      (capability) => ({
+        model: "muse-spark",
+        role: "architect",
+        capability,
+        pass: true,
+        turns: 7,
+      }),
+    ).concat(
+      HARNESS_CAPABILITIES.map((capability) => ({
+        model: "muse-spark",
+        role: "developer",
+        capability,
+        pass: false,
+        turns: 12,
+      })),
+    );
+    const table = writeConformanceTable(shared);
+    expect(table).toContain("`muse-spark (architect)`");
+    expect(table).toContain("`muse-spark (developer)`");
+    const readRow = table
+      .trimEnd()
       .split("\n")
-      .find((line) => line.startsWith("| role "));
+      .find((line) => line.startsWith("| read "));
+    expect(readRow?.split("|")[2]?.trim()).toBe("PASS");
+    expect(readRow?.split("|")[3]?.trim()).toBe("FAIL");
+  });
+
+  it("carries the turn count of each mini-task", () => {
+    const table = writeConformanceTable(rows);
     const turnsRow = table
       .split("\n")
       .find((line) => line.startsWith("| turns "));
-    expect(roleRow).toBe("| role | developer | reviewer |");
     expect(turnsRow).toBe("| turns | 6 | 9 |");
   });
 
@@ -174,23 +254,11 @@ describe("writeConformanceTable", () => {
 function recordingSink(): {
   events: { event: string; detail: Record<string, unknown> }[];
   artifacts: { key: string; data: Uint8Array; contentType: string }[];
-  sink: {
-    appendEvent: (
-      runId: string,
-      event: string,
-      detail: Record<string, unknown>,
-    ) => void;
-    putArtifact: (
-      runId: string,
-      kind: string,
-      key: string,
-      data: Uint8Array,
-      contentType: string,
-    ) => Promise<{ ref: string; bytes: number; sha256: string }>;
-  };
+  sink: RunAuditSink;
 } {
   const events: { event: string; detail: Record<string, unknown> }[] = [];
-  const artifacts: { key: string; data: Uint8Array; contentType: string }[] = [];
+  const artifacts: { key: string; data: Uint8Array; contentType: string }[] =
+    [];
   return {
     events,
     artifacts,
@@ -207,9 +275,7 @@ function recordingSink(): {
 }
 
 describe("harness conformance audit seam", () => {
-  it(
-    "appends harness.conformance and stores the markdown table",
-    async () => {
+  it("appends harness.conformance and stores the markdown table", async () => {
     const recorded = recordingSink();
     const root = await mkdtemp(join(tmpdir(), "colony-harness-audit-"));
     try {
@@ -238,9 +304,9 @@ describe("harness conformance audit seam", () => {
         developerModels.length * HARNESS_CAPABILITIES.length,
       );
       expect(rows.every((row) => row.pass === false)).toBe(true);
-      expect(rows.slice(0, HARNESS_CAPABILITIES.length).map((r) => r.capability)).toEqual(
-        [...HARNESS_CAPABILITIES],
-      );
+      expect(
+        rows.slice(0, HARNESS_CAPABILITIES.length).map((r) => r.capability),
+      ).toEqual([...HARNESS_CAPABILITIES]);
 
       const event = recorded.events.find(
         (entry) => entry.event === "harness.conformance",
@@ -257,19 +323,15 @@ describe("harness conformance audit seam", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-    },
-    // Each model in the chain gets one request against a closed port; the
-    // budget is real time spent, not a race with it.
-    60_000,
-  );
+  }, 60_000); // budget is real time spent, not a race with it. // Each model in the chain gets one request against a closed port; the
 
   it("throws instead of reporting an empty table when no credential exists", async () => {
     const saved = process.env.COLONY_OPENAI_COMPATIBLE_API_KEY;
     delete process.env.COLONY_OPENAI_COMPATIBLE_API_KEY;
     try {
-      await expect(runHarnessConformance({ roles: ["developer"] })).rejects.toThrow(
-        /credential/,
-      );
+      await expect(
+        runHarnessConformance({ roles: ["developer"] }),
+      ).rejects.toThrow(/credential/);
     } finally {
       if (saved !== undefined) {
         process.env.COLONY_OPENAI_COMPATIBLE_API_KEY = saved;

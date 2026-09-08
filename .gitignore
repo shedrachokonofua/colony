@@ -29,3 +29,7 @@ playwright-report/
 
 # Test-run outputs (gunzipped redacted transcripts et al.); fixtures stay committed.
 packages/agent-runtime/src/testdata/out/
+
+# Written by the live harness-conformance suite into the cwd; CI uploads it as
+# an artifact, so it must never land in the tree.
+harness-conformance-table.md

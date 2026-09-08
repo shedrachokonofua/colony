@@ -16,6 +16,9 @@
   "scripts": {
     "test": "vitest run --root ../.. src/*.test.ts"
   },
+  "devDependencies": {
+    "@colony/sandbox-in-process": "*"
+  },
   "dependencies": {
     "@colony/sandbox": "*",
     "@colony/schemas": "*",

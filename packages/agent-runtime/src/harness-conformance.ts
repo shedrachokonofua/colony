@@ -17,10 +17,7 @@ import {
   type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import { createInProcessEngine } from "@colony/sandbox-in-process";
-import {
-  buildSandboxLaunchProfile,
-  type SandboxHandle,
-} from "@colony/sandbox";
+import { buildSandboxLaunchProfile, type SandboxHandle } from "@colony/sandbox";
 import type { RunAuditSink } from "./audit-sink.js";
 import { buildSandboxTools } from "./sandbox-tools.js";
 import {
@@ -323,35 +320,53 @@ export async function readPinnedVersions(): Promise<PinnedVersions> {
 }
 
 /**
- * Markdown table: one row per capability, one column per model, so a reader
- * sees at a glance which capability a model drops. `role` and `turns` are
- * per-model footers, not capabilities — the mini-task is one run, and its
- * turn count is the cost of that run.
+ * Markdown table: one row per capability, one column per measured
+ * model x role, so a reader sees at a glance which capability a model drops
+ * in which role.
+ *
+ * The column key is the model AND its role, not the model alone: the same
+ * model leads one role's chain and falls back for another, and collapsing
+ * those into one column would report whichever row happened to land last.
+ * `turns` is the whole mini-task's count — the cost of that run, not of one
+ * capability.
  */
 export function writeConformanceTable(
   rows: readonly ModelConformanceRow[],
 ): string {
-  const models = [...new Set(rows.map((row) => row.model))];
-  const roleOf = new Map(rows.map((row) => [row.model, row.role]));
-  const turnsOf = new Map(rows.map((row) => [row.model, row.turns]));
+  // Insertion order of a Map keyed on first appearance keeps the sweep's own
+  // order: roles in config order, models in failover order.
+  const columns = new Map<string, { model: string; role: string }>();
+  for (const row of rows) {
+    const key = `${row.model} (${row.role})`;
+    if (!columns.has(key))
+      columns.set(key, { model: row.model, role: row.role });
+  }
   const passOf = new Map(
-    rows.map((row) => [`${row.model}|${row.capability}`, row.pass]),
+    rows.map((row) => [
+      `${row.model} (${row.role})|${row.capability}`,
+      row.pass,
+    ]),
   );
-  const header = ["capability", ...models.map((model) => `\`${model}\``)];
+  const turnsOf = new Map(
+    rows.map((row) => [`${row.model} (${row.role})`, row.turns]),
+  );
+  const header = [
+    "capability",
+    ...[...columns.keys()].map((key) => `\`${key}\``),
+  ];
   const lines = [
     `| ${header.join(" | ")} |`,
     `| ${header.map(() => "---").join(" | ")} |`,
   ];
   for (const capability of HARNESS_CAPABILITIES) {
-    const cells = models.map((model) => {
-      const pass = passOf.get(`${model}|${capability}`);
+    const cells = [...columns.keys()].map((key) => {
+      const pass = passOf.get(`${key}|${capability}`);
       return pass === undefined ? "n/a" : pass ? "PASS" : "FAIL";
     });
     lines.push(`| ${[capability, ...cells].join(" | ")} |`);
   }
   lines.push(
-    `| ${["role", ...models.map((model) => roleOf.get(model) ?? "n/a")].join(" | ")} |`,
-    `| ${["turns", ...models.map((model) => String(turnsOf.get(model) ?? "n/a"))].join(" | ")} |`,
+    `| ${["turns", ...[...columns.keys()].map((key) => String(turnsOf.get(key) ?? "n/a"))].join(" | ")} |`,
   );
   return `${lines.join("\n")}\n`;
 }
@@ -496,7 +511,9 @@ async function resolveGatewayModel(
   });
   const resolved = registry.find(GATEWAY_PROVIDER, model);
   if (!resolved) {
-    throw new Error(`gateway model ${model} did not resolve through ${baseUrl}`);
+    throw new Error(
+      `gateway model ${model} did not resolve through ${baseUrl}`,
+    );
   }
   return resolved as Model<"openai-completions">;
 }
@@ -526,7 +543,10 @@ function buildMiniTaskPrompt(
 }
 
 interface ToolResult {
-  readonly content: readonly { readonly type: string; readonly text?: string }[];
+  readonly content: readonly {
+    readonly type: string;
+    readonly text?: string;
+  }[];
 }
 
 /**
@@ -577,7 +597,9 @@ async function runMiniTask(
   try {
     const engine = createInProcessEngine();
     handle = await engine.provision(
-      buildSandboxLaunchProfile(role === "developer" ? "developer" : "reviewer"),
+      buildSandboxLaunchProfile(
+        role === "developer" ? "developer" : "reviewer",
+      ),
       parentDir,
     );
     await writeFile(join(parentDir, READ_FILE), READ_FILE_BODY);
@@ -621,7 +643,10 @@ async function runMiniTask(
       const assistant = await complete(
         resolvedModel,
         { messages, tools: allTools as readonly Tool[] } as Context,
-        { apiKey, signal: AbortSignal.timeout(options.requestTimeoutMs ?? 120_000) },
+        {
+          apiKey,
+          signal: AbortSignal.timeout(options.requestTimeoutMs ?? 120_000),
+        },
       );
       turns += 1;
       messages.push(assistant);
@@ -629,18 +654,30 @@ async function runMiniTask(
       // would spend the whole turn budget proving nothing, and the failure
       // is already the finding this row must report. Only `stop` (text) and
       // `toolUse` are productive; `error` and `aborted` are terminal.
-      if (assistant.stopReason !== "stop" && assistant.stopReason !== "toolUse") {
-        lastText = assistant.errorMessage ?? `stop reason: ${assistant.stopReason}`;
+      if (
+        assistant.stopReason !== "stop" &&
+        assistant.stopReason !== "toolUse"
+      ) {
+        lastText =
+          assistant.errorMessage ?? `stop reason: ${assistant.stopReason}`;
         break;
       }
       const toolCalls = assistant.content.filter(
-        (part): part is Extract<AssistantMessage["content"][number], { type: "toolCall" }> =>
-          part.type === "toolCall",
+        (
+          part,
+        ): part is Extract<
+          AssistantMessage["content"][number],
+          { type: "toolCall" }
+        > => part.type === "toolCall",
       );
       const text = assistant.content
         .filter(
-          (part): part is Extract<AssistantMessage["content"][number], { type: "text" }> =>
-            part.type === "text",
+          (
+            part,
+          ): part is Extract<
+            AssistantMessage["content"][number],
+            { type: "text" }
+          > => part.type === "text",
         )
         .map((part) => part.text)
         .join("\n")
@@ -651,8 +688,7 @@ async function runMiniTask(
         if (captured !== undefined) break;
         messages.push({
           role: "user",
-          content:
-            `No tool call in that message. Call the next tool in the list; step 6 is \`${submitTool.name}\` and it ends the check.`,
+          content: `No tool call in that message. Call the next tool in the list; step 6 is \`${submitTool.name}\` and it ends the check.`,
           timestamp: Date.now(),
         });
         continue;
@@ -687,7 +723,8 @@ async function runMiniTask(
             role: "toolResult",
             toolCallId: call.id,
             toolName: call.name,
-            content: (result as ToolResult).content as ToolResultMessage["content"],
+            content: (result as ToolResult)
+              .content as ToolResultMessage["content"],
             isError: false,
             timestamp: Date.now(),
           });
@@ -779,7 +816,8 @@ function score(
   // so it lands on every row: a model that needs 40 turns to pass six
   // capabilities is not conformant however green each capability looks.
   const withinBudget =
-    facts.turns <= MAX_HARNESS_TURNS && facts.wallMinutes <= MAX_HARNESS_MINUTES;
+    facts.turns <= MAX_HARNESS_TURNS &&
+    facts.wallMinutes <= MAX_HARNESS_MINUTES;
   if (!withinBudget) {
     for (const capability of HARNESS_CAPABILITIES) {
       capabilities[capability] = false;
