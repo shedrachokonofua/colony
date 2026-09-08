@@ -15,16 +15,13 @@ test("project list empty state, brand, actor default, no page errors", async ({
 
   await page.goto("/");
 
-  // Empty state may be populated by other desktop tests sharing the DB; tolerate both
-  const emptyVisible = await page
-    .getByText("No projects yet")
-    .isVisible()
-    .catch(() => false);
-  if (emptyVisible) {
-    await expect(page.getByText("No projects yet")).toBeVisible();
-  } else {
-    await expect(page.locator(".project-row").first()).toBeVisible();
-  }
+  // The index renders before /projects lands, and other suites sharing the
+  // DB may have populated it, so the settled state is empty OR rows.
+  // Assert the disjunction in one retrying expectation: snapshotting with
+  // isVisible() first picked a state that this assertion then outlived.
+  await expect(page.locator(".rack-empty, .project-row").first()).toBeVisible({
+    timeout: 15000,
+  });
   await expect(
     page.locator(".brand", { hasText: "COLONY" }).first(),
   ).toBeVisible();
@@ -46,15 +43,9 @@ test("mobile — page loads and the board is visible within the 390x844 viewport
 
   await page.goto("/");
 
-  const emptyVisible = await page
-    .getByText("No projects yet")
-    .isVisible()
-    .catch(() => false);
-  if (emptyVisible) {
-    await expect(page.getByText("No projects yet")).toBeVisible();
-  } else {
-    await expect(page.locator(".project-row").first()).toBeVisible();
-  }
+  await expect(page.locator(".rack-empty, .project-row").first()).toBeVisible({
+    timeout: 15000,
+  });
   await expect(
     page.locator(".brand", { hasText: "COLONY" }).first(),
   ).toBeVisible();
