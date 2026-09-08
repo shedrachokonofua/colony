@@ -298,7 +298,11 @@ export interface AgentFaultAttribute {
 
 export function beginAgentRun(
   attributes: AgentMetricAttributes,
-): (status: string, reason?: string, fault?: AgentFaultAttribute | null) => void {
+): (
+  status: string,
+  reason?: string,
+  fault?: AgentFaultAttribute | null,
+) => void {
   if (!provider) return () => undefined;
   const started = performance.now();
   const labels = agentLabels(attributes);
@@ -308,7 +312,8 @@ export function beginAgentRun(
     activeAgentRuns.add(-1, labels);
     const normalizedStatus = boundedLabel(status);
     const faultAttributes: Attributes =
-      (normalizedStatus === "failed" || normalizedStatus === "envelope_rejected") &&
+      (normalizedStatus === "failed" ||
+        normalizedStatus === "envelope_rejected") &&
       fault &&
       fault.layer &&
       fault.code

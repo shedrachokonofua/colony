@@ -56,10 +56,14 @@ describe("Colony telemetry", () => {
     });
 
     const envelopeRejectedRunFinish = beginAgentRun(labels);
-    envelopeRejectedRunFinish("envelope_rejected", "envelope failed schema parse", {
-      layer: "model",
-      code: "envelope_invalid",
-    });
+    envelopeRejectedRunFinish(
+      "envelope_rejected",
+      "envelope failed schema parse",
+      {
+        layer: "model",
+        code: "envelope_invalid",
+      },
+    );
 
     const canceledRunFinish = beginAgentRun(labels);
     canceledRunFinish("canceled", "canceled by user", {
