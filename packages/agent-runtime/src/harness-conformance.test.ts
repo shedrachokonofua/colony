@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import type { RunAuditSink } from "./audit-sink.js";
 import {
   HARNESS_CAPABILITIES,
+  HARNESS_ROLES,
   MAX_HARNESS_TURNS,
   parseDeployRoleChains,
   readPinnedVersions,
@@ -111,6 +112,36 @@ describe("harness conformance config parsing", () => {
     expect(roleModelChains({}, ["developer"])).toEqual([
       { role: "developer", models: [] },
     ]);
+  });
+
+  it("reads the real config/colony.deploy.yaml", async () => {
+    const chains = parseDeployRoleChains(
+      await readFile(
+        new URL("../../../config/colony.deploy.yaml", import.meta.url),
+        "utf8",
+      ),
+    );
+    const byRole = roleModelChains(chains);
+    expect(byRole.map((entry) => entry.role)).toEqual([...HARNESS_ROLES]);
+    // The sweep is only useful if it has models to drive: a parser that
+    // silently yields empty chains would turn every nightly green.
+    for (const entry of byRole) {
+      expect(entry.models.length, `${entry.role} chain`).toBeGreaterThan(0);
+    }
+    // Pinned to the chains this file had when the check was written, so a
+    // routing change has to update the expectation deliberately.
+    expect(byRole[0]?.models).toEqual([
+      "hy4-preview",
+      "muse-spark",
+      "gemini-3.8-flash",
+      "glm-5.3-flash",
+      "deepseek-v4-flash",
+      "qwen3.8-flash",
+    ]);
+    expect(byRole[4]).toEqual({
+      role: "memory_consolidator",
+      models: ["muse-spark"],
+    });
   });
 });
 
