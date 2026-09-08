@@ -18,6 +18,13 @@ import type { SandboxHandle } from "@colony/sandbox";
 import type { RunAuditSink } from "./audit-sink.js";
 import { captureWorkspace } from "./workspace-capture.js";
 
+/**
+ * Every test below drives real git subprocesses (bare init, commits, push,
+ * clones, bundle create/verify/checkout) against a temp fixture, which outruns
+ * bun's 5s default per test on a loaded or slow-disk runner.
+ */
+const GIT_FIXTURE_TIMEOUT_MS = 30_000;
+
 type EventRecord = {
   runId: string;
   event: string;
@@ -230,229 +237,247 @@ function hasRef(repoDir: string, ref: string): boolean {
 }
 
 describe("captureWorkspace", () => {
-  it("stores a recoverable delta bundle while preserving the reviewer checkout", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-bundle-test-"));
-    try {
-      const repo = createRepository(tempRoot, true);
-      addGeneratedFiles(repo.workspaceDir);
-      writeFileSync(
-        join(repo.workspaceDir, "tracked.txt"),
-        "updated tracked\n",
-      );
-      unlinkSync(join(repo.workspaceDir, "delete.txt"));
-      writeFileSync(join(repo.workspaceDir, "staged.txt"), "updated staged\n");
-      git(repo.workspaceDir, ["add", "staged.txt"]);
-      writeFileSync(join(repo.workspaceDir, "new.txt"), "new content\n");
+  it(
+    "stores a recoverable delta bundle while preserving the reviewer checkout",
+    async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-bundle-test-"));
+      try {
+        const repo = createRepository(tempRoot, true);
+        addGeneratedFiles(repo.workspaceDir);
+        writeFileSync(
+          join(repo.workspaceDir, "tracked.txt"),
+          "updated tracked\n",
+        );
+        unlinkSync(join(repo.workspaceDir, "delete.txt"));
+        writeFileSync(
+          join(repo.workspaceDir, "staged.txt"),
+          "updated staged\n",
+        );
+        git(repo.workspaceDir, ["add", "staged.txt"]);
+        writeFileSync(join(repo.workspaceDir, "new.txt"), "new content\n");
 
-      const headBefore = git(repo.workspaceDir, ["rev-parse", "HEAD"]);
-      const indexBefore = git(repo.workspaceDir, ["rev-parse", ":staged.txt"]);
-      const statusBefore = git(repo.workspaceDir, ["status", "--porcelain"]);
-      const stagedDiffBefore = git(repo.workspaceDir, [
-        "diff",
-        "--cached",
-        "--binary",
-      ]);
-      const worktreeDiffBefore = git(repo.workspaceDir, ["diff", "--binary"]);
+        const headBefore = git(repo.workspaceDir, ["rev-parse", "HEAD"]);
+        const indexBefore = git(repo.workspaceDir, [
+          "rev-parse",
+          ":staged.txt",
+        ]);
+        const statusBefore = git(repo.workspaceDir, ["status", "--porcelain"]);
+        const stagedDiffBefore = git(repo.workspaceDir, [
+          "diff",
+          "--cached",
+          "--binary",
+        ]);
+        const worktreeDiffBefore = git(repo.workspaceDir, ["diff", "--binary"]);
 
-      const handle = createWorkspaceSandboxHandle(repo.workspaceDir);
-      const { sink, events, artifacts } = createRecordingSink();
-      const runId = "run-bundle-123";
-      const localGitRef = `refs/colony/runs/${runId}`;
+        const handle = createWorkspaceSandboxHandle(repo.workspaceDir);
+        const { sink, events, artifacts } = createRecordingSink();
+        const runId = "run-bundle-123";
+        const localGitRef = `refs/colony/runs/${runId}`;
 
-      const result = await captureWorkspace({
-        runId,
-        handle,
-        parentSha: repo.parentSha,
-        secrets: [],
-        sink,
-      });
+        const result = await captureWorkspace({
+          runId,
+          handle,
+          parentSha: repo.parentSha,
+          secrets: [],
+          sink,
+        });
 
-      expect(result).toBeDefined();
-      expect(result!.ref).toBe(`blob://runs/${runId}/workspace.bundle`);
-      expect(result!.sha).toMatch(/^[0-9a-f]{40}$/);
-      expect(hasRef(repo.workspaceDir, localGitRef)).toBe(false);
-      expect(existsSync(repo.pushAttemptMarker)).toBe(false);
+        expect(result).toBeDefined();
+        expect(result!.ref).toBe(`blob://runs/${runId}/workspace.bundle`);
+        expect(result!.sha).toMatch(/^[0-9a-f]{40}$/);
+        expect(hasRef(repo.workspaceDir, localGitRef)).toBe(false);
+        expect(existsSync(repo.pushAttemptMarker)).toBe(false);
 
-      const bundleArtifact = artifacts.find(
-        (a) => a.kind === "workspace_bundle",
-      );
-      expect(bundleArtifact).toBeDefined();
-      expect(bundleArtifact!.key).toBe(`runs/${runId}/workspace.bundle`);
-      expect(bundleArtifact!.contentType).toBe("application/x-git-bundle");
+        const bundleArtifact = artifacts.find(
+          (a) => a.kind === "workspace_bundle",
+        );
+        expect(bundleArtifact).toBeDefined();
+        expect(bundleArtifact!.key).toBe(`runs/${runId}/workspace.bundle`);
+        expect(bundleArtifact!.contentType).toBe("application/x-git-bundle");
 
-      const recoveryDir = recoverBundle(
-        repo.seedDir,
-        tempRoot,
-        bundleArtifact!.data,
-        localGitRef,
-      );
-      expect(
-        gitIn(recoveryDir, [
-          "bundle",
-          "verify",
-          join(tempRoot, "workspace.bundle"),
-        ]),
-      ).toContain(repo.parentSha);
-      expect(git(recoveryDir, ["rev-parse", "HEAD"])).toBe(result!.sha);
-      expect(readFileSync(join(recoveryDir, "tracked.txt"), "utf8")).toBe(
-        "updated tracked\n",
-      );
-      expect(readFileSync(join(recoveryDir, "staged.txt"), "utf8")).toBe(
-        "updated staged\n",
-      );
-      expect(readFileSync(join(recoveryDir, "new.txt"), "utf8")).toBe(
-        "new content\n",
-      );
-      expect(existsSync(join(recoveryDir, "delete.txt"))).toBe(false);
-      const recoveredPaths = git(recoveryDir, [
-        "ls-tree",
-        "-r",
-        "--name-only",
-        "HEAD",
-      ]).split("\n");
-      expect(
-        recoveredPaths.some((path) =>
-          path
-            .split("/")
-            .some((part) =>
-              ["node_modules", ".bun-cache", "dist"].includes(part),
-            ),
-        ),
-      ).toBe(false);
+        const recoveryDir = recoverBundle(
+          repo.seedDir,
+          tempRoot,
+          bundleArtifact!.data,
+          localGitRef,
+        );
+        expect(
+          gitIn(recoveryDir, [
+            "bundle",
+            "verify",
+            join(tempRoot, "workspace.bundle"),
+          ]),
+        ).toContain(repo.parentSha);
+        expect(git(recoveryDir, ["rev-parse", "HEAD"])).toBe(result!.sha);
+        expect(readFileSync(join(recoveryDir, "tracked.txt"), "utf8")).toBe(
+          "updated tracked\n",
+        );
+        expect(readFileSync(join(recoveryDir, "staged.txt"), "utf8")).toBe(
+          "updated staged\n",
+        );
+        expect(readFileSync(join(recoveryDir, "new.txt"), "utf8")).toBe(
+          "new content\n",
+        );
+        expect(existsSync(join(recoveryDir, "delete.txt"))).toBe(false);
+        const recoveredPaths = git(recoveryDir, [
+          "ls-tree",
+          "-r",
+          "--name-only",
+          "HEAD",
+        ]).split("\n");
+        expect(
+          recoveredPaths.some((path) =>
+            path
+              .split("/")
+              .some((part) =>
+                ["node_modules", ".bun-cache", "dist"].includes(part),
+              ),
+          ),
+        ).toBe(false);
 
-      const manifestArtifact = artifacts.find(
-        (a) => a.kind === "workspace_manifest",
-      );
-      expect(manifestArtifact).toBeDefined();
-      expect(manifestArtifact!.contentType).toBe("application/json");
-      expect(manifestArtifact!.key).toBe(
-        `runs/${runId}/workspace-manifest.json`,
-      );
-      const manifest = JSON.parse(
-        Buffer.from(manifestArtifact!.data).toString("utf8"),
-      ) as {
-        files: { path: string; sha256: string }[];
-        deleted: string[];
-        generated_at: string;
-        parent_sha: string;
-        sha: string;
-        git_ref: string;
-      };
-      expect(manifest.parent_sha).toBe(repo.parentSha);
-      expect(manifest.sha).toBe(result!.sha);
-      expect(manifest.git_ref).toBe(localGitRef);
-      expect(manifest.deleted).toEqual(["delete.txt"]);
-      expect(manifest.files.map((file) => file.path).sort()).toEqual([
-        "new.txt",
-        "staged.txt",
-        "tracked.txt",
-      ]);
-      expect(manifest.generated_at).toEqual(expect.any(String));
+        const manifestArtifact = artifacts.find(
+          (a) => a.kind === "workspace_manifest",
+        );
+        expect(manifestArtifact).toBeDefined();
+        expect(manifestArtifact!.contentType).toBe("application/json");
+        expect(manifestArtifact!.key).toBe(
+          `runs/${runId}/workspace-manifest.json`,
+        );
+        const manifest = JSON.parse(
+          Buffer.from(manifestArtifact!.data).toString("utf8"),
+        ) as {
+          files: { path: string; sha256: string }[];
+          deleted: string[];
+          generated_at: string;
+          parent_sha: string;
+          sha: string;
+          git_ref: string;
+        };
+        expect(manifest.parent_sha).toBe(repo.parentSha);
+        expect(manifest.sha).toBe(result!.sha);
+        expect(manifest.git_ref).toBe(localGitRef);
+        expect(manifest.deleted).toEqual(["delete.txt"]);
+        expect(manifest.files.map((file) => file.path).sort()).toEqual([
+          "new.txt",
+          "staged.txt",
+          "tracked.txt",
+        ]);
+        expect(manifest.generated_at).toEqual(expect.any(String));
 
-      expect(
-        events.find((event) => event.event === "workspace_snapshot")?.detail,
-      ).toEqual({
-        ref: result!.ref,
-        sha: result!.sha,
-        parent_sha: repo.parentSha,
-        git_ref: localGitRef,
-      });
-      expect(events.some((event) => event.event === "workspace_ref")).toBe(
-        false,
-      );
+        expect(
+          events.find((event) => event.event === "workspace_snapshot")?.detail,
+        ).toEqual({
+          ref: result!.ref,
+          sha: result!.sha,
+          parent_sha: repo.parentSha,
+          git_ref: localGitRef,
+        });
+        expect(events.some((event) => event.event === "workspace_ref")).toBe(
+          false,
+        );
 
-      expect(git(repo.workspaceDir, ["rev-parse", "HEAD"])).toBe(headBefore);
-      expect(git(repo.workspaceDir, ["rev-parse", ":staged.txt"])).toBe(
-        indexBefore,
-      );
-      expect(git(repo.workspaceDir, ["status", "--porcelain"])).toBe(
-        statusBefore,
-      );
-      expect(git(repo.workspaceDir, ["diff", "--cached", "--binary"])).toBe(
-        stagedDiffBefore,
-      );
-      expect(git(repo.workspaceDir, ["diff", "--binary"])).toBe(
-        worktreeDiffBefore,
-      );
-      expect(readFileSync(join(repo.workspaceDir, "new.txt"), "utf8")).toBe(
-        "new content\n",
-      );
-      expect(existsSync(join(repo.workspaceDir, "delete.txt"))).toBe(false);
-      expect(
-        existsSync(join(repo.workspaceDir, "node_modules", "ignored.txt")),
-      ).toBe(true);
-    } finally {
-      rmSync(tempRoot, { recursive: true, force: true });
-    }
-  });
+        expect(git(repo.workspaceDir, ["rev-parse", "HEAD"])).toBe(headBefore);
+        expect(git(repo.workspaceDir, ["rev-parse", ":staged.txt"])).toBe(
+          indexBefore,
+        );
+        expect(git(repo.workspaceDir, ["status", "--porcelain"])).toBe(
+          statusBefore,
+        );
+        expect(git(repo.workspaceDir, ["diff", "--cached", "--binary"])).toBe(
+          stagedDiffBefore,
+        );
+        expect(git(repo.workspaceDir, ["diff", "--binary"])).toBe(
+          worktreeDiffBefore,
+        );
+        expect(readFileSync(join(repo.workspaceDir, "new.txt"), "utf8")).toBe(
+          "new content\n",
+        );
+        expect(existsSync(join(repo.workspaceDir, "delete.txt"))).toBe(false);
+        expect(
+          existsSync(join(repo.workspaceDir, "node_modules", "ignored.txt")),
+        ).toBe(true);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
 
-  it("captures a clean reviewer workspace after an interrupted capture without remote writes", async () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-reviewer-test-"));
-    try {
-      const repo = createRepository(tempRoot, true);
-      const statusBefore = git(repo.workspaceDir, ["status", "--porcelain"]);
-      const { sink, events } = createRecordingSink();
-      const runId = "run-reviewer-123";
-      git(repo.workspaceDir, [
-        "update-ref",
-        `refs/colony/runs/${runId}`,
-        repo.parentSha,
-      ]);
+  it(
+    "captures a clean reviewer workspace after an interrupted capture without remote writes",
+    async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "colony-ws-reviewer-test-"));
+      try {
+        const repo = createRepository(tempRoot, true);
+        const statusBefore = git(repo.workspaceDir, ["status", "--porcelain"]);
+        const { sink, events } = createRecordingSink();
+        const runId = "run-reviewer-123";
+        git(repo.workspaceDir, [
+          "update-ref",
+          `refs/colony/runs/${runId}`,
+          repo.parentSha,
+        ]);
 
-      const result = await captureWorkspace({
-        runId,
-        handle: createWorkspaceSandboxHandle(repo.workspaceDir),
-        parentSha: repo.parentSha,
-        secrets: [],
-        sink,
-      });
+        const result = await captureWorkspace({
+          runId,
+          handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+          parentSha: repo.parentSha,
+          secrets: [],
+          sink,
+        });
 
-      expect(result).toBeDefined();
-      expect(existsSync(repo.pushAttemptMarker)).toBe(false);
-      expect(
-        git(repo.workspaceDir, ["rev-parse", `refs/colony/runs/${runId}`]),
-      ).toBe(repo.parentSha);
-      expect(git(repo.workspaceDir, ["status", "--porcelain"])).toBe(
-        statusBefore,
+        expect(result).toBeDefined();
+        expect(existsSync(repo.pushAttemptMarker)).toBe(false);
+        expect(
+          git(repo.workspaceDir, ["rev-parse", `refs/colony/runs/${runId}`]),
+        ).toBe(repo.parentSha);
+        expect(git(repo.workspaceDir, ["status", "--porcelain"])).toBe(
+          statusBefore,
+        );
+        expect(
+          events.some((event) => event.event === "workspace_snapshot"),
+        ).toBe(true);
+        expect(
+          events.some((event) => event.event === "workspace_capture_failed"),
+        ).toBe(false);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
+
+  it(
+    "does not emit a success marker when artifact storage fails",
+    async () => {
+      const tempRoot = mkdtempSync(
+        join(tmpdir(), "colony-ws-artifact-fail-test-"),
       );
-      expect(events.some((event) => event.event === "workspace_snapshot")).toBe(
-        true,
-      );
-      expect(
-        events.some((event) => event.event === "workspace_capture_failed"),
-      ).toBe(false);
-    } finally {
-      rmSync(tempRoot, { recursive: true, force: true });
-    }
-  });
+      try {
+        const repo = createRepository(tempRoot, true);
+        writeFileSync(join(repo.workspaceDir, "new.txt"), "new content\n");
+        const { sink, events } = createRecordingSink("workspace_manifest");
 
-  it("does not emit a success marker when artifact storage fails", async () => {
-    const tempRoot = mkdtempSync(
-      join(tmpdir(), "colony-ws-artifact-fail-test-"),
-    );
-    try {
-      const repo = createRepository(tempRoot, true);
-      writeFileSync(join(repo.workspaceDir, "new.txt"), "new content\n");
-      const { sink, events } = createRecordingSink("workspace_manifest");
+        const result = await captureWorkspace({
+          runId: "run-artifact-fail-123",
+          handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+          parentSha: repo.parentSha,
+          secrets: [],
+          sink,
+        });
 
-      const result = await captureWorkspace({
-        runId: "run-artifact-fail-123",
-        handle: createWorkspaceSandboxHandle(repo.workspaceDir),
-        parentSha: repo.parentSha,
-        secrets: [],
-        sink,
-      });
-
-      expect(result).toBeUndefined();
-      expect(events.some((event) => event.event === "workspace_snapshot")).toBe(
-        false,
-      );
-      expect(
-        events.some((event) => event.event === "workspace_capture_failed"),
-      ).toBe(true);
-      expect(existsSync(repo.pushAttemptMarker)).toBe(false);
-    } finally {
-      rmSync(tempRoot, { recursive: true, force: true });
-    }
-  });
+        expect(result).toBeUndefined();
+        expect(
+          events.some((event) => event.event === "workspace_snapshot"),
+        ).toBe(false);
+        expect(
+          events.some((event) => event.event === "workspace_capture_failed"),
+        ).toBe(true);
+        expect(existsSync(repo.pushAttemptMarker)).toBe(false);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
 });
