@@ -112,11 +112,7 @@ async function assertNoHorizontalOverflow(page: Page) {
 }
 
 async function createScopeViaApi(
-  request: Parameters<
-    Parameters<typeof test>[0]["request"]["post"]
-  >[0] extends never
-    ? never
-    : import("@playwright/test").APIRequestContext,
+  request: import("@playwright/test").APIRequestContext,
   opts: { title: string; goal: string },
 ): Promise<string> {
   const res = await request.post("/scopes", {
