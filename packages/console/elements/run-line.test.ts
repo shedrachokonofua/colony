@@ -235,7 +235,11 @@ describe("run-line", () => {
     expect(rows[1]).toContain("src/a.ts, src/b.ts");
     expect(
       el.querySelector(".challenged")?.textContent?.replace(/\s+/g, " "),
-    ).toContain("challenged reviewed 2 · dropped 1");
+    ).toContain("self-check: 2 examined · 1 set aside");
+    expect(el.textContent).not.toContain("challenged reviewed");
+    expect(el.querySelector(".challenged")?.textContent).toContain(
+      "candidates considered but not submitted",
+    );
   });
 
   it("leaves older verdict-only review rows and non-review rows untouched", async () => {
@@ -250,6 +254,9 @@ describe("run-line", () => {
     await review.updateComplete;
     expect(review.querySelector(".dimensions")).toBeNull();
     expect(review.querySelector(".challenged")).toBeNull();
+    expect(review.textContent).toContain(
+      "full details unavailable for this older record",
+    );
     review.remove();
 
     const build = makeLine({
@@ -269,5 +276,370 @@ describe("run-line", () => {
     await build.updateComplete;
     expect(build.querySelector(".dimensions")).toBeNull();
     expect(build.querySelector(".challenged")).toBeNull();
+    expect(build.textContent).not.toContain("unavailable");
+  });
+
+  const REVIEW_BASE = {
+    kind: "review",
+    status: "succeeded",
+    head_sha: "abcdef1234567890",
+  };
+
+  it("renders an approve's rationale and every recorded finding", async () => {
+    const el = makeLine({
+      ...REVIEW_BASE,
+      evidence_json: JSON.stringify({
+        verdict: "approve",
+        head_sha: "abcdef1234567890",
+        dimensions: [
+          {
+            name: "spec-compliance",
+            spec_blind: false,
+            target_files: [],
+            findings: 0,
+          },
+          {
+            name: "defect-scan",
+            spec_blind: true,
+            target_files: [],
+            findings: 4,
+          },
+          {
+            name: "test-coverage",
+            spec_blind: true,
+            target_files: [],
+            findings: 4,
+          },
+          {
+            name: "regression-risk",
+            spec_blind: true,
+            target_files: [],
+            findings: 4,
+          },
+        ],
+        challenged: { reviewed: 11, dropped: 7 },
+      }),
+      envelope_json: JSON.stringify({
+        kind: "reviewer_verdict",
+        verdict: "approve",
+        summary:
+          "The change moves the verdict store behind one writer and every read path follows, so approved reviews can no longer disagree with the merge gate.",
+        findings: [
+          {
+            severity: "minor",
+            file: "packages/core/src/store.ts",
+            note: "store only",
+          },
+          {
+            severity: "minor",
+            file: "apps/colonyd/src/http.ts",
+            note: "serialize once",
+          },
+          {
+            severity: "minor",
+            file: "apps/cli/src/commands/run.ts",
+            note: "read one shape",
+          },
+          { severity: "minor", note: "no shared helper for the fallback" },
+        ],
+        inspected: [
+          { file: "packages/core/src/store.ts", note: "single writer" },
+        ],
+        dimensions: [
+          {
+            name: "defect-scan",
+            spec_blind: true,
+            target_files: ["packages/core/src/store.ts"],
+            findings: 4,
+          },
+        ],
+        challenged: { reviewed: 11, dropped: 7 },
+        head_sha: "abcdef1234567890",
+      }),
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".review-summary")?.textContent).toContain(
+      "The change moves the verdict store behind one writer",
+    );
+    expect(el.querySelector(".findings-count")?.textContent).toContain(
+      "4 final findings",
+    );
+    const rows = [...el.querySelectorAll(".findings li")].map((row) =>
+      row.textContent?.replace(/\s+/g, " ").trim(),
+    );
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toContain("minor — store only");
+    expect(rows[0]).toContain("packages/core/src/store.ts");
+    expect(rows[3]).toContain("minor — no shared helper for the fallback");
+    expect(el.querySelector(".kind")?.textContent).toContain("approve");
+  });
+
+  it("renders request_changes findings from the envelope identically", async () => {
+    const el = makeLine({
+      ...REVIEW_BASE,
+      evidence_json: JSON.stringify({
+        verdict: "request_changes",
+        head_sha: "abcdef1234567890",
+        findings: [{ severity: "major", note: "stale evidence finding" }],
+      }),
+      envelope_json: JSON.stringify({
+        kind: "reviewer_verdict",
+        verdict: "request_changes",
+        summary:
+          "The reviewer rejects the change because the gate still writes twice.",
+        findings: [
+          {
+            severity: "blocker",
+            file: "apps/colonyd/src/main.ts",
+            note: "second writer remains",
+          },
+          { severity: "minor", note: "comment is noise" },
+        ],
+        inspected: [],
+        dimensions: [],
+        challenged: { reviewed: 2, dropped: 0 },
+        head_sha: "abcdef1234567890",
+      }),
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".review-summary")?.textContent).toContain(
+      "the gate still writes twice",
+    );
+    expect(el.querySelector(".findings-count")?.textContent).toContain(
+      "2 final findings",
+    );
+    const rows = [...el.querySelectorAll(".findings li")].map((row) =>
+      row.textContent?.replace(/\s+/g, " ").trim(),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("blocker — second writer remains");
+    expect(rows[0]).toContain("apps/colonyd/src/main.ts");
+    // The envelope's findings are the final ones; the evidence copy is not
+    // rendered a second time.
+    expect(el.textContent).not.toContain("stale evidence finding");
+  });
+
+  it("says so plainly when an approve records zero findings", async () => {
+    const el = makeLine({
+      ...REVIEW_BASE,
+      evidence_json: JSON.stringify({
+        verdict: "approve",
+        head_sha: "abcdef1234567890",
+      }),
+      envelope_json: JSON.stringify({
+        kind: "reviewer_verdict",
+        verdict: "approve",
+        summary:
+          "A clean approve: the diff is small and covered by tests end to end.",
+        findings: [],
+        inspected: [{ file: "src/a.ts", note: "covered by tests" }],
+        dimensions: [],
+        challenged: { reviewed: 3, dropped: 3 },
+        head_sha: "abcdef1234567890",
+      }),
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".findings-count")?.textContent).toContain(
+      "no final findings were recorded",
+    );
+    expect(el.querySelector(".findings")).toBeNull();
+  });
+
+  it("keeps coverage behind a disclosure below the verdict", async () => {
+    const el = makeLine({
+      ...REVIEW_BASE,
+      evidence_json: JSON.stringify({
+        verdict: "approve",
+        head_sha: "abcdef1234567890",
+      }),
+      envelope_json: JSON.stringify({
+        kind: "reviewer_verdict",
+        verdict: "approve",
+        summary:
+          "Approved after reading every call site of the changed writer.",
+        findings: [],
+        inspected: [
+          {
+            file: "packages/core/src/store.ts",
+            note: "every call site follows",
+          },
+        ],
+        dimensions: [
+          {
+            name: "defect-scan",
+            spec_blind: true,
+            target_files: [
+              "packages/core/src/store.ts",
+              "apps/colonyd/src/http.ts",
+            ],
+            findings: 2,
+          },
+        ],
+        challenged: { reviewed: 5, dropped: 5 },
+        head_sha: "abcdef1234567890",
+      }),
+    });
+    await el.updateComplete;
+    const details = el.querySelector("details.review-coverage");
+    expect(details).toBeTruthy();
+    expect(details?.querySelector("summary")?.textContent).toContain(
+      "review coverage",
+    );
+    expect(
+      details
+        ?.querySelector(".dimensions li")
+        ?.textContent?.replace(/\s+/g, " ")
+        .trim(),
+    ).toContain("defect-scan spec-blind · 2 candidates");
+    expect(details?.textContent?.replace(/\s+/g, " ")).toContain(
+      "counts may overlap, so they are not an additive total",
+    );
+    expect(details?.querySelector(".inspected li")?.textContent).toContain(
+      "every call site follows",
+    );
+    expect(details?.querySelector(".spec-blind")).toBeTruthy();
+    expect(details?.querySelector(".spec-blind")?.getAttribute("title")).toBe(
+      "checked without seeing the task spec",
+    );
+    // Coverage is below the verdict, not before it.
+    const reviewDetail = el.querySelector(".review-detail");
+    expect(reviewDetail?.textContent?.indexOf("verdict: approve")).toBeLessThan(
+      reviewDetail?.textContent?.indexOf("review coverage") ?? -1,
+    );
+  });
+
+  it("escapes envelope prose instead of rendering markup", async () => {
+    const el = makeLine({
+      ...REVIEW_BASE,
+      evidence_json: null,
+      envelope_json: JSON.stringify({
+        kind: "reviewer_verdict",
+        verdict: "approve",
+        summary: "<img src=x onerror=alert(1)> rationale",
+        findings: [{ severity: "minor", note: "<script>alert(2)</script>" }],
+        inspected: [],
+        dimensions: [],
+        challenged: { reviewed: 1, dropped: 0 },
+        head_sha: "abcdef1234567890",
+      }),
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".review-summary")?.textContent).toContain(
+      "<img src=x onerror=alert(1)>",
+    );
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.querySelector("script")).toBeNull();
+  });
+
+  it("falls back to evidence on a malformed envelope", async () => {
+    const el = makeLine({
+      ...REVIEW_BASE,
+      evidence_json: JSON.stringify({
+        verdict: "request_changes",
+        head_sha: "abcdef1234567890",
+        findings: [{ severity: "major", note: "evidence fallback finding" }],
+      }),
+      envelope_json: "{not json",
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".review-detail")).toBeNull();
+    expect(el.querySelector(".findings li")?.textContent).toContain(
+      "evidence fallback finding",
+    );
+    expect(el.textContent).toContain(
+      "full details unavailable for this older record",
+    );
+  });
+
+  it("falls back to evidence when the envelope lacks a verdict", async () => {
+    const el = makeLine({
+      ...REVIEW_BASE,
+      evidence_json: JSON.stringify({
+        verdict: "approve",
+        head_sha: "abcdef1234567890",
+        findings: [{ severity: "minor", note: "only evidence carries it" }],
+      }),
+      envelope_json: JSON.stringify({
+        kind: "reviewer_verdict",
+        summary: "no verdict here",
+      }),
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".review-detail")).toBeNull();
+    expect(el.querySelector(".findings li")?.textContent).toContain(
+      "only evidence carries it",
+    );
+    expect(el.textContent).toContain("unavailable");
+  });
+
+  it("states no verdict was submitted for a failed review run", async () => {
+    const el = makeLine({
+      kind: "review",
+      status: "failed",
+      error: "reviewer timed out",
+      evidence_json: JSON.stringify({ head_sha: "abcdef1234567890" }),
+    });
+    await el.updateComplete;
+    expect(el.textContent).toContain("no accepted verdict was submitted");
+    expect(el.querySelector(".review-detail")).toBeNull();
+  });
+
+  it("never presents a failed head-mismatch envelope as the verdict", async () => {
+    const el = makeLine({
+      kind: "review",
+      status: "failed",
+      error: "envelope facts unverified: reviewed head_sha mismatch",
+      evidence_json: JSON.stringify({ head_sha: "abcdef1234567890" }),
+      envelope_json: JSON.stringify({
+        kind: "reviewer_verdict",
+        verdict: "approve",
+        summary: "An approve the server rejected for a head SHA mismatch.",
+        findings: [],
+        inspected: [{ file: "src/a.ts", note: "read" }],
+        dimensions: [],
+        challenged: { reviewed: 1, dropped: 0 },
+        head_sha: "1234567890abcdef1234567890abcdef12345678",
+      }),
+    });
+    await el.updateComplete;
+    expect(el.textContent).toContain("no accepted verdict was submitted");
+    expect(el.textContent).toContain(
+      "a submission was recorded but not accepted",
+    );
+    expect(el.querySelector(".review-detail")).toBeNull();
+    expect(el.querySelector(".review-summary")).toBeNull();
+    expect(el.querySelector(".kind")?.textContent).not.toContain("approve");
+  });
+
+  it("renders a plan_review envelope row unchanged", async () => {
+    const el = makeLine({
+      kind: "plan_review",
+      status: "succeeded",
+      evidence_json: JSON.stringify({
+        verdict: "request_changes",
+        findings: [{ severity: "major", note: "task 1 has no evidence" }],
+      }),
+      envelope_json: JSON.stringify({
+        kind: "plan_review_verdict",
+        verdict: "request_changes",
+        summary: "The plan cannot be approved until task 1 names its evidence.",
+        findings: [
+          { severity: "major", task: 1, note: "task 1 has no evidence" },
+        ],
+        inspected: [{ file: "docs/spec.md", note: "plan source" }],
+      }),
+    });
+    await el.updateComplete;
+    expect(el.querySelector(".review-detail")).toBeNull();
+    expect(el.querySelector(".review-summary")).toBeNull();
+    expect(
+      el
+        .querySelector(".findings li")
+        ?.textContent?.replace(/\s+/g, " ")
+        .trim(),
+    ).toContain("major — task 1 has no evidence");
+    expect(el.querySelector(".dimensions")).toBeNull();
+    expect(el.querySelector(".challenged")).toBeNull();
+    expect(el.textContent).not.toContain("unavailable");
   });
 });
