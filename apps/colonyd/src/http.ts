@@ -14,6 +14,7 @@ import {
 } from "@colony/observability";
 import { ArchitectDecompositionV2 as architectDecompositionV2Schema } from "@colony/schemas";
 import { ArchitectExtensionEnvelope as architectExtensionEnvelopeSchema } from "@colony/agent-runtime";
+import { sanitizeTrace } from "@colony/provider";
 import { parseFault, type Fault, FAULT_LAYERS, type Run } from "@colony/core";
 import {
   deriveDeliveryStatus,
@@ -120,10 +121,51 @@ const runArtifactsQuery = z.object({
   offset: z.coerce.number().int().nonnegative().optional(),
 });
 
+/** Global run feed. since/until are instants the run's window column
+ *  (COALESCE(finished_at, started_at)) is compared against. */
+const runsQuery = z.object({
+  since: z.iso.datetime({ offset: true }).optional(),
+  until: z.iso.datetime({ offset: true }).optional(),
+  status: z.enum(["running", "succeeded", "failed", "canceled"]).optional(),
+  kind: z
+    .enum([
+      "architect",
+      "plan_review",
+      "implement",
+      "merge_gate",
+      "review",
+      "validate",
+    ])
+    .optional(),
+  model_id: z.string().min(1).max(200).optional(),
+  limit: z.coerce.number().int().positive().max(100).optional(),
+  offset: z.coerce.number().int().nonnegative().optional(),
+});
+
 function serializeRun(run: Run): Run & { fault: Fault | null } {
   return {
     ...run,
     fault: parseFault(run.fault_json),
+  };
+}
+
+/**
+ * A serialized run with its operator-facing error text sanitized: the row
+ * stores whatever the runner threw (credentials and all), so a copy is
+ * redacted before it reaches a feed. Only the copy is rewritten — the stored
+ * error and fault_json stay raw for the paths that legitimately read them.
+ */
+function redactRunErrors(
+  run: Run & { fault: Fault | null },
+): Run & { fault: Fault | null } {
+  const { fault } = run;
+  return {
+    ...run,
+    ...(run.error === null ? {} : { error: sanitizeTrace(run.error) }),
+    fault:
+      fault && fault.detail !== undefined
+        ? { ...fault, detail: sanitizeTrace(fault.detail) }
+        : fault,
   };
 }
 
@@ -1615,6 +1657,24 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     });
     ctx.requestTick();
     return c.json(updated);
+  });
+
+  /**
+   * Global run feed: every run in the daemon, newest first, windowed on
+   * COALESCE(finished_at, started_at) so a running run is windowed by its
+   * start and a finished run by its finish. Served with error text and
+   * fault detail sanitized — the stored row keeps the raw text.
+   */
+  app.get("/runs", (c) => {
+    const parsed = runsQuery.safeParse(c.req.query());
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const limit = parsed.data.limit ?? 25;
+    const offset = parsed.data.offset ?? 0;
+    const page = ctx.store.listRuns({ ...parsed.data, limit, offset });
+    return c.json({
+      ...page,
+      items: page.items.map((run) => redactRunErrors(serializeRun(run))),
+    });
   });
 
   app.get("/runs/:id", (c) => {

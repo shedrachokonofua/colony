@@ -385,6 +385,12 @@ function clampPageLimit(limit: number | undefined): number {
   return Math.max(1, Math.min(limit ?? 200, 1000));
 }
 
+/** Run feed pages: default 25, clamp 1..100 — operator-facing, so bounded
+ *  tighter than the internal 1000-row pages. */
+function clampRunPageLimit(limit: number | undefined): number {
+  return Math.max(1, Math.min(limit ?? 25, 100));
+}
+
 export class Store {
   readonly db: InstanceType<typeof Database>;
 
@@ -1961,6 +1967,66 @@ export class Store {
     return this.db
       .prepare(`SELECT * FROM runs WHERE scope_id = ? ORDER BY started_at`)
       .all(scopeId) as Run[];
+  }
+
+  /**
+   * One page of every run in the daemon, newest first, with optional
+   * window/narrowing filters. `total` counts the whole filtered dataset, so
+   * it always agrees with the rows any page of `items` can return.
+   *
+   * The window binds COALESCE(finished_at, started_at): a running run has no
+   * finished_at and windows by its start, a finished run by its finish. The
+   * operator summary reads the same predicate, so a count and a page taken at
+   * the same instant agree.
+   */
+  listRuns(
+    filter: {
+      since?: string;
+      until?: string;
+      status?: Run["status"];
+      kind?: Run["kind"];
+      model_id?: string;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): { items: Run[]; total: number; limit: number; offset: number } {
+    const limit = clampRunPageLimit(filter.limit);
+    const offset = Math.max(0, filter.offset ?? 0);
+    // One predicate for both statements: rows and their count can never
+    // drift apart because a clause was added to only one of them.
+    const order = `COALESCE(finished_at, started_at)`;
+    const clauses: string[] = [];
+    const params: Record<string, SQLQueryBindings> = {};
+    if (filter.since !== undefined) {
+      clauses.push(`${order} >= @since`);
+      params.since = filter.since;
+    }
+    if (filter.until !== undefined) {
+      clauses.push(`${order} <= @until`);
+      params.until = filter.until;
+    }
+    if (filter.status !== undefined) {
+      clauses.push(`status = @status`);
+      params.status = filter.status;
+    }
+    if (filter.kind !== undefined) {
+      clauses.push(`kind = @kind`);
+      params.kind = filter.kind;
+    }
+    if (filter.model_id !== undefined) {
+      clauses.push(`model_id = @model_id`);
+      params.model_id = filter.model_id;
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const items = this.db
+      .prepare(
+        `SELECT * FROM runs ${where} ORDER BY ${order} DESC, id DESC LIMIT @limit OFFSET @offset`,
+      )
+      .all(named({ ...params, limit, offset })) as Run[];
+    const { n } = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM runs ${where}`)
+      .get(named(params)) as { n: number };
+    return { items, total: n, limit, offset };
   }
 
   latestRun(
