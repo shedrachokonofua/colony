@@ -6,7 +6,7 @@ import {
 } from "./project-running.test.js";
 import type { Run } from "@colony/core";
 
-describe("GET /projects/:name/failures and run.fault serialization", () => {
+describe("run.fault serialization", () => {
   it("includes parsed fault or null in GET /tasks/:id, /scopes/:id, /runs/:id, /projects/:name/running", async () => {
     const { store, app } = appWithStore();
     const { scope_id, task_ids } = scopeWithTasks(store, "p-fault", ["Task-1"]);
@@ -84,84 +84,5 @@ describe("GET /projects/:name/failures and run.fault serialization", () => {
       run: { fault: unknown };
     }>;
     expect(runningBody[0]!.run.fault).toBeNull();
-  });
-
-  it("GET /projects/:name/failures returns paginated failures and census counts", async () => {
-    const { store, app } = appWithStore();
-    const { scope_id, task_ids } = scopeWithTasks(store, "census-proj", [
-      "T1",
-      "T2",
-    ]);
-
-    // Run 1: provider failure
-    const r1 = store.startRun({
-      scope_id,
-      task_id: task_ids[0]!,
-      kind: "implement",
-      lease_ttl_ms: 60_000,
-    });
-    store.finishRun(r1.id, "failed", {
-      fault: { layer: "provider", code: "rate_limit" },
-    });
-
-    // Run 2: model failure
-    const r2 = store.startRun({
-      scope_id,
-      task_id: task_ids[1]!,
-      kind: "implement",
-      lease_ttl_ms: 60_000,
-    });
-    store.finishRun(r2.id, "failed", {
-      fault: { layer: "model", code: "syntax_error" },
-    });
-
-    // Run 3: colonyd failure
-    const r3 = store.startRun({
-      scope_id,
-      kind: "architect",
-      lease_ttl_ms: 60_000,
-    });
-    store.finishRun(r3.id, "failed", {
-      fault: { layer: "colonyd", code: "process_restart" },
-    });
-
-    // Run 4: succeeded run (should not be counted in failures)
-    const r4 = store.startRun({
-      scope_id,
-      kind: "architect",
-      lease_ttl_ms: 60_000,
-    });
-    store.finishRun(r4.id, "succeeded");
-
-    const res = await app.request(
-      `/projects/census-proj/failures?limit=2&offset=0`,
-      {
-        headers: { "X-Actor-Id": "human:op-1" },
-      },
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      total: number;
-      limit: number;
-      offset: number;
-      items: Array<Record<string, unknown>>;
-      counts: Record<string, number>;
-    };
-    expect(body.total).toBe(3);
-    expect(body.limit).toBe(2);
-    expect(body.offset).toBe(0);
-    expect(body.items).toHaveLength(2);
-    expect(body.counts).toEqual({
-      model: 1,
-      harness: 0,
-      sandbox: 0,
-      provider: 1,
-      colonyd: 1,
-      unknown: 0,
-    });
-    expect(body.items[0]).toHaveProperty("runId");
-    expect(body.items[0]).toHaveProperty("layer");
-    expect(body.items[0]).toHaveProperty("code");
-    expect(body.items[0]).toHaveProperty("at");
   });
 });

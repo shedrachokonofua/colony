@@ -120,11 +120,6 @@ const runArtifactsQuery = z.object({
   offset: z.coerce.number().int().nonnegative().optional(),
 });
 
-const failuresQuery = z.object({
-  limit: z.coerce.number().int().positive().max(1000).optional(),
-  offset: z.coerce.number().int().nonnegative().optional(),
-});
-
 function serializeRun(run: Run): Run & { fault: Fault | null } {
   return {
     ...run,
@@ -527,70 +522,6 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         };
       }),
     );
-  });
-
-  app.get("/projects/:name/failures", (c) => {
-    const project = ctx.store.getProject(c.req.param("name"));
-    if (!project) return notFound(c, "project");
-
-    const parsed = failuresQuery.safeParse(c.req.query());
-    if (!parsed.success) return badBody(c, parsed.error.message);
-    const limit = parsed.data.limit ?? 25;
-    const offset = parsed.data.offset ?? 0;
-
-    const scopes = ctx.store.pageScopes(1000, 0, project.name).scopes;
-    const allRuns: Run[] = [];
-    for (const s of scopes) {
-      allRuns.push(...ctx.store.runsForScope(s.id));
-    }
-
-    const counts: Record<string, number> = {
-      model: 0,
-      harness: 0,
-      sandbox: 0,
-      provider: 0,
-      colonyd: 0,
-      unknown: 0,
-    };
-
-    const failedItems: Array<{
-      runId: string;
-      taskId: string | null;
-      layer: string;
-      code: string;
-      at: string;
-    }> = [];
-
-    for (const run of allRuns) {
-      const fault = parseFault(run.fault_json);
-      if (!fault) continue;
-      if (fault.layer in counts) {
-        counts[fault.layer] = (counts[fault.layer] ?? 0) + 1;
-      } else {
-        counts.unknown = (counts.unknown ?? 0) + 1;
-      }
-      failedItems.push({
-        runId: run.id,
-        taskId: run.task_id ?? null,
-        layer: fault.layer,
-        code: fault.code,
-        at: run.finished_at ?? run.started_at,
-      });
-    }
-
-    // Sort newest failure first
-    failedItems.sort((a, b) => b.at.localeCompare(a.at));
-
-    const total = failedItems.length;
-    const items = failedItems.slice(offset, offset + limit);
-
-    return c.json({
-      items,
-      total,
-      limit,
-      offset,
-      counts,
-    });
   });
 
   app.get("/projects/:name/context", (c) => {
