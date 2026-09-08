@@ -517,8 +517,10 @@ async function resolveGatewayModel(
 /**
  * Builds the mini-task prompt: five tool steps, then the role's envelope.
  *
- * The pinned toolchain rides along as context a model may quote back, so the
- * version facts this sweep reads are the ones the model was told.
+ * The `bash` step runs `bun --version` and `node --version` on purpose — it
+ * is the one step whose output is a fact the harness can check rather than a
+ * fact it supplied — so the toolchain the sweep asserts on is the one the
+ * sandbox actually gives the model.
  */
 function buildMiniTaskPrompt(
   submitName: string,
@@ -530,11 +532,11 @@ function buildMiniTaskPrompt(
     `2. grep: call the \`grep\` tool for the symbol ${GREP_SYMBOL}.`,
     `3. edit: call the \`edit\` tool to change the line "${EDIT_OLD}" to "${EDIT_NEW}" in ${READ_FILE}.`,
     `4. write: call the \`write\` tool to create ${WRITE_FILE} containing exactly the line "${WRITE_MARKER}".`,
-    `5. bash: call the \`bash\` tool to run: printf ${BASH_MARKER}`,
+    `5. bash: call the \`bash\` tool to run: printf ${BASH_MARKER}; bun --version; node --version`,
     `6. submit: call \`${submitName}\` once with the envelope its own schema describes (for the developer envelope: kind "implementer_completion", status "complete", summary one line, branch "harness-conformance", head_sha "${HEAD_SHA}", commands [{cmd: "bun test", exit_code: 0}]).`,
     "Call the submit tool exactly once, only after steps 1-5. Do not ask questions and do not add steps.",
     "",
-    `The pinned toolchain is bun ${versions.bun} and node ${versions.nodeWithV}.`,
+    `The workspace pins bun ${versions.bun} and node ${versions.nodeWithV}; step 5 must report exactly those.`,
   ].join("\n");
 }
 
@@ -551,16 +553,6 @@ interface ToolResult {
  * same escape callers use when driving a tool definition directly.
  */
 const TOOL_CONTEXT = undefined as never;
-
-/** Text of a tool result, for the message the model reads back. */
-function resultText(result: ToolResult): string {
-  return result.content
-    .map((part) =>
-      part.type === "text" && typeof part.text === "string" ? part.text : "",
-    )
-    .join("\n")
-    .slice(0, 8000);
-}
 
 /**
  * Runs one model x role mini-task: provisions a scratch sandbox, drives the
