@@ -172,6 +172,7 @@ let agentTokens!: Counter;
 let agentCost!: Counter;
 let agentToolCalls!: Counter;
 let agentLimits!: Counter;
+let agentEmptyCompletions!: Counter;
 let agentTurnDuration!: Histogram;
 let agentLastProgress!: Gauge;
 
@@ -222,6 +223,13 @@ function initializeInstruments(): void {
     description: "Agent runs stopped by a turn, cost, or time limit",
     unit: "{run}",
   });
+  agentEmptyCompletions = meter.createCounter(
+    `${METRIC_PREFIX}.agent.empty_completions`,
+    {
+      description: "Completions reporting zero output tokens",
+      unit: "{completion}",
+    },
+  );
   agentTurnDuration = meter.createHistogram(AGENT_TURN_DURATION, {
     description:
       "Elapsed time between completed assistant messages, including tool work",
@@ -283,25 +291,49 @@ export function instrumentFetch(
   };
 }
 
+export interface AgentFaultAttribute {
+  readonly layer: string;
+  readonly code: string;
+}
+
 export function beginAgentRun(
   attributes: AgentMetricAttributes,
-): (status: string, reason?: string) => void {
+): (status: string, reason?: string, fault?: AgentFaultAttribute | null) => void {
   if (!provider) return () => undefined;
   const started = performance.now();
   const labels = agentLabels(attributes);
   activeAgentRuns.add(1, labels);
   recordAgentProgress(attributes);
-  return (status, reason) => {
+  return (status, reason, fault) => {
     activeAgentRuns.add(-1, labels);
+    const normalizedStatus = boundedLabel(status);
+    const faultAttributes: Attributes =
+      (normalizedStatus === "failed" || normalizedStatus === "envelope_rejected") &&
+      fault &&
+      fault.layer &&
+      fault.code
+        ? {
+            "fault.layer": boundedLabel(fault.layer),
+            "fault.code": boundedLabel(fault.code),
+          }
+        : {};
     const complete = {
       ...labels,
-      status: boundedLabel(status),
+      status: normalizedStatus,
       reason: classifyReason(reason),
+      ...faultAttributes,
     };
     agentRuns.add(1, complete);
     agentRunDuration.record((performance.now() - started) / 1_000, complete);
     recordAgentProgress(attributes);
   };
+}
+
+export function recordEmptyCompletion(model?: string): void {
+  if (!provider) return;
+  agentEmptyCompletions.add(1, {
+    model: boundedLabel(model ?? "unknown"),
+  });
 }
 
 export function recordAgentMessage(

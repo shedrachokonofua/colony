@@ -17,6 +17,7 @@
     "test": "vitest run --root ../.. src/*.test.ts"
   },
   "dependencies": {
+    "@colony/observability": "*",
     "@colony/sandbox": "*",
     "@colony/schemas": "*",
     "@earendil-works/pi-agent-core": "^0.84.2",

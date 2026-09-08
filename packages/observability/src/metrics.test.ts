@@ -5,6 +5,7 @@ import {
   instrumentFetch,
   recordAgentMessage,
   recordAgentToolCall,
+  recordEmptyCompletion,
   startTelemetry,
 } from "./metrics.js";
 
@@ -48,6 +49,26 @@ describe("Colony telemetry", () => {
     recordAgentToolCall(labels, "bash", false);
     finish("succeeded");
 
+    const failedRunFinish = beginAgentRun(labels);
+    failedRunFinish("failed", "test_failure", {
+      layer: "sandbox",
+      code: "oom_killed",
+    });
+
+    const envelopeRejectedRunFinish = beginAgentRun(labels);
+    envelopeRejectedRunFinish("envelope_rejected", "envelope failed schema parse", {
+      layer: "model",
+      code: "envelope_invalid",
+    });
+
+    const canceledRunFinish = beginAgentRun(labels);
+    canceledRunFinish("canceled", "canceled by user", {
+      layer: "unknown",
+      code: "unknown",
+    });
+
+    recordEmptyCompletion("mimo-v2.5-pro");
+
     const body = await fetch(`http://127.0.0.1:${port}/metrics`).then(
       (response) => response.text(),
     );
@@ -58,6 +79,33 @@ describe("Colony telemetry", () => {
     expect(body).toContain('model="mimo-v2.5-pro"');
     expect(body).toContain('type="input"');
     expect(body).not.toContain("col-signalroom");
+
+    // Success carries no fault attributes
+    expect(body).toMatch(
+      /colony_agent_runs_total\{[^}]*status="succeeded"[^}]*\}/,
+    );
+    expect(body).not.toMatch(
+      /colony_agent_runs_total\{[^}]*status="succeeded"[^}]*fault_layer=/,
+    );
+    // Canceled carries no fault attributes
+    expect(body).toMatch(
+      /colony_agent_runs_total\{[^}]*status="canceled"[^}]*\}/,
+    );
+    expect(body).not.toMatch(
+      /colony_agent_runs_total\{[^}]*status="canceled"[^}]*fault_layer=/,
+    );
+    // Failed carries fault.layer and fault.code (Prometheus converts dots to underscores)
+    expect(body).toMatch(
+      /colony_agent_runs_total\{[^}]*status="failed"[^}]*fault_layer="sandbox"[^}]*fault_code="oom_killed"[^}]*\}/,
+    );
+    // Envelope rejected carries fault.layer and fault.code
+    expect(body).toMatch(
+      /colony_agent_runs_total\{[^}]*status="envelope_rejected"[^}]*fault_layer="model"[^}]*fault_code="envelope_invalid"[^}]*\}/,
+    );
+    // Empty completion counter increments with model attribute
+    expect(body).toMatch(
+      /colony_agent_empty_completions_total\{[^}]*model="mimo-v2\.5-pro"[^}]*\} 1/,
+    );
   });
 });
 
