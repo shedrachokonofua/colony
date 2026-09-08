@@ -1,4 +1,5 @@
 import type { Fault } from "@colony/core";
+import { recordEmptyCompletion } from "@colony/observability";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -981,6 +982,7 @@ export function installRunGuards(
         outputTokens: usage?.output ?? 0,
       });
       if ((usage?.output ?? 0) === 0) {
+        recordEmptyCompletion(event.message.model);
         zeroOutputTurns += 1;
         if (zeroOutputTurns >= zeroOutputStallTurns) {
           zeroOutputTurns = 0;

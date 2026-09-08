@@ -204,7 +204,14 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         };
       }
       this.runs.set(runId, { ...finalMetadata, output });
-      finishMetrics(finalMetadata.status, finalMetadata.rejectionReason);
+      finishMetrics(
+        finalMetadata.status,
+        finalMetadata.rejectionReason,
+        finalMetadata.status === "failed" ||
+          finalMetadata.status === "envelope_rejected"
+          ? finalMetadata.fault
+          : undefined,
+      );
       return finalMetadata;
     } catch (err) {
       const current = this.runs.get(runId);
@@ -231,7 +238,11 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
             },
       };
       this.runs.set(runId, metadata);
-      finishMetrics(metadata.status, metadata.rejectionReason);
+      finishMetrics(
+        metadata.status,
+        metadata.rejectionReason,
+        metadata.status === "failed" ? metadata.fault : undefined,
+      );
       return metadata;
     }
   }
@@ -296,7 +307,13 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
         runId,
         output === undefined ? metadata : { ...metadata, output },
       );
-      finishMetrics(status, metadata.rejectionReason);
+      finishMetrics(
+        status,
+        metadata.rejectionReason,
+        status === "failed" || status === "envelope_rejected"
+          ? fault
+          : undefined,
+      );
       return metadata;
     };
 
