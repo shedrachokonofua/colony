@@ -1,4 +1,6 @@
+import { createServer } from "node:net";
 import { describe, expect, it } from "bun:test";
+import { startTelemetry } from "@colony/observability";
 
 import {
   DEFAULT_LIVENESS_TIMEOUT_MS,
@@ -184,6 +186,44 @@ describe("zero-output stall", () => {
     expect(stalled).toBe(0);
     expect(agent.aborted).toBe(0);
   });
+
+  it("counts zero-output completions on the telemetry counter", async () => {
+    const port = await availablePort();
+    const shutdown = startTelemetry({
+      serviceName: "colony-run-guards-test",
+      serviceVersion: "test-sha",
+      environment: "test",
+      metricsPort: port,
+    });
+    try {
+      const agent = fakeAgent();
+      const unsubscribe = installRunGuards(agent as never, "run-zo-metrics", {
+        abort: () => agent.abort(),
+        zeroOutputStallTurns: 10,
+        livenessTimeoutMs: 0,
+      });
+      try {
+        agent.emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            model: "caller-wired-model",
+            usage: { output: 0, input: 10, cost: { total: 0 } },
+          },
+        } as never);
+      } finally {
+        unsubscribe();
+      }
+      const body = await fetch(`http://127.0.0.1:${port}/metrics`).then(
+        (response) => response.text(),
+      );
+      expect(body).toMatch(
+        /colony_agent_empty_completions_total\{[^}]*model="caller-wired-model"[^}]*\} 1/,
+      );
+    } finally {
+      await shutdown();
+    }
+  });
 });
 
 describe("run limit", () => {
@@ -218,3 +258,20 @@ describe("run limit", () => {
     }
   });
 });
+
+async function availablePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("failed to allocate metrics test port");
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  return address.port;
+}
