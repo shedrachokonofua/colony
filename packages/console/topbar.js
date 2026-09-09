@@ -30,7 +30,7 @@ export function brandMark() {
 }
 
 /**
- * Topbar: brand, breadcrumb, account. Property-down: the shell feeds actor,
+ * Topbar: brand, breadcrumb, global navigation, account. Property-down: the shell feeds actor,
  * config, auth, oidc. Events-up: edits bubble as colony-actor-change,
  * colony-signin, colony-signout; links bubble as colony-navigate so the
  * shell owns the hash.
@@ -147,21 +147,15 @@ export class ColonyTopbar extends ColonyElement {
         >${brandMark()}<span>COLONY</span></a
       >
       <nav class="crumbs" aria-label="Breadcrumb">
-        <a
-          href="#/"
-          @click=${/** @param {MouseEvent} e */ (e) => this.#navigate(e, "#/")}
-          >Projects</a
-        >
-        <span class="crumb-sep">/</span>
-        <a
-          class="crumb"
-          href=${OPERATOR_HREF}
-          aria-current=${isOperator ? "page" : nothing}
-          @click=${
-            /** @param {MouseEvent} e */ (e) => this.#navigate(e, OPERATOR_HREF)
-          }
-          >Operator</a
-        >
+        ${isOperator
+          ? html`<span class="crumb" aria-current="page">Operator</span>`
+          : html`<a
+              href="#/"
+              @click=${
+                /** @param {MouseEvent} e */ (e) => this.#navigate(e, "#/")
+              }
+              >Projects</a
+            >`}
         ${projectName
           ? html`<span class="crumb-sep">/</span>
               <a
@@ -202,6 +196,16 @@ export class ColonyTopbar extends ColonyElement {
           ? html`<span class="crumb-sep">/</span>
               <span class="crumb mono">${scopeId}</span>`
           : nothing}
+      </nav>
+      <nav class="topbar-nav" aria-label="Application">
+        <a
+          href=${OPERATOR_HREF}
+          aria-current=${isOperator ? "page" : nothing}
+          @click=${
+            /** @param {MouseEvent} e */ (e) => this.#navigate(e, OPERATOR_HREF)
+          }
+          >Operator</a
+        >
       </nav>
       ${account}
     </header>`;

@@ -570,19 +570,12 @@ describe("GET /operator/summary", () => {
   it("counts merges, verdicts and validation over the same window as the runs", async () => {
     const { app, store } = setup();
     const scope = seedScope(store, { goal: "counts" });
-    store.audit("svc:colonyd", "mr.merged", {
-      scope_id: scope.id,
-      detail: { head_sha: "c".repeat(40) },
-    });
-    store.audit("svc:colonyd", "review.approved", {
-      scope_id: scope.id,
-      detail: { head_sha: "d".repeat(40) },
-    });
-    store.audit("svc:colonyd", "review.changes_requested", {
-      scope_id: scope.id,
-      detail: { head_sha: "d".repeat(40) },
-    });
-    store.audit("svc:colonyd", "scope.validated", { scope_id: scope.id });
+    // Keep fixtures inside the half-open window, not at its excluded upper
+    // bound when the audit writes and summary read share a millisecond.
+    auditAt(store, "mr.merged", scope.id, IN_WINDOW);
+    auditAt(store, "review.approved", scope.id, IN_WINDOW);
+    auditAt(store, "review.changes_requested", scope.id, IN_WINDOW);
+    auditAt(store, "scope.validated", scope.id, IN_WINDOW);
     // Outside the 24h window: present in the append-only log, absent from
     // the summary. The audit table forbids UPDATE, so an old row is written
     // directly with its own `at`.

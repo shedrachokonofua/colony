@@ -175,8 +175,30 @@ body {
   text-overflow: ellipsis;
 }
 
-.sign {
+.topbar-nav {
   margin-left: auto;
+  flex-shrink: 0;
+}
+
+.topbar-nav a {
+  display: block;
+  padding: 0.35rem 0.55rem;
+  border-radius: var(--r-ctl);
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.topbar-nav a:hover,
+.topbar-nav a:focus-visible,
+.topbar-nav a[aria-current="page"] {
+  color: var(--link);
+  background: var(--wash);
+}
+
+.sign {
+  min-width: 0;
 }
 
 .sign label {
@@ -189,6 +211,7 @@ body {
 
 .sign input {
   width: 10rem;
+  min-width: 0;
   padding: 0.3rem 0.55rem;
   font: 500 0.78rem var(--mono);
   color: var(--muted);
@@ -1933,6 +1956,11 @@ pre.runlog {
 }
 
 @media (max-width: 900px) {
+  .topbar {
+    gap: 0.6rem;
+    padding-inline: 0.75rem;
+  }
+
   .board,
   .sheet-cols,
   .project-settings {
@@ -2509,8 +2537,6 @@ pre.runlog {
   font-size: 0.86rem;
 }
 
-/* The nav separator before the Operator crumb is part of the breadcrumb, not
-   a top-level nav of its own: it stays with the crumbs on mobile. */
 @media (max-width: 900px) {
   .operator-groups {
     grid-template-columns: 1fr;
