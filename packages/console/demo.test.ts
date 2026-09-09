@@ -19,9 +19,15 @@ Object.defineProperty(globalThis, "location", {
   writable: true,
 });
 
-const { DEMO, DEMO_READS, demoContextStore, demoFileStore, demoWorld } =
-  await import("./demo.js");
-const { DEMO_PROJECT_COUNT, DEMO_SCOPES_IN_PROJECT } =
+const {
+  DEMO,
+  DEMO_READS,
+  demoContextStore,
+  demoFileStore,
+  demoOperatorSummary,
+  demoWorld,
+} = await import("./demo.js");
+const { DEMO_PROJECT_COUNT, DEMO_SCOPES_IN_PROJECT, DEMO_SHA_B } =
   await import("./demo-data.js");
 
 function withSearch(search: string) {
@@ -52,6 +58,10 @@ describe("DEMO_READS", () => {
       "/projects/Operator%20console/context",
       "/projects/Operator%20console/files",
       "/scopes?project=Operator%20console",
+      // The Operator page's one read: without it api-client.js throws and
+      // the page shows its error banner offline.
+      "/operator/summary?window=24h",
+      "/operator/summary?window=7d",
     ]) {
       expect(DEMO_READS.test(path)).toBe(true);
     }
@@ -61,6 +71,9 @@ describe("DEMO_READS", () => {
       "/scopes/col-x/approve",
       "/projects",
       "/ui/config",
+      // The shell always sends a window; a bare path is not a shape the
+      // API answers, so it must not be allowed through offline.
+      "/operator/summary",
     ]) {
       expect(DEMO_READS.test(path)).toBe(false);
     }
@@ -146,6 +159,42 @@ describe("demoWorld", () => {
     const world = demoWorld();
     expect(world.runEvents.every((e) => e.run_id === "run-gate-1")).toBe(true);
     expect(world.audit.map((a) => a.action)).toContain("mr.merged");
+  });
+});
+
+describe("demoOperatorSummary", () => {
+  it("serves the operator page's one read through the DEMO_READS path", () => {
+    // Two contracts at once: the path the shell builds is one demo.js
+    // admits (or api-client.js throws "demo"), and the payload carries the
+    // fields the view binds — a window the toggle can flip and a restart
+    // count that is one line, not one per reaped run.
+    const path = "/operator/summary?window=24h";
+    expect(DEMO_READS.test(path)).toBe(true);
+    const summary = demoOperatorSummary("24h");
+    expect(summary.window).toBe("24h");
+    expect(summary.metrics.restart_incidents).toEqual({
+      incidents: 1,
+      reaped_runs: 2,
+    });
+    expect(summary.waiting_on_you.awaiting_merge).toEqual([
+      {
+        scope_id: "col-a1b2c3d4",
+        task_id: "col-a1b2c3d4.1",
+        head_sha: DEMO_SHA_B,
+      },
+    ]);
+    // The demo's stalled row is what makes the live section's ordering
+    // visible offline; an unclassified row carries the served detail.
+    expect(summary.live.filter((run) => run.stalled)).toHaveLength(1);
+    expect(summary.unclassified[0].detail).toBeTruthy();
+  });
+
+  it("follows the window the toggle asks for", () => {
+    const week = demoOperatorSummary("7d");
+    expect(week.window).toBe("7d");
+    expect(Date.parse(week.window_start)).toBeLessThan(
+      Date.parse(demoOperatorSummary("24h").window_start),
+    );
   });
 });
 

@@ -1,9 +1,11 @@
 import { ColonyElement, html, nothing } from "./base.js";
 import {
+  OPERATOR_HREF,
   projectHref,
   routeIsManageFiles,
   routeIsNew,
   routeIsNewProject,
+  routeIsOperator,
   routeProjectName,
   routeScopeId,
 } from "./router.js";
@@ -104,6 +106,7 @@ export class ColonyTopbar extends ColonyElement {
     const isNew = routeIsNew();
     const isNewProject = routeIsNewProject();
     const isFiles = routeIsManageFiles();
+    const isOperator = routeIsOperator();
     const scopeProject = scopeId
       ? this.detail?.scope?.project_name || null
       : null;
@@ -148,6 +151,16 @@ export class ColonyTopbar extends ColonyElement {
           href="#/"
           @click=${/** @param {MouseEvent} e */ (e) => this.#navigate(e, "#/")}
           >Projects</a
+        >
+        <span class="crumb-sep">/</span>
+        <a
+          class="crumb"
+          href=${OPERATOR_HREF}
+          aria-current=${isOperator ? "page" : nothing}
+          @click=${
+            /** @param {MouseEvent} e */ (e) => this.#navigate(e, OPERATOR_HREF)
+          }
+          >Operator</a
         >
         ${projectName
           ? html`<span class="crumb-sep">/</span>

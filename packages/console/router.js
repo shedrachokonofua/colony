@@ -7,6 +7,11 @@ export const FILES_ROUTE = /^project\/([^/?]+)\/files(?:$|\?)/;
 // Create route, optionally carrying a query (e.g. #/new?project=X).
 export const NEW_ROUTE = /^new(?:$|\?)/;
 export const NEW_PROJECT_ROUTE = /^new-project(?:$|\?)/;
+// Fleet-first Operator page: `#/operator`, never under a project. A
+// trailing slash or a different case is still that page: falling through
+// would hand "operator/" to the scopeId fallback and read a scope that
+// does not exist.
+export const OPERATOR_ROUTE = /^operator(?:\/|\?|$)/i;
 
 export function routeScopeId() {
   const hash = location.hash.replace(/^#\/?/, "");
@@ -15,6 +20,7 @@ export function routeScopeId() {
     hash.startsWith("?") ||
     NEW_ROUTE.test(hash) ||
     NEW_PROJECT_ROUTE.test(hash) ||
+    OPERATOR_ROUTE.test(hash) ||
     PROJECT_ROUTE.test(hash)
   )
     return null;
@@ -28,6 +34,10 @@ export function routeIsNew() {
 
 export function routeIsNewProject() {
   return NEW_PROJECT_ROUTE.test(location.hash.replace(/^#\/?/, ""));
+}
+
+export function routeIsOperator() {
+  return OPERATOR_ROUTE.test(location.hash.replace(/^#\/?/, ""));
 }
 
 export function routeIsManageFiles() {
@@ -54,6 +64,9 @@ export function projectHref(name) {
 export function projectFilesHref(name) {
   return `#/project/${encodeURIComponent(name)}/files`;
 }
+
+/** The Operator page's hash: a top-level route, never under a project. */
+export const OPERATOR_HREF = "#/operator";
 
 /** The `?project=` query of the current hash route, or null when absent. */
 export function hashQueryProject() {

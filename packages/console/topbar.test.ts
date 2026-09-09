@@ -46,30 +46,53 @@ describe("topbar breadcrumbs", () => {
     // connectedCallback never read the hash before, so the first paint of a
     // deep link showed no project crumb.
     const crumbs = await crumbsFor("#/project/Operator%20console");
-    expect(crumbs).toEqual(["Projects", "Operator console"]);
+    expect(crumbs).toEqual(["Projects", "Operator", "Operator console"]);
   });
 
   it("renders the manage-files crumbs (project + files) from router.js", async () => {
     const crumbs = await crumbsFor("#/project/Acme/files");
-    expect(crumbs).toEqual(["Projects", "Acme", "files"]);
+    expect(crumbs).toEqual(["Projects", "Operator", "Acme", "files"]);
   });
 
   it("renders the new-project crumb", async () => {
     const crumbs = await crumbsFor("#/new-project");
-    expect(crumbs).toEqual(["Projects", "new project"]);
+    expect(crumbs).toEqual(["Projects", "Operator", "new project"]);
   });
 
   it("renders the scope-project crumb from the shell's detail", async () => {
     const crumbs = await crumbsFor("#/col-a1b2c3d4", {
       detail: { scope: { project_name: "Acme" } },
     });
-    expect(crumbs).toEqual(["Projects", "Acme", "col-a1b2c3d4"]);
+    expect(crumbs).toEqual(["Projects", "Operator", "Acme", "col-a1b2c3d4"]);
   });
 
   it("renders no scope crumb for paginated list routes", async () => {
     // The hand parse treated the "?page=2" query as a scope id.
     const crumbs = await crumbsFor("#/?page=2");
-    expect(crumbs).toEqual(["Projects"]);
+    expect(crumbs).toEqual(["Projects", "Operator"]);
+  });
+
+  it("renders no third crumb on the operator route", async () => {
+    // Top-level nav: Projects and Operator sit side by side everywhere, and
+    // #/operator adds no third crumb of its own.
+    const crumbs = await crumbsFor("#/operator");
+    expect(crumbs).toEqual(["Projects", "Operator"]);
+  });
+
+  it("places Operator next to Projects, before any project crumb", async () => {
+    // "Next to Projects" is an order claim, not just presence: the nav must
+    // read Projects / Operator on every route, with the route's own crumbs
+    // following.
+    for (const hash of [
+      "#/",
+      "#/operator",
+      "#/project/Acme",
+      "#/new-project",
+      "#/col-a1b2c3d4",
+    ]) {
+      const crumbs = await crumbsFor(hash);
+      expect(crumbs.slice(0, 2)).toEqual(["Projects", "Operator"]);
+    }
   });
 
   it("re-reads the route at render time, not only on hashchange", async () => {
@@ -77,7 +100,12 @@ describe("topbar breadcrumbs", () => {
     const el = makeTopbar();
     document.body.append(el);
     await el.updateComplete;
-    expect(el.querySelectorAll(".crumbs .crumb").length).toBe(0);
+    // Only the top-level nav: no crumb for the route's own subject yet.
+    expect(
+      [...el.querySelectorAll(".crumbs .crumb")].map((node) =>
+        node.textContent.trim(),
+      ),
+    ).toEqual(["Operator"]);
     // A lit render without a hashchange (e.g. an actor or detail prop
     // landing late) must still paint the current URL's crumbs.
     withHash("#/project/Acme");
@@ -86,6 +114,6 @@ describe("topbar breadcrumbs", () => {
     const crumbs = [...el.querySelectorAll(".crumbs .crumb")].map((node) =>
       node.textContent.trim(),
     );
-    expect(crumbs).toEqual(["Acme"]);
+    expect(crumbs).toEqual(["Operator", "Acme"]);
   });
 });

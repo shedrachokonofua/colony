@@ -335,6 +335,21 @@ export async function taskAction(app, taskId, action) {
   await mutate(app, `/tasks/${encodeURIComponent(taskId)}/${action}`);
 }
 
+/**
+ * Switch the Operator page's metrics window, then refetch: the window is a
+ * query of the one GET /operator/summary, so the toggle is a refetch, never
+ * a second dataset the page would have to reconcile.
+ *
+ * @param {import("./shell-data.js").ShellState} app
+ * @param {"24h" | "7d"} window
+ */
+export function setOperatorWindow(app, window) {
+  if (window !== "24h" && window !== "7d") return;
+  if (app.operatorWindow === window) return;
+  app.operatorWindow = window;
+  void app._refresh();
+}
+
 /** @param {import("./shell-data.js").ShellState} app @param {string} scopeId */
 export async function abandon(app, scopeId) {
   await mutate(app, `/scopes/${encodeURIComponent(scopeId)}/abandon`);

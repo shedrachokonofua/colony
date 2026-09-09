@@ -8,6 +8,7 @@ import {
   routeProjectName,
   routeProjectFilesName,
   routeScopeId,
+  routeIsOperator,
 } from "./router.js";
 import { DEMO } from "./demo.js";
 import { VIEW_ROUTES } from "./view-routes.js";
@@ -72,6 +73,8 @@ function archivedQuery(app) {
  * @property {string} error
  * @property {boolean} showArchived
  * @property {{ name: string, params: Record<string, any> }} currentRoute
+ * @property {Record<string, any> | null} operatorSummary
+ * @property {"24h" | "7d"} operatorWindow
  * @property {ViewModuleState | null} viewModule
  * @property {import("./duration.js").Ticker | null} ticker
  * @property {(path: string, options?: { method?: string, body?: string, headers?: Record<string, string>, notFound?: "null" }) => Promise<any>} api
@@ -110,6 +113,19 @@ export async function refresh(app) {
         app.error = "";
         return;
       }
+    }
+    // The Operator page owns one read: GET /operator/summary. It returns
+    // after it, so no GET /runs can land a second, differently-windowed
+    // dataset beside its server-computed counts. The config/OIDC bootstrap
+    // above still runs first: without it a cold load on #/operator would
+    // leave app.oidc null, so api() would send X-Actor-Id instead of a
+    // bearer token and no signin gate could ever show.
+    if (routeIsOperator()) {
+      app.operatorSummary = await app.api(
+        `/operator/summary?window=${app.operatorWindow}`,
+      );
+      app.error = "";
+      return;
     }
     const pageNo = pageFromHash(location.hash);
     const offset = (pageNo - 1) * PAGE_SIZE;

@@ -358,6 +358,113 @@ export function buildDemoRunEvents(now) {
   ];
 }
 
+/**
+ * The offline GET /operator/summary payload: the same shape
+ * apps/colonyd/src/operator-summary.ts serves, so the demo page renders
+ * through the identical code path. `now`-relative like every builder here:
+ * the live section and the deploy uptime are the only moving parts.
+ *
+ * @param {number} now
+ * @param {"24h" | "7d"} [window]
+ */
+export function buildDemoOperatorSummary(now, window = "24h") {
+  const minutes = (/** @type {number} */ n) =>
+    new Date(now - n * 60_000).toISOString();
+  return {
+    window,
+    window_start: new Date(
+      now - (window === "24h" ? 1 : 7) * 24 * 3600_000,
+    ).toISOString(),
+    generated_at: new Date(now).toISOString(),
+    waiting_on_you: {
+      // The demo scope's own plan: the operator's approval is what moves it.
+      plan_approvals: [{ scope_id: "col-a1b2c3d4" }],
+      // The demo scope's .1 sits in mr_open at its reviewed head.
+      awaiting_merge: [
+        {
+          scope_id: "col-a1b2c3d4",
+          task_id: "col-a1b2c3d4.1",
+          head_sha: DEMO_SHA_B,
+        },
+      ],
+      blocked_tasks: [],
+      blocked_scopes: [],
+    },
+    live: [
+      {
+        id: "run-gate-1",
+        kind: "merge_gate",
+        model_id: null,
+        scope_id: "col-a1b2c3d4",
+        task_id: "col-a1b2c3d4.1",
+        started_at: DEMO_GATE_STARTED,
+        last_progress_at: minutes(9),
+        active_tool: "bash",
+        // 9 minutes past progress: the demo's one stalled row, so the
+        // stalled-first ordering is visible offline.
+        stalled: true,
+      },
+      {
+        id: "run-impl-2",
+        kind: "implement",
+        model_id: "deepseek-v4-flash",
+        scope_id: "col-0badc0de",
+        task_id: null,
+        started_at: minutes(2),
+        last_progress_at: minutes(1),
+        active_tool: "edit",
+        stalled: false,
+      },
+    ],
+    metrics: {
+      runs_by_kind_status: {
+        "implement:succeeded": 3,
+        "merge_gate:running": 1,
+        "review:succeeded": 1,
+        "validate:failed": 1,
+      },
+      merges: 1,
+      verdicts: 1,
+      per_model: {
+        "deepseek-v4-flash": {
+          runs: 3,
+          succeeded: 2,
+          failed: 1,
+          timeouts: 0,
+          completion_rate: 2 / 3,
+          median_ms: 7 * 60_000,
+          p90_ms: 10 * 60_000,
+        },
+      },
+      faults_by_layer: { model: 1, unknown: 1 },
+      faults_by_layer_code: {
+        "model:wall_timeout": 1,
+        "unknown:unknown": 1,
+      },
+      // A batch reaped by one restart: one incident, two victims.
+      restart_incidents: { incidents: 1, reaped_runs: 2 },
+      validation: { pass: 0, fail: 1 },
+    },
+    unclassified: [
+      {
+        run_id: "run-impl-orphan",
+        kind: "implement",
+        model_id: "deepseek-v4-flash",
+        task_id: "col-a1b2c3d4.2",
+        finished_at: minutes(42),
+        // Already redacted, as the API serves it: the page never redacts
+        // client-side and never echoes a stored error.
+        detail: "glpa...7hbQ refused the push",
+      },
+    ],
+    deploy: {
+      version: "demo",
+      started_at: minutes(186),
+      restart_incidents: { incidents: 1, reaped_runs: 2 },
+    },
+  };
+}
+
 /** @param {number} now */
 export function buildDemoAudit(now) {
   return [

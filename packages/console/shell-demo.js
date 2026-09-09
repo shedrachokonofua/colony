@@ -6,8 +6,14 @@ import {
   routeProjectName,
   routeProjectFilesName,
   routeScopeId,
+  routeIsOperator,
 } from "./router.js";
-import { demoWorld, demoContextStore, demoFileStore } from "./demo.js";
+import {
+  demoWorld,
+  demoContextStore,
+  demoFileStore,
+  demoOperatorSummary,
+} from "./demo.js";
 import { PAGE_SIZE } from "./shell-data.js";
 import { consumePendingTaskSelection } from "./shell-selection.js";
 
@@ -20,6 +26,13 @@ import { consumePendingTaskSelection } from "./shell-selection.js";
 export function refreshDemo(app) {
   const world = demoWorld();
   app.config = world.config;
+  // Same one read the live path performs: the operator page never sees a
+  // second windowed dataset.
+  if (routeIsOperator()) {
+    app.operatorSummary = demoOperatorSummary(app.operatorWindow);
+    app.error = "";
+    return;
+  }
   const id = routeScopeId();
   if (id) {
     const scopeRow = world.scopes.find((s) => s.id === id) ?? null;

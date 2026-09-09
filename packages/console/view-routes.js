@@ -11,4 +11,5 @@ export const VIEW_ROUTES = {
   newProject: ["./views/project-create.js", "project-create"],
   newScope: ["./views/scope-create.js", "scope-create"],
   scope: ["./views/scope-sheet.js", "scope-sheet"],
+  operator: ["./views/operator-page.js", "operator-page"],
 };

@@ -6,6 +6,7 @@ import {
   buildDemoAudit,
   buildDemoDetail,
   buildDemoFiles,
+  buildDemoOperatorSummary,
   buildDemoProject,
   buildDemoRunEvents,
   buildDemoScopes,
@@ -19,12 +20,23 @@ export const DEMO = new URLSearchParams(location.search).has("demo");
 // Demo-safe read paths: project detail, its context, its scope page, and the
 // project list (the homepage) so the whole console is driveable offline.
 export const DEMO_READS =
-  /^\/projects\/[^/?]+(?:\/context|\/running|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?/;
+  /^\/projects\/[^/?]+(?:\/context|\/running|\/files(?:\/\w+)?)?(?:\?.*)?$|^\/projects\?|^\/scopes\?|^\/operator\/summary\?/;
 
 // Demo brief/file edits are purely local state: they must never hit the
 // network, but the same affordances stay visible.
 export const demoContextStore = new Map();
 export const demoFileStore = new Map();
+
+/**
+ * The offline GET /operator/summary. Built on demand, not stored in the
+ * world: the window is a live choice the operator flips, so a fixture
+ * frozen at demoWorld() time could not follow it.
+ *
+ * @param {"24h" | "7d"} [operatorWindow]
+ */
+export function demoOperatorSummary(operatorWindow = "24h") {
+  return buildDemoOperatorSummary(Date.now(), operatorWindow);
+}
 
 export function demoWorld() {
   const now = Date.now();
