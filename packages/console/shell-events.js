@@ -24,6 +24,7 @@ import {
   closeReader,
   feedback,
   mutate,
+  setOperatorWindow,
 } from "./shell-actions.js";
 
 /** Every colony-* event type the shell listens for on itself. */
@@ -53,6 +54,7 @@ export const LISTENED = [
   "colony-close-reader",
   "colony-page",
   "colony-feedback",
+  "colony-operator-window",
 ];
 
 /**
@@ -159,6 +161,9 @@ export function handleEvent(app, event) {
       break;
     case "colony-feedback":
       void feedback(app, detail.path, detail.body ?? {});
+      break;
+    case "colony-operator-window":
+      setOperatorWindow(app, detail.window);
       break;
     default:
       break;

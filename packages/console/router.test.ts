@@ -3,12 +3,15 @@ import {
   FILES_ROUTE,
   NEW_PROJECT_ROUTE,
   NEW_ROUTE,
+  OPERATOR_HREF,
+  OPERATOR_ROUTE,
   PROJECT_ROUTE,
   hashQueryProject,
   projectHref,
   routeIsManageFiles,
   routeIsNew,
   routeIsNewProject,
+  routeIsOperator,
   routeProjectFilesName,
   routeProjectName,
   routeScopeId,
@@ -54,6 +57,10 @@ describe("route regexes", () => {
     expect(NEW_ROUTE.test("new-project")).toBe(false);
     expect(NEW_PROJECT_ROUTE.test("new-project")).toBe(true);
     expect(NEW_PROJECT_ROUTE.test("new-project?x=1")).toBe(true);
+    expect(OPERATOR_ROUTE.test("operator")).toBe(true);
+    expect(OPERATOR_ROUTE.test("operator?window=7d")).toBe(true);
+    expect(OPERATOR_ROUTE.test("operator-console")).toBe(false);
+    expect(OPERATOR_ROUTE.test("project/operator")).toBe(false);
   });
 });
 
@@ -98,6 +105,9 @@ describe("routeScopeId", () => {
       "#/?page=2",
       "#/new",
       "#/new-project",
+      // #/operator is a page, not a scope id: the scope fallback must not
+      // swallow it into a detail read for a scope named "operator".
+      "#/operator",
       "#/project/acme",
     ]) {
       withHash(hash);
@@ -120,6 +130,26 @@ describe("routeIsNew / routeIsNewProject / routeIsManageFiles", () => {
     expect(routeIsManageFiles()).toBe(true);
     withHash("#/project/acme");
     expect(routeIsManageFiles()).toBe(false);
+  });
+});
+
+describe("routeIsOperator", () => {
+  it("flags the operator route and only it", () => {
+    withHash("#/operator");
+    expect(routeIsOperator()).toBe(true);
+    withHash("#/new-project");
+    expect(routeIsOperator()).toBe(false);
+    withHash("#/col-a1b2c3d4");
+    expect(routeIsOperator()).toBe(false);
+    withHash("#/");
+    expect(routeIsOperator()).toBe(false);
+  });
+
+  it("names the operator page's own href", () => {
+    // The topbar and the page's own links must agree on the hash, or the
+    // router that parses it and the nav that writes it drift.
+    expect(OPERATOR_HREF).toBe("#/operator");
+    expect(OPERATOR_ROUTE.test(OPERATOR_HREF.replace(/^#\//, ""))).toBe(true);
   });
 });
 

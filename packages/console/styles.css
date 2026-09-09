@@ -2330,3 +2330,179 @@ pre.runlog {
   font-size: 0.82rem;
   color: var(--faint);
 }
+
+/* ---------- Operator page ---------- */
+
+.operator-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.operator-generated {
+  margin: -0.6rem 0 0;
+}
+
+.operator-section .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.operator-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.operator-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.operator-group-head {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.operator-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.operator-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  font-size: 0.85rem;
+}
+
+/* A stalled run needs the operator's decision, so it reads as the row that
+   is not well. */
+.operator-row.is-stalled {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+.operator-link {
+  color: var(--link);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.operator-link:hover,
+.operator-link:focus-visible {
+  text-decoration: underline;
+}
+
+.operator-age {
+  margin-left: auto;
+  font-size: 0.74rem;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.operator-head-sha {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+/* The served redacted detail: pre-wrap keeps its newlines without letting
+   one long trace blow out the row. */
+.operator-detail {
+  flex: 1 1 100%;
+  font: 400 0.76rem/1.5 var(--mono);
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.operator-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.operator-table th,
+.operator-table td {
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.operator-table th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.operator-table tr:last-child td {
+  border-bottom: none;
+}
+
+.operator-tally {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.operator-restart,
+.operator-deploy {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.operator-deploy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.operator-deploy dt {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.operator-deploy dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+/* The section empty states: the same dashed card as every other rack, but
+   tighter so a column of them still reads as one page. */
+.operator-empty {
+  padding: 1.1rem 1rem;
+  text-align: left;
+  font-size: 0.86rem;
+}
+
+/* The nav separator before the Operator crumb is part of the breadcrumb, not
+   a top-level nav of its own: it stays with the crumbs on mobile. */
+@media (max-width: 900px) {
+  .operator-groups {
+    grid-template-columns: 1fr;
+  }
+}

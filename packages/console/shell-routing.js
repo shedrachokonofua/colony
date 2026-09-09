@@ -6,6 +6,7 @@ import {
   routeScopeId,
   routeIsNew,
   routeIsNewProject,
+  routeIsOperator,
   routeIsManageFiles,
   routeProjectFilesName,
   routeProjectName,
@@ -27,6 +28,8 @@ export function parseRoute() {
     return { name: "newScope", params: { project: hashQueryProject() } };
   }
   if (routeIsNewProject()) return { name: "newProject", params: {} };
+  // Before the scopeId fallback: "operator" is a top-level page, not a scope.
+  if (routeIsOperator()) return { name: "operator", params: {} };
   if (routeIsManageFiles()) {
     return { name: "files", params: { name: routeProjectFilesName() } };
   }
@@ -61,6 +64,7 @@ export function onHashChange(app) {
   app.confirmFile = null;
   app.replaceFileId = null;
   app.newProjectDraft = null;
+  app.operatorSummary = null;
   app.showArchived = false;
   app.currentRoute = parseRoute();
   app.projectTab = hashQueryTab();

@@ -83,6 +83,8 @@ export class ColonyApp extends ColonyElement {
     replaceFileId: { state: true },
     newProjectDraft: { state: true },
     showArchived: { state: true },
+    operatorSummary: { state: true },
+    operatorWindow: { state: true },
     error: { state: true },
     auth: { state: true },
     currentRoute: { state: true },
@@ -142,6 +144,10 @@ export class ColonyApp extends ColonyElement {
     /** @type {{ name: string, context_doc: string } | null} */
     this.newProjectDraft = null;
     this.showArchived = false;
+    /** @type {Record<string, any> | null} */
+    this.operatorSummary = null;
+    /** @type {"24h" | "7d"} */
+    this.operatorWindow = "24h";
     this.error = "";
     /** @type {import("./auth.js").Auth | null} */
     this.auth = null;

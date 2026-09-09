@@ -78,6 +78,12 @@ export function renderView(app) {
         .config=${app.config}
         .confirm=${app.confirm}
       ></scope-sheet>`;
+    case "operator":
+      return html`<operator-page
+        .summary=${app.operatorSummary}
+        .window=${app.operatorWindow}
+        .error=${app.error}
+      ></operator-page>`;
     default:
       return nothing;
   }

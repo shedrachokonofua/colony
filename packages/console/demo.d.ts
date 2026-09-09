@@ -33,6 +33,39 @@ export interface DemoProject {
 export const DEMO: boolean;
 export const DEMO_READS: RegExp;
 export const demoContextStore: Map<string, string | null>;
+
+/**
+ * The offline GET /operator/summary: the shape
+ * apps/colonyd/src/operator-summary.ts serves, for one window.
+ */
+export function demoOperatorSummary(operatorWindow?: "24h" | "7d"): {
+  window: "24h" | "7d";
+  window_start: string;
+  generated_at: string;
+  waiting_on_you: {
+    plan_approvals: Array<{ scope_id: string }>;
+    awaiting_merge: Array<{
+      scope_id: string;
+      task_id: string;
+      head_sha: string;
+    }>;
+    blocked_tasks: Array<{
+      scope_id: string;
+      task_id: string;
+      blocked_reason: string | null;
+      age: string | null;
+    }>;
+    blocked_scopes: Array<{
+      scope_id: string;
+      blocked_reason: string | null;
+      age: string | null;
+    }>;
+  };
+  live: Array<Record<string, unknown>>;
+  metrics: Record<string, unknown>;
+  unclassified: Array<Record<string, unknown>>;
+  deploy: Record<string, unknown>;
+};
 export const demoFileStore: Map<string, Array<Record<string, unknown>>>;
 
 /** The assembled offline world the demo shell reads in demo mode. */
