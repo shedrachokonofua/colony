@@ -525,7 +525,9 @@ describe("operator route", () => {
     expect(configRead).toBeGreaterThan(-1);
     expect(operatorRead).toBeGreaterThan(configRead);
     // The token refresh sits between them, on the operator route too.
-    expect(shellSource.indexOf("ensureFreshToken()")).toBeLessThan(operatorRead);
+    expect(shellSource.indexOf("ensureFreshToken()")).toBeLessThan(
+      operatorRead,
+    );
   });
 
   it("serves the offline summary and refetches on the toggled window", async () => {
