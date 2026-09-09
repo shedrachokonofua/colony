@@ -2417,7 +2417,8 @@ pre.runlog {
   white-space: nowrap;
 }
 
-.operator-head-sha {
+.operator-head-sha,
+.operator-run-id {
   font-size: 0.74rem;
   color: var(--muted);
 }
@@ -2432,21 +2433,28 @@ pre.runlog {
   overflow-wrap: anywhere;
 }
 
+/* A compact grid, not a layout table: the rows carry the table's ARIA roles
+   (see operator-page.js) so the markup stays parser-safe under lit. */
 .operator-table {
+  display: flex;
+  flex-direction: column;
   width: 100%;
-  border-collapse: collapse;
   font-size: 0.82rem;
 }
 
-.operator-table th,
-.operator-table td {
-  padding: 0.35rem 0.5rem;
-  text-align: left;
+.operator-tr {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr));
+  gap: 0.5rem;
+  padding: 0.35rem 0;
   border-bottom: 1px solid var(--line);
-  vertical-align: top;
 }
 
-.operator-table th {
+.operator-tr:last-child {
+  border-bottom: none;
+}
+
+.operator-th {
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -2454,8 +2462,10 @@ pre.runlog {
   color: var(--faint);
 }
 
-.operator-table tr:last-child td {
-  border-bottom: none;
+.operator-td {
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .operator-tally {

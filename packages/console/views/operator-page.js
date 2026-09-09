@@ -37,11 +37,17 @@ function scopeHref(scopeId) {
   return `#/${encodeURIComponent(scopeId)}`;
 }
 
-/** @param {string} scopeId @param {string | null} taskId */
-function taskHref(scopeId, taskId) {
-  return taskId
-    ? `#/${encodeURIComponent(scopeId)}?task=${encodeURIComponent(taskId)}`
-    : scopeHref(scopeId);
+/**
+ * The scope a task id belongs to. Task ids are `<scope>.<n>` (the store
+ * mints them that way), and the unclassified row carries only the task —
+ * so this is how its run link reaches the scope the operator can open.
+ *
+ * @param {string | null | undefined} taskId
+ */
+function scopeOfTask(taskId) {
+  if (!taskId) return null;
+  const dot = taskId.lastIndexOf(".");
+  return dot > 0 ? taskId.slice(0, dot) : null;
 }
 
 /** @param {string | null | undefined} sha */
@@ -133,7 +139,7 @@ export class OperatorPage extends ColonyElement {
                 (row) => `plan:${row.scope_id}`,
                 (row) =>
                   html`<li class="operator-row">
-                    ${this.#anchor(scopeHref(row.scope_id), row.scope_id)}
+                    ${this.#anchor(row.scope_id, scopeHref(row.scope_id))}
                     <span class="note">plan ready</span>
                   </li>`,
               )}
@@ -151,9 +157,10 @@ export class OperatorPage extends ColonyElement {
                 (row) => `merge:${row.task_id}`,
                 (row) =>
                   html`<li class="operator-row">
-                    ${this.#anchor(scopeHref(row.scope_id), row.scope_id)}
-                    ${this.#anchor(
-                      taskHref(row.scope_id, row.task_id),
+                    ${this.#anchor(row.scope_id, scopeHref(row.scope_id))}
+                    ${this.#taskAnchor(
+                      row.task_id,
+                      row.scope_id,
                       row.task_id,
                     )}
                     <span class="mono operator-head-sha"
@@ -173,9 +180,10 @@ export class OperatorPage extends ColonyElement {
                 (row) => `task:${row.task_id}`,
                 (row) =>
                   html`<li class="operator-row">
-                    ${this.#anchor(scopeHref(row.scope_id), row.scope_id)}
-                    ${this.#anchor(
-                      taskHref(row.scope_id, row.task_id),
+                    ${this.#anchor(row.scope_id, scopeHref(row.scope_id))}
+                    ${this.#taskAnchor(
+                      row.task_id,
+                      row.scope_id,
                       row.task_id,
                     )}
                     <span class="note"
@@ -198,7 +206,7 @@ export class OperatorPage extends ColonyElement {
                 (row) => `scope:${row.scope_id}`,
                 (row) =>
                   html`<li class="operator-row">
-                    ${this.#anchor(scopeHref(row.scope_id), row.scope_id)}
+                    ${this.#anchor(row.scope_id, scopeHref(row.scope_id))}
                     <span class="note"
                       >${row.blocked_reason ?? "no reason recorded"}</span
                     >
@@ -213,13 +221,42 @@ export class OperatorPage extends ColonyElement {
     </div>`;
   }
 
-  /** @param {string} href @param {string} label */
-  #anchor(href, label) {
+  /** @param {string} label @param {string} href */
+  #anchor(label, href) {
     return html`<a
       class="operator-link mono"
       href=${href}
       @click=${/** @param {MouseEvent} event */ (event) =>
         this.#nav(event, href)}
+      >${label}</a
+    >`;
+  }
+
+  /**
+   * A task link. Opening a task is a navigation plus a deferred selection
+   * (the shell parks the id until the scope's detail lands), so the row
+   * emits colony-open-task rather than inventing a `?task=` route the
+   * router has never parsed.
+   *
+   * @param {string} label @param {string} scopeId @param {string} taskId
+   */
+  #taskAnchor(label, scopeId, taskId) {
+    return html`<a
+      class="operator-link mono"
+      href=${scopeHref(scopeId)}
+      @click=${
+        /** @param {MouseEvent} event */ (event) => {
+          if (
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.button
+          )
+            return;
+          event.preventDefault();
+          this.#emit("colony-open-task", { scopeId, taskId });
+        }
+      }
       >${label}</a
     >`;
   }
@@ -243,11 +280,12 @@ export class OperatorPage extends ColonyElement {
             ${run.stalled
               ? html`<span class="chip" data-kind="blocked">stalled</span>`
               : html`<span class="chip" data-kind="running">live</span>`}
-            ${this.#anchor(scopeHref(run.scope_id), run.scope_id)}
+            ${this.#anchor(run.scope_id, scopeHref(run.scope_id))}
             ${run.task_id
-              ? this.#anchor(taskHref(run.scope_id, run.task_id), run.task_id)
+              ? this.#taskAnchor(run.task_id, run.scope_id, run.task_id)
               : nothing}
             <span>${kindLabel(run.kind)}</span>
+            <span class="mono operator-run-id">${run.id}</span>
             ${run.model_id
               ? html`<span class="mono">${run.model_id}</span>`
               : nothing}
@@ -263,6 +301,40 @@ export class OperatorPage extends ColonyElement {
   }
 
   // -- Metrics ------------------------------------------------------------
+
+  /**
+   * One compact metrics table.
+   *
+   * Rows are divs carrying the table's ARIA roles rather than <tr>/<td>:
+   * lit renders each row from its own template, and an HTML parser drops a
+   * bare <tr> at the root of a fragment (it is only valid inside a table),
+   * which silently emptied these tables. The roles keep it a real table to
+   * assistive tech.
+   *
+   * @param {{ label: string, columns: string[], rows: any[][] }} args
+   */
+  #table({ label, columns, rows }) {
+    return html`<div class="operator-table" role="table" aria-label=${label}>
+      <div class="operator-tr" role="row">
+        ${columns.map(
+          (column) => html`<span class="operator-th" role="columnheader"
+            >${column}</span
+          >`,
+        )}
+      </div>
+      ${repeat(
+        rows,
+        (row) => row.key,
+        (row) => html`<div class="operator-tr" role="row">
+          ${row.cells.map(
+            (cell) => html`<span class="operator-td" role="cell"
+              >${cell}</span
+            >`,
+          )}
+        </div>`,
+      )}
+    </div>`;
+  }
 
   /** @param {Record<string, any>} metrics */
   #metrics(metrics) {
@@ -280,27 +352,23 @@ export class OperatorPage extends ColonyElement {
       <div class="operator-group">
         <p class="operator-group-head">Runs by role</p>
         ${byKind.length
-          ? html`<table class="operator-table">
-              <thead>
-                <tr>
-                  <th scope="col">Role</th>
-                  <th scope="col">Outcome</th>
-                  <th scope="col">Runs</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${byKind.map(([key, count]) => {
-                  const [role, outcome] = String(key).split(":");
-                  return html`<tr>
-                    <td>${kindLabel(role)}</td>
-                    <td>
-                      <span class="chip" data-kind=${outcome}>${outcome}</span>
-                    </td>
-                    <td class="mono">${count}</td>
-                  </tr>`;
-                })}
-              </tbody>
-            </table>`
+          ? this.#table({
+              label: "Runs by role and outcome",
+              columns: ["Role", "Outcome", "Runs"],
+              rows: byKind.map(([key, count]) => {
+                const [role, outcome] = String(key).split(":");
+                return {
+                  key,
+                  cells: [
+                    kindLabel(role),
+                    html`<span class="chip" data-kind=${outcome}
+                      >${outcome}</span
+                    >`,
+                    count,
+                  ],
+                };
+              }),
+            })
           : this.#empty("No runs finished in this window.")}
         <p class="operator-tally">
           <span class="mono">${metrics?.merges ?? 0}</span> merges ·
@@ -313,62 +381,40 @@ export class OperatorPage extends ColonyElement {
       <div class="operator-group">
         <p class="operator-group-head">Per model</p>
         ${perModel.length
-          ? html`<table class="operator-table">
-              <thead>
-                <tr>
-                  <th scope="col">Model</th>
-                  <th scope="col">Completion</th>
-                  <th scope="col">Timeouts</th>
-                  <th scope="col">Median</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${perModel.map(([model, m]) => {
-                  const rate = /** @type {Record<string, any>} */ (m)
-                    .completion_rate;
-                  return html`<tr>
-                    <td class="mono">${model}</td>
-                    <td class="mono">
-                      ${typeof rate === "number"
-                        ? `${Math.round(rate * 100)}% of ${/** @type {Record<string, any>} */ (m).runs}`
-                        : "—"}
-                    </td>
-                    <td class="mono">
-                      ${/** @type {Record<string, any>} */ (m).timeouts}
-                    </td>
-                    <td class="mono">
-                      ${/** @type {Record<string, any>} */ (m).median_ms ===
-                      null
-                        ? "—"
-                        : formatDuration(
-                            /** @type {Record<string, any>} */ (m).median_ms,
-                          )}
-                    </td>
-                  </tr>`;
-                })}
-              </tbody>
-            </table>`
+          ? this.#table({
+              label: "Per-model completion, timeouts and median runtime",
+              columns: ["Model", "Completion", "Timeouts", "Median"],
+              rows: perModel.map(([model, m]) => {
+                const stats = /** @type {Record<string, any>} */ (m);
+                const rate = stats.completion_rate;
+                return {
+                  key: model,
+                  cells: [
+                    html`<span class="mono">${model}</span>`,
+                    typeof rate === "number"
+                      ? `${Math.round(rate * 100)}% of ${stats.runs}`
+                      : "—",
+                    stats.timeouts,
+                    stats.median_ms === null
+                      ? "—"
+                      : formatDuration(stats.median_ms),
+                  ],
+                };
+              }),
+            })
           : this.#empty("No model ran in this window.")}
       </div>
       <div class="operator-group">
         <p class="operator-group-head">Faults by layer</p>
         ${byLayer.length
-          ? html`<table class="operator-table">
-              <thead>
-                <tr>
-                  <th scope="col">Layer</th>
-                  <th scope="col">Faults</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${byLayer.map(
-                  ([layer, count]) => html`<tr>
-                    <td>${layer}</td>
-                    <td class="mono">${count}</td>
-                  </tr>`,
-                )}
-              </tbody>
-            </table>`
+          ? this.#table({
+              label: "Faults by layer",
+              columns: ["Layer", "Faults"],
+              rows: byLayer.map(([layer, count]) => ({
+                key: layer,
+                cells: [layer, count],
+              })),
+            })
           : this.#empty("No faults recorded in this window.")}
       </div>
       <div class="operator-group">
@@ -411,9 +457,20 @@ export class OperatorPage extends ColonyElement {
         (row) =>
           html`<li class="operator-row">
             <span class="chip" data-kind="failed">unclassified</span>
-            ${this.#anchor(scopeHref(row.scope_id ?? ""), row.scope_id ?? "—")}
-            ${row.task_id
-              ? this.#anchor(taskHref(row.scope_id ?? "", row.task_id), row.task_id)
+            ${(() => {
+              // The row carries no scope_id of its own: the task id is how
+              // its run link reaches a scope.
+              const scopeId = row.scope_id ?? scopeOfTask(row.task_id);
+              return scopeId
+                ? this.#anchor(scopeId, scopeHref(scopeId))
+                : html`<span class="mono">unknown scope</span>`;
+            })()}
+            ${row.task_id && scopeOfTask(row.task_id)
+              ? this.#taskAnchor(
+                  row.task_id,
+                  scopeOfTask(row.task_id),
+                  row.task_id,
+                )
               : nothing}
             <span>${kindLabel(row.kind)}</span>
             ${row.model_id
