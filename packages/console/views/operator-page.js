@@ -3,8 +3,8 @@
 //
 // Property-down: the GET /operator/summary payload verbatim (the shell's
 // operatorSummary), the active window, and the shell's error banner. Events-
-// up: colony-navigate from every scope/task link and colony-operator-window
-// {window} from the metrics toggle.
+// up: colony-navigate from every scope link, colony-open-task from a task
+// link, and colony-operator-window {window} from the metrics toggle.
 //
 // The view recomputes nothing. Every count it prints is a field the server
 // computed over the ONE window read that also produced the rows below it, so
@@ -29,7 +29,7 @@ import { KIND_LABEL } from "../kind-label.js";
  */
 
 /** The two windows GET /operator/summary accepts; the API 400s on any other. */
-export const OPERATOR_WINDOWS = /** @type {const} */ (["24h", "7d"]);
+const OPERATOR_WINDOWS = /** @type {const} */ (["24h", "7d"]);
 
 const WINDOW_LABEL = { "24h": "24 hours", "7d": "7 days" };
 
@@ -68,7 +68,7 @@ function shortSha(sha) {
  *
  * @param {string | null | undefined} age
  */
-export function ageLabel(age) {
+function ageLabel(age) {
   const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(String(age ?? ""));
   if (!match) return age ? String(age) : "—";
   const [, h, m, s] = match;
