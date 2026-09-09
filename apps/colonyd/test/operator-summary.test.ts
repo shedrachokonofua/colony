@@ -157,6 +157,7 @@ function seedScope(
     goal: string;
     approvals?: "auto" | "manual";
     status?: "active" | "blocked" | "planning";
+    blockedReason?: string;
   } = { goal: "summary" },
 ) {
   const scope = store.createScope({
@@ -174,7 +175,7 @@ function seedScope(
   const active = store.setScopeStatus(planning.id, "active", "test");
   return input.status === "blocked"
     ? store.setScopeStatus(active.id, "blocked", "test", {
-        blocked_reason: input.goal,
+        blocked_reason: input.blockedReason ?? input.goal,
       })
     : active;
 }
@@ -527,6 +528,43 @@ describe("GET /operator/summary", () => {
     });
     expect(week.unclassified.length).toBe(1);
     expect(week.metrics.per_model["router/muse-spark-1.3"]!.runs).toBe(2);
+  });
+
+  it("surfaces a plan awaiting approval and blocks with redacted reasons", async () => {
+    const { app, store } = setup();
+    // A proposed plan is the only thing that puts a scope in the operator's
+    // hands: planning alone means the architect is still working.
+    const pending = seedScope(store, {
+      goal: "awaiting plan",
+      status: "planning",
+    });
+    store.setScopePlan(pending.id, JSON.stringify({ kind: "plan" }));
+    const noPlan = seedScope(store, { goal: "no plan", status: "planning" });
+
+    const secret = ["glpat", "blockedreason00000000ab"].join("-");
+    // The reason the tick parks a scope with carries the failed run's error
+    // text, so the summary must serve it redacted.
+    const blocked = seedScope(store, {
+      goal: "blocked scope",
+      status: "blocked",
+      blockedReason: `architect died: token ${secret} refused`,
+    });
+
+    const summary = await get(app, "?window=24h");
+    expect(summary.waiting_on_you.plan_approvals).toEqual([
+      { scope_id: pending.id },
+    ]);
+    expect(
+      summary.waiting_on_you.plan_approvals.map((row) => row.scope_id),
+    ).not.toContain(noPlan.id);
+
+    // The blocked scope's reason is served redacted and aged.
+    const scope = summary.waiting_on_you.blocked_scopes.find(
+      (row) => row.scope_id === blocked.id,
+    )!;
+    expect(scope.blocked_reason).not.toContain(secret);
+    expect(scope.blocked_reason).toContain(`${secret.slice(0, 4)}...`);
+    expect(scope.age).toMatch(/^PT\d+S$/);
   });
 
   it("counts merges, verdicts and validation over the same window as the runs", async () => {

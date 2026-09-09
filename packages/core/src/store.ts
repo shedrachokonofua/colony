@@ -2032,7 +2032,9 @@ export class Store {
   /**
    * Every run whose window column — COALESCE(finished_at, started_at), the
    * same one listRuns filters and orders on — falls inside [since, until],
-   * newest first, capped at `limit` (default 2000).
+   * newest first, capped at `limit` (default 2000). Ordering matches
+   * listRuns exactly (column DESC, id DESC), so a caller sees the same
+   * newest-first sequence as the run feed.
    *
    * The cap is far above the run feed's page size on purpose: a fleet
    * summary derives every metric and every row from this one read, and a

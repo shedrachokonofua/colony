@@ -2,7 +2,6 @@ import {
   parseFault,
   type Fault,
   type Run,
-  type Scope,
   type Store,
   type Task,
 } from "@colony/core";
@@ -19,21 +18,12 @@ const WINDOW_MS: Record<OperatorSummaryWindow, number> = {
   "7d": 7 * 24 * 60 * 60 * 1000,
 };
 
-export function windowMs(window: OperatorSummaryWindow): number {
+function windowMs(window: OperatorSummaryWindow): number {
   return WINDOW_MS[window];
 }
 
 /** Cap on each waiting_on_you list and on the unclassified tail. */
 const LIST_CAP = 100;
-
-/**
- * A run is stalled when it is running and its wall age exceeds its lease:
- * a leased run heartbeats (runs/adoption.ts, runs/implement.ts) well inside
- * the lease, so an age past the lease means no heartbeat landed — the
- * process holding it died or wedged. No new timeout knob: the lease the
- * dispatcher already granted IS the progress contract.
- */
-const STALL_LEASE_MULTIPLIER = 2;
 
 /**
  * Fault codes a restart left behind: the crash-reap path and the resume-
@@ -239,7 +229,7 @@ export function buildOperatorSummary(
   const blockedTasks: BlockedTask[] = [];
   const blockedScopes: BlockedScope[] = [];
 
-  const mrOpen: { task: Task; scope: Scope }[] = [];
+  const mrOpen: { task: Task }[] = [];
   for (const scope of store.listScopes()) {
     if (scope.status === "planning" && scope.plan_json) {
       planApprovals.push({ scope_id: scope.id });
@@ -247,27 +237,21 @@ export function buildOperatorSummary(
     if (scope.status === "blocked") {
       blockedScopes.push({
         scope_id: scope.id,
-        blocked_reason: scope.blocked_reason,
+        blocked_reason: redacted(scope.blocked_reason),
         age: ageOf(scope.updated_at, nowMs),
       });
     }
-    if (
-      scope.status === "active" ||
-      scope.status === "validating" ||
-      scope.status === "blocked"
-    ) {
-      for (const task of store.listTasks(scope.id)) {
-        if (task.state === "blocked") {
-          blockedTasks.push({
-            scope_id: scope.id,
-            task_id: task.id,
-            blocked_reason: task.blocked_reason,
-            age: ageOf(task.updated_at, nowMs),
-          });
-        }
-        if (task.state === "mr_open" && scope.approvals === "manual") {
-          mrOpen.push({ task, scope });
-        }
+    for (const task of store.listTasks(scope.id)) {
+      if (task.state === "blocked") {
+        blockedTasks.push({
+          scope_id: scope.id,
+          task_id: task.id,
+          blocked_reason: redacted(task.blocked_reason),
+          age: ageOf(task.updated_at, nowMs),
+        });
+      }
+      if (task.state === "mr_open" && scope.approvals === "manual") {
+        mrOpen.push({ task });
       }
     }
   }
@@ -340,7 +324,7 @@ export function buildOperatorSummary(
           finished_at: run.finished_at,
           // The stored detail is whatever the runner threw, credentials
           // included; only the served copy is redacted.
-          detail: sanitizeTrace(fault.detail ?? run.error ?? ""),
+          detail: redacted(fault.detail ?? run.error) ?? "",
         });
       }
     }
@@ -385,7 +369,7 @@ export function buildOperatorSummary(
         fail: auditCounts.get(VALIDATION_FAIL_ACTION) ?? 0,
       },
     },
-    unclassified: cap(unclassified.slice().reverse()),
+    unclassified: cap(unclassified),
     deploy: {
       version: opts.version ?? process.env["COLONY_VERSION"] ?? "unknown",
       started_at: (opts.startedAt ?? processStart()).toISOString(),
@@ -397,12 +381,30 @@ export function buildOperatorSummary(
   };
 }
 
+/**
+ * True when a running run has made no progress for a whole lease. Every
+ * execution heartbeats its lease (runs/adoption.ts, runs/implement.ts), so
+ * the lease TTL the dispatcher already granted IS the progress contract:
+ * no new timeout knob, and no confusion with the model-level wall timeout.
+ * A run whose lease never advanced (an unparseable or inverted one) is not
+ * stalled — it is simply unmeasured.
+ */
 function isStalled(run: Run, nowMs: number): boolean {
   const progressMs = Date.parse(run.last_progress_at ?? run.started_at);
   if (Number.isNaN(progressMs)) return false;
   const leaseMs = Date.parse(run.lease_expires_at) - Date.parse(run.started_at);
   if (!Number.isFinite(leaseMs) || leaseMs <= 0) return false;
-  return nowMs - progressMs > leaseMs * STALL_LEASE_MULTIPLIER;
+  return nowMs - progressMs > leaseMs;
+}
+
+/**
+ * An operator-facing copy of stored text. A blocked reason carries the
+ * failing run's error (tick.ts parks a scope with the architect's error
+ * text), so it needs the same redaction a fault detail does. Only the copy
+ * is rewritten — the stored row keeps its raw text.
+ */
+function redacted(text: string | null | undefined): string | null {
+  return text === null || text === undefined ? null : sanitizeTrace(text);
 }
 
 function cap<T>(rows: readonly T[]): T[] {
