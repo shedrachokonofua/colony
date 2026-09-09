@@ -13,30 +13,68 @@ import {
 } from "../cost-prediction.js";
 import "./run-duration.js";
 
+/** A review row with no recorded envelope: the run predates envelope_json. */
+const DETAILS_UNAVAILABLE = "full details unavailable for this older record";
+
+/** A review run that finished without a verdict has nothing to believe. */
+const NO_ACCEPTED_VERDICT = "no accepted verdict was submitted";
+
+/** A failed/canceled run's envelope is a submission the server rejected. */
+const NOT_ACCEPTED = "a submission was recorded but not accepted";
+
 /** @param {string | null | undefined} sha */
 function shortSha(sha) {
   return sha && sha.length >= 7 ? sha.slice(0, 7) : "—";
 }
 
-/** @param {string | null | undefined} raw */
-function parseEvidence(raw) {
+/**
+ * @param {string | null | undefined} raw
+ * @returns {Record<string, any> | null}
+ */
+function parseRecord(raw) {
   if (!raw) return null;
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
     return null;
   }
 }
 
 /**
- * Review-run envelope summary from persisted evidence: one line per review
- * dimension plus the challenged reviewed/dropped counts. Guards on shape so
- * older rows (verdict-only evidence) render exactly as before.
- * @param {any} evidence
+ * The reviewer envelope of a succeeded review run, or null when there is
+ * none to believe. Only a succeeded run's envelope is an accepted verdict: a
+ * failed or canceled run's envelope is a submission the server never
+ * accepted, so it is never presented as the verdict.
+ * @param {Record<string, any>} run
+ * @returns {Record<string, any> | null}
  */
-function reviewDimensionsAndChallenged(evidence) {
-  const dimensions = Array.isArray(evidence?.dimensions)
-    ? /** @type {any[]} */ (evidence.dimensions).filter(
+function reviewEnvelope(run) {
+  if (run.status !== "succeeded") return null;
+  const envelope = parseRecord(run.envelope_json);
+  if (!envelope) return null;
+  if (envelope.kind !== undefined && envelope.kind !== "reviewer_verdict")
+    return null;
+  return typeof envelope.verdict === "string" ? envelope : null;
+}
+
+/** @param {any} finding */
+function findingRow(finding) {
+  return html`<li>
+    ${finding.severity} —
+    ${finding.note}${finding.file ? ` (${finding.file})` : ""}
+  </li>`;
+}
+
+/**
+ * Per-dimension candidate counts: how many candidate findings each review
+ * dimension produced. Counts overlap between dimensions, so they are not an
+ * additive total.
+ * @param {any} rawDimensions
+ */
+function dimensionRows(rawDimensions) {
+  const dimensions = Array.isArray(rawDimensions)
+    ? /** @type {any[]} */ (rawDimensions).filter(
         /** @param {any} dimension */
         (dimension) =>
           dimension &&
@@ -44,34 +82,121 @@ function reviewDimensionsAndChallenged(evidence) {
           typeof dimension?.findings === "number",
       )
     : [];
-  const challenged = evidence?.challenged;
-  const challengedLine =
-    challenged &&
-    typeof challenged?.reviewed === "number" &&
-    typeof challenged?.dropped === "number"
-      ? html`<p class="challenged">
-          challenged reviewed ${challenged.reviewed} · dropped
-          ${challenged.dropped}
-        </p>`
-      : nothing;
-  if (dimensions.length === 0) return challengedLine;
-  return html`<ul class="dimensions">
+  if (dimensions.length === 0) return nothing;
+  return html`<p class="coverage-note">
+      per-dimension candidate counts · counts may overlap, so they are not an
+      additive total
+    </p>
+    <ul class="dimensions">
       ${dimensions.map(
         /** @param {any} dimension */
         (dimension) =>
           html`<li>
             ${dimension.name}${dimension.spec_blind
-              ? html` <span class="badge">spec-blind</span>`
+              ? html` <span
+                  class="badge spec-blind"
+                  title="checked without seeing the task spec"
+                  >spec-blind</span
+                >`
               : nothing}
             · ${dimension.findings}
+            ${dimension.findings === 1 ? "candidate" : "candidates"}
             ${Array.isArray(dimension.target_files) &&
             dimension.target_files.length > 0
               ? ` (${dimension.target_files.join(", ")})`
               : nothing}
           </li>`,
       )}
-    </ul>
-    ${challengedLine}`;
+    </ul>`;
+}
+
+/**
+ * The reviewer's self-check: how many candidate findings it examined and set
+ * aside before submitting. Plain language only — no per-candidate history.
+ * @param {any} challenged
+ */
+function selfCheckLine(challenged) {
+  const reviewed = challenged?.reviewed;
+  const dropped = challenged?.dropped;
+  if (typeof reviewed !== "number" || typeof dropped !== "number")
+    return nothing;
+  return html`<p class="challenged">
+    self-check: ${reviewed} examined · ${dropped} set aside
+    <span class="self-check-note">candidates considered but not submitted</span>
+  </p>`;
+}
+
+/** @param {any} rawInspected */
+function inspectedRows(rawInspected) {
+  const inspected = Array.isArray(rawInspected)
+    ? /** @type {any[]} */ (rawInspected).filter(
+        /** @param {any} entry */
+        (entry) => entry && typeof entry?.file === "string",
+      )
+    : [];
+  if (inspected.length === 0) return nothing;
+  return html`<p class="coverage-note">files inspected</p>
+    <ul class="inspected">
+      ${inspected.map(
+        /** @param {any} entry */
+        (entry) => html`<li>${entry.file} — ${entry.note ?? ""}</li>`,
+      )}
+    </ul>`;
+}
+
+/**
+ * Review coverage recorded in evidence only: one line per dimension plus the
+ * self-check counts. Guards on shape so older rows (verdict-only evidence)
+ * render exactly as before.
+ * @param {any} evidence
+ */
+function evidenceCoverage(evidence) {
+  const dimensions = dimensionRows(evidence?.dimensions);
+  const selfCheck = selfCheckLine(evidence?.challenged);
+  if (dimensions === nothing) return selfCheck;
+  return html`${dimensions}${selfCheck}`;
+}
+
+/**
+ * The recorded review: verdict, the reviewer's rationale, every final finding,
+ * then coverage behind one disclosure. The final count is the recorded
+ * findings array length — never reviewed-minus-dropped.
+ * @param {Record<string, any>} envelope
+ * @param {Record<string, any> | null} evidence
+ * @param {string} verdict the recorded verdict: evidence wins over envelope.
+ */
+function reviewBrief(envelope, evidence, verdict) {
+  const findings = Array.isArray(envelope.findings) ? envelope.findings : [];
+  const count = envelope.findings?.length ?? 0;
+  const summary =
+    typeof envelope.summary === "string" ? envelope.summary : nothing;
+  const coverage = [
+    dimensionRows(envelope.dimensions ?? evidence?.dimensions),
+    selfCheckLine(envelope.challenged ?? evidence?.challenged),
+    inspectedRows(envelope.inspected),
+  ].filter((block) => block !== nothing);
+  return html`<div class="review-detail">
+    <p class="review-verdict">verdict: ${verdict}</p>
+    ${summary === nothing
+      ? nothing
+      : html`<p class="review-summary">${summary}</p>`}
+    <p class="findings-count">
+      ${count === 0
+        ? "no final findings were recorded"
+        : `${count} final finding${count === 1 ? "" : "s"}`}
+    </p>
+    ${count === 0
+      ? nothing
+      : html`<ul class="findings">
+          ${findings.map(findingRow)}
+        </ul>`}
+    ${coverage.length === 0
+      ? nothing
+      : html`<details class="review-coverage">
+          <summary>review coverage</summary>
+          ${coverage}
+        </details>`}
+  </div> `;
 }
 
 export class RunLine extends ColonyElement {
@@ -95,24 +220,43 @@ export class RunLine extends ColonyElement {
     const run = this.run;
     if (!run) return nothing;
     const traceUrl = traceHref(this.config ?? {}, run);
-    const evidence = parseEvidence(run.evidence_json);
-    const findings = Array.isArray(evidence?.findings)
-      ? html`<ul class="findings">
-          ${
-            /** @type {{findings: any[]}} */ (evidence).findings.map(
-              /** @param {{severity: string, note: string, file?: string}} finding */
-              (finding) =>
-                html`<li>
-                  ${finding.severity} —
-                  ${finding.note}${finding.file ? ` (${finding.file})` : ""}
-                </li>`,
-            )
-          }
-        </ul>`
-      : nothing;
-    const verdict = evidence?.verdict ? ` · ${evidence.verdict}` : "";
-    const reviewExtras =
-      run.kind === "review" ? reviewDimensionsAndChallenged(evidence) : nothing;
+    const evidence = parseRecord(run.evidence_json);
+    // Envelope substance is for review runs only: a plan_review run carries a
+    // plan_review_verdict with the same field names and renders unchanged.
+    const isReview = run.kind === "review";
+    const envelope = isReview ? reviewEnvelope(run) : null;
+    const verdict = evidence?.verdict ?? envelope?.verdict;
+    // With an envelope, its findings ARE the final findings; the evidence copy
+    // would be a duplicate list.
+    const findings =
+      envelope || !Array.isArray(evidence?.findings)
+        ? nothing
+        : html`<ul class="findings">
+            ${
+              /** @type {{findings: any[]}} */ (evidence).findings.map(
+                findingRow,
+              )
+            }
+          </ul>`;
+    const coverage =
+      !envelope && isReview ? evidenceCoverage(evidence) : nothing;
+    // A succeeded review with no usable envelope is an older record: show what
+    // evidence holds and say the rest is gone, rather than inventing it.
+    const unavailable =
+      isReview && run.status === "succeeded" && !envelope
+        ? html`<p class="details-unavailable">${DETAILS_UNAVAILABLE}</p>`
+        : nothing;
+    const notAccepted =
+      isReview &&
+      (run.status === "failed" || run.status === "canceled") &&
+      !evidence?.verdict
+        ? html`<p class="verdict-note">
+            ${NO_ACCEPTED_VERDICT}${run.envelope_json
+              ? ` — ${NOT_ACCEPTED}`
+              : ""}
+          </p>`
+        : nothing;
+    const verdictChip = verdict ? ` · ${verdict}` : "";
     const prediction = parseCostPrediction(this.task ?? {});
     const predictionLine = prediction
       ? costPredictionLines(prediction)[0]
@@ -130,7 +274,7 @@ export class RunLine extends ColonyElement {
       <i></i>
       <div>
         <p class="kind">
-          ${KIND_LABEL[run.kind] || run.kind} ${run.status}${verdict}
+          ${KIND_LABEL[run.kind] || run.kind} ${run.status}${verdictChip}
         </p>
         <p class="meta">
           ${run.model_id ? `${run.model_id} · ` : ""} ${shortSha(run.head_sha)}
@@ -165,7 +309,10 @@ export class RunLine extends ColonyElement {
               >Trace</a
             >`
           : nothing}
-        ${findings} ${reviewExtras}
+        ${envelope && verdict
+          ? reviewBrief(envelope, evidence, verdict)
+          : nothing}
+        ${findings} ${coverage} ${unavailable} ${notAccepted}
       </div>
     </div>`;
   }

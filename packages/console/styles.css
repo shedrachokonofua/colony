@@ -1716,6 +1716,90 @@ body {
   color: var(--muted);
 }
 
+/* Review verdict: verdict line, rationale, every final finding, then
+   coverage behind a disclosure. */
+.review-detail {
+  margin: 0.3rem 0 0;
+}
+
+.review-verdict {
+  margin: 0;
+  font-size: 0.79rem;
+  font-weight: 600;
+}
+
+/* Unbroken paths and long rationale prose must wrap at narrow widths. */
+.review-summary {
+  margin: 0.15rem 0 0;
+  font-size: 0.79rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.review-detail .findings-count {
+  margin: 0.25rem 0 0;
+  font: 500 0.72rem var(--mono);
+  color: var(--ink);
+}
+
+.review-coverage {
+  margin: 0.3rem 0 0;
+}
+
+.review-coverage > summary {
+  font: 500 0.72rem var(--mono);
+  color: var(--link);
+  cursor: pointer;
+}
+
+.review-coverage > summary:hover,
+.review-coverage > summary:focus-visible {
+  text-decoration: underline;
+}
+
+/* Per-dimension counts are candidates, not a total. */
+.coverage-note {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
+.review-coverage .dimensions,
+.review-coverage .inspected,
+.run .dimensions {
+  margin: 0.2rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.76rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.run .challenged {
+  margin: 0.25rem 0 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.self-check-note {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
+.spec-blind {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  cursor: help;
+}
+
+/* Older rows and unaccepted submissions say so instead of guessing. */
+.details-unavailable,
+.verdict-note {
+  margin: 0.25rem 0 0;
+  font-size: 0.74rem;
+  color: var(--faint);
+}
+
 /* ---------- Validation card ---------- */
 
 .validation-summary {
