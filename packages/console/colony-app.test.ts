@@ -400,6 +400,23 @@ describe("colony-open-task", () => {
 
 // -- hashchange ------------------------------------------------------------
 
+/**
+ * Wait for the lazy view module to finish loading. The import settles after
+ * a macrotask at the earliest, so the loop yields to the real clock; it
+ * polls the state rather than sleeping a guessed duration.
+ *
+ * @param {any} app
+ * @param {number} [attempts]
+ */
+async function settledViewModule(app, attempts = 200) {
+  for (let i = 0; i < attempts; i += 1) {
+    await app.updateComplete;
+    if (!app.viewModule?.loading) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("view module never finished loading");
+}
+
 describe("hashchange handler", () => {
   it("resets transient surface state and re-parses the route", async () => {
     const app = makeShell();
@@ -458,7 +475,9 @@ describe("hashchange handler", () => {
     await app.updateComplete;
     expect(app.viewModule?.route).toBe("newProject");
     expect(app.viewModule?.loading).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // A cold dynamic import of the view module costs more than one macrotask
+    // (tens of ms on a cold cache), so wait on the state, not on a duration.
+    await settledViewModule(app);
     // project-create registers and resolves: the shell shows it.
     expect(app.viewModule).toEqual({ route: "newProject", loading: false });
   });
