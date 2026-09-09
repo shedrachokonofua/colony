@@ -22,6 +22,12 @@ import { KIND_LABEL } from "../kind-label.js";
 
 /** @typedef {"24h" | "7d"} OperatorWindow */
 
+/**
+ * One row of a metrics table: its repeat key and its rendered cells.
+ *
+ * @typedef {{ key: string, cells: any[] }} OperatorRow
+ */
+
 /** The two windows GET /operator/summary accepts; the API 400s on any other. */
 export const OPERATOR_WINDOWS = /** @type {const} */ (["24h", "7d"]);
 
@@ -43,11 +49,12 @@ function scopeHref(scopeId) {
  * so this is how its run link reaches the scope the operator can open.
  *
  * @param {string | null | undefined} taskId
+ * @returns {string | undefined}
  */
 function scopeOfTask(taskId) {
-  if (!taskId) return null;
+  if (!taskId) return undefined;
   const dot = taskId.lastIndexOf(".");
-  return dot > 0 ? taskId.slice(0, dot) : null;
+  return dot > 0 ? taskId.slice(0, dot) : undefined;
 }
 
 /** @param {string | null | undefined} sha */
@@ -311,7 +318,11 @@ export class OperatorPage extends ColonyElement {
    * which silently emptied these tables. The roles keep it a real table to
    * assistive tech.
    *
-   * @param {{ label: string, columns: string[], rows: any[][] }} args
+   * @param {{
+   *   label: string,
+   *   columns: string[],
+   *   rows: OperatorRow[],
+   * }} args
    */
   #table({ label, columns, rows }) {
     return html`<div class="operator-table" role="table" aria-label=${label}>
@@ -327,7 +338,9 @@ export class OperatorPage extends ColonyElement {
         (row) => row.key,
         (row) => html`<div class="operator-tr" role="row">
           ${row.cells.map(
-            (cell) => html`<span class="operator-td" role="cell"
+            (/** @type {any} */ cell) => html`<span
+              class="operator-td"
+              role="cell"
               >${cell}</span
             >`,
           )}
@@ -454,23 +467,17 @@ export class OperatorPage extends ColonyElement {
       ${repeat(
         unclassified,
         (row) => row.run_id,
-        (row) =>
-          html`<li class="operator-row">
+        (row) => {
+          // The row carries no scope_id of its own: the task id is how its
+          // run link reaches a scope the operator can open.
+          const scopeId = row.scope_id || scopeOfTask(row.task_id) || "";
+          return html`<li class="operator-row">
             <span class="chip" data-kind="failed">unclassified</span>
-            ${(() => {
-              // The row carries no scope_id of its own: the task id is how
-              // its run link reaches a scope.
-              const scopeId = row.scope_id ?? scopeOfTask(row.task_id);
-              return scopeId
-                ? this.#anchor(scopeId, scopeHref(scopeId))
-                : html`<span class="mono">unknown scope</span>`;
-            })()}
-            ${row.task_id && scopeOfTask(row.task_id)
-              ? this.#taskAnchor(
-                  row.task_id,
-                  scopeOfTask(row.task_id),
-                  row.task_id,
-                )
+            ${scopeId
+              ? this.#anchor(scopeId, scopeHref(scopeId))
+              : html`<span class="mono">unknown scope</span>`}
+            ${scopeId && row.task_id
+              ? this.#taskAnchor(row.task_id, scopeId, row.task_id)
               : nothing}
             <span>${kindLabel(row.kind)}</span>
             ${row.model_id
@@ -478,7 +485,8 @@ export class OperatorPage extends ColonyElement {
               : nothing}
             <span class="operator-detail">${row.detail}</span>
             <span class="mono operator-age">${rel(row.finished_at)}</span>
-          </li>`,
+          </li>`;
+        },
       )}
     </ul>`;
   }

@@ -2,6 +2,9 @@
 // 2.5s poll (document.hidden skip), and the hashchange reset handler.
 // @ts-nocheck
 import { afterEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sharedDom } from "./elements/test-dom.js";
 
 // Element suites share this window and registry (bun runs every suite in one
@@ -458,5 +461,134 @@ describe("hashchange handler", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     // project-create registers and resolves: the shell shows it.
     expect(app.viewModule).toEqual({ route: "newProject", loading: false });
+  });
+});
+
+// -- Operator route -------------------------------------------------------
+
+const here = dirname(fileURLToPath(import.meta.url));
+const shellSource = readFileSync(join(here, "shell-data.js"), "utf8");
+
+/** A GET /operator/summary payload with every section empty. */
+function minimalSummary(window) {
+  return {
+    window,
+    window_start: new Date().toISOString(),
+    generated_at: new Date().toISOString(),
+    waiting_on_you: {
+      plan_approvals: [],
+      awaiting_merge: [],
+      blocked_tasks: [],
+      blocked_scopes: [],
+    },
+    live: [],
+    metrics: {
+      runs_by_kind_status: {},
+      merges: 0,
+      verdicts: 0,
+      per_model: {},
+      faults_by_layer: {},
+      faults_by_layer_code: {},
+      restart_incidents: { incidents: 0, reaped_runs: 0 },
+      validation: { pass: 0, fail: 0 },
+    },
+    unclassified: [],
+    deploy: {
+      version: "v",
+      started_at: new Date().toISOString(),
+      restart_incidents: { incidents: 0, reaped_runs: 0 },
+    },
+  };
+}
+
+/**
+ * Wait for a selector to appear. A lazy view module registers its element
+ * after an await, so the test waits on the element rather than on a
+ * guessed duration.
+ */
+async function settled(app, selector, attempts = 50) {
+  for (let i = 0; i < attempts; i += 1) {
+    await app.updateComplete;
+    if (app.querySelector(selector)) return;
+    // A macrotask: the view module arrives through a dynamic import, which
+    // no number of microtask turns will let settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`${selector} never mounted`);
+}
+
+describe("operator route", () => {
+  it("parses #/operator as a page, not a scope id", async () => {
+    // "operator" looks exactly like a scope id; without its own route the
+    // scope fallback would read a detail for a scope that does not exist.
+    withHash("#/operator");
+    expect(makeShell().currentRoute).toEqual({
+      name: "operator",
+      params: {},
+    });
+  });
+
+  it("reads the operator route at /operator/summary?window= and nothing else", () => {
+    // The live path's one request. demo.js freezes DEMO at first import and
+    // this suite loads under ?demo=1 like the console's others, so refresh()
+    // takes the offline branch here and the URL is asserted at the source —
+    // the same way running-tab.test.ts pins shell-data.js's reads.
+    expect(shellSource).toContain("routeIsOperator()");
+    expect(shellSource).toContain("`/operator/summary?window=${app.operatorWindow}`");
+    // No GET /runs on this page: a second windowed dataset could contradict
+    // the server-computed counts rendered above it. The operator branch is
+    // delimited, so this cannot match the /runs read the scope sheet does.
+    const operatorBranch =
+      /if \(routeIsOperator\(\)\) \{[\s\S]*?\n    \}/.exec(shellSource);
+    expect(operatorBranch).toBeTruthy();
+    expect(operatorBranch[0]).not.toContain("/runs");
+  });
+
+  it("serves the offline summary and refetches on the toggled window", async () => {
+    // The demo branch of the same path, and the page's own wiring end to
+    // end: the toggle bubbles colony-operator-window and the summary lands
+    // on the view. The view performs no fetch of its own either way.
+    withHash("#/operator");
+    const app = makeShell();
+    const calls = [];
+    const realApi = app.api;
+    app.api = async (path) => {
+      calls.push(path);
+      return realApi(path);
+    };
+    document.body.append(app);
+    await app.updateComplete;
+    expect(app.viewModule?.route).toBe("operator");
+    // The view module imports lazily; wait for the element it registers.
+    await settled(app, "operator-page");
+    const page = app.querySelector("operator-page");
+    expect(page).toBeTruthy();
+    expect(app.operatorSummary?.window).toBe("24h");
+
+    const seen = [];
+    page.addEventListener("colony-operator-window", (event) =>
+      seen.push(event.detail),
+    );
+    [...page.querySelectorAll(".tabs .tab")][1].click();
+    expect(seen).toEqual([{ window: "7d" }]);
+    await app.updateComplete;
+    expect(app.operatorSummary?.window).toBe("7d");
+    // No GET /runs ever: every section renders the one summary.
+    expect(calls.some((path) => path.startsWith("/runs"))).toBe(false);
+  });
+
+  it("resets the operator slots on a navigation away", async () => {
+    withHash("#/operator");
+    const app = makeShell();
+    app.operatorSummary = { window: "24h" };
+    document.body.append(app);
+    await app.updateComplete;
+    // The shell's own refresh would refill the slot from the demo world;
+    // only the handler's clearing is under test here.
+    app._refresh = async () => {};
+    withHash("#/");
+    window.dispatchEvent(new window.Event("hashchange"));
+    await app.updateComplete;
+    expect(app.operatorSummary).toBeNull();
   });
 });
