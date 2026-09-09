@@ -72,7 +72,7 @@ describe("topbar breadcrumbs", () => {
     expect(crumbs).toEqual(["Projects", "Operator"]);
   });
 
-  it("renders the Operator crumb only on the operator route", async () => {
+  it("renders no third crumb on the operator route", async () => {
     // Top-level nav: Projects and Operator sit side by side everywhere, and
     // #/operator adds no third crumb of its own.
     const crumbs = await crumbsFor("#/operator");

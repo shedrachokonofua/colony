@@ -59,6 +59,10 @@ describe("route regexes", () => {
     expect(NEW_PROJECT_ROUTE.test("new-project?x=1")).toBe(true);
     expect(OPERATOR_ROUTE.test("operator")).toBe(true);
     expect(OPERATOR_ROUTE.test("operator?window=7d")).toBe(true);
+    // A hand-edited URL must still name the page: anything else falls
+    // through to the scopeId fallback and reads a scope named "operator/".
+    expect(OPERATOR_ROUTE.test("operator/")).toBe(true);
+    expect(OPERATOR_ROUTE.test("OPERATOR")).toBe(true);
     expect(OPERATOR_ROUTE.test("operator-console")).toBe(false);
     expect(OPERATOR_ROUTE.test("project/operator")).toBe(false);
   });
@@ -108,6 +112,8 @@ describe("routeScopeId", () => {
       // #/operator is a page, not a scope id: the scope fallback must not
       // swallow it into a detail read for a scope named "operator".
       "#/operator",
+      "#/operator/",
+      "#/OPERATOR",
       "#/project/acme",
     ]) {
       withHash(hash);
@@ -136,6 +142,8 @@ describe("routeIsNew / routeIsNewProject / routeIsManageFiles", () => {
 describe("routeIsOperator", () => {
   it("flags the operator route and only it", () => {
     withHash("#/operator");
+    expect(routeIsOperator()).toBe(true);
+    withHash("#/operator/");
     expect(routeIsOperator()).toBe(true);
     withHash("#/new-project");
     expect(routeIsOperator()).toBe(false);

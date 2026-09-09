@@ -163,14 +163,6 @@ function sectionText(el, title) {
   return section(el, title)?.textContent ?? "";
 }
 
-/** Links of one element's rows: [href, text], the way an operator reads them. */
-function links(el) {
-  return [...el.querySelectorAll("a")].map((a) => [
-    a.getAttribute("href"),
-    a.textContent.trim(),
-  ]);
-}
-
 function eventsOf(el) {
   const seen = [];
   for (const type of [
@@ -438,10 +430,11 @@ describe("operator-page unclassified faults", () => {
     ).toEqual(["#/col-a1b2c3d4", "#/col-a1b2c3d4"]);
   });
 
-  it("never renders an unredacted detail the server did not send", async () => {
-    // The page prints the served string verbatim; it has no raw source to
-    // leak. Break the contract — hand it a bare secret — and the page still
-    // shows only what it was given, because it never writes its own copy.
+  it("renders the served detail verbatim; redaction is the server contract", async () => {
+    // The page prints the served string verbatim — redaction is the
+    // server's job, never the client's. Hand it a raw secret and it still
+    // shows only what it was given: it never writes its own copy, so no
+    // client-side path can print more than the server sent.
     const el = makePage(
       summary({
         unclassified: [

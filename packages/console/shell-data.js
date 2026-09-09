@@ -101,16 +101,6 @@ export async function refresh(app) {
       refreshDemo(app);
       return;
     }
-    // The Operator page owns one read: GET /operator/summary. It returns
-    // after it, so no GET /runs can land a second, differently-windowed
-    // dataset beside its server-computed counts.
-    if (routeIsOperator()) {
-      app.operatorSummary = await app.api(
-        `/operator/summary?window=${app.operatorWindow}`,
-      );
-      app.error = "";
-      return;
-    }
     const config = /** @type {any} */ (await app.api("/ui/config"));
     app.config = config;
     app.oidc = config.oidc || null;
@@ -123,6 +113,19 @@ export async function refresh(app) {
         app.error = "";
         return;
       }
+    }
+    // The Operator page owns one read: GET /operator/summary. It returns
+    // after it, so no GET /runs can land a second, differently-windowed
+    // dataset beside its server-computed counts. The config/OIDC bootstrap
+    // above still runs first: without it a cold load on #/operator would
+    // leave app.oidc null, so api() would send X-Actor-Id instead of a
+    // bearer token and no signin gate could ever show.
+    if (routeIsOperator()) {
+      app.operatorSummary = await app.api(
+        `/operator/summary?window=${app.operatorWindow}`,
+      );
+      app.error = "";
+      return;
     }
     const pageNo = pageFromHash(location.hash);
     const offset = (pageNo - 1) * PAGE_SIZE;

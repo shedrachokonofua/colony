@@ -7,8 +7,11 @@ export const FILES_ROUTE = /^project\/([^/?]+)\/files(?:$|\?)/;
 // Create route, optionally carrying a query (e.g. #/new?project=X).
 export const NEW_ROUTE = /^new(?:$|\?)/;
 export const NEW_PROJECT_ROUTE = /^new-project(?:$|\?)/;
-// Fleet-first Operator page: `#/operator`, never under a project.
-export const OPERATOR_ROUTE = /^operator(?:$|\?)/;
+// Fleet-first Operator page: `#/operator`, never under a project. A
+// trailing slash or a different case is still that page: falling through
+// would hand "operator/" to the scopeId fallback and read a scope that
+// does not exist.
+export const OPERATOR_ROUTE = /^operator(?:\/|\?|$)/i;
 
 export function routeScopeId() {
   const hash = location.hash.replace(/^#\/?/, "");

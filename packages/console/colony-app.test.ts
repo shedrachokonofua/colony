@@ -469,38 +469,6 @@ describe("hashchange handler", () => {
 const here = dirname(fileURLToPath(import.meta.url));
 const shellSource = readFileSync(join(here, "shell-data.js"), "utf8");
 
-/** A GET /operator/summary payload with every section empty. */
-function minimalSummary(window) {
-  return {
-    window,
-    window_start: new Date().toISOString(),
-    generated_at: new Date().toISOString(),
-    waiting_on_you: {
-      plan_approvals: [],
-      awaiting_merge: [],
-      blocked_tasks: [],
-      blocked_scopes: [],
-    },
-    live: [],
-    metrics: {
-      runs_by_kind_status: {},
-      merges: 0,
-      verdicts: 0,
-      per_model: {},
-      faults_by_layer: {},
-      faults_by_layer_code: {},
-      restart_incidents: { incidents: 0, reaped_runs: 0 },
-      validation: { pass: 0, fail: 0 },
-    },
-    unclassified: [],
-    deploy: {
-      version: "v",
-      started_at: new Date().toISOString(),
-      restart_incidents: { incidents: 0, reaped_runs: 0 },
-    },
-  };
-}
-
 /**
  * Wait for a selector to appear. A lazy view module registers its element
  * after an await, so the test waits on the element rather than on a
@@ -545,6 +513,19 @@ describe("operator route", () => {
     );
     expect(operatorBranch).toBeTruthy();
     expect(operatorBranch[0]).not.toContain("/runs");
+  });
+
+  it("bootstraps /ui/config and OIDC before the operator read", () => {
+    // A cold load straight on #/operator must not skip the bootstrap: with
+    // app.oidc still null, api() sends X-Actor-Id instead of a bearer
+    // token, the 401 lands in the error banner with no signin gate to
+    // explain it, and idling past expiry skips the proactive refresh.
+    const configRead = shellSource.indexOf('api("/ui/config")');
+    const operatorRead = shellSource.indexOf("`/operator/summary?window=");
+    expect(configRead).toBeGreaterThan(-1);
+    expect(operatorRead).toBeGreaterThan(configRead);
+    // The token refresh sits between them, on the operator route too.
+    expect(shellSource.indexOf("ensureFreshToken()")).toBeLessThan(operatorRead);
   });
 
   it("serves the offline summary and refetches on the toggled window", async () => {
