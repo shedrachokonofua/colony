@@ -5,8 +5,10 @@ import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 export interface SubagentRequest {
   readonly description: string;
   readonly prompt: string;
-  /** The parent turn's abort; the child must die with it. */
-  readonly signal: AbortSignal | undefined;
+  /** The absolute cutoff for this child's delegated work. */
+  readonly deadline: number;
+  /** The child must die with its parent or its own execution budget. */
+  readonly signal: AbortSignal;
 }
 
 /**
@@ -19,18 +21,41 @@ export interface SubagentRequest {
  */
 export type SubagentSpawner = (request: SubagentRequest) => Promise<string>;
 
+export interface SubagentToolBudget {
+  /** The parent submission window's absolute cutoff. */
+  readonly deadline: number;
+  /** Maximum child execution time after admission to the semaphore. */
+  readonly timeoutMs: number;
+}
+
 /** Cap on concurrently running child sessions per run. */
 const MAX_CONCURRENT_SUBAGENTS = 3;
 
 /** Cap on the report size returned into the parent's context. */
 const MAX_REPORT_CHARS = 24_000;
 
+interface QueuedSubagent {
+  readonly resolve: (admittedAt: number) => void;
+  readonly reject: (reason: Error) => void;
+  readonly signal: AbortSignal | undefined;
+  settled: boolean;
+  abortListener?: () => void;
+  cutoffTimer?: ReturnType<typeof setTimeout>;
+}
+
+const subagentAborted = (): Error => new Error("subagent aborted");
+const subagentDeadlineExceeded = (): Error =>
+  new Error("subagent delegation deadline exceeded");
+
 /**
  * Colony's `task`: delegate a self-contained unit of work to a subagent that
  * shares this run's workspace and tool set. Multiple calls in one turn run
  * concurrently (bounded); the child's final message is the tool result.
  */
-export function createSubagentTool(spawn: SubagentSpawner): ToolDefinition {
+export function createSubagentTool(
+  spawn: SubagentSpawner,
+  budget: SubagentToolBudget,
+): ToolDefinition {
   const parameters = Type.Object(
     {
       description: Type.String({
@@ -49,22 +74,86 @@ export function createSubagentTool(spawn: SubagentSpawner): ToolDefinition {
   );
 
   let active = 0;
-  const waiters: Array<() => void> = [];
-  const acquire = async (): Promise<void> => {
+  const waiters: QueuedSubagent[] = [];
+
+  const cleanupWaiter = (waiter: QueuedSubagent): void => {
+    if (waiter.signal && waiter.abortListener) {
+      waiter.signal.removeEventListener("abort", waiter.abortListener);
+      waiter.abortListener = undefined;
+    }
+    if (waiter.cutoffTimer !== undefined) {
+      clearTimeout(waiter.cutoffTimer);
+      waiter.cutoffTimer = undefined;
+    }
+  };
+
+  const cancelWaiter = (waiter: QueuedSubagent, reason: Error): void => {
+    if (waiter.settled) return;
+    waiter.settled = true;
+    const index = waiters.indexOf(waiter);
+    if (index >= 0) waiters.splice(index, 1);
+    cleanupWaiter(waiter);
+    waiter.reject(reason);
+  };
+
+  const dispatch = (): void => {
+    while (active < MAX_CONCURRENT_SUBAGENTS && waiters.length > 0) {
+      const waiter = waiters.shift()!;
+      if (waiter.settled) continue;
+      if (waiter.signal?.aborted) {
+        cancelWaiter(waiter, subagentAborted());
+        continue;
+      }
+      if (Date.now() >= budget.deadline) {
+        cancelWaiter(waiter, subagentDeadlineExceeded());
+        continue;
+      }
+      waiter.settled = true;
+      cleanupWaiter(waiter);
+      active += 1;
+      waiter.resolve(Date.now());
+    }
+  };
+
+  const acquire = async (signal: AbortSignal | undefined): Promise<number> => {
+    if (signal?.aborted) throw subagentAborted();
+    const now = Date.now();
+    if (now >= budget.deadline) throw subagentDeadlineExceeded();
     if (active < MAX_CONCURRENT_SUBAGENTS) {
       active += 1;
-      return;
+      return now;
     }
-    const { promise, resolve } = Promise.withResolvers<void>();
-    waiters.push(() => {
-      active += 1;
-      resolve();
-    });
+
+    const { promise, resolve, reject } = Promise.withResolvers<number>();
+    const waiter: QueuedSubagent = {
+      resolve,
+      reject,
+      signal,
+      settled: false,
+    };
+    waiter.abortListener = () => cancelWaiter(waiter, subagentAborted());
+    waiters.push(waiter);
+    if (signal) {
+      signal.addEventListener("abort", waiter.abortListener);
+      if (signal.aborted) {
+        cancelWaiter(waiter, subagentAborted());
+        return promise;
+      }
+    }
+    const delay = budget.deadline - Date.now();
+    if (delay <= 0) {
+      cancelWaiter(waiter, subagentDeadlineExceeded());
+    } else if (Number.isFinite(delay)) {
+      waiter.cutoffTimer = setTimeout(() => {
+        cancelWaiter(waiter, subagentDeadlineExceeded());
+      }, delay);
+    }
     return promise;
   };
+
   const release = (): void => {
     active -= 1;
-    waiters.shift()?.();
+    dispatch();
   };
 
   return {
@@ -81,30 +170,72 @@ export function createSubagentTool(spawn: SubagentSpawner): ToolDefinition {
     // CustomTool contract - not ToolDefinition's (id, params, signal, ...).
     // The declared type lies; the fifth argument is the turn's abort.
     execute: async (_toolCallId, rawParams, ...runtimeArgs: unknown[]) => {
-      const signal = runtimeArgs.find(
+      const parentSignal = runtimeArgs.find(
         (value): value is AbortSignal => value instanceof AbortSignal,
       );
-      const params = rawParams as Omit<SubagentRequest, "signal">;
-      await acquire();
+      const params = rawParams as Omit<SubagentRequest, "signal" | "deadline">;
+      const admittedAt = await acquire(parentSignal);
+      const childDeadline = Math.min(
+        admittedAt + budget.timeoutMs,
+        budget.deadline,
+      );
+      const childController = new AbortController();
+      let removeParentAbort = (): void => {};
+      if (parentSignal) {
+        const onParentAbort = () => {
+          childController.abort(subagentAborted());
+        };
+        if (parentSignal.aborted) {
+          onParentAbort();
+        } else {
+          parentSignal.addEventListener("abort", onParentAbort, { once: true });
+          removeParentAbort = () =>
+            parentSignal.removeEventListener("abort", onParentAbort);
+        }
+      }
+
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      if (!childController.signal.aborted) {
+        const delay = childDeadline - Date.now();
+        if (delay <= 0) {
+          childController.abort(subagentDeadlineExceeded());
+        } else if (Number.isFinite(delay)) {
+          deadlineTimer = setTimeout(() => {
+            childController.abort(subagentDeadlineExceeded());
+          }, delay);
+        }
+      }
+
+      let removeCancellationListener = (): void => {};
       let report: string;
       try {
-        // A child that never comes back (aborted mid-tool, upstream that
-        // never answers) must not pin the parent's turn: the parent's abort
-        // is the ceiling. 2026-09-01: a reviewer sat 70 minutes past its
-        // wall awaiting a child the wall had already aborted.
-        report = await Promise.race([
-          spawn({ ...params, signal }),
-          new Promise<never>((_, reject) => {
-            if (!signal) return;
-            if (signal.aborted) reject(new Error("subagent aborted"));
-            signal.addEventListener(
-              "abort",
-              () => reject(new Error("subagent aborted")),
-              { once: true },
-            );
-          }),
-        ]);
+        childController.signal.throwIfAborted();
+        const spawned = spawn({
+          ...params,
+          deadline: childDeadline,
+          signal: childController.signal,
+        });
+        const { promise: cancellation, reject: rejectCancellation } =
+          Promise.withResolvers<never>();
+        const onCancellation = () => {
+          const reason = childController.signal.reason;
+          rejectCancellation(
+            reason instanceof Error ? reason : subagentAborted(),
+          );
+        };
+        childController.signal.addEventListener("abort", onCancellation, {
+          once: true,
+        });
+        removeCancellationListener = () =>
+          childController.signal.removeEventListener("abort", onCancellation);
+        if (childController.signal.aborted) onCancellation();
+
+        report = await Promise.race([spawned, cancellation]);
+        childController.signal.throwIfAborted();
       } finally {
+        clearTimeout(deadlineTimer);
+        removeCancellationListener();
+        removeParentAbort();
         release();
       }
       const text = report.trim() || "(subagent produced no output)";

@@ -287,6 +287,15 @@ Useful-progress timestamps advance on tool activity or successful,
 non-empty assistant output. Error-only usage events and aborted turns do
 not make a stalled run appear productive.
 
+Delegated work uses isolated session identities and the coordinator's current
+model, including after fallback. Children share its restricted workspace tools
+but cannot submit a verdict or delegate again. Up to three children run at
+once, each for at most eight minutes. Delegation stops when the submission
+window begins: eight minutes before the run deadline, or the final 20% for
+shorter runs. Queued work cannot start after cancellation or that cutoff, and
+interrupted children return errors rather than successful partial reports.
+These limits reserve submission time without extending the run's wall clock.
+
 ## Architecture
 
 ```mermaid

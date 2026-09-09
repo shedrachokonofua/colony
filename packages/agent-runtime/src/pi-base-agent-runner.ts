@@ -1035,7 +1035,7 @@ export class PiBaseAgentRunner implements PiRunner {
           // The run session was built for the single-prompt shape; stages
           // bring their own. Drop it so its guards never fire on a stage.
           unsubscribeGuards();
-          session?.dispose();
+          await session?.dispose();
           session = undefined;
           const lastStage = stages.at(-1)!;
           for (const stage of stages) {
@@ -1326,7 +1326,7 @@ export class PiBaseAgentRunner implements PiRunner {
             if (!isFinal) {
               artifacts.draft = stageCaptured as StageArtifacts["draft"];
               artifacts.inspection = inspectionManifest();
-              stageSession.dispose();
+              await stageSession.dispose();
               if (session === stageSession) session = undefined;
             }
           }
@@ -1946,7 +1946,7 @@ export class PiBaseAgentRunner implements PiRunner {
         }
       }
       // (2) Ordered teardown.
-      session?.dispose();
+      await session?.dispose();
       this.activeRuns.delete(runId);
       // (3) Leak fix: /tmp/colony-pi-runs/<runId> (or <scratchDir>/<runId>)
       //     must not survive the run. Removing only cwd never touches a shared

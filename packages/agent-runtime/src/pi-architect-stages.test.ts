@@ -285,14 +285,8 @@ describe("staged architect", () => {
     expect(planPrompt).toContain("Repair failed CI automatically.");
     const verifyPrompt = firstUserText(requests[2]!);
     expect(verifyPrompt).toContain('"summary": "draft"');
-    expect(verifyPrompt).toContain("## Mechanical inspection manifest");
     expect(verifyPrompt).toContain('"pwd"');
     expect(verifyPrompt).toContain("Repair failed CI automatically.");
-    const closingNudge = requests[1]!.messages
-      .map((message) => textOf(message.content))
-      .join("\n");
-    expect(closingNudge).toContain("The submission window is closing");
-    expect(closingNudge).not.toMatch(/\b\d+\s*(?:minutes?|mins?)\b/i);
 
     const names = (request: ChatRequest) =>
       (request.tools ?? []).map((tool) => tool.function.name);

@@ -8,6 +8,7 @@ import {
   PiBaseAgentRunner,
   REVIEWER_ROLE_PROFILE,
 } from "./pi-base-agent-runner.js";
+import { noopRunAuditSink, type RunAuditSink } from "./audit-sink.js";
 
 const servers: Server[] = [];
 const scratchDirs: string[] = [];
@@ -34,7 +35,7 @@ const SSE_HEADERS = {
   "cache-control": "no-cache",
 };
 
-function sseToolCall(name: string, args: unknown): string {
+function sseToolCall(name: string, args: unknown, parallel = 1): string {
   const chunk = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
   const base = {
     id: "chatcmpl-x",
@@ -50,14 +51,12 @@ function sseToolCall(name: string, args: unknown): string {
           index: 0,
           delta: {
             role: "assistant",
-            tool_calls: [
-              {
-                index: 0,
-                id: `call-${name}-${Math.random().toString(36).slice(2, 8)}`,
-                type: "function",
-                function: { name, arguments: JSON.stringify(args) },
-              },
-            ],
+            tool_calls: Array.from({ length: parallel }, (_, index) => ({
+              index,
+              id: `call-${name}-${Math.random().toString(36).slice(2, 8)}`,
+              type: "function",
+              function: { name, arguments: JSON.stringify(args) },
+            })),
           },
           finish_reason: null,
         },
@@ -79,6 +78,7 @@ function isChildTurn(body: string): boolean {
 async function harness(
   handle: (body: string, response: ServerResponse) => void,
   runTimeoutMs: number,
+  auditSink?: RunAuditSink,
 ) {
   const server = createServer((request, response) => {
     let body = "";
@@ -120,72 +120,77 @@ async function harness(
       broker: { resolve: () => "test-key" },
       maxTurns: 60,
       runTimeoutMs,
+      auditSink,
     },
   );
 }
 
+const envelope = {
+  kind: "reviewer_verdict",
+  verdict: "approve",
+  summary:
+    "Child exhausted; parent inspected the diff itself against the spec and submitted the verdict once the turn guard returned.",
+  findings: [],
+  inspected: [{ file: "src/main.ts", note: "checked against the task spec" }],
+  dimensions: [
+    {
+      name: "spec-compliance",
+      spec_blind: false,
+      target_files: ["src/main.ts"],
+      findings: 0,
+    },
+    {
+      name: "defect-scan",
+      spec_blind: true,
+      target_files: ["src/main.ts"],
+      findings: 0,
+    },
+  ],
+  challenged: { reviewed: 0, dropped: 0 },
+  head_sha: "f".repeat(40),
+};
 describe("subagent abort propagation", () => {
   // 2026-09-01: a reviewer delegated to a `task` subagent, the child hit
   // its turn guard mid-work, and the task tool never returned. The wall
   // and the wedge watchdog then aborted the PARENT session only; the run
   // outlived its 45-minute wall by half an hour, heartbeating its lease.
 
-  it("the run wall aborts a child whose upstream never answers, and the run finalizes", async () => {
+  it("a bounded child deadline returns control so the parent can inspect and submit", async () => {
     let childTurns = 0;
+    let parentTurns = 0;
     const runner = await harness((body, response) => {
       response.writeHead(200, SSE_HEADERS);
-      if (!isChildTurn(body)) {
+      if (isChildTurn(body)) {
+        childTurns += 1;
+        response.write(": open\n\n");
+        hanging.push(response);
+        return;
+      }
+      parentTurns += 1;
+      if (parentTurns === 1) {
         response.end(
           sseToolCall("task", { description: "inspect", prompt: "inspect" }),
         );
-        return;
+      } else if (parentTurns === 2) {
+        response.end(sseToolCall("glob", { pattern: "*" }));
+      } else {
+        response.end(sseToolCall("submit_reviewer_verdict", envelope));
       }
-      // The child's turn: headers, then silence forever.
-      childTurns += 1;
-      response.write(": open\n\n");
-      hanging.push(response);
-    }, 3_000);
+    }, 4_000);
 
-    const started = Date.now();
     const result = await runner.run({
       runId: "subagent-abort-hung-upstream",
-      packet: { goal: "Review the change", head_sha: "e".repeat(40) },
+      packet: { goal: "Review the change", head_sha: envelope.head_sha },
       environment: { role: "reviewer" },
     });
 
     expect(childTurns).toBe(1);
-    expect(result.reason).toBe("timeout_without_envelope");
-    // Finalized on the wall's schedule, not the child's (which is never).
-    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(parentTurns).toBe(3);
+    expect(result.envelope).toEqual(envelope);
+    expect(result.reason).toBeUndefined();
   }, 30_000);
 
   it("a child that exhausts its own turn guard returns to the parent, which finishes the run", async () => {
-    const envelope = {
-      kind: "reviewer_verdict",
-      verdict: "approve",
-      summary:
-        "Child exhausted; parent inspected the diff itself against the spec and submitted the verdict once the turn guard returned.",
-      findings: [],
-      inspected: [
-        { file: "src/main.ts", note: "checked against the task spec" },
-      ],
-      dimensions: [
-        {
-          name: "spec-compliance",
-          spec_blind: false,
-          target_files: ["src/main.ts"],
-          findings: 0,
-        },
-        {
-          name: "defect-scan",
-          spec_blind: true,
-          target_files: ["src/main.ts"],
-          findings: 0,
-        },
-      ],
-      challenged: { reviewed: 0, dropped: 0 },
-      head_sha: "f".repeat(40),
-    };
     let parentTurns = 0;
     let childTurns = 0;
     const runner = await harness((body, response) => {
@@ -221,4 +226,80 @@ describe("subagent abort propagation", () => {
     expect(result.envelope).toEqual(envelope);
     expect(result.reason).toBeUndefined();
   }, 60_000);
+
+  it("records an operator-interrupted child as failed delegation, not a successful partial report", async () => {
+    const childStarted = Promise.withResolvers<void>();
+    const taskEvents: Record<string, unknown>[] = [];
+    let parentTurns = 0;
+    let childTurns = 0;
+    const runner = await harness(
+      (body, response) => {
+        response.writeHead(200, SSE_HEADERS);
+        if (isChildTurn(body)) {
+          response.write(
+            `data: ${JSON.stringify({
+              id: "partial-child",
+              object: "chat.completion.chunk",
+              created: 1,
+              model: "m",
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    role: "assistant",
+                    content: "UNFINISHED-CHILD-REPORT",
+                  },
+                  finish_reason: null,
+                },
+              ],
+            })}\n\n`,
+          );
+          hanging.push(response);
+          if (++childTurns === 3) childStarted.resolve();
+        } else if (++parentTurns === 1) {
+          response.end(sseToolCall("glob", { pattern: "*" }));
+        } else if (parentTurns === 2) {
+          response.end(
+            sseToolCall(
+              "task",
+              {
+                description: "inspect until canceled",
+                prompt: "Inspect the change and report only when finished.",
+              },
+              3,
+            ),
+          );
+        } else {
+          response.write(": open\n\n");
+          hanging.push(response);
+        }
+      },
+      15_000,
+      {
+        ...noopRunAuditSink,
+        appendEvent(_runId, event, detail) {
+          if (event === "tool_call" && detail.tool === "task")
+            taskEvents.push(detail);
+        },
+      },
+    );
+    const runId = "subagent-operator-cancel";
+    const running = runner.run({
+      runId,
+      packet: { goal: "Review the change", head_sha: envelope.head_sha },
+      environment: { role: "reviewer" },
+    });
+    await childStarted.promise;
+    await runner.cancel(runId);
+    await running;
+
+    expect(taskEvents.map((event) => event.is_error)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    for (const event of taskEvents) {
+      expect(event.result_summary).not.toContain("UNFINISHED-CHILD-REPORT");
+    }
+  }, 30_000);
 });

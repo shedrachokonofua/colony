@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +88,10 @@ export const CONNECTION_ERROR_RE =
 
 /** Consecutive connection-class failures that settle a provider leg as dead. */
 export const MODEL_CONNECTION_ERROR_LIMIT = 5;
+
+/** Two admission waves and the adversary must fit below the tool-wedge limit. */
+const MAX_SUBAGENT_DURATION_MS = 8 * 60_000;
+const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
 
 export const COLONY_ADVISOR_NAME = "colony-critic";
 export const COLONY_ADVISOR_INSTRUCTIONS = [
@@ -335,6 +340,10 @@ export interface PiSession {
      * rewriting) the run's transcript.
      */
     journal: "run" | "transient";
+    /** Delegated work inherits this session's current model and identity. */
+    parent?: AgentSession;
+    /** Delegated work ends before the run's submission window. */
+    deadline?: number;
   }) => Promise<CreateAgentSessionOptions>;
 }
 
@@ -376,10 +385,18 @@ export async function buildPiSession(
   // The packet repo token is a live secret: every evidence row must redact
   // it, not just the well-known token patterns.
   const { runToken } = options;
-  // Late-bound: the goal tool reads the session that does not exist yet.
+  // Colony owns the process lifecycle; every embedded SDK session is a sub.
+  const sessionIdentityPrefix = `colony-${runId}-${randomUUID()}`;
+  let sessionSequence = 0;
   let session: AgentSession | undefined;
-  const deadline =
-    Date.now() + (options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS);
+  let activeSession: AgentSession | undefined;
+  const runTimeoutMs = options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS;
+  // The runner's already-armed wall timer owns timeout classification.
+  const deadline = Date.now() + runTimeoutMs;
+  const submissionReserveMs = Math.min(
+    SUBMIT_DEADLINE_NUDGE_MS,
+    runTimeoutMs / 5,
+  );
   const thinkingLevel = toSdkThinkingLevel(
     options.thinkingLevel ?? options.defaultThinkingLevel,
   );
@@ -441,13 +458,21 @@ export async function buildPiSession(
     customTools: readonly ToolDefinition[];
     toolNames: readonly string[];
     journal: "run" | "transient";
-  }) => {
+    parent?: AgentSession;
+    deadline?: number;
+  }): Promise<CreateAgentSessionOptions> => {
+    const agentId = `${sessionIdentityPrefix}.${++sessionSequence}`;
     const useAdvisor = shouldEnableColonyAdvisor(
       input.role,
       perSession.journal,
       input.advisorModel !== undefined,
     );
     return {
+      agentId,
+      agentDisplayName: perSession.parent ? "subagent" : input.role,
+      parentAgentId: (perSession.parent ?? session)?.getAgentId(),
+      taskDepth: perSession.parent ? 2 : 1,
+      expectedAgentRef: null,
       // Advisor discovery must not walk the untrusted checkout: a project
       // WATCHDOG.yml could otherwise add mutating advisors that bypass the
       // sandbox. The supplied SessionManager still owns the real workspace
@@ -460,7 +485,7 @@ export async function buildPiSession(
             workspaceTree: await advisorWorkspaceTree,
           }
         : {}),
-      model: primaryModel,
+      model: perSession.parent?.model ?? primaryModel,
       thinkingLevel,
       authStorage,
       modelRegistry,
@@ -488,7 +513,7 @@ export async function buildPiSession(
       toolNames: [...perSession.toolNames],
       restrictToolNames: true,
       allowRestrictedCustomTools: true,
-      deadline,
+      deadline: perSession.deadline ?? deadline,
       enableMCP: false,
       enableLsp: false,
       disableExtensionDiscovery: true,
@@ -519,59 +544,89 @@ export async function buildPiSession(
     ...toolNames.filter((name) => name !== submitTool.name),
     ...sandboxTools.map((tool) => tool.name),
   ];
-  const subagentTool = createSubagentTool(async ({ prompt, signal }) => {
-    const child = await createAgentSession(
-      await buildSessionOptions({
+  const subagentTool = createSubagentTool(
+    async ({ prompt, signal, deadline: childDeadline }) => {
+      signal.throwIfAborted();
+      const childOptions = await buildSessionOptions({
         systemPrompt: buildSubagentSystemPrompt(),
         customTools: childCustomTools,
         toolNames: childToolNames,
         journal: "transient",
-      }),
-    );
-    let report = "";
-    const unsubscribeReport = child.session.agent.subscribe((event) => {
-      if (event.type === "message_end" && event.message.role === "assistant") {
-        const text = event.message.content
-          .filter(
-            (block): block is { type: "text"; text: string } =>
-              block.type === "text" && typeof block.text === "string",
-          )
-          .map((block) => block.text)
-          .join("\n");
-        if (text.trim()) report = text;
-      }
-    });
-    const unsubscribeChildGuards = installRunGuards(
-      child.session.agent,
-      `${runId}.sub`,
-      {
-        maxTurns: 24,
-        logger: options.logger,
-        abort: () => void child.session.abort(),
-      },
-    );
-    hooks.childSessions?.add(child.session);
-    // The parent's turn abort (wall, watchdog, cancel) reaches the child
-    // directly; the tool's own race returns the parent's turn regardless.
-    const abortChild = () => void child.session.abort();
-    signal?.addEventListener("abort", abortChild, { once: true });
-    if (signal?.aborted) abortChild();
-    try {
-      await inTraceContext(
-        environment,
-        () => child.session.prompt(prompt, { expandPromptTemplates: false }),
-        traceContext,
+        parent: activeSession ?? session,
+        deadline: childDeadline,
+      });
+      signal.throwIfAborted();
+      const { session: child } = await createAgentSession(childOptions);
+      let report = "";
+      let modelFailure: string | undefined;
+      let guardFailure: string | undefined;
+      const unsubscribeReport = child.agent.subscribe((event) => {
+        if (
+          event.type === "message_end" &&
+          event.message.role === "assistant"
+        ) {
+          // Context-overflow recovery can succeed after an error; only the
+          // last model outcome is terminal. Guard failures remain latched.
+          modelFailure =
+            event.message.stopReason === "error" ||
+            event.message.stopReason === "aborted"
+              ? (event.message.errorMessage ??
+                `subagent ${event.message.stopReason}`)
+              : undefined;
+          const text = event.message.content
+            .filter(
+              (block): block is { type: "text"; text: string } =>
+                block.type === "text" && typeof block.text === "string",
+            )
+            .map((block) => block.text)
+            .join("\n");
+          if (text.trim()) report = text;
+        }
+      });
+      const unsubscribeChildGuards = installRunGuards(
+        child.agent,
+        childOptions.agentId!,
+        {
+          maxTurns: 24,
+          logger: options.logger,
+          onFailure: (reason) => {
+            guardFailure ??= reason;
+          },
+          abort: () => void child.abort(),
+        },
       );
-      await child.session.agent.waitForIdle();
-      return report;
-    } finally {
-      signal?.removeEventListener("abort", abortChild);
-      hooks.childSessions?.delete(child.session);
-      unsubscribeChildGuards();
-      unsubscribeReport();
-      child.session.dispose();
-    }
-  });
+      hooks.childSessions?.add(child);
+      const abortChild = () => void child.abort();
+      signal.addEventListener("abort", abortChild, { once: true });
+      try {
+        // Startup is not abortable in the SDK. A late-created child must be
+        // disposed without prompting if its delegation budget already ended.
+        signal.throwIfAborted();
+        await inTraceContext(
+          environment,
+          () => child.prompt(prompt, { expandPromptTemplates: false }),
+          traceContext,
+        );
+        await child.agent.waitForIdle();
+        signal.throwIfAborted();
+        const failure = guardFailure ?? modelFailure;
+        if (failure) {
+          throw new Error(sanitizeSecret(failure, runToken));
+        }
+        return report;
+      } finally {
+        signal.removeEventListener("abort", abortChild);
+        unsubscribeChildGuards();
+        unsubscribeReport();
+        hooks.childSessions?.delete(child);
+        await child.dispose();
+      }
+    },
+    {
+      deadline: deadline - submissionReserveMs,
+      timeoutMs: MAX_SUBAGENT_DURATION_MS,
+    },
+  );
 
   // Goal mode: the hidden goal tool is only registered by the SDK when
   // restrictToolNames is off, so Colony registers the SDK's own GoalTool
@@ -590,6 +645,7 @@ export async function buildPiSession(
     "# Goal and delegation",
     '- Your packet objective is registered as this session\'s persistent goal. Completing the goal NEVER replaces the submit call: your run counts only when a submission is accepted. Call goal({op:"complete"}) at most once, only after your submission is accepted.',
     "- The task tool runs subagents in this same workspace with your work tools (but no submit authority). Delegate independent, self-contained subtasks - research, scoped edits, running checks - and parallelize by issuing several task calls in one turn.",
+    "- Delegated work is bounded and cannot consume the submission window. Treat a failed or interrupted task as incomplete evidence, not a successful review; use its error to narrow the remaining work.",
   ].join("\n");
 
   const result = await createAgentSession(
@@ -651,6 +707,7 @@ export async function buildPiSession(
     submitName: string,
     observeInspection?: (toolName: string, args: unknown) => void,
   ): (() => void) => {
+    activeSession = target;
     // Recovery belongs to one session/model leg: a staged session and a
     // fresh guard installation must never inherit a prior leg's stall or
     // submission rejection.
@@ -863,12 +920,11 @@ export async function buildPiSession(
   // A near-deadline reminder also reaches models that keep investigating,
   // but does not advertise a time allowance: models given a number tend to
   // spend it.
-  const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
   let lastDeadlineNudgeAt = Number.NEGATIVE_INFINITY;
   const takeSubmitDeadlineNudge = (force = false): string | null => {
     if (hooks.submissionCaptured?.()) return null;
     const remainingMs = deadline - Date.now();
-    if (remainingMs > SUBMIT_DEADLINE_NUDGE_MS) return null;
+    if (remainingMs > submissionReserveMs) return null;
     if (!force && performance.now() - lastDeadlineNudgeAt < 60_000) return null;
     lastDeadlineNudgeAt = performance.now();
     return [
