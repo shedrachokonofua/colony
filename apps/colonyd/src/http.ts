@@ -23,6 +23,10 @@ import {
   type Store,
 } from "@colony/core";
 import type { ColonydContext } from "./context.js";
+import {
+  buildOperatorSummary,
+  OPERATOR_SUMMARY_WINDOWS,
+} from "./operator-summary.js";
 import { createOidcVerifier } from "./oidc.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
 import { runValidation } from "./runs/validate.js";
@@ -119,6 +123,12 @@ const runEventsQuery = z.object({
 const runArtifactsQuery = z.object({
   limit: z.coerce.number().int().positive().max(1000).optional(),
   offset: z.coerce.number().int().nonnegative().optional(),
+});
+
+/** Fleet health summary: one bounded window, chosen from the enum; any
+ *  other value is a 400 rather than a silent default. */
+const operatorSummaryQuery = z.object({
+  window: z.enum(OPERATOR_SUMMARY_WINDOWS).default("24h"),
 });
 
 /** Global run feed. since/until are instants the run's window column
@@ -1777,6 +1787,19 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         },
       },
       200,
+    );
+  });
+
+  /**
+   * One round trip for the whole fleet: everything the operator page shows,
+   * computed from SQLite alone and served fully redacted. No provider call
+   * happens on this path, so a provider outage cannot blank the page.
+   */
+  app.get("/operator/summary", (c) => {
+    const parsed = operatorSummaryQuery.safeParse(c.req.query());
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    return c.json(
+      buildOperatorSummary(ctx.store, { window: parsed.data.window }),
     );
   });
 
