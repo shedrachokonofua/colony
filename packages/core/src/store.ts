@@ -2029,6 +2029,27 @@ export class Store {
     return { items, total: n, limit, offset };
   }
 
+  /**
+   * Every run whose window column — COALESCE(finished_at, started_at), the
+   * same one listRuns filters and orders on — falls inside [since, until],
+   * newest first, capped at `limit` (default 2000).
+   *
+   * The cap is far above the run feed's page size on purpose: a fleet
+   * summary derives every metric and every row from this one read, and a
+   * count taken over one page of the window would disagree with the rows it
+   * sits beside. Still bounded, so a daemon with a long history cannot be
+   * asked to materialize all of it.
+   */
+  runsInWindow(since: string, until: string, limit = 2000): Run[] {
+    const column = `COALESCE(finished_at, started_at)`;
+    return this.db
+      .prepare(
+        `SELECT * FROM runs WHERE ${column} >= ? AND ${column} <= ?
+         ORDER BY ${column} DESC, id DESC LIMIT ?`,
+      )
+      .all(since, until, limit) as Run[];
+  }
+
   latestRun(
     scopeId: ScopeId | string,
     kind: Run["kind"],
@@ -2308,6 +2329,61 @@ export class Store {
       )
       .get(...bindings) as { one: number } | null | undefined;
     return row !== null && row !== undefined;
+  }
+
+  /**
+   * Count of audit rows per action inside a half-open time window
+   * [since, until), for a caller-capped action list. Rows with no action in
+   * the list are never read, so a caller cannot walk the whole log.
+   *
+   * Well-known actions only: the list is parameterized, never interpolated,
+   * and the summary surfaces one count per requested action (0 when the
+   * window holds none — the caller reads a stable shape, not a sparse one).
+   */
+  countAuditByAction(
+    actions: readonly string[],
+    since: string,
+    until: string,
+  ): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const action of actions) counts.set(action, 0);
+    if (actions.length === 0) return counts;
+    const placeholders = actions.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT action, COUNT(*) AS n FROM audit
+         WHERE action IN (${placeholders}) AND at >= ? AND at < ?
+         GROUP BY action`,
+      )
+      .all(...actions, since, until) as { action: string; n: number }[];
+    for (const row of rows) counts.set(row.action, row.n);
+    return counts;
+  }
+
+  /**
+   * The newest audit row of one action for each of a capped set of tasks,
+   * keyed by task id — tasks with no such row are absent. Newest-first per
+   * task via the id-ordered window function, so a task that was reviewed
+   * twice yields the row the head actually came from, not the first one.
+   *
+   * Bounded by `taskIds` (the caller's own page of tasks) and by one action:
+   * this is the read behind "the head a review approved", not a log scan.
+   */
+  latestAuditByTask(
+    action: string,
+    taskIds: readonly string[],
+  ): Map<string, AuditRow> {
+    if (taskIds.length === 0) return new Map();
+    const placeholders = taskIds.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT *, ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
+           FROM audit WHERE action = ? AND task_id IN (${placeholders})
+         ) WHERE rn = 1`,
+      )
+      .all(action, ...taskIds) as AuditRow[];
+    return new Map(rows.map((row) => [row.task_id as string, row]));
   }
 
   // ---------------------------------------------------------------------
