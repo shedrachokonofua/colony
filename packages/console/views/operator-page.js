@@ -72,8 +72,7 @@ export function ageLabel(age) {
   const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(String(age ?? ""));
   if (!match) return age ? String(age) : "—";
   const [, h, m, s] = match;
-  const totalSec =
-    Number(h ?? 0) * 3600 + Number(m ?? 0) * 60 + Number(s ?? 0);
+  const totalSec = Number(h ?? 0) * 3600 + Number(m ?? 0) * 60 + Number(s ?? 0);
   return formatDuration(totalSec * 1000);
 }
 
@@ -110,7 +109,8 @@ export class OperatorPage extends ColonyElement {
    * @param {MouseEvent} event @param {string} href
    */
   #nav(event, href) {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
+      return;
     event.preventDefault();
     this.#emit("colony-navigate", { href });
   }
@@ -139,7 +139,9 @@ export class OperatorPage extends ColonyElement {
     return html`<div class="operator-groups">
       ${plans.length
         ? html`<div class="operator-group">
-            <p class="operator-group-head">Plans to approve (${plans.length})</p>
+            <p class="operator-group-head">
+              Plans to approve (${plans.length})
+            </p>
             <ul class="operator-list">
               ${repeat(
                 plans,
@@ -165,11 +167,7 @@ export class OperatorPage extends ColonyElement {
                 (row) =>
                   html`<li class="operator-row">
                     ${this.#anchor(row.scope_id, scopeHref(row.scope_id))}
-                    ${this.#taskAnchor(
-                      row.task_id,
-                      row.scope_id,
-                      row.task_id,
-                    )}
+                    ${this.#taskAnchor(row.task_id, row.scope_id, row.task_id)}
                     <span class="mono operator-head-sha"
                       >${shortSha(row.head_sha)}</span
                     >
@@ -188,17 +186,11 @@ export class OperatorPage extends ColonyElement {
                 (row) =>
                   html`<li class="operator-row">
                     ${this.#anchor(row.scope_id, scopeHref(row.scope_id))}
-                    ${this.#taskAnchor(
-                      row.task_id,
-                      row.scope_id,
-                      row.task_id,
-                    )}
+                    ${this.#taskAnchor(row.task_id, row.scope_id, row.task_id)}
                     <span class="note"
                       >${row.blocked_reason ?? "no reason recorded"}</span
                     >
-                    <span class="mono operator-age"
-                      >${ageLabel(row.age)}</span
-                    >
+                    <span class="mono operator-age">${ageLabel(row.age)}</span>
                   </li>`,
               )}
             </ul>
@@ -217,9 +209,7 @@ export class OperatorPage extends ColonyElement {
                     <span class="note"
                       >${row.blocked_reason ?? "no reason recorded"}</span
                     >
-                    <span class="mono operator-age"
-                      >${ageLabel(row.age)}</span
-                    >
+                    <span class="mono operator-age">${ageLabel(row.age)}</span>
                   </li>`,
               )}
             </ul>
@@ -233,8 +223,9 @@ export class OperatorPage extends ColonyElement {
     return html`<a
       class="operator-link mono"
       href=${href}
-      @click=${/** @param {MouseEvent} event */ (event) =>
-        this.#nav(event, href)}
+      @click=${
+        /** @param {MouseEvent} event */ (event) => this.#nav(event, href)
+      }
       >${label}</a
     >`;
   }
@@ -253,12 +244,7 @@ export class OperatorPage extends ColonyElement {
       href=${scopeHref(scopeId)}
       @click=${
         /** @param {MouseEvent} event */ (event) => {
-          if (
-            event.metaKey ||
-            event.ctrlKey ||
-            event.shiftKey ||
-            event.button
-          )
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button)
             return;
           event.preventDefault();
           this.#emit("colony-open-task", { scopeId, taskId });
@@ -277,7 +263,9 @@ export class OperatorPage extends ColonyElement {
     }
     // Stalled first: a stalled run needs a decision, and a healthy fleet
     // scrolls the healthy rows off the top.
-    const ordered = [...live].sort((a, b) => Number(b.stalled) - Number(a.stalled));
+    const ordered = [...live].sort(
+      (a, b) => Number(b.stalled) - Number(a.stalled),
+    );
     return html`<ul class="operator-list">
       ${repeat(
         ordered,
@@ -328,23 +316,22 @@ export class OperatorPage extends ColonyElement {
     return html`<div class="operator-table" role="table" aria-label=${label}>
       <div class="operator-tr" role="row">
         ${columns.map(
-          (column) => html`<span class="operator-th" role="columnheader"
-            >${column}</span
-          >`,
+          (column) =>
+            html`<span class="operator-th" role="columnheader"
+              >${column}</span
+            >`,
         )}
       </div>
       ${repeat(
         rows,
         (row) => row.key,
-        (row) => html`<div class="operator-tr" role="row">
-          ${row.cells.map(
-            (/** @type {any} */ cell) => html`<span
-              class="operator-td"
-              role="cell"
-              >${cell}</span
-            >`,
-          )}
-        </div>`,
+        (row) =>
+          html`<div class="operator-tr" role="row">
+            ${row.cells.map(
+              (/** @type {any} */ cell) =>
+                html`<span class="operator-td" role="cell">${cell}</span>`,
+            )}
+          </div>`,
       )}
     </div>`;
   }
@@ -449,10 +436,8 @@ export class OperatorPage extends ColonyElement {
       return this.#empty("No restart incidents in this window.");
     }
     return html`<p class="operator-restart">
-      ${n} restart incident${n === 1 ? "" : "s"} reaped ${reaped} run${reaped ===
-      1
-        ? ""
-        : "s"}.
+      ${n} restart incident${n === 1 ? "" : "s"} reaped ${reaped}
+      run${reaped === 1 ? "" : "s"}.
     </p>`;
   }
 
@@ -529,14 +514,15 @@ export class OperatorPage extends ColonyElement {
           <div class="board-head-actions">
             <nav class="tabs" role="tablist" aria-label="Metrics window">
               ${OPERATOR_WINDOWS.map(
-                (w) => html`<button
-                  class="tab"
-                  role="tab"
-                  aria-selected=${this.window === w}
-                  @click=${() => this.#window(w)}
-                >
-                  ${WINDOW_LABEL[w]}
-                </button>`,
+                (w) =>
+                  html`<button
+                    class="tab"
+                    role="tab"
+                    aria-selected=${this.window === w}
+                    @click=${() => this.#window(w)}
+                  >
+                    ${WINDOW_LABEL[w]}
+                  </button>`,
               )}
             </nav>
           </div>
@@ -562,8 +548,7 @@ export class OperatorPage extends ColonyElement {
               </section>
               <section class="card operator-section">
                 <p class="card-head">
-                  Unclassified faults
-                  (${summary.unclassified?.length ?? 0})
+                  Unclassified faults (${summary.unclassified?.length ?? 0})
                 </p>
                 <div class="card-body">
                   ${this.#unclassified(summary.unclassified ?? [])}

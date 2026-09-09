@@ -63,12 +63,7 @@ describe("topbar breadcrumbs", () => {
     const crumbs = await crumbsFor("#/col-a1b2c3d4", {
       detail: { scope: { project_name: "Acme" } },
     });
-    expect(crumbs).toEqual([
-      "Projects",
-      "Operator",
-      "Acme",
-      "col-a1b2c3d4",
-    ]);
+    expect(crumbs).toEqual(["Projects", "Operator", "Acme", "col-a1b2c3d4"]);
   });
 
   it("renders no scope crumb for paginated list routes", async () => {

@@ -261,9 +261,7 @@ describe("operator-page waiting on you", () => {
     await el.updateComplete;
     const link = section(el, "Waiting on you").querySelector("a");
     link.click();
-    expect(seen).toEqual([
-      ["colony-navigate", { href: "#/col-plan1111" }],
-    ]);
+    expect(seen).toEqual([["colony-navigate", { href: "#/col-plan1111" }]]);
   });
 
   it("clicking a task link bubbles colony-open-task, not an invented route", async () => {
@@ -327,12 +325,11 @@ describe("operator-page live", () => {
   });
 
   it("reads the server's live count, not a recount", async () => {
-    const el = makePage(
-      summary({ live: summary().live.slice(0, 1) }),
-    );
+    const el = makePage(summary({ live: summary().live.slice(0, 1) }));
     await el.updateComplete;
-    expect(section(el, "Live").querySelector(".card-head")?.textContent)
-      .toContain("Live (1)");
+    expect(
+      section(el, "Live").querySelector(".card-head")?.textContent,
+    ).toContain("Live (1)");
     expect(section(el, "Live").querySelectorAll(".operator-row")).toHaveLength(
       1,
     );
@@ -381,8 +378,9 @@ describe("operator-page metrics", () => {
   it("prints merges and verdicts as the server counted them", async () => {
     const el = makePage();
     await el.updateComplete;
-    expect(section(el, "Metrics").querySelector(".operator-tally")?.textContent)
-      .toMatch(/2\s+merges.*4\s+verdicts/s);
+    expect(
+      section(el, "Metrics").querySelector(".operator-tally")?.textContent,
+    ).toMatch(/2\s+merges.*4\s+verdicts/s);
   });
 
   it("collapses a restart batch into exactly one line", async () => {
@@ -390,8 +388,9 @@ describe("operator-page metrics", () => {
     // two runs is one line, not two. Two lines would read as two outages.
     const el = makePage();
     await el.updateComplete;
-    const head = [...section(el, "Metrics").querySelectorAll(".operator-group")]
-      .find((group) => group.textContent.includes("Restart incidents"));
+    const head = [
+      ...section(el, "Metrics").querySelectorAll(".operator-group"),
+    ].find((group) => group.textContent.includes("Restart incidents"));
     const lines = [...head.querySelectorAll("p, li, tr")].filter(
       (node) => !node.classList.contains("operator-group-head"),
     );
@@ -434,8 +433,9 @@ describe("operator-page unclassified faults", () => {
     // The count above the list is the server's, and it equals the rows.
     expect(faults.querySelector(".card-head")?.textContent).toContain("(1)");
     expect(faults.querySelectorAll(".operator-row")).toHaveLength(1);
-    expect([...faults.querySelectorAll("a")].map((a) => a.getAttribute("href")))
-      .toEqual(["#/col-a1b2c3d4", "#/col-a1b2c3d4"]);
+    expect(
+      [...faults.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+    ).toEqual(["#/col-a1b2c3d4", "#/col-a1b2c3d4"]);
   });
 
   it("never renders an unredacted detail the server did not send", async () => {

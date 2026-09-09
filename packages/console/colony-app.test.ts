@@ -534,12 +534,15 @@ describe("operator route", () => {
     // takes the offline branch here and the URL is asserted at the source —
     // the same way running-tab.test.ts pins shell-data.js's reads.
     expect(shellSource).toContain("routeIsOperator()");
-    expect(shellSource).toContain("`/operator/summary?window=${app.operatorWindow}`");
+    expect(shellSource).toContain(
+      "`/operator/summary?window=${app.operatorWindow}`",
+    );
     // No GET /runs on this page: a second windowed dataset could contradict
     // the server-computed counts rendered above it. The operator branch is
     // delimited, so this cannot match the /runs read the scope sheet does.
-    const operatorBranch =
-      /if \(routeIsOperator\(\)\) \{[\s\S]*?\n    \}/.exec(shellSource);
+    const operatorBranch = /if \(routeIsOperator\(\)\) \{[\s\S]*?\n    \}/.exec(
+      shellSource,
+    );
     expect(operatorBranch).toBeTruthy();
     expect(operatorBranch[0]).not.toContain("/runs");
   });
