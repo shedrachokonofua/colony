@@ -78,7 +78,11 @@ providers:
         context_window: 1048576
         max_tokens: 131072
         # Caps concurrently RUNNING runs across this entry's pooled credentials.
-        max_parallel_runs: 3
+        # 2026-09-25: 4, the slot count for pools with good AA unit economics
+        # ($0.25 per Intelligence Index task) that pass a burst: 4 and 6
+        # concurrent turns went 20/20 across all four legs, no 429s. History's
+        # 43 rate-limit faults predate the OpenCode Go session-header fix.
+        max_parallel_runs: 4
         cost: { input: 0, output: 0 }
       - id: kimi/k3
         name: kimi-k3
@@ -97,7 +101,9 @@ providers:
         reasoning: true
         context_window: 1048576
         max_tokens: 384000
-        max_parallel_runs: 2
+        # 2026-09-25: $0.67 per AA task; bursts of 4 and 6 concurrent turns
+        # went 20/20 on Ollama Cloud with a 1.9 s worst case, no 429s.
+        max_parallel_runs: 4
         cost: { input: 0, output: 0 }
       - id: aether/qwen3.8-27b
         name: qwen3.8-27b
@@ -172,7 +178,9 @@ providers:
         # self-submitting 4/4 in two-turn agent loops, so finalizers steer it.
         compat:
           supportsForcedToolChoice: false
-        max_parallel_runs: 2
+        # 2026-09-25: $0.72 per AA task; bursts of 4 and 6 concurrent xhigh
+        # turns went 20/20 on the Step Plan, no 429s.
+        max_parallel_runs: 4
         cost: { input: 0, output: 0 }
 
 agents:
