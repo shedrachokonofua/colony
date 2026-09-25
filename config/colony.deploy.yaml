@@ -154,7 +154,10 @@ providers:
         # (2026-09-25 probe), so finalizers steer it instead of forcing.
         compat:
           supportsForcedToolChoice: false
-        max_parallel_runs: 2
+        # 2026-09-25: matches muse-spark. Bursts of 4 and 6 concurrent xhigh
+        # agent turns went 20/20, all on the Xiaomi priority leg (no failover
+        # to the capped OpenCode Go leg), median 2.8-8 s, no 429s.
+        max_parallel_runs: 4
         cost: { input: 0, output: 0 }
       # Step 5 Preview on the Step Plan subscription: a quota pool no other
       # role draws on. Step's API reports 1,024,000 input tokens. It reasons
