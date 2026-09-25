@@ -150,6 +150,32 @@ providers:
         max_tokens: 65536
         max_parallel_runs: 4
         cost: { input: 0, output: 0 }
+      # GPT-6 Astra via the ChatGPT subscription (LiteLLM chatgpt/*; the route
+      # is streaming-only, which Pi's transport satisfies). The subscription
+      # also serves the household's only OpenWebUI model, so Colony uses it
+      # for plan review alone - its lowest-volume role - one run at a time.
+      - id: chatgpt/gpt-6-astra
+        name: gpt-6-astra
+        reasoning: true
+        # Operational cap: AA lists a 1M API context, but the subscription
+        # route's limit is unverified.
+        context_window: 272000
+        max_tokens: 65536
+        max_parallel_runs: 1
+        cost: { input: 0, output: 0 }
+      # MiMo V2.6 Pro through LiteLLM's priority pool: the Xiaomi token plan
+      # first, Command Code and OpenCode Go only while it fails.
+      - id: router/mimo-v2.6-pro
+        name: mimo-v2.6-pro
+        reasoning: true
+        context_window: 1000000
+        max_tokens: 131072
+        # A named forced tool_choice gets a different tool call back
+        # (2026-09-25 probe), so finalizers steer it instead of forcing.
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
 
 agents:
   # Budgets sized from observed run durations (12h window, 2026-08-18):
@@ -165,11 +191,21 @@ agents:
   # spark Contributor 61 (186 tok/s, $0.10/M in, $0.20/M out);
   # gemini-3.8-flash 59 (302 tok/s, $0.58), glm-5.3-flash 57 ($0.09),
   # qwen3.8-flash.
+  # 2026-09-25: mimo-v2.6-pro (AA Index v4.3.2: 46, vs glm-5.3-flash 42 and
+  # gemini-3.8-flash 41) goes ahead of glm-5.3-flash, whose implement runs
+  # hit 43 rate-limit faults in the 45 days to 2026-09-09. MiMo has no
+  # in-loop record yet, so it stays behind the fallbacks that do.
   developer:
     provider: openai_compatible
     model: hy4-preview
     fallback_models:
-      [muse-spark, gemini-3.8-flash, glm-5.3-flash, qwen3.8-flash]
+      [
+        muse-spark,
+        gemini-3.8-flash,
+        mimo-v2.6-pro,
+        glm-5.3-flash,
+        qwen3.8-flash,
+      ]
     thinking_level: high
     timeout_ms: 10800000
     max_turns: 400
@@ -195,14 +231,18 @@ agents:
   # Grok 4.7 plan-review quality is unmeasured; retain the separate chain.
   # The plan reviewer must not be the plan's author: spark leads the
   # architect chain, so a spark-first review is the model grading its own
-  # draft - the rubber stamp the review loop exists to replace. qwen3.8-max
-  # leads (lab reviewer 4/4, real findings; not an architect head), then
-  # kimi-k3 60, glm-5.3 60, deepseek 53; spark last, for when nothing
-  # else answers.
+  # draft - the rubber stamp the review loop exists to replace.
+  # 2026-09-25: gpt-6-astra leads (AA Index v4.3.2: 53, the gateway's highest;
+  # not an architect head). It honours a forced submit, which qwen3.8-max
+  # rejects with HTTP 400: 9 of qwen's 11 failed plan reviews in the 45 days
+  # to 2026-09-09 ended without an envelope or at the wall clock. Then
+  # qwen3.8-max (32 succeeded), kimi-k3, glm-5.3, deepseek; spark last, for
+  # when nothing else answers.
   plan_reviewer:
     provider: openai_compatible
-    model: qwen3.8-max
+    model: gpt-6-astra
     fallback_models:
+      - qwen3.8-max
       - kimi-k3
       - glm-5.3
       - deepseek-v4-pro

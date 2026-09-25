@@ -134,6 +134,7 @@ describe("harness conformance config parsing", () => {
       "hy4-preview",
       "muse-spark",
       "gemini-3.8-flash",
+      "mimo-v2.6-pro",
       "glm-5.3-flash",
       "qwen3.8-flash",
     ]);
