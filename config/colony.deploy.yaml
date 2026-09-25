@@ -176,6 +176,21 @@ providers:
           supportsForcedToolChoice: false
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
+      # Step 5 Preview on the Step Plan subscription: a quota pool no other
+      # role draws on. Step's API reports 1,024,000 input tokens. It reasons
+      # verbosely on open-ended prose (2.5-3.7k tokens for a 400-word answer),
+      # so the output cap bounds a runaway turn the way muse-spark's does.
+      - id: step/step-5-preview
+        name: step-5-preview
+        reasoning: true
+        context_window: 1024000
+        max_tokens: 32768
+        # Honoured a named forced tool_choice 1/3 (2026-09-25 probe) while
+        # self-submitting 4/4 in two-turn agent loops, so finalizers steer it.
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
 
 agents:
   # Budgets sized from observed run durations (12h window, 2026-08-18):
@@ -195,6 +210,10 @@ agents:
   # gemini-3.8-flash 41) goes ahead of glm-5.3-flash, whose implement runs
   # hit 43 rate-limit faults in the 45 days to 2026-09-09. MiMo has no
   # in-loop record yet, so it stays behind the fallbacks that do.
+  # step-5-preview (AA 44; separate Step Plan pool) follows mimo-v2.6-pro:
+  # 4/4 two-turn agent loops at high/xhigh, 1.3-2.4 s per turn (2026-09-25),
+  # ahead of the rate-limited glm-5.3-flash (42) and qwen3.8-flash (AA's
+  # Qwen3.8-Flash-Next, 40). Same caveat as MiMo: no in-loop record yet.
   developer:
     provider: openai_compatible
     model: hy4-preview
@@ -203,6 +222,7 @@ agents:
         muse-spark,
         gemini-3.8-flash,
         mimo-v2.6-pro,
+        step-5-preview,
         glm-5.3-flash,
         qwen3.8-flash,
       ]
