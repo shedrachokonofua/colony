@@ -99,13 +99,6 @@ providers:
         max_tokens: 384000
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
-      - id: qwen-cloud/qwen3.8-max
-        name: qwen3.8-max
-        reasoning: true
-        context_window: 1000000
-        max_tokens: 131072
-        max_parallel_runs: 1
-        cost: { input: 0, output: 0 }
       - id: aether/qwen3.8-27b
         name: qwen3.8-27b
         reasoning: true
@@ -127,12 +120,6 @@ providers:
         name: gemini-3.8-flash
         reasoning: true
         context_window: 1048576
-        max_parallel_runs: 2
-        cost: { input: 0, output: 0 }
-      - id: qwen-cloud/qwen3.8-flash
-        name: qwen3.8-flash
-        reasoning: true
-        context_window: 1000000
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
       # Standard Grok 4.7 through the SuperGrok subscription bridge.
@@ -192,79 +179,76 @@ agents:
   # 2026-09-25: Hy4 left the chain (no longer free), so the clock returns to
   # 90 min as planned for faster coders. Turns are the divergence guard; the
   # stall/liveness watchdogs cover hangs; the clock is the outer bound.
-  # muse-spark leads: the best implement record in the 45 days to 2026-09-09
-  # (20 succeeded / 4 failed as the starting model) and 1.2-2.8 s agent turns.
-  # mimo-v2.6-pro follows (AA Index v4.3.2: 46; Xiaomi token plan first in
-  # its pool), then gemini-3.8-flash (34/16, mostly process restarts; it
-  # relies on the forced finalizer, which it honours), step-5-preview (AA 44,
-  # Step Plan pool, 4/4 agent loops), the rate-limited glm-5.3-flash (43
-  # rate-limit faults), and qwen3.8-flash (AA Qwen3.8-Flash-Next 40; verbose,
-  # rejects forced tool_choice).
+  #
+  # 2026-09-25 holistic re-pick. Evidence per model: Colony history (runs as
+  # the starting model, 45 days to 2026-09-09), AA Intelligence Index v4.3.2
+  # (plus AA-LCR where AA exposes it), and a role-suitability run through
+  # LiteLLM: 2 sessions per model and role in a convention-bearing repo,
+  # graded deterministically, submitting through Colony's real envelope
+  # validators with the steer-then-force finalizer. Chain members passed
+  # their role there unless noted; chains order by history, then quality,
+  # then speed. Dropped: qwen3.8-max (9-11 min sessions, p90 turn 104 s,
+  # rejects forced tool_choice, worst reviewer record 10/33), qwen3.8-flash
+  # (0/2 as developer: never submitted, forced submit HTTP 400),
+  # step-5-preview as developer (1/2: never submitted), and
+  # gemini-3.8-flash as architect (1/2: missed docs and SQL conventions).
+  #
+  # developer: muse-spark (20/4 implement; 2/2 in 21 s), mimo-v2.6-pro
+  # (AA 46; 2/2 voluntary), gemini-3.8-flash (34/16, mostly infra; 2/2 only
+  # via the forced finalizer, which it honours), glm-5.3-flash (2/2 in 32 s;
+  # rate-limited history), deepseek-v4-pro (2/2 in 8 s; Ollama Cloud pool).
   developer:
     provider: openai_compatible
     model: muse-spark
     fallback_models:
-      [
-        mimo-v2.6-pro,
-        gemini-3.8-flash,
-        step-5-preview,
-        glm-5.3-flash,
-        qwen3.8-flash,
-      ]
+      [mimo-v2.6-pro, gemini-3.8-flash, glm-5.3-flash, deepseek-v4-pro]
     thinking_level: high
     timeout_ms: 5400000
     max_turns: 400
-  # 2026-09-03: Grok 4.6 led code review - 6/8 landed in production that night
-  # (the two misses were a daemon restart and an in-flight run), lab 2/2
-  # with dense correct findings. qwen3.8-max second on evidence: lab 4/4
-  # submitted (4-9 min), opens the diff, runs the typecheck, findings real.
-  # Then spark (AA 61), kimi-k3 60, glm-5.3 60, deepseek-v4-pro 53.
+  # reviewer: grok-4.7 (AA 46; 2/2 in 31 s; honours a forced submit),
+  # kimi-k3 (best review record 71/20; AA-LCR 88.7%), glm-5.3 (22/27;
+  # honours a forced submit), mimo-v2.6-pro (AA 46), deepseek-v4-pro (8/2;
+  # 2/2 in 14 s), and muse-spark-1.3 last: muse-spark now writes the code.
   reviewer:
     provider: openai_compatible
     model: grok-4.7
     fallback_models:
-      - qwen3.8-max
-      - muse-spark-1.3
       - kimi-k3
       - glm-5.3
+      - mimo-v2.6-pro
       - deepseek-v4-pro
+      - muse-spark-1.3
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
-  # Historical Grok 4.6 plan reviews narrated a verdict without calling
-  # submit (0/10 in production; the architect chain saw the same behavior).
-  # Grok 4.7 plan-review quality is unmeasured; retain the separate chain.
-  # The plan reviewer must not be the plan's author: spark leads the
-  # architect chain, so a spark-first review is the model grading its own
-  # draft - the rubber stamp the review loop exists to replace.
-  # 2026-09-25: gpt-6-astra leads (AA Index v4.3.2: 53, the gateway's highest;
-  # not an architect head). It honours a forced submit, which qwen3.8-max
-  # rejects with HTTP 400: 9 of qwen's 11 failed plan reviews in the 45 days
-  # to 2026-09-09 ended without an envelope or at the wall clock. Then
-  # qwen3.8-max (32 succeeded), kimi-k3, glm-5.3, deepseek; spark last, for
-  # when nothing else answers.
+  # The plan reviewer must not be the plan's author: muse-spark leads the
+  # architect chain, so no muse model reviews plans. gpt-6-astra leads
+  # (AA 53, the gateway's highest; 2/2 with all 5 planted flaws, 33 s).
+  # grok-4.7 is now measured: 2/2, all 5 flaws, voluntary submit in 32 s
+  # (4.6 submitted 0/10 plan reviews in production). Then kimi-k3 (12/0 plan
+  # reviews; AA-LCR 88.7%), glm-5.3, mimo-v2.6-pro (AA-LCR 86.3%), and
+  # step-5-preview (AA 44, AA-LCR 88.3%; 2/2 all 5 flaws; Step Plan pool).
   plan_reviewer:
     provider: openai_compatible
     model: gpt-6-astra
     fallback_models:
-      - qwen3.8-max
+      - grok-4.7
       - kimi-k3
       - glm-5.3
-      - deepseek-v4-pro
-      - muse-spark-1.3
+      - mimo-v2.6-pro
+      - step-5-preview
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
-  # 2026-09-03: spark leads through the Contributor route after completing
-  # all staged-architect lab submissions; AA Index 61 at xhigh.
-  # Contributor is $0.10/M input and $0.20/M output. Behind it, AA Index order:
-  # glm-5.3 60, kimi-k3 60, gemini-3.8-flash 59. Grok-4.6 failed forced
-  # structured submission after two steers and is excluded from this chain.
+  # architect: muse-spark leads (46/10 as architect; 2/2 in 90 s). Then
+  # glm-5.3 (30/48, mostly infra faults; honours a forced submit), grok-4.7
+  # (honours a forced submit; 2/2), kimi-k3 (AA-LCR 88.7%; forced with
+  # reasoning off), mimo-v2.6-pro (AA 46), deepseek-v4-pro (5/1; 2/2 in 48 s).
   architect:
     provider: openai_compatible
     model: muse-spark
     fallback_models:
-      [glm-5.3, kimi-k3, gemini-3.8-flash, qwen3.8-max, deepseek-v4-pro]
+      [glm-5.3, grok-4.7, kimi-k3, mimo-v2.6-pro, deepseek-v4-pro]
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200

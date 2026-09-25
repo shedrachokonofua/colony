@@ -134,9 +134,8 @@ describe("harness conformance config parsing", () => {
       "muse-spark",
       "mimo-v2.6-pro",
       "gemini-3.8-flash",
-      "step-5-preview",
       "glm-5.3-flash",
-      "qwen3.8-flash",
+      "deepseek-v4-pro",
     ]);
     expect(byRole[4]).toEqual({
       role: "memory_consolidator",
