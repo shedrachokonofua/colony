@@ -135,7 +135,6 @@ describe("harness conformance config parsing", () => {
       "muse-spark",
       "gemini-3.8-flash",
       "glm-5.3-flash",
-      "deepseek-v4-flash",
       "qwen3.8-flash",
     ]);
     expect(byRole[4]).toEqual({

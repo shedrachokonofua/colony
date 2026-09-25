@@ -1,6 +1,7 @@
 # Production agent config baked into the colonyd image (see Dockerfile).
-# The aether-side deployment points COLONY_CONFIG_PATH here; editing this
-# file redeploys colonyd through the normal image build on main.
+# The aether-side deployment points COLONY_CONFIG_PATH here. CI bakes changes
+# into a new image; aether pins its immutable digest and rolls it out through
+# IaC after quiescing scopes. Keel is disabled; a build alone does not deploy.
 #
 # Web research (env-gated): web_search/web_fetch are enabled only when
 # COLONY_SEARXNG_URL is set (e.g. https://searxng.home.shdr.ch). No API key.
@@ -65,16 +66,15 @@ providers:
         # without letting a burst drain it.
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
-      # ox-alpha's free stealth preview ended; OpenRouter and aether's own
-      # litellm config both confirm the named successor is GLM-5.3-Flash.
-      # Pooled across 5 credentials (clinepass, zai, commandcode, opencode-go,
-      # ollama-cloud) for quota resilience under developer's high turn volume.
+      # GLM-5.3-Flash is the named successor to the ended Ox Alpha preview.
+      # Pooled across Z.AI, Command Code, OpenCode Go, and Ollama Cloud for
+      # quota resilience under developer's high turn volume.
       - id: router/glm-5.3-flash
         name: glm-5.3-flash
         reasoning: true
         context_window: 1048576
         max_tokens: 131072
-        # Caps concurrently RUNNING runs across this entry's pooled credentials (5 keys).
+        # Caps concurrently RUNNING runs across this entry's pooled credentials.
         max_parallel_runs: 3
         cost: { input: 0, output: 0 }
       # Temporary CodeBuddy Hy4 trial route. This endpoint is stream-only and
@@ -105,13 +105,6 @@ providers:
         context_window: 1048576
         max_tokens: 384000
         max_parallel_runs: 2
-        cost: { input: 0, output: 0 }
-      - id: router/deepseek-v4-flash
-        name: deepseek-v4-flash
-        reasoning: true
-        context_window: 1048576
-        max_tokens: 384000
-        max_parallel_runs: 3
         cost: { input: 0, output: 0 }
       - id: qwen-cloud/qwen3.8-max
         name: qwen3.8-max
@@ -149,17 +142,11 @@ providers:
         context_window: 1000000
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
-      - id: router/mimo-v2.5-pro
-        name: mimo-v2.5-pro
+      # Standard Grok 4.7 through the SuperGrok subscription bridge.
+      - id: supergrok/grok-4.7
+        name: grok-4.7
         reasoning: true
-        context_window: 262144
-        max_parallel_runs: 2
-        cost: { input: 0, output: 0 }
-      # Grok 4.6 through the SuperGrok bridge; bypasses Cursor Composer.
-      - id: supergrok/grok-4.6
-        name: grok-4.6
-        reasoning: true
-        context_window: 262144
+        context_window: 500000
         max_tokens: 65536
         max_parallel_runs: 4
         cost: { input: 0, output: 0 }
@@ -177,29 +164,23 @@ agents:
   # it, AA Index with throughput as the tie-break for this long-horizon role:
   # spark Contributor 61 (186 tok/s, $0.10/M in, $0.20/M out);
   # gemini-3.8-flash 59 (302 tok/s, $0.58), glm-5.3-flash 57 ($0.09),
-  # deepseek-v4-flash 52 (137 tok/s, $0.11), qwen3.8-flash.
+  # qwen3.8-flash.
   developer:
     provider: openai_compatible
     model: hy4-preview
     fallback_models:
-      [
-        muse-spark,
-        gemini-3.8-flash,
-        glm-5.3-flash,
-        deepseek-v4-flash,
-        qwen3.8-flash,
-      ]
+      [muse-spark, gemini-3.8-flash, glm-5.3-flash, qwen3.8-flash]
     thinking_level: high
     timeout_ms: 10800000
     max_turns: 400
-  # 2026-09-03: grok leads code review - 6/8 landed in production tonight
+  # 2026-09-03: Grok 4.6 led code review - 6/8 landed in production that night
   # (the two misses were a daemon restart and an in-flight run), lab 2/2
   # with dense correct findings. qwen3.8-max second on evidence: lab 4/4
   # submitted (4-9 min), opens the diff, runs the typecheck, findings real.
   # Then spark (AA 61), kimi-k3 60, glm-5.3 60, deepseek-v4-pro 53.
   reviewer:
     provider: openai_compatible
-    model: grok-4.6
+    model: grok-4.7
     fallback_models:
       - qwen3.8-max
       - muse-spark-1.3
@@ -209,9 +190,9 @@ agents:
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
-  # A plan is prose, a diff is code. grok-4.6 lands code reviews but its
-  # plan reviews narrate a verdict and never call submit (0/10 in
-  # production; the architect chain dropped it for the same signature).
+  # Historical Grok 4.6 plan reviews narrated a verdict without calling
+  # submit (0/10 in production; the architect chain saw the same behavior).
+  # Grok 4.7 plan-review quality is unmeasured; retain the separate chain.
   # The plan reviewer must not be the plan's author: spark leads the
   # architect chain, so a spark-first review is the model grading its own
   # draft - the rubber stamp the review loop exists to replace. qwen3.8-max

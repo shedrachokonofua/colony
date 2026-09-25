@@ -233,27 +233,30 @@ providers:
     base_url: https://litellm.example.com/v1
     auth: { kind: api_key, value: LITELLM_API_KEY } # env var name
     models:
-      - id: deepseek-v4-flash
-        context_window: 1048576
-        max_tokens: 384000
-      - id: glm-5.2
+      - id: qwen-cloud/qwen3.8-max
+        name: qwen3.8-max
+        context_window: 1000000
+        max_tokens: 131072
+      - id: router/glm-5.3
+        name: glm-5.3
         max_parallel_runs: 2 # cap concurrent runs on this model
-      - id: kimi-k3
+      - id: kimi/k3
+        name: kimi-k3
 
 agents:
-  architect: { provider: gateway, model: glm-5.2 }
+  architect: { provider: gateway, model: glm-5.3 }
   plan_reviewer: { provider: gateway, model: kimi-k3 }
   developer:
     provider: gateway
-    model: deepseek-v4-flash
-    fallback_models: [glm-5.2, kimi-k3]
+    model: qwen3.8-max
+    fallback_models: [glm-5.3, kimi-k3]
     thinking_level: high
     timeout_ms: 1800000
     max_turns: 250
   reviewer:
     provider: gateway
     model: kimi-k3
-    fallback_models: [glm-5.2]
+    fallback_models: [glm-5.3]
 ```
 
 Fallbacks work at three points:
