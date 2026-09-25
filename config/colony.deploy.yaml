@@ -55,7 +55,10 @@ providers:
         # generation. Bounding a single response keeps the run acting instead
         # of monologuing.
         max_tokens: 16384
-        max_parallel_runs: 1
+        # 2026-09-25: the pool (Command Code Contributor + subscription bridge)
+        # served bursts of 4 and 6 concurrent xhigh agent turns 20/20 in
+        # 1.1-6.2 s with no 429s; 4 leaves headroom under that ceiling.
+        max_parallel_runs: 4
         cost: { input: 0.1, output: 0.2, cache_read: 0.002 }
       - id: router/glm-5.3
         name: glm-5.3
@@ -76,16 +79,6 @@ providers:
         max_tokens: 131072
         # Caps concurrently RUNNING runs across this entry's pooled credentials.
         max_parallel_runs: 3
-        cost: { input: 0, output: 0 }
-      # Temporary CodeBuddy Hy4 trial route. This endpoint is stream-only and
-      # requires a leading system message; Pi's OpenAI transport satisfies both.
-      - id: codebuddy/hy4-preview
-        name: hy4-preview
-        reasoning: true
-        context_window: 1048576
-        max_tokens: 64000
-        # Caps concurrently RUNNING runs on the single CodeBuddy trial credential.
-        max_parallel_runs: 1
         cost: { input: 0, output: 0 }
       - id: kimi/k3
         name: kimi-k3
@@ -195,39 +188,31 @@ providers:
 agents:
   # Budgets sized from observed run durations (12h window, 2026-08-18):
   # implement 20-26 min at the old 30 min cap, review 10-23 min, plan 8-25 min.
-  # 2026-08-30: developer 400 turns / 3 h. Hy4 measures ~47.6 tok/s with 6 s
-  # TTFT (~2.3 turns/min), so 400 turns needs ~3 h; on GLM-Flash (~5.7
-  # turns/min) turns bind near minute 70. Turns are the divergence guard;
-  # the stall/liveness watchdogs cover hangs; the clock is the outer bound.
-  # Revert to 5400000 if the coder returns to a GLM-Flash-class model.
-  # hy4 leads: the one lane with in-loop evidence (7/7 valid ledger outcomes,
-  # Tencent's 163-expert side-by-side beats GLM/Kimi on engineering). Behind
-  # it, AA Index with throughput as the tie-break for this long-horizon role:
-  # spark Contributor 61 (186 tok/s, $0.10/M in, $0.20/M out);
-  # gemini-3.8-flash 59 (302 tok/s, $0.58), glm-5.3-flash 57 ($0.09),
-  # qwen3.8-flash.
-  # 2026-09-25: mimo-v2.6-pro (AA Index v4.3.2: 46, vs glm-5.3-flash 42 and
-  # gemini-3.8-flash 41) goes ahead of glm-5.3-flash, whose implement runs
-  # hit 43 rate-limit faults in the 45 days to 2026-09-09. MiMo has no
-  # in-loop record yet, so it stays behind the fallbacks that do.
-  # step-5-preview (AA 44; separate Step Plan pool) follows mimo-v2.6-pro:
-  # 4/4 two-turn agent loops at high/xhigh, 1.3-2.4 s per turn (2026-09-25),
-  # ahead of the rate-limited glm-5.3-flash (42) and qwen3.8-flash (AA's
-  # Qwen3.8-Flash-Next, 40). Same caveat as MiMo: no in-loop record yet.
+  # 2026-08-30 raised developer to 400 turns / 3 h for Hy4 (~2.3 turns/min).
+  # 2026-09-25: Hy4 left the chain (no longer free), so the clock returns to
+  # 90 min as planned for faster coders. Turns are the divergence guard; the
+  # stall/liveness watchdogs cover hangs; the clock is the outer bound.
+  # muse-spark leads: the best implement record in the 45 days to 2026-09-09
+  # (20 succeeded / 4 failed as the starting model) and 1.2-2.8 s agent turns.
+  # mimo-v2.6-pro follows (AA Index v4.3.2: 46; Xiaomi token plan first in
+  # its pool), then gemini-3.8-flash (34/16, mostly process restarts; it
+  # relies on the forced finalizer, which it honours), step-5-preview (AA 44,
+  # Step Plan pool, 4/4 agent loops), the rate-limited glm-5.3-flash (43
+  # rate-limit faults), and qwen3.8-flash (AA Qwen3.8-Flash-Next 40; verbose,
+  # rejects forced tool_choice).
   developer:
     provider: openai_compatible
-    model: hy4-preview
+    model: muse-spark
     fallback_models:
       [
-        muse-spark,
-        gemini-3.8-flash,
         mimo-v2.6-pro,
+        gemini-3.8-flash,
         step-5-preview,
         glm-5.3-flash,
         qwen3.8-flash,
       ]
     thinking_level: high
-    timeout_ms: 10800000
+    timeout_ms: 5400000
     max_turns: 400
   # 2026-09-03: Grok 4.6 led code review - 6/8 landed in production that night
   # (the two misses were a daemon restart and an in-flight run), lab 2/2

@@ -131,10 +131,9 @@ describe("harness conformance config parsing", () => {
     // Pinned to the chains this file had when the check was written, so a
     // routing change has to update the expectation deliberately.
     expect(byRole[0]?.models).toEqual([
-      "hy4-preview",
       "muse-spark",
-      "gemini-3.8-flash",
       "mimo-v2.6-pro",
+      "gemini-3.8-flash",
       "step-5-preview",
       "glm-5.3-flash",
       "qwen3.8-flash",
