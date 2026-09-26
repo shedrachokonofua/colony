@@ -31,6 +31,7 @@ import {
   DEFAULT_PI_RUN_TIMEOUT_MS,
   buildSubagentSystemPrompt,
   installRunGuards,
+  packetRepo,
   sanitizeSecret,
   type PiModelSpec,
   type PiRunnerLogger,
@@ -91,7 +92,71 @@ export const MODEL_CONNECTION_ERROR_LIMIT = 5;
 
 /** Two admission waves and the adversary must fit below the tool-wedge limit. */
 const MAX_SUBAGENT_DURATION_MS = 8 * 60_000;
-const SUBMIT_DEADLINE_NUDGE_MS = 8 * 60_000;
+
+/** Floor of the soft reminder window: the previous fixed reserve. */
+const SUBMIT_RESERVE_FLOOR_MS = 8 * 60_000;
+/** A multi-hour run never reserves more than this for reminders. */
+const SUBMIT_RESERVE_CAP_MS = 20 * 60_000;
+/** Hard margin: below this remaining time the submission is forced. */
+const FORCED_SUBMIT_MARGIN_MS = 5 * 60_000;
+
+/**
+ * Deadline accounting for the submission window, shared by the session
+ * builder (soft reminder) and the runner (hard forced submission) so the
+ * two phases cannot reorder.
+ *
+ * `reserveMs` opens the role-aware text reminders. The 8-minute floor is
+ * the previous fixed window; on top of it the window scales with 10% of the
+ * run so an implementer on a multi-hour budget still has room to commit,
+ * push, and build an envelope once the reminders start (run 03172189: an
+ * implementer whose only three nudges landed in the final five minutes of a
+ * 90-minute run ignored them and walled with no envelope). The 20-minute
+ * cap keeps multi-hour runs from reserving absurd windows, and the
+ * quarter-of-the-run cap keeps short runs usable.
+ *
+ * `forcedSubmitMarginMs` is the hard margin: below it the free-running
+ * session is stopped and the submission is forced through the finalizer.
+ * Five minutes covers the abort plus two forced turns at real model
+ * latency; the 15% bound keeps it strictly inside the reserve for short
+ * runs (15% < 25%) and under the 8-minute floor for long ones.
+ */
+export function submissionWindows(runTimeoutMs: number): {
+  reserveMs: number;
+  forcedSubmitMarginMs: number;
+} {
+  return {
+    reserveMs: Math.min(
+      Math.max(SUBMIT_RESERVE_FLOOR_MS, runTimeoutMs * 0.1),
+      SUBMIT_RESERVE_CAP_MS,
+      runTimeoutMs * 0.25,
+    ),
+    forcedSubmitMarginMs: Math.min(
+      FORCED_SUBMIT_MARGIN_MS,
+      runTimeoutMs * 0.15,
+    ),
+  };
+}
+
+/**
+ * The role-aware deadline reminder folded into tool results and stop-steers.
+ * An implementer cannot submit until its work is pushed - the submit gate
+ * verifies the envelope's head against the remote - so its reminder orders
+ * commit-and-push first and accepts a blocked envelope over a timeout; the
+ * read-only roles keep the verdict wording.
+ */
+export function buildSubmitDeadlineNudge(
+  role: AgentRuntimeRole,
+  submitName: string,
+  branch: string | undefined,
+): string {
+  return [
+    "<system-reminder>",
+    role === "developer"
+      ? `The run is almost out of time. Stop coding and investigating: commit what you have NOW and push it (git push origin ${branch ?? "<work branch>"}), then call ${submitName} with the pushed head - status "complete" with the commands you ran if the spec is satisfied, otherwise status "blocked" with blocked_reason. Work that is not pushed is lost when the run ends; a blocked submission pointing at what you pushed beats a timeout.`
+      : `The submission window is closing. Stop investigating NOW and call ${submitName} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
+    "</system-reminder>",
+  ].join("\n");
+}
 
 export const COLONY_ADVISOR_NAME = "colony-critic";
 export const COLONY_ADVISOR_INSTRUCTIONS = [
@@ -393,10 +458,7 @@ export async function buildPiSession(
   const runTimeoutMs = options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS;
   // The runner's already-armed wall timer owns timeout classification.
   const deadline = Date.now() + runTimeoutMs;
-  const submissionReserveMs = Math.min(
-    SUBMIT_DEADLINE_NUDGE_MS,
-    runTimeoutMs / 5,
-  );
+  const { reserveMs: submissionReserveMs } = submissionWindows(runTimeoutMs);
   const thinkingLevel = toSdkThinkingLevel(
     options.thinkingLevel ?? options.defaultThinkingLevel,
   );
@@ -927,11 +989,11 @@ export async function buildPiSession(
     if (remainingMs > submissionReserveMs) return null;
     if (!force && performance.now() - lastDeadlineNudgeAt < 60_000) return null;
     lastDeadlineNudgeAt = performance.now();
-    return [
-      "<system-reminder>",
-      `The submission window is closing. Stop investigating NOW and call ${hooks.submitNameOf?.() ?? submitTool.name} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
-      "</system-reminder>",
-    ].join("\n");
+    return buildSubmitDeadlineNudge(
+      input.role,
+      hooks.submitNameOf?.() ?? submitTool.name,
+      packetRepo(packet)?.branch,
+    );
   };
 
   // Scoped to messages produced by the CURRENT model: an errored turn
