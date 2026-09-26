@@ -634,6 +634,13 @@ export function createKubernetesEngine(
       // Agent sessions do not survive a colonyd process restart. Reap every
       // Sandbox CR from the previous process before admitting new work so
       // abandoned pods cannot strand namespace quota.
+      // Re-sync the adopted exclusion first: the set is live and grows after
+      // construction (deferred adoption claims land mid-process once a dead
+      // holder's lease goes stale), and this is the last moment before the
+      // only cleanup pass this process will ever run.
+      for (const sandboxId of options.adoptedSandboxIds ?? []) {
+        protectedSandboxIds.add(sandboxId);
+      }
       let startupCleanup = startupCleanups.get(namespace);
       if (!startupCleanup) {
         startupCleanup = removeStartupOrphans(

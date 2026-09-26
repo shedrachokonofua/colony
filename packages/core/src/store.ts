@@ -179,7 +179,11 @@ export interface Run {
   readonly workspace_path: string | null;
   /** Live sandbox the run is executing in; set once creation succeeds. */
   readonly sandbox_id: string | null;
-  /** Exactly-once adoption marker; 1 only after a winning adoptRun claim. */
+  /**
+   * Exactly-once adoption marker; 1 while a winning adoptRun claim is held.
+   * A claim whose holder stops heartbeating becomes claimable again (see
+   * {@link Store.adoptRun}), so 1 does not mean "adopted forever".
+   */
   readonly adopted: 0 | 1;
   readonly envelope_json: string | null;
   readonly evidence_json: string | null;
@@ -341,6 +345,15 @@ export interface AppendTaskInput {
 
 export function nowIso(date: Date = new Date()): string {
   return date.toISOString();
+}
+
+/**
+ * How often a run's owner pushes its lease. Adoption and the run executors
+ * share one cadence: a well owner keeps `lease_expires_at` within one
+ * interval of `now + ttl`, so two missed intervals mark the owner dead.
+ */
+export function heartbeatIntervalMs(leaseTtlMs: number): number {
+  return Math.min(60_000, Math.max(1, Math.floor(leaseTtlMs / 3)));
 }
 
 /** `pf-` + 12 lowercase hex, matching the `col-<hex>` id style. */
@@ -1803,27 +1816,50 @@ export class Store {
   }
 
   /**
-   * Atomically claim a run for adoption. Returns true only for the first
-   * caller: the conditional UPDATE flips `adopted` inside the statement, so a
-   * concurrent loser's no-changes result never pushes the lease or audits.
-   * `adopted = 0` survives plain heartbeats by design — a heartbeat-extended
-   * run is still claimable by the next daemon.
+   * Atomically claim a run for adoption. Returns true only for the winner:
+   * the conditional UPDATE flips `adopted` (or rewrites the stale lease)
+   * inside the statement, so a concurrent loser's no-changes result never
+   * pushes the lease or audits. `adopted = 0` survives plain heartbeats by
+   * design — a heartbeat-extended run is still claimable by the next daemon.
+   *
+   * A claim is normally released by {@link handoffRun} at the holder's drain,
+   * but a holder that dies without draining (SIGKILL before the drain cap,
+   * crash) never releases — and the claim must not become immortal then: a
+   * run adopted once would otherwise never be adopted again and would idle
+   * until its lease expired (production 2026-09-26: ~50 min of implement work
+   * redone). A held claim whose lease has not moved for two heartbeat
+   * intervals belongs to a dead holder and is re-claimable here; the lease
+   * value is the CAS token, so two concurrent re-claimers still produce
+   * exactly one winner. A live claim (lease still being extended) is
+   * refused, keeping exactly-once adoption across overlapping boots. An
+   * already-expired lease is never claimed: the lease reaper owns those runs.
    */
   adoptRun(runId: string, leaseTtlMs: number): boolean {
+    const seen = this.getRun(runId);
+    if (!seen) return false;
+    const now = Date.now();
     const claim = this.db
       .prepare(
-        `UPDATE runs SET adopted = 1
-         WHERE id = ? AND status = 'running'
-           AND sandbox_id IS NOT NULL AND adopted = 0`,
+        `UPDATE runs SET adopted = 1, lease_expires_at = @lease
+         WHERE id = @id AND status = 'running'
+           AND sandbox_id IS NOT NULL
+           AND lease_expires_at > @nowIso
+           AND (adopted = 0
+                OR (lease_expires_at = @seenLease
+                    AND lease_expires_at <= @staleBeforeIso))`,
       )
-      .run(runId);
+      .run(
+        named({
+          id: runId,
+          lease: new Date(now + leaseTtlMs).toISOString(),
+          nowIso: new Date(now).toISOString(),
+          seenLease: seen.lease_expires_at,
+          staleBeforeIso: new Date(
+            now + leaseTtlMs - 2 * heartbeatIntervalMs(leaseTtlMs),
+          ).toISOString(),
+        }),
+      );
     if (claim.changes === 0) return false;
-    const now = Date.now();
-    this.db
-      .prepare(
-        `UPDATE runs SET lease_expires_at = ? WHERE id = ? AND status = 'running'`,
-      )
-      .run(new Date(now + leaseTtlMs).toISOString(), runId);
     const run = this.getRun(runId);
     this.audit("svc:colonyd", "run.adopted", {
       run_id: runId,

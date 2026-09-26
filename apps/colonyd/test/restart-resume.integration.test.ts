@@ -22,7 +22,7 @@ import { buildSandboxLaunchProfile } from "@colony/sandbox";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
 import { adoptOrExpireRuns } from "../src/runs/adoption.js";
-import { awaitPendingRuns, trackRun } from "../src/runs/registry.js";
+import { awaitPendingRuns, detachRun, trackRun } from "../src/runs/registry.js";
 import { readSessionHeader } from "@colony/agent-runtime/session-store";
 
 /**
@@ -38,6 +38,8 @@ const handles: ColonydHandle[] = [];
 
 /** Scripted continuation envelope the fake adapter returns on resume. */
 let resumeCalls: { runId: string; sandboxId: string }[] = [];
+/** Every resume entry, including resumes that never reach the envelope. */
+let resumeEntries: string[] = [];
 let resumePause:
   | {
       started: () => void;
@@ -51,6 +53,7 @@ class RestartAdapter extends FakeAgentRuntimeAdapter {
     packet: AgentRuntimePacket,
     environment: AgentRunResumeEnvironment,
   ) {
+    resumeEntries.push(environment.runId ?? "?");
     const pause = resumePause;
     if (pause) {
       pause.started();
@@ -162,6 +165,7 @@ afterEach(async () => {
     await handle?.shutdown().catch(() => undefined);
   }
   resumeCalls = [];
+  resumeEntries = [];
 });
 
 async function bootHeadless(
@@ -532,5 +536,111 @@ describe("restart resume integration", () => {
     expect(run.status).toBe("failed");
     expect(run.error).toBe("lease_expired");
     store.close();
+  }, 60_000);
+
+  it("a run resumed across two consecutive restarts survives a claim holder that dies without a handoff", async () => {
+    const seeded = await seedMidFlightRun();
+    const { runId, taskId, scopeId } = seeded;
+    await seeded.handle.shutdown();
+
+    // --- restart #1: boot claims the run (adopted 0 -> 1) and resumes it.
+    const released = Promise.withResolvers<void>();
+    const returned = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    resumePause = {
+      started: () => entered.resolve(),
+      released: released.promise,
+      returned: () => returned.resolve(),
+    };
+    const restarting = bootHeadless(dbPath);
+    try {
+      // Same boot-race guard as the restart test above: a boot that blocks
+      // on adopted execution must fail fast, not hang the case.
+      const first = await Promise.race([
+        restarting,
+        Bun.sleep(2_000).then(() => undefined),
+      ]);
+      if (!first) throw new Error("boot waited for adopted execution");
+      await entered.promise;
+      expect(first.ctx.store.getRun(runId)!.adopted).toBe(1);
+
+      // --- the crash: the claim holder dies mid-resume WITHOUT the drain
+      // handoff (SIGKILL before the drain cap). detachRun drops its registry
+      // entry and heartbeat exactly as process death would; the claim stays
+      // on the row and the lease stops moving.
+      expect(detachRun(runId)).toBe(true);
+      resumePause = undefined;
+
+      // --- restart #2 boots while the dead holder's claim still looks live
+      // (the lease is within one heartbeat cadence of a live claimant). It
+      // must not give up on the run.
+      const second = await bootHeadless(dbPath);
+      // Pause the scope (draft -> planning -> paused): the tick ignores
+      // paused scopes entirely, so only the adoption retry acts here.
+      second.ctx.store.setScopeStatus(scopeId, "planning", "test");
+      second.ctx.store.setScopeStatus(scopeId, "paused", "test");
+      expect(resumeEntries).toEqual([runId]);
+
+      // Two missed heartbeat intervals later the claim is re-issuable; the
+      // tick's adoption retry re-claims the run and resumes it AGAIN.
+      second.ctx.store.db
+        .prepare(`UPDATE runs SET lease_expires_at = ? WHERE id = ?`)
+        .run(new Date(Date.now() + 30_000).toISOString(), runId);
+      await second.tick();
+      await awaitPendingRuns();
+
+      expect(resumeEntries).toEqual([runId, runId]);
+      const run = second.ctx.store.getRun(runId)!;
+      expect(run.status).toBe("succeeded");
+      expect(run.adopted).toBe(1);
+      expect(second.ctx.store.getTask(taskId)?.state).toBe("mr_open");
+      expect(second.ctx.store.runsForTask(taskId).map((r) => r.id)).toEqual([
+        runId,
+      ]);
+    } finally {
+      resumePause = undefined;
+      released.resolve();
+      await restarting;
+      await returned.promise.catch(() => undefined);
+      // One loop turn so the unwinding detached resume settles its
+      // continuations before the next case starts (microtask flush, not a
+      // duration guess).
+      await Bun.sleep(0);
+    }
+  }, 60_000);
+
+  it("a lease-expired run's sandbox is destroyed and its token revoked", async () => {
+    const seeded = await seedMidFlightRun();
+    const { runId, taskId, scopeId, sandboxId } = seeded;
+    // Pause the scope (draft -> planning -> paused): the tick ignores
+    // paused scopes entirely, so only the lease reaper acts here.
+    seeded.handle.ctx.store.setScopeStatus(scopeId, "planning", "test");
+    seeded.handle.ctx.store.setScopeStatus(scopeId, "paused", "test");
+    const minted = await provider.accessTokens.mint(
+      { id: repoId, path: "so/resume-e2e" },
+      {
+        name: `colony-task-${taskId}`,
+        scopes: ["api"],
+        access_level: 30,
+        expires_at: "2099-01-01",
+      },
+    );
+    seeded.handle.ctx.store.setRunToken(runId, minted.id);
+    seeded.handle.ctx.store.db
+      .prepare(`UPDATE runs SET lease_expires_at = ? WHERE id = ?`)
+      .run(new Date(Date.now() - 1_000).toISOString(), runId);
+
+    // The tick's expireLeases reaps a run no in-process handler owns.
+    await seeded.handle.tick();
+
+    const run = seeded.handle.ctx.store.getRun(runId)!;
+    expect(run.status).toBe("failed");
+    expect(run.error).toBe("lease_expired");
+    // Tokens stay revoked on this path.
+    expect(
+      provider.listAccessTokens().some((token) => token.id === minted.id),
+    ).toBe(false);
+    // The sandbox must not outlive its run.
+    await expect(createInProcessEngine().connect(sandboxId)).rejects.toThrow();
   }, 60_000);
 });

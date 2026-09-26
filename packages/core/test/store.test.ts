@@ -2059,6 +2059,45 @@ describe("run adoption and sandbox id", () => {
     });
   });
 
+  it("adoptRun re-claims a claim whose holder stopped heartbeating", () => {
+    const runId = createRun("stale claim");
+    store.setRunSandboxId(runId, "sbx-stale");
+    expect(store.adoptRun(runId, 60_000)).toBe(true);
+
+    // The claim is live — its holder pushes the lease — so another daemon
+    // must not steal it (exactly-once across overlapping boots).
+    expect(store.adoptRun(runId, 60_000)).toBe(false);
+
+    // The holder dies without a handoff: the lease stops moving. Two missed
+    // heartbeat intervals later the claim is re-issuable, and the winner
+    // re-mints the lease and audits the takeover like a first claim.
+    store.db
+      .prepare(`UPDATE runs SET lease_expires_at = ? WHERE id = ?`)
+      .run(new Date(Date.now() + 10_000).toISOString(), runId);
+    expect(store.adoptRun(runId, 60_000)).toBe(true);
+    const after = store.getRun(runId)!;
+    expect(after.adopted).toBe(1);
+    expect(new Date(after.lease_expires_at).getTime()).toBeGreaterThan(
+      Date.now() + 50_000,
+    );
+    expect(
+      store
+        .listAudit({ run_id: runId })
+        .events.filter((e) => e.action === "run.adopted"),
+    ).toHaveLength(2);
+  });
+
+  it("adoptRun never claims a run whose lease already expired", () => {
+    const runId = createRun("expired claim");
+    store.setRunSandboxId(runId, "sbx-expired");
+    expect(store.adoptRun(runId, 60_000)).toBe(true);
+    store.db
+      .prepare(`UPDATE runs SET lease_expires_at = ? WHERE id = ?`)
+      .run(new Date(Date.now() - 1_000).toISOString(), runId);
+    // The lease reaper owns expired runs; adoption must not resurrect them.
+    expect(store.adoptRun(runId, 60_000)).toBe(false);
+  });
+
   it("adoptRun refuses finished runs even with a sandbox id", () => {
     const runId = createRun("finished run");
     store.setRunSandboxId(runId, "sbx-done");
