@@ -416,6 +416,16 @@ every run instead, set `COLONYD_SINGLE_TOKEN=1`; that token then also
 needs whatever your branch protection requires to merge into the default
 branch.
 
+Give Colony its own GitLab user and use that user's token, never yours:
+every merge request, merge, comment, and per-run token Colony creates is
+attributed to the owner of `GITLAB_TOKEN`. Make the user Maintainer of the
+groups its repositories live in; creating project tokens, protecting
+branches, and merging into a protected default branch all need it. Set
+`GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, and
+`GIT_COMMITTER_EMAIL` to that user's name and email: Colony pins the same
+identity in every agent workspace, so agent commits link to the user
+instead of an identity the model makes up.
+
 ```sh
 git clone <repo-url> colony && cd colony
 bun install

@@ -235,7 +235,7 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
           verdict: "request_changes",
           summary: "Task B's evidence does not prove B.",
           findings: [
-            { severity: "major", task: 1, note: "evidence must exercise B" },
+            { severity: "blocker", task: 1, note: "evidence must exercise B" },
           ],
           inspected: [],
         };
