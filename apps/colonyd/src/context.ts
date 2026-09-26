@@ -22,6 +22,17 @@ export interface ColonydContext {
   readonly validateExecutor?: ValidateExecutor;
   /** Sandbox engine used to provision scope-validation handles. */
   readonly validateEngine?: SandboxEngine;
+  /**
+   * Engine used to destroy the sandbox of a run that ended without its
+   * in-process handler (lease expiry, crash reap). The run row's
+   * sandbox_id is the identity; the engine only ever connects and destroys.
+   */
+  readonly sandboxEngine?: SandboxEngine;
+  /**
+   * Re-attempt adoption claims the boot pass lost to a live claimant and
+   * resume the winners. Wired by main from the boot pass's deferred set.
+   */
+  readonly retryAdoptions?: () => Promise<void>;
   /** Test seam: overrides the verifier built from env.oidcIssuer. */
   readonly oidcVerifier?: TokenVerifier;
   /** Shutdown drain state: the tick dispatch gate flips the moment drain begins. */

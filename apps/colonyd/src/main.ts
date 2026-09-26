@@ -73,7 +73,7 @@ import {
   collectRunModelIds,
   formatColonyModelsTrailer,
 } from "./runs/model-provenance.js";
-import { adoptOrExpireRuns } from "./runs/adoption.js";
+import { adoptOrExpireRuns, retryDeferredAdoptions } from "./runs/adoption.js";
 import { faultForFailure, modelFault } from "./fault-budget.js";
 import { pickDispatchSlot, tick } from "./tick.js";
 
@@ -188,13 +188,13 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     return wiredAgents;
   };
 
-  const adoption = await adoptOrExpireRuns({
+  const adoptionDeps = {
     store,
     provider,
     logger,
     sessionsDir: config.sessionsDir,
-    connect: (id) => probeEngine.connect(id),
-    resume: async (run, signal) => {
+    connect: (id: string) => probeEngine.connect(id),
+    resume: async (run: Run, signal: AbortSignal) => {
       const role = resumeRole(run.kind);
       const headSha = run.base_sha ?? run.head_sha ?? "";
       const excludedModelIds =
@@ -334,12 +334,17 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         throw err;
       }
     },
-    cancel: async (run) => {
+    cancel: async (run: Run) => {
       const agents = await ensureAgents();
       await resumeAdapter(agents, run.kind).cancelRun(run.id);
     },
     resumeLeaseTtlMs: environment.COLONY_RESUME_LEASE_TTL_MS,
-  });
+  } as const;
+  const adoption = await adoptOrExpireRuns(adoptionDeps);
+  // Claim-held runs the boot pass could not take are retried per tick; the
+  // boot pass itself must stay one-shot so the daemon can become Ready (the
+  // draining pod's SIGTERM — and its claim release — only lands after that).
+  const deferredAdoptions = new Set(adoption.deferred.map((run) => run.id));
   for (const run of adoption.adoptable) {
     if (run.sandbox_id) adoptedIds.add(run.sandbox_id);
   }
@@ -351,29 +356,31 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     );
   }
 
-  let tickRunning = false;
-  let tickRequested = false;
+  // Single-flight reconciliation with coalescing: calls during a pass share
+  // one follow-up pass ("one more pass after the current one"). The returned
+  // promise resolves after the pass the call folded into, so
+  // `await handle.tick()` observes a complete reconciliation instead of
+  // returning early while a previous pass is still working (which left
+  // callers racing the in-flight pass's dispatches).
+  let currentTick: Promise<void> | undefined;
+  let queuedTick: Promise<void> | undefined;
 
-  const runTick = async (): Promise<void> => {
-    if (tickRunning) {
-      tickRequested = true; // coalesce: one more pass after the current one
-      return;
-    }
-    tickRunning = true;
-    try {
-      await tick(ctx);
-    } catch (err) {
-      logger.error(
-        { error: err instanceof Error ? err.message : String(err) },
-        "tick.crashed",
-      );
-    } finally {
-      tickRunning = false;
-    }
-    if (tickRequested) {
-      tickRequested = false;
-      void runTick();
-    }
+  const runTick = (): Promise<void> => {
+    queuedTick ??= (currentTick ?? Promise.resolve()).then(() => {
+      queuedTick = undefined;
+      currentTick = (async () => {
+        try {
+          await tick(ctx);
+        } catch (err) {
+          logger.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            "tick.crashed",
+          );
+        }
+      })();
+      return currentTick;
+    });
+    return queuedTick;
   };
 
   const drainDeps: DrainDeps = {
@@ -432,6 +439,18 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     gateExecutor: options.gateExecutor,
     validateExecutor: options.validateExecutor,
     validateEngine,
+    sandboxEngine: probeEngine,
+    retryAdoptions: async () => {
+      const claimed = await retryDeferredAdoptions(
+        adoptionDeps,
+        deferredAdoptions,
+      );
+      // Same exclusion as the boot claims: the k8s startup sweep may not
+      // reap the sandbox of a run this process has claimed and is resuming.
+      for (const run of claimed) {
+        if (run.sandbox_id) adoptedIds.add(run.sandbox_id);
+      }
+    },
     env: {
       gitlabBaseUrl: environment.GITLAB_BASE_URL,
       gitlabToken: environment.GITLAB_TOKEN,

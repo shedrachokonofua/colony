@@ -49,6 +49,7 @@ import {
   retryResetAt,
 } from "./fault-budget.js";
 import { abortRunsAndWait, activeTrackedRunIds } from "./runs/registry.js";
+import { destroyRunSandbox } from "./runs/sandboxes.js";
 
 /** How long after a push the provider's MR head may still report the previous commit. */
 const PROVIDER_HEAD_LAG_MS = 3 * 60_000;
@@ -91,6 +92,12 @@ export async function tick(ctx: ColonydContext): Promise<void> {
 
   try {
     await phase(ctx, "expire_leases", () => expireLeases(ctx, now));
+    // A boot pass races the previous daemon's drain (the new pod is Ready
+    // before the old one gets SIGTERM), so its one-shot claims can lose to
+    // held claims that release moments later. The retry is what turns that
+    // lost race into a takeover instead of a run that idles until its lease
+    // expires and ~50 min of work is redone (production 2026-09-26).
+    await phase(ctx, "retry_adoptions", () => ctx.retryAdoptions?.());
     await phase(ctx, "poll_provider", () => pollProviderFacts(ctx, now));
     await phase(ctx, "advance_mr_open", () =>
       advanceMrOpenTasks(ctx, dispatch),
@@ -129,7 +136,7 @@ async function phase(
   } catch {
     // audit failure must not break the tick
   }
-  reapUnownedRuns(ctx, name, message);
+  await reapUnownedRuns(ctx, name, message);
 }
 
 /**
@@ -143,11 +150,11 @@ async function phase(
  * not the agent. Runs still executing are untouched — a live handler owns its
  * own outcome.
  */
-function reapUnownedRuns(
+async function reapUnownedRuns(
   ctx: ColonydContext,
   phaseName: string,
   message: string,
-): void {
+): Promise<void> {
   const owned = new Set(activeTrackedRunIds());
   for (const run of ctx.store.activeRuns()) {
     if (owned.has(run.id)) continue;
@@ -165,6 +172,12 @@ function reapUnownedRuns(
       run_id: run.id,
       detail: { reason: `tick_error: ${phaseName}` },
     });
+    // Terminal without an in-process handler: reap its sandbox too, or it
+    // outlives the run and holds its namespace slot.
+    const engine = ctx.sandboxEngine;
+    if (engine) {
+      await destroyRunSandbox((id) => engine.connect(id), run, ctx.logger);
+    }
   }
 }
 
@@ -176,6 +189,12 @@ async function expireLeases(ctx: ColonydContext, now: Date): Promise<void> {
   const expired = ctx.store.expireDeadLeases(now);
   await revokeTokensForRuns(ctx.store, ctx.provider, expired);
   for (const run of expired) {
+    // Lease expiry is terminal and the handler that owned the run is gone
+    // (its heartbeats stopped); the sandbox must not outlive the run.
+    const engine = ctx.sandboxEngine;
+    if (engine) {
+      await destroyRunSandbox((id) => engine.connect(id), run, ctx.logger);
+    }
     ctx.store.audit(SERVICE_ACTOR, "run.lease_expired", {
       scope_id: run.scope_id,
       task_id: run.task_id,
