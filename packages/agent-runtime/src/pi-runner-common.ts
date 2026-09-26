@@ -1229,7 +1229,7 @@ export function buildImplementerFinalizerPrompt(
     2,
   );
   return [
-    "Your work is complete. Submit exactly one schema-conforming implementer_completion envelope by calling submit_implementer_completion.",
+    "Stop all other work and submit exactly one schema-conforming implementer_completion envelope by calling submit_implementer_completion now.",
     "",
     "Use this canonical implementer_completion envelope as your starting point:",
     "",
@@ -1239,10 +1239,10 @@ export function buildImplementerFinalizerPrompt(
     "",
     "Rules:",
     '- Keep kind exactly "implementer_completion".',
-    '- status is "complete" or "blocked" (add blocked_reason when blocked).',
+    '- status is "complete" only when the spec is satisfied and verified; otherwise status is "blocked" with blocked_reason naming what remains.',
     "- branch must be the work branch from packet.repo.branch.",
-    "- head_sha must be the 40-hex commit SHA you actually pushed to that branch.",
-    "- commands lists each verification command you ran with its exit code.",
+    "- head_sha must be the 40-hex commit SHA that origin/<branch> actually points at - your last pushed commit. The submit tool verifies it against the remote and refuses anything else; if its refusal names the remote head, resubmit with exactly that SHA.",
+    "- commands lists each verification command you already ran with its exit code; omit it when blocked with nothing verified.",
     "- Do not add wrapper keys such as envelope, arguments, or data. The tool arguments are the envelope object.",
   ].join("\n");
 }

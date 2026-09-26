@@ -83,6 +83,7 @@ import {
   buildPiSession,
   CONNECTION_ERROR_RE,
   MODEL_CONNECTION_ERROR_LIMIT,
+  submissionWindows,
   type PiRunState,
 } from "./pi-session.js";
 import {
@@ -344,6 +345,21 @@ export class PiBaseAgentRunner implements PiRunner {
       }
     }
     let clearTimeoutGuard: (() => void) | undefined;
+    /**
+     * Set when the hard deadline margin fires: free-running work stops and
+     * the submission is forced through the finalizer, so the run ends with
+     * a captured envelope instead of dying at the wall.
+     */
+    let forcedSubmitTriggered = false;
+    /**
+     * Bounded blocked_reason of a deadline-forced blocked implementer
+     * envelope: such an envelope is not a success (colonyd parks a blocked
+     * task on the operator while a timeout requeues and continues from the
+     * pushed branch), so the run takes the timeout's classification and
+     * carries the reason into its fault detail.
+     */
+    let forcedBlockedReason: string | undefined;
+    let clearForcedSubmitTimer: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
     const capturedEnvelopePromise = new Promise<void>((resolve) => {
@@ -392,6 +408,46 @@ export class PiBaseAgentRunner implements PiRunner {
     const sizeGate = this.options.architectSizeGate?.();
     const submitTool = this.profile.submitTool(
       (value) => {
+        // A deadline-forced blocked envelope must not land as a success:
+        // colonyd treats a blocked implementer task as a hard operator
+        // block, while a timeout requeues and continues from the pushed
+        // branch. The forced salvage may only land real work - a forced
+        // "blocked" report ends the run with the wall timeout's own
+        // classification instead. A voluntary blocked submission before
+        // the forced phase keeps its meaning.
+        const status =
+          value !== null && typeof value === "object" && "status" in value
+            ? value.status
+            : undefined;
+        if (
+          forcedSubmitTriggered &&
+          this.profile.role === "developer" &&
+          status === "blocked"
+        ) {
+          const rawReason =
+            value !== null &&
+            typeof value === "object" &&
+            "blocked_reason" in value
+              ? value.blocked_reason
+              : undefined;
+          forcedBlockedReason = sanitizeSecret(
+            typeof rawReason === "string" && rawReason.trim()
+              ? rawReason
+              : "no reason given",
+            runToken,
+          )
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 160);
+          state.failureReason ??= "timeout_without_envelope";
+          state.failureFault ??= {
+            layer: "model",
+            code: "wall_timeout",
+            detail: `forced submission was blocked at the deadline (blocked: ${forcedBlockedReason})`,
+          };
+          resolveCapturedEnvelope?.();
+          return;
+        }
         capturedEnvelope = value;
         resolveCapturedEnvelope?.();
       },
@@ -540,6 +596,14 @@ export class PiBaseAgentRunner implements PiRunner {
         runTimeoutMs: this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS,
         branch: packetRepo(request.packet)?.branch,
       });
+      const wallTimeoutMs =
+        this.options.runTimeoutMs ?? DEFAULT_PI_RUN_TIMEOUT_MS;
+      // Hard deadline escalation (run 03172189: an implementer ignored three
+      // text nudges and walled with no envelope): below the forced margin
+      // the free-running session is stopped and the submission is forced
+      // through the finalizer. The margin rides the wall timer's own clock
+      // so the forced phase always completes inside it.
+      const { forcedSubmitMarginMs } = submissionWindows(wallTimeoutMs);
       clearTimeoutGuard = withRunTimeout(
         runId,
         this.options.runTimeoutMs,
@@ -550,6 +614,24 @@ export class PiBaseAgentRunner implements PiRunner {
           state.timeoutTriggered = true;
         },
       );
+      const forcedSubmitTimer = setTimeout(
+        () => {
+          if (
+            capturedEnvelope !== undefined ||
+            state.timeoutTriggered ||
+            state.cancellationTriggered
+          )
+            return;
+          forcedSubmitTriggered = true;
+          this.options.logger?.warn?.(
+            { runId, sandboxId, marginMs: forcedSubmitMarginMs },
+            "pi_forced_submit",
+          );
+          void abortRun();
+        },
+        Math.max(0, wallTimeoutMs - forcedSubmitMarginMs),
+      );
+      clearForcedSubmitTimer = () => clearTimeout(forcedSubmitTimer);
       this.activeRuns.set(runId, {
         abort: async () => {
           state.cancellationTriggered = true;
@@ -901,6 +983,10 @@ export class PiBaseAgentRunner implements PiRunner {
             // ends the run immediately.
             if (state.cancellationTriggered) throw err;
             if (state.timeoutTriggered) return true;
+            // The forced-submission phase aborts the in-flight prompt the
+            // same way; stop advancing candidates and let the finalizer
+            // force the envelope out instead of free-running a fallback.
+            if (forcedSubmitTriggered) return true;
             // A guard/runtime failure is already the decisive cause. The
             // session abort rejects the prompt with an opaque SDK error;
             // never relabel that error as a provider failure.
@@ -1221,6 +1307,9 @@ export class PiBaseAgentRunner implements PiRunner {
               });
               let firstCandidate = true;
               for (; index < resolvedModels.length; index += 1) {
+                // The forced-submission phase owns the remaining clock: no
+                // free-running stage turns, only the forced steers below.
+                if (forcedSubmitTriggered) break;
                 const candidate = resolvedModels[index]!;
                 if (!sameCandidate(stageSession.model, candidate)) {
                   await activateStageCandidate(candidate);
@@ -1260,9 +1349,19 @@ export class PiBaseAgentRunner implements PiRunner {
                   resolvedModels[Math.min(index, resolvedModels.length - 1)]!;
                 await activateStageCandidate(candidate);
                 forceStageSubmit(assistantTurns);
+                // The forced-submission phase drives the final stage with
+                // the role's finalizer prompt; a stage that never got its
+                // own prompt has no transcript to work from, so its stage
+                // prompt (carrying the artifacts) rides along.
+                const steerPrompt =
+                  forcedSubmitTriggered && isFinal
+                    ? `${this.profile.finalizerPrompt(request.packet)}${
+                        assistantTurns === 0 ? `\n\n${prompt}` : ""
+                      }`
+                    : `This stage ends only when you call ${stageSubmit.name}. Call it now with what you have; nothing else you write counts.`;
                 const stopped = await driveSession(
                   stageSession,
-                  `This stage ends only when you call ${stageSubmit.name}. Call it now with what you have; nothing else you write counts.`,
+                  steerPrompt,
                   candidate,
                   landed,
                   stagePromise,
@@ -1346,6 +1445,9 @@ export class PiBaseAgentRunner implements PiRunner {
           const activeSession = session;
           if (!activeSession) throw new Error("run session missing");
           for (; index < resolvedModels.length; index += 1) {
+            // The forced-submission phase owns the remaining clock: never
+            // start another free-running leg.
+            if (forcedSubmitTriggered) break;
             const candidate = resolvedModels[index]!;
             if (index > 0) {
               await activeSession.setModel(candidate);
@@ -1399,7 +1501,12 @@ export class PiBaseAgentRunner implements PiRunner {
           state.failureReason === undefined
         ) {
           let prompt: string;
-          if (state.connectionErrors >= MODEL_CONNECTION_ERROR_LIMIT) {
+          // The forced-submission phase overrides every recovery arm: its
+          // only destination is the finalizer in the else branch below.
+          if (
+            !forcedSubmitTriggered &&
+            state.connectionErrors >= MODEL_CONNECTION_ERROR_LIMIT
+          ) {
             // The leg settled its whole budget in transport errors. Fail over
             // now instead of spending jiggle backoff on a dead upstream (it
             // can be mute AND unreachable, so this precedes the stall path
@@ -1444,11 +1551,11 @@ export class PiBaseAgentRunner implements PiRunner {
               "pi_model_fallback",
             );
             prompt = CONNECTION_RETRY_PROMPT;
-          } else if (state.connectionErrors > 0) {
+          } else if (!forcedSubmitTriggered && state.connectionErrors > 0) {
             // Under budget: a blip, not a dead leg. Re-prompt the same model
             // so one transient never costs a configured candidate.
             prompt = CONNECTION_RETRY_PROMPT;
-          } else if (state.zeroOutputStalled) {
+          } else if (!forcedSubmitTriggered && state.zeroOutputStalled) {
             // Deliberately NOT cleared here: the flag is the loop's memory
             // that the current leg has gone mute. Only real progress (a tool
             // call, output tokens) or a model switch clears it, so an
@@ -1508,18 +1615,28 @@ export class PiBaseAgentRunner implements PiRunner {
             prompt =
               "Your last several replies were empty. Continue the task from the current conversation and workspace state; if the work is already complete, submit the required envelope now.";
           } else {
-            const steer = steering.takeContinuationSteer(
-              packetObjective(request.packet),
-            );
+            // A forced phase never steers: its only business is the
+            // finalizer below.
+            const steer = forcedSubmitTriggered
+              ? null
+              : steering.takeContinuationSteer(packetObjective(request.packet));
             if (!steer) {
-              if (!steering.continuationAllowanceExhausted()) break;
+              if (
+                !forcedSubmitTriggered &&
+                !steering.continuationAllowanceExhausted()
+              )
+                break;
 
+              // A stale rejection must not skip the forced salvage: the
+              // finalizer prompt names the pushed remote head the gate
+              // wants, so the very call the gate refused can land here.
               const skipFinalizer =
                 submissionCaptured() ||
                 state.timeoutTriggered ||
                 state.cancellationTriggered ||
                 state.failureReason !== undefined ||
-                state.submissionRejectionReason !== undefined ||
+                (!forcedSubmitTriggered &&
+                  state.submissionRejectionReason !== undefined) ||
                 (this.profile.requireRepositoryInspection &&
                   !state.repositoryInspected);
 
@@ -1689,7 +1806,10 @@ export class PiBaseAgentRunner implements PiRunner {
                   break;
                 } else if (
                   state.timeoutTriggered ||
-                  state.cancellationTriggered
+                  state.cancellationTriggered ||
+                  // A guard or the forced-blocked interception already
+                  // classified the run: never fail over past it.
+                  state.failureReason !== undefined
                 ) {
                   break;
                 } else if (
@@ -1702,6 +1822,12 @@ export class PiBaseAgentRunner implements PiRunner {
                 } else {
                   prompt = MODEL_FAILED_PROMPT;
                 }
+              } else if (forcedSubmitTriggered) {
+                // Nothing salvageable at the forced point (e.g. a reviewer
+                // that never inspected): end with the classified failure
+                // instead of burning the remaining minutes free-running a
+                // fallback candidate to the wall.
+                break;
               } else {
                 // Continuation allowance is local to a model leg. Exhausting
                 // this candidate's stop-steers must not terminate a run while a
@@ -1759,6 +1885,9 @@ export class PiBaseAgentRunner implements PiRunner {
             }
           } catch (err) {
             if (state.cancellationTriggered) throw err;
+            // The forced-submission abort lands here when a steer prompt is
+            // in flight; the next iteration runs the finalizer.
+            if (forcedSubmitTriggered) continue;
             // A transient thrown out of the steer prompt is the same blip the
             // counter already tracks: stay on the model and re-prompt. Only a
             // settled leg (budget spent) or a non-connection failure ends the
@@ -1797,17 +1926,22 @@ export class PiBaseAgentRunner implements PiRunner {
       if (capturedEnvelope === undefined) {
         // The wall timer arms {model, wall_timeout} as the default because it
         // fires without evidence; this is the only place that can see whether
-        // the model worked before the wall closed.
+        // the model worked before the wall closed. A deadline-forced blocked
+        // implementer envelope takes the same decision: it is the timeout's
+        // failure shape, not a success colonyd would park on the operator.
         if (
-          state.timeoutTriggered &&
+          (state.timeoutTriggered || forcedBlockedReason !== undefined) &&
           state.failureFault?.code === "wall_timeout" &&
           evidence.summary().tool_calls > 0
         ) {
           state.failureFault = {
             layer: "model",
             code: "timeout_no_envelope",
-            detail:
-              "run timed out after tool activity without submitting an envelope",
+            detail: `run timed out after tool activity without submitting an envelope${
+              forcedBlockedReason !== undefined
+                ? ` (blocked: ${forcedBlockedReason})`
+                : ""
+            }`,
           };
         }
       }
@@ -1882,6 +2016,7 @@ export class PiBaseAgentRunner implements PiRunner {
       // the 5s teardown budget: one readFileSync, a redact pass, and a
       // gzipSync of the run's JSONL.
       clearTimeoutGuard?.();
+      clearForcedSubmitTimer?.();
       workspaceProbe?.();
       // (1) Transcript capture. Must precede dispose (dispose drops the
       //     session manager that owns the file path) and the run-dir removal
