@@ -1225,7 +1225,7 @@ export function buildImplementerFinalizerPrompt(
     2,
   );
   return [
-    "The run is out of time. Stop all other work and submit exactly one schema-conforming implementer_completion envelope by calling submit_implementer_completion now.",
+    "Stop all other work and submit exactly one schema-conforming implementer_completion envelope by calling submit_implementer_completion now.",
     "",
     "Use this canonical implementer_completion envelope as your starting point:",
     "",

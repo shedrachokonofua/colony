@@ -350,6 +350,14 @@ export class PiBaseAgentRunner implements PiRunner {
      * a captured envelope instead of dying at the wall.
      */
     let forcedSubmitTriggered = false;
+    /**
+     * Bounded blocked_reason of a deadline-forced blocked implementer
+     * envelope: such an envelope is not a success (colonyd parks a blocked
+     * task on the operator while a timeout requeues and continues from the
+     * pushed branch), so the run takes the timeout's classification and
+     * carries the reason into its fault detail.
+     */
+    let forcedBlockedReason: string | undefined;
     let clearForcedSubmitTimer: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
@@ -399,6 +407,46 @@ export class PiBaseAgentRunner implements PiRunner {
     const sizeGate = this.options.architectSizeGate?.();
     const submitTool = this.profile.submitTool(
       (value) => {
+        // A deadline-forced blocked envelope must not land as a success:
+        // colonyd treats a blocked implementer task as a hard operator
+        // block, while a timeout requeues and continues from the pushed
+        // branch. The forced salvage may only land real work - a forced
+        // "blocked" report ends the run with the wall timeout's own
+        // classification instead. A voluntary blocked submission before
+        // the forced phase keeps its meaning.
+        const status =
+          value !== null && typeof value === "object" && "status" in value
+            ? value.status
+            : undefined;
+        if (
+          forcedSubmitTriggered &&
+          this.profile.role === "developer" &&
+          status === "blocked"
+        ) {
+          const rawReason =
+            value !== null &&
+            typeof value === "object" &&
+            "blocked_reason" in value
+              ? value.blocked_reason
+              : undefined;
+          forcedBlockedReason = sanitizeSecret(
+            typeof rawReason === "string" && rawReason.trim()
+              ? rawReason
+              : "no reason given",
+            runToken,
+          )
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 160);
+          state.failureReason ??= "timeout_without_envelope";
+          state.failureFault ??= {
+            layer: "model",
+            code: "wall_timeout",
+            detail: `forced submission was blocked at the deadline (blocked: ${forcedBlockedReason})`,
+          };
+          resolveCapturedEnvelope?.();
+          return;
+        }
         capturedEnvelope = value;
         resolveCapturedEnvelope?.();
       },
@@ -1754,7 +1802,10 @@ export class PiBaseAgentRunner implements PiRunner {
                   break;
                 } else if (
                   state.timeoutTriggered ||
-                  state.cancellationTriggered
+                  state.cancellationTriggered ||
+                  // A guard or the forced-blocked interception already
+                  // classified the run: never fail over past it.
+                  state.failureReason !== undefined
                 ) {
                   break;
                 } else if (
@@ -1871,17 +1922,22 @@ export class PiBaseAgentRunner implements PiRunner {
       if (capturedEnvelope === undefined) {
         // The wall timer arms {model, wall_timeout} as the default because it
         // fires without evidence; this is the only place that can see whether
-        // the model worked before the wall closed.
+        // the model worked before the wall closed. A deadline-forced blocked
+        // implementer envelope takes the same decision: it is the timeout's
+        // failure shape, not a success colonyd would park on the operator.
         if (
-          state.timeoutTriggered &&
+          (state.timeoutTriggered || forcedBlockedReason !== undefined) &&
           state.failureFault?.code === "wall_timeout" &&
           evidence.summary().tool_calls > 0
         ) {
           state.failureFault = {
             layer: "model",
             code: "timeout_no_envelope",
-            detail:
-              "run timed out after tool activity without submitting an envelope",
+            detail: `run timed out after tool activity without submitting an envelope${
+              forcedBlockedReason !== undefined
+                ? ` (blocked: ${forcedBlockedReason})`
+                : ""
+            }`,
           };
         }
       }

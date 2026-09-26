@@ -265,17 +265,16 @@ describe("deadline forced submission", () => {
     // The work branch already exists on the remote at baseSha: the forced
     // submission must succeed against whatever is already pushed.
     execFileSync("git", ["-C", origin, "branch", branch]);
-    const blockedEnvelope = {
+    const completeEnvelope = {
       kind: "implementer_completion",
-      status: "blocked",
-      summary:
-        "Deadline reached before the task finished; partial work pushed.",
+      status: "complete",
+      summary: "Landed the change before the deadline; checks pass.",
       branch,
       head_sha: baseSha,
-      blocked_reason: "work incomplete at the run deadline",
+      commands: [{ cmd: "bun test", exit_code: 0 }],
     };
     const { baseUrl, requestBodies, toolResultsSeen } = await startGateway(
-      stubbornModel(blockedEnvelope, 100),
+      stubbornModel(completeEnvelope, 100),
     );
 
     const runTimeoutMs = 30_000;
@@ -297,7 +296,7 @@ describe("deadline forced submission", () => {
     const elapsedMs = Date.now() - startedAt;
 
     // The run ends with a captured envelope, before the wall closes it.
-    expect(result.envelope).toEqual({ ...blockedEnvelope, commands: [] });
+    expect(result.envelope).toEqual(completeEnvelope);
     expect(result.reason).toBeUndefined();
     expect(elapsedMs).toBeLessThan(runTimeoutMs);
 
@@ -381,6 +380,102 @@ describe("deadline forced submission", () => {
         body.tool_choice?.function?.name === "submit_implementer_completion",
     );
     expect(finalizerBodies.length).toBeGreaterThanOrEqual(2);
+  }, 120_000);
+
+  it("fails like the wall timeout when the forced submission is blocked", async () => {
+    const { origin, baseSha, branch } = seedOrigin("colony-forced-blocked-");
+    execFileSync("git", ["-C", origin, "branch", branch]);
+    // A forced BLOCKED envelope is not a success: colonyd parks a blocked
+    // implementer task on the operator, while a timeout requeues and
+    // continues from the pushed branch. The run must fail with the timeout's
+    // own classification and carry the blocked_reason.
+    const blockedEnvelope = {
+      kind: "implementer_completion",
+      status: "blocked",
+      summary:
+        "Deadline reached before the task finished; partial work pushed.",
+      branch,
+      head_sha: baseSha,
+      blocked_reason: "work incomplete at the run deadline",
+    };
+    const { baseUrl, requestBodies } = await startGateway(
+      stubbornModel(blockedEnvelope, 100),
+    );
+
+    const runTimeoutMs = 30_000;
+    const runner = new PiBaseAgentRunner(DEVELOPER_ROLE_PROFILE, {
+      model: modelSpec(baseUrl),
+      fallbackModels: [],
+      engine: createInProcessEngine(),
+      broker: { resolve: () => "test-key" },
+      maxTurns: 5_000,
+      runTimeoutMs,
+    });
+
+    const startedAt = Date.now();
+    const result = await runner.run({
+      runId: `forced-blocked-${Date.now()}`,
+      packet: packet(origin, branch, baseSha),
+      environment: { role: "developer" },
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toBe("timeout_without_envelope");
+    expect(result.fault).toMatchObject({
+      layer: "model",
+      code: "timeout_no_envelope",
+    });
+    expect(result.fault?.detail).toContain(
+      "work incomplete at the run deadline",
+    );
+    expect(elapsedMs).toBeLessThan(runTimeoutMs);
+
+    const finalizerBodies = requestBodies.filter(
+      (body) =>
+        body.tool_choice?.function?.name === "submit_implementer_completion",
+    );
+    expect(finalizerBodies.length).toBeGreaterThanOrEqual(1);
+  }, 120_000);
+
+  it("keeps a voluntary blocked submission before the forced phase a success", async () => {
+    const { origin, baseSha, branch } = seedOrigin("colony-voluntary-blocked-");
+    execFileSync("git", ["-C", origin, "branch", branch]);
+    const blockedEnvelope = {
+      kind: "implementer_completion",
+      status: "blocked",
+      summary: "Cannot finish this task from the current repository state.",
+      branch,
+      head_sha: baseSha,
+      blocked_reason: "spec precondition is missing",
+    };
+    // The model submits on its first turn: nothing forced about it.
+    const { baseUrl } = await startGateway((body, response) => {
+      respondToolCall(
+        response,
+        "submit_implementer_completion",
+        blockedEnvelope,
+      );
+    });
+
+    const runner = new PiBaseAgentRunner(DEVELOPER_ROLE_PROFILE, {
+      model: modelSpec(baseUrl),
+      fallbackModels: [],
+      engine: createInProcessEngine(),
+      broker: { resolve: () => "test-key" },
+      maxTurns: 5_000,
+      runTimeoutMs: 30_000,
+    });
+
+    const result = await runner.run({
+      runId: `voluntary-blocked-${Date.now()}`,
+      packet: packet(origin, branch, baseSha),
+      environment: { role: "developer" },
+    });
+
+    expect(result.envelope).toEqual({ ...blockedEnvelope, commands: [] });
+    expect(result.reason).toBeUndefined();
+    expect(result.fault).toBeUndefined();
   }, 120_000);
 });
 
