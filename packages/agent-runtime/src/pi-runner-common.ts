@@ -442,6 +442,15 @@ export function provisionRepoWorkspace(
     }
 
     try {
+      // Agents commit as the identity colonyd acts as, so their commits link
+      // to Colony's GitLab user instead of one a model invents or copies
+      // from history. Unset outside production: agents choose, as before.
+      const authorName = process.env["GIT_AUTHOR_NAME"]?.trim();
+      const authorEmail = process.env["GIT_AUTHOR_EMAIL"]?.trim();
+      if (authorName && authorEmail) {
+        git(["config", "user.name", authorName], dir);
+        git(["config", "user.email", authorEmail], dir);
+      }
       writeFileSync(join(dir, "PACKET.json"), JSON.stringify(packet, null, 2), {
         encoding: "utf8",
       });
