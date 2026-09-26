@@ -1,6 +1,12 @@
 import type { ArchitectDecompositionV2, RepairIntentV1 } from "@colony/schemas";
 import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
+import { formatPlanReviewFinding } from "@colony/agent-runtime";
+import type {
+  PlanChanges,
+  PreviousPlanReview,
+  RevisionHistoryEntry,
+} from "./plan-loop.js";
 
 /** Operator-facing section title per repair trigger. */
 const REPAIR_INTENT_TITLE: Record<RepairIntentV1["kind"], string> = {
@@ -46,6 +52,10 @@ export interface ArchitectRevisionContext {
   plan_hash: string;
   planning_epoch: string;
   feedback: string;
+  /** Earlier rejections in this planning line, oldest first, bounded. */
+  review_history: readonly RevisionHistoryEntry[];
+  /** Goal inputs the operator changed since the rejected plan was reviewed. */
+  goal_changes: readonly string[];
 }
 
 export interface ArchitectPacket {
@@ -75,6 +85,11 @@ export interface PlanReviewPacket {
   plan_directives?: string;
   /** Which review round this is (1-based). */
   round: number;
+  /**
+   * The review this plan revises. The verdict must give each of its
+   * `finding_count` findings a status in previous_findings.
+   */
+  previous_review?: { run_id: string; round: number; finding_count: number };
 }
 
 export interface ArchitectExtensionPacket {
@@ -248,6 +263,56 @@ export function buildArchitectPacket(
   };
 }
 
+function planChangeLines(changes: PlanChanges): string[] {
+  const lines = changes.tasks.map((task) =>
+    task.change === "changed"
+      ? `- task ${task.index} "${task.title}": changed (${task.fields.join(", ")})`
+      : `- task ${task.index} "${task.title}": ${task.change}`,
+  );
+  for (const title of changes.removed) lines.push(`- removed: "${title}"`);
+  lines.push(
+    changes.plan.length > 0
+      ? `- plan-level changes: ${changes.plan.join(", ")}`
+      : "- plan-level fields unchanged",
+  );
+  return lines;
+}
+
+function previousReviewSection(
+  previous: PreviousPlanReview,
+  baseSha: string,
+): string {
+  const { review, changes } = previous;
+  const lines = [
+    `## Previous review (round ${review.round}): request_changes`,
+    review.verdict.summary,
+    "",
+    ...review.verdict.findings.map(
+      (finding, index) => `${index + 1}. ${formatPlanReviewFinding(finding)}`,
+    ),
+    "",
+    "Give each numbered finding a status in previous_findings (resolved or open), and repeat every open one in findings.",
+  ];
+  const reviewBase = review.run.base_sha;
+  if (reviewBase && reviewBase !== baseSha) {
+    lines.push(
+      `The default branch moved since that review: run \`git diff --stat ${reviewBase} ${baseSha}\` and re-check findings that rest on changed files.`,
+    );
+  }
+  lines.push("", "## What changed since that review");
+  if (changes) {
+    lines.push(
+      ...planChangeLines(changes),
+      "A new finding on an unchanged task must say why the previous review missed it.",
+    );
+  } else {
+    lines.push(
+      "The rejected plan could not be recovered: judge every task afresh.",
+    );
+  }
+  return lines.join("\n");
+}
+
 export function buildPlanReviewPacket(
   scope: Scope,
   project: Project | null,
@@ -255,6 +320,7 @@ export function buildPlanReviewPacket(
   baseSha: string,
   plan: ArchitectDecompositionV2,
   round: number,
+  previous: PreviousPlanReview | null = null,
 ): PlanReviewPacket {
   return {
     kind: "plan_review",
@@ -266,6 +332,7 @@ export function buildPlanReviewPacket(
       operatorPlanDirectivesSection(scope),
       `Plan review round ${round}. Judge the proposed plan against this repository and submit plan_review_verdict.`,
       "Return request_changes if the plan omits or contradicts any non-superseded operator directive.",
+      previous ? previousReviewSection(previous, baseSha) : "",
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -282,6 +349,15 @@ export function buildPlanReviewPacket(
       ? { plan_directives: scope.plan_directives }
       : {}),
     round,
+    ...(previous
+      ? {
+          previous_review: {
+            run_id: previous.review.run.id,
+            round: previous.review.round,
+            finding_count: previous.review.verdict.findings.length,
+          },
+        }
+      : {}),
   };
 }
 

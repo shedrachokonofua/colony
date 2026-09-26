@@ -1128,7 +1128,9 @@ export function buildArchitectDecompositionRules(): string {
     "- Implementers see ONLY their own spec — never a sibling's. When task B consumes anything task A produces, B's spec must restate that contract concretely (exact paths, exported symbols, schema shapes, CLI flags), and A's spec must declare it is producing exactly that. A dependency edge without a restated contract is an unbuildable task.",
     "- Independent tasks run CONCURRENTLY: tasks without a dependency edge must not touch the same files, or their merge requests will conflict.",
     "- Task boundary test: split two pieces of work only where a reviewer could meaningfully reject one while approving the other. Fold setup, configuration, scaffolding, and docs into the task whose deliverable needs them — they are never tasks of their own.",
-    "- Never create a task whose output a later task rewrites or discards (temporary shells, placeholder pages, scaffolding a sibling replaces wholesale). Planned rework is a plan failure: restructure so each task's deliverable survives to the end state.",
+    // col-d6ca6aa2: cutover tasks were rejected both for staging through
+    // rewritten states and for landing as one unmergeable task.
+    "- Never create a task whose output a later task rewrites or discards (temporary shells, placeholder pages, scaffolding a sibling replaces wholesale). Planned rework is a plan failure: restructure so each task's deliverable survives to the end state. Migrations are the exception: when the goal replaces something already running on the default branch, the existing path may stay live, or be bridged, until a named later task retires it. Declare that in the journey, and make the retiring task's evidence prove the old path is gone.",
     "- Two tasks must not both introduce schema migrations unless one depends on the other.",
     "- Pure verify/QA tasks with no diff cannot pass a merge gate — fold verification into the producing task as required evidence.",
     "- Tasks creating shared contracts (schemas, wire protocols, exported test suites) must say so in their spec; contract mistakes are permanent and get the strictest review.",

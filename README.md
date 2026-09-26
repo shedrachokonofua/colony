@@ -106,7 +106,8 @@ Full timeline in [docs/examples/reddit-clone.md](docs/examples/reddit-clone.md).
 flowchart LR
   G[Goal] --> A[Architect plans]
   A --> PR{Plan reviewer}
-  PR -->|request_changes| A
+  PR -->|blocker| A
+  PR -->|stalled / needs your decision| H
   PR -->|approve| H{You approve?}
   H -->|replan with feedback| A
   H -->|approve| T[Task graph]
@@ -127,9 +128,16 @@ flowchart LR
    commands that prove it, and its dependencies. It also writes the scope's
    acceptance commands.
 2. **Review the plan.** With `review.mode: required`, a plan reviewer reads
-   the plan against the checked-out repository and approves or sends it
-   back with findings; the architect revises. After ten rejections the
-   scope blocks and asks you.
+   the plan against the checked-out repository. Only a blocker sends it
+   back; majors and minors ride into the approved task specs as notes. Each
+   revision amends the rejected plan, and the next review first marks the
+   previous findings resolved or open. The scope blocks and asks you,
+   holding the rejected plan, when a blocker needs your decision (something
+   outside the repository, or goal sources in conflict), when the loop
+   stalls (the same task blocked in four reviews running, or blockers not
+   falling over four), or after twenty rejections. Continue sends the held
+   plan back for revision under a fresh budget; approve accepts it as is;
+   replan adds a durable directive.
 3. **Approve.** With `hitl.mode: gated` you read the plan in the console and
    approve it or send it back with feedback. With `hitl.mode: yolo` the
    plan is applied automatically, unless the scope was opened `--manual`.

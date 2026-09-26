@@ -8,11 +8,8 @@ import { createLocalArtifactStore, Store, type Fault } from "@colony/core";
 import { FakeProviderAdapter } from "@colony/provider";
 import type { ColonydContext } from "../context.js";
 import { awaitPendingRuns } from "./registry.js";
-import {
-  planHash,
-  runPlanReview,
-  timedOutPlanReviewModelIds,
-} from "./plan-review.js";
+import { runPlanReview, timedOutPlanReviewModelIds } from "./plan-review.js";
+import { planHash } from "./plan-loop.js";
 
 const PLAN = {
   kind: "architect_decomposition" as const,

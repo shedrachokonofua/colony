@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
-import { createArchitectSubmitTool } from "./architect-stages.js";
+import {
+  createArchitectSubmitTool,
+  createPlanReviewSubmitTool,
+} from "./architect-stages.js";
 import { createArchitectExtensionSubmitTool } from "./architect-extension.js";
 
 function decomposition(
@@ -379,5 +382,73 @@ describe("architect submission", () => {
         undefined as never,
       ),
     ).rejects.toThrow("unknown existing task id");
+  });
+});
+
+describe("plan review submission", () => {
+  const rejection = {
+    kind: "plan_review_verdict" as const,
+    verdict: "request_changes" as const,
+    summary: "Task 1 cannot land alone.",
+    findings: [
+      { severity: "blocker" as const, task: 1, note: "Add the missing edge." },
+    ],
+    inspected: [],
+  };
+
+  it("requires a status for every finding of the previous review", async () => {
+    let captured: unknown;
+    const tool = createPlanReviewSubmitTool((value) => {
+      captured = value;
+    }, 3);
+    await expect(
+      tool.execute(
+        "verdict-1",
+        {
+          ...rejection,
+          previous_findings: [
+            { finding: 1, status: "resolved" },
+            { finding: 4, status: "open" },
+          ],
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow(/no status for previous finding 2, 3[\s\S]*no finding 4/);
+    expect(captured).toBeUndefined();
+
+    const complete = {
+      ...rejection,
+      previous_findings: [
+        { finding: 1, status: "resolved" as const },
+        { finding: 2, status: "open" as const },
+        { finding: 3, status: "resolved" as const },
+      ],
+    };
+    await tool.execute(
+      "verdict-2",
+      complete,
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    expect(captured).toEqual(complete);
+  });
+
+  it("rejects a request_changes that carries no blocker", async () => {
+    const tool = createPlanReviewSubmitTool(() => {});
+    await expect(
+      tool.execute(
+        "verdict-majors",
+        {
+          ...rejection,
+          findings: [{ severity: "major", task: 1, note: "Tighten B." }],
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow("at least one blocker");
   });
 });

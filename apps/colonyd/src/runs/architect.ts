@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
 import {
   type ArchitectDecompositionV2,
-  PlanReviewVerdictV1,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
 } from "@colony/schemas";
-import type { Run, Scope } from "@colony/core";
+import type { Scope } from "@colony/core";
 import { context } from "@opentelemetry/api";
 import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
@@ -24,6 +22,14 @@ import {
 } from "@colony/agent-runtime";
 import type { ArchitectExtensionEnvelope as ArchitectExtensionEnvelopeType } from "@colony/agent-runtime";
 import { handleArchitectExtension } from "./extend.js";
+import {
+  auditSinceMarker,
+  changedGoalInputs,
+  currentGoalInputs,
+  proposingArchitectRun,
+  readPlanReview,
+  revisionHistory,
+} from "./plan-loop.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -34,77 +40,28 @@ export interface ArchitectRunOptions {
   readonly extension?: ArchitectExtensionInput;
   readonly startModelId?: string;
 }
+
+/**
+ * Operator directives that replace the plan line: after one, the architect
+ * plans afresh and earlier rejections are no revision material. A continue
+ * or unblock is not one - it resumes the same line, so the rejected plan the
+ * blocked scope held stays the amendment base (col-d6ca6aa2: every continue
+ * dropped it and the architect re-planned from scratch).
+ */
 const REVISION_EPOCH_ACTIONS: Record<string, true> = {
   "plan.replan_requested": true,
-  "scope.plan_review_continued": true,
   "scope.plan_review_replanned": true,
 };
-
-interface ReviewEvidence {
-  readonly plan_hash?: unknown;
-  readonly round?: unknown;
-  readonly verdict?: unknown;
-}
-function parseReviewEvidence(
-  run: Run,
-): { planHash: string; round: number; verdict: PlanReviewVerdictV1 } | null {
-  if (
-    run.kind !== "plan_review" ||
-    run.status !== "succeeded" ||
-    !run.evidence_json ||
-    !run.envelope_json
-  ) {
-    return null;
-  }
-  try {
-    const evidence = JSON.parse(run.evidence_json) as ReviewEvidence;
-    if (
-      typeof evidence.plan_hash !== "string" ||
-      typeof evidence.round !== "number" ||
-      evidence.verdict !== "request_changes"
-    ) {
-      return null;
-    }
-    const verdict = PlanReviewVerdictV1.safeParse(
-      JSON.parse(run.envelope_json),
-    );
-    if (!verdict.success || verdict.data.verdict !== "request_changes") {
-      return null;
-    }
-    return {
-      planHash: evidence.plan_hash,
-      round: evidence.round,
-      verdict: verdict.data,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function parseArchitectPlan(run: Run): ArchitectDecompositionV2 | null {
-  if (
-    run.kind !== "architect" ||
-    run.status !== "succeeded" ||
-    !run.envelope_json
-  ) {
-    return null;
-  }
-  try {
-    const parsed = architectDecompositionV2Schema.safeParse(
-      JSON.parse(run.envelope_json),
-    );
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Locate the exact plan rejected in the current planning epoch. The rejection
  * audit identifies the review run; the review evidence identifies the plan by
  * content hash; and the preceding architect run supplies the durable envelope.
  * If an old database has feedback but no rejection audit, the same checks are
- * applied to the newest matching review, but only within the current epoch.
+ * applied to the newest review, but only within the current epoch. The
+ * context also carries the epoch's earlier rejections, so a revision does not
+ * bring back an approach a review already rejected, and the goal inputs the
+ * operator changed since the review.
  */
 export function findArchitectRevisionContext(
   ctx: ColonydContext,
@@ -113,69 +70,57 @@ export function findArchitectRevisionContext(
   const feedback = scope.plan_feedback?.trim();
   if (!feedback) return null;
 
-  const audit = ctx.store.listAudit({ scope_id: scope.id, limit: 500 }).events;
-  const epochMarker = audit
-    .filter((row) => REVISION_EPOCH_ACTIONS[row.action] === true)
-    .at(-1);
-  const epoch = epochMarker
-    ? `${epochMarker.action}:${epochMarker.id}`
-    : "legacy";
-  const rejection = audit
-    .filter(
-      (row) =>
-        row.action === "scope.plan_rejected" &&
-        (!epochMarker || row.id > epochMarker.id),
-    )
-    .at(-1);
-  const rejectionRunId = rejection?.run_id ?? null;
+  const { marker, rows } = auditSinceMarker(
+    ctx,
+    scope.id,
+    (action) => REVISION_EPOCH_ACTIONS[action] === true,
+  );
+  const epoch = marker ? `${marker.action}:${marker.id}` : "legacy";
+  const rejections = rows.filter(
+    (row) => row.action === "scope.plan_rejected" && row.run_id !== null,
+  );
   const runs = ctx.store.runsForScope(scope.id);
-  const runEntries = runs.map((run, index) => ({ run, index }));
-  const latestReview = runEntries
-    .filter(({ run }) => run.kind === "plan_review")
-    .at(-1);
-  const candidates = rejectionRunId
-    ? runEntries.filter(({ run }) => run.id === rejectionRunId)
-    : latestReview
-      ? [latestReview]
-      : [];
-  for (const { run: reviewRun, index: reviewIndex } of candidates) {
-    const review = parseReviewEvidence(reviewRun);
-    if (!review) continue;
-    const normalizedFeedback = formatPlanReviewFeedback(
-      review.verdict,
-      review.round,
-    ).trim();
-    if (normalizedFeedback !== feedback) {
-      continue;
-    }
-    if (epochMarker && reviewRun.started_at < epochMarker.at) continue;
-    for (let i = reviewIndex - 1; i >= 0; i -= 1) {
-      const architectRun = runs[i]!;
-      if (
-        architectRun.kind !== "architect" ||
-        architectRun.status !== "succeeded" ||
-        !architectRun.envelope_json ||
-        (epochMarker && architectRun.started_at < epochMarker.at)
-      ) {
-        continue;
-      }
-      const plan = parseArchitectPlan(architectRun);
-      if (!plan) continue;
-      const planHash = createHash("sha256")
-        .update(architectRun.envelope_json)
-        .digest("hex");
-      if (planHash !== review.planHash) continue;
-      return {
-        rejected_plan: plan,
-        review_run_id: reviewRun.id,
-        review_base_sha: reviewRun.base_sha,
-        plan_hash: review.planHash,
-        planning_epoch: epoch,
-        feedback,
-      };
+  const rejectionRunId = rejections.at(-1)?.run_id;
+  let reviewIndex = -1;
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index]!;
+    if (
+      rejectionRunId ? run.id === rejectionRunId : run.kind === "plan_review"
+    ) {
+      reviewIndex = index;
+      break;
     }
   }
-  return null;
+  if (reviewIndex < 0) return null;
+  const reviewRun = runs[reviewIndex]!;
+  const review = readPlanReview(reviewRun);
+  if (!review || review.verdict.verdict !== "request_changes") return null;
+  const normalizedFeedback = formatPlanReviewFeedback(
+    review.verdict,
+    review.round,
+  ).trim();
+  if (normalizedFeedback !== feedback) return null;
+  if (marker && reviewRun.started_at < marker.at) return null;
+  const proposing = proposingArchitectRun(
+    runs,
+    reviewIndex,
+    review.planHash,
+    marker?.at,
+  );
+  if (!proposing) return null;
+  return {
+    rejected_plan: proposing.plan,
+    review_run_id: reviewRun.id,
+    review_base_sha: reviewRun.base_sha,
+    plan_hash: review.planHash,
+    planning_epoch: epoch,
+    feedback,
+    review_history: revisionHistory(ctx, rejections),
+    goal_changes: changedGoalInputs(
+      review.goalInputs,
+      currentGoalInputs(ctx, scope),
+    ),
+  };
 }
 /**
  * Execute one architect run for a scope already transitioned to `planning`.
@@ -393,6 +338,10 @@ async function executeArchitect(
 
     ctx.store.finishRun(runId, "succeeded", {
       envelope_json: JSON.stringify(decomposition),
+      // The next plan review reads this to show the reviewer its predecessor.
+      evidence_json: JSON.stringify({
+        revision_of_review: revisionContext?.review_run_id ?? null,
+      }),
     });
     runSpan?.end("succeeded");
     ctx.store.setScopePlan(scope.id, JSON.stringify(decomposition));

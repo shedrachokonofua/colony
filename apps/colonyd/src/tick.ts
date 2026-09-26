@@ -28,13 +28,16 @@ import {
   runReview,
 } from "./runs/review.js";
 import {
-  latestPlanReview,
-  MAX_PLAN_REVIEW_ROUNDS,
-  planHash,
-  planReviewRounds,
   runPlanReview,
   timedOutPlanReviewModelIds,
 } from "./runs/plan-review.js";
+import {
+  advanceRejectedPlan,
+  budgetRejections,
+  latestPlanReview,
+  planHash,
+  withReviewNotes,
+} from "./runs/plan-loop.js";
 import { revokeTokensForRuns } from "./runs/tokens.js";
 import {
   buildValidationExtensionInput,
@@ -1255,11 +1258,12 @@ async function advanceScopePlanning(
           continue;
         }
         // The plan goes through the reviewer chain before anyone builds on
-        // it - the same loop an implementer's MR gets. request_changes
-        // clears the plan with the findings and the architect runs again
-        // (the branch above); approve lets it through to the operator or
-        // to materialization. Without a reviewer configured the plan is
-        // trusted as before.
+        // it - the same loop an implementer's MR gets. A rejected plan stays
+        // in place until the loop policy either sends it back to the
+        // architect with the findings (the branch above, next tick) or
+        // blocks the scope with it held for the operator; an approved plan
+        // carries the reviewer's non-blocking findings into its task specs.
+        // Without a reviewer configured the plan is trusted as before.
         if (ctx.agents.planReviewer) {
           const review = latestPlanReview(
             ctx,
@@ -1268,13 +1272,6 @@ async function advanceScopePlanning(
             lastArchitect.id,
           );
           if (!review) {
-            const rounds = planReviewRounds(ctx, scope.id);
-            if (rounds >= MAX_PLAN_REVIEW_ROUNDS) {
-              ctx.store.setScopeStatus(scope.id, "blocked", SERVICE_ACTOR, {
-                blocked_reason: `plan review rejected ${rounds} consecutive times`,
-              });
-              continue;
-            }
             const excludedModelIds = timedOutPlanReviewModelIds(
               ctx,
               scope.id,
@@ -1295,15 +1292,30 @@ async function advanceScopePlanning(
               }
               continue;
             }
+            const round = budgetRejections(ctx, scope).length + 1;
             dispatch(
-              runPlanReview(ctx, scope, plan, rounds + 1, {
+              runPlanReview(ctx, scope, plan, round, {
                 startModelId: slot.startModelId ?? undefined,
                 excludedModelIds,
+                proposedByRunId: lastArchitect.id,
               }),
             );
             continue;
           }
-          if (review.verdict !== "approve") continue;
+          if (review.verdict.verdict === "request_changes") {
+            if (advanceRejectedPlan(ctx, scope, plan, review) === "revise") {
+              const slot = pickDispatchSlot(ctx, "architect");
+              if (slot.allowed) {
+                dispatch(
+                  runArchitect(ctx, ctx.store.getScope(scope.id) ?? scope, {
+                    startModelId: slot.startModelId ?? undefined,
+                  }),
+                );
+              }
+            }
+            continue;
+          }
+          plan = withReviewNotes(plan, review.verdict, review.round);
         }
         if (ctx.config.hitlMode === "yolo" && scope.approvals !== "manual") {
           ctx.store.materializePlan(scope.id, plan, SERVICE_ACTOR);

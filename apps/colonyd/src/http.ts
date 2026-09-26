@@ -30,6 +30,11 @@ import {
 import { createOidcVerifier } from "./oidc.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
 import { runValidation } from "./runs/validate.js";
+import {
+  parsePlanReviewBlockReason,
+  withApprovedReviewNotes,
+  type PlanReviewBlockKind,
+} from "./runs/plan-loop.js";
 
 const UI_DIR = dirname(
   createRequire(import.meta.url).resolve("@colony/console/package.json"),
@@ -809,7 +814,11 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         return c.json({ scope: ctx.store.getScope(scope.id), tasks }, 200);
       }
       const plan = architectDecompositionV2Schema.parse(raw);
-      const tasks = ctx.store.materializePlan(scope.id, plan, c.get("actor"));
+      const tasks = ctx.store.materializePlan(
+        scope.id,
+        withApprovedReviewNotes(ctx, scope, plan),
+        c.get("actor"),
+      );
       ctx.requestTick();
       return c.json({ scope: ctx.store.getScope(scope.id), tasks }, 200);
     } catch (err) {
@@ -847,37 +856,32 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return c.json(updated);
   });
 
-  const PLAN_REVIEW_CAP_REASON =
-    /^plan review rejected (\d+) consecutive times$/;
-
-  function parsePlanReviewCap(scope: {
+  /** The plan-loop block a scope sits in with its plan held, or null. */
+  function parsePlanReviewBlock(scope: {
     status: string;
     plan_json: string | null;
     blocked_reason: string | null;
-  }): { rounds: number } | null {
+  }): { rounds: number; kind: PlanReviewBlockKind } | null {
     if (scope.status !== "blocked" || !scope.plan_json) return null;
-    const match = scope.blocked_reason?.match(PLAN_REVIEW_CAP_REASON);
-    if (!match) return null;
-    return { rounds: Number(match[1]) };
+    const block = parsePlanReviewBlockReason(scope.blocked_reason);
+    return block ? { rounds: block.rejections, kind: block.kind } : null;
   }
 
-  // Escape endpoint (1): continue plan review under a fresh epoch.
+  const NOT_PLAN_REVIEW_BLOCKED =
+    "scope is not blocked by the plan-review loop with plan_json retained";
+
+  // Escape endpoint (1): continue the plan loop under a fresh budget. A held
+  // plan the reviewer rejected goes back to the architect as the amendment
+  // base; an unreviewed one (legacy blocks) is reviewed first.
   app.post("/scopes/:id/plan-review-continue", (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
     if (!scope) return notFound(c, "scope");
-    const cap = parsePlanReviewCap(scope);
-    if (!cap) {
-      return conflict(
-        c,
-        new Error(
-          "scope is not blocked at the plan-review cap with plan_json retained",
-        ),
-      );
-    }
+    const block = parsePlanReviewBlock(scope);
+    if (!block) return conflict(c, new Error(NOT_PLAN_REVIEW_BLOCKED));
     const actor = c.get("actor");
     ctx.store.audit(actor, "scope.plan_review_continued", {
       scope_id: scope.id,
-      detail: { rounds: cap.rounds },
+      detail: { rounds: block.rounds, block: block.kind },
     });
     ctx.store.setScopeStatus(scope.id, "planning", actor);
     ctx.requestTick();
@@ -888,15 +892,8 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.post("/scopes/:id/plan-review-approve", (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
     if (!scope) return notFound(c, "scope");
-    const cap = parsePlanReviewCap(scope);
-    if (!cap) {
-      return conflict(
-        c,
-        new Error(
-          "scope is not blocked at the plan-review cap with plan_json retained",
-        ),
-      );
-    }
+    const block = parsePlanReviewBlock(scope);
+    if (!block) return conflict(c, new Error(NOT_PLAN_REVIEW_BLOCKED));
     let raw: unknown;
     try {
       raw = JSON.parse(scope.plan_json!);
@@ -933,7 +930,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       }
       ctx.store.audit(actor, "scope.plan_review_approved", {
         scope_id: scope.id,
-        detail: { rounds: cap.rounds },
+        detail: { rounds: block.rounds, block: block.kind },
       });
       ctx.requestTick();
       return c.json({ scope: ctx.store.getScope(scope.id), tasks }, 200);
@@ -946,15 +943,8 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
   app.post("/scopes/:id/plan-review-replan", async (c) => {
     const scope = ctx.store.getScope(c.req.param("id"));
     if (!scope) return notFound(c, "scope");
-    const cap = parsePlanReviewCap(scope);
-    if (!cap) {
-      return conflict(
-        c,
-        new Error(
-          "scope is not blocked at the plan-review cap with plan_json retained",
-        ),
-      );
-    }
+    const block = parsePlanReviewBlock(scope);
+    if (!block) return conflict(c, new Error(NOT_PLAN_REVIEW_BLOCKED));
     const parsed = feedbackBody.safeParse(await parseBody(c));
     if (!parsed.success) return badBody(c, parsed.error.message);
     const actor = c.get("actor");
@@ -965,7 +955,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     });
     ctx.store.audit(actor, "scope.plan_review_replanned", {
       scope_id: scope.id,
-      detail: { rounds: cap.rounds },
+      detail: { rounds: block.rounds, block: block.kind },
     });
     ctx.store.setScopeStatus(scope.id, "planning", actor);
     ctx.requestTick();

@@ -455,4 +455,85 @@ describe("run audit end-to-end integration over in-process sandbox engine", () =
       ),
     ).toBeNull();
   });
+
+  it("keeps the held rejected plan as the amendment base across a plan-review continue", () => {
+    if (!handle) throw new Error("boot failed");
+    const store = handle.ctx.store;
+    const scope = store.createScope({
+      goal: "continue revision test",
+      title: "continue revision test",
+      provider_repo_id: "revision-repo",
+      provider_repo_path: gitRepoDir,
+    });
+    store.setScopeStatus(scope.id, "planning", "test");
+    const reject = (
+      plan: ArchitectDecompositionV2,
+      round: number,
+      note: string,
+    ) => {
+      const planJson = JSON.stringify(plan);
+      const architectRun = store.startRun({
+        scope_id: scope.id,
+        kind: "architect",
+        lease_ttl_ms: 60_000,
+      });
+      store.finishRun(architectRun.id, "succeeded", {
+        envelope_json: planJson,
+      });
+      store.setScopePlan(scope.id, planJson);
+      const verdict: PlanReviewVerdictV1 = {
+        kind: "plan_review_verdict",
+        verdict: "request_changes",
+        summary: `Round ${round} rejects the plan.`,
+        findings: [{ severity: "blocker", task: 0, note }],
+        inspected: [],
+      };
+      const reviewRun = store.startRun({
+        scope_id: scope.id,
+        kind: "plan_review",
+        lease_ttl_ms: 60_000,
+      });
+      store.finishRun(reviewRun.id, "succeeded", {
+        envelope_json: JSON.stringify(verdict),
+        evidence_json: JSON.stringify({
+          verdict: "request_changes",
+          round,
+          plan_hash: createHash("sha256").update(planJson).digest("hex"),
+        }),
+      });
+      store.audit("test", "scope.plan_rejected", {
+        scope_id: scope.id,
+        run_id: reviewRun.id,
+      });
+      return { reviewRun, feedback: formatPlanReviewFeedback(verdict, round) };
+    };
+    reject(ENVELOPE, 1, "Use the queue-safe state transition.");
+    const held = { ...ENVELOPE, summary: "Revised run-audit decomposition." };
+    const latest = reject(held, 2, "Keep the retry idempotent.");
+
+    // The loop blocked with the rejected plan held; the operator continues
+    // and the tick sends that plan back with its findings.
+    store.setScopeStatus(scope.id, "blocked", "test", {
+      blocked_reason:
+        "plan review stalled after 2 rejections: blockers did not fall",
+    });
+    store.audit("test", "scope.plan_review_continued", {
+      scope_id: scope.id,
+      detail: { rounds: 2 },
+    });
+    store.setScopeStatus(scope.id, "planning", "test");
+    store.requestReviewReplan(scope.id, latest.feedback);
+
+    const revision = findArchitectRevisionContext(
+      handle.ctx,
+      store.getScope(scope.id)!,
+    );
+    expect(revision?.rejected_plan).toEqual(held);
+    expect(revision?.review_run_id).toBe(latest.reviewRun.id);
+    expect(
+      revision?.review_history.map((entry) =>
+        entry.findings.map((finding) => finding.note),
+      ),
+    ).toEqual([["Use the queue-safe state transition."]]);
+  });
 });

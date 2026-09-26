@@ -702,6 +702,41 @@ describe("plan-review cap escape hatch", () => {
     ]);
   });
 
+  it("offers the loop actions for stall and operator-decision blocks, with what each asks of you", async () => {
+    const cases = [
+      {
+        reason:
+          "plan review stalled after 4 rejections: task 7 (Cut over) has had a blocker in each of the last 4 reviews",
+        hint: "Planning stopped converging.",
+      },
+      {
+        reason:
+          "plan review needs an operator decision after 1 rejection: Decide who owns the shared ingress.",
+        hint: "The reviewer needs your decision.",
+      },
+    ];
+    for (const { reason, hint } of cases) {
+      const el = makeSheet(
+        detail({
+          scope: {
+            ...SCOPE_CLOSED,
+            status: "blocked",
+            blocked_reason: reason,
+            plan_json: planJson,
+          },
+        }),
+      );
+      await el.updateComplete;
+      const planCard = el.querySelector("plan-card");
+      await planCard.updateComplete;
+      expect(buttonWithText(planCard, "Continue")).toBeTruthy();
+      expect(buttonWithText(planCard, "Request replan")).toBeTruthy();
+      expect(planCard.querySelector(".wait-inline")?.textContent).toContain(
+        hint,
+      );
+    }
+  });
+
   it("suppresses generic Unblock button on validation-card when cap regex matches", async () => {
     const world = detail({
       scope: {

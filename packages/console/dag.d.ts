@@ -52,6 +52,8 @@ export interface Plan {
   journey?: Array<{ after_task?: number; working_state?: string }>;
   acceptance?: Array<{ description?: string; command?: string }>;
   tasks: PlanTask[];
+  /** Decisions the architect says only the operator can make. */
+  operator_decisions?: string[];
 }
 
 export function parsePlan(raw: string | null | undefined): Plan | null;

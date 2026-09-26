@@ -52,6 +52,13 @@ export function planMarkdown(scope, plan) {
       parts.push(`- ${a.description ?? ""}`, "", "```", a.command ?? "", "```");
     }
   }
+  if (
+    Array.isArray(plan.operator_decisions) &&
+    plan.operator_decisions.length
+  ) {
+    parts.push("", "## Decisions the architect needs from you");
+    for (const decision of plan.operator_decisions) parts.push(`- ${decision}`);
+  }
   (plan.tasks || []).forEach(
     (
       /** @type {import("../dag.js").PlanTask} */ task,
@@ -77,8 +84,24 @@ export function planMarkdown(scope, plan) {
   return parts.join("\n");
 }
 
+/**
+ * Blocks the plan-review loop stops in with the plan held: the rejection
+ * ceiling, a stall, or a decision only the operator can make. Mirrors
+ * PLAN_REVIEW_BLOCK_REASON in apps/colonyd/src/runs/plan-loop.ts.
+ */
 export const PLAN_REVIEW_CAP_REASON =
-  /^plan review rejected \d+ consecutive times$/;
+  /^plan review (?:rejected \d+ consecutive times$|stalled after \d+ rejections?:|needs an operator decision after \d+ rejections?:)/;
+
+/** @param {string} reason @returns {string | null} */
+function capHint(reason) {
+  if (reason.startsWith("plan review needs an operator decision")) {
+    return "The reviewer needs your decision. Answer it with Request replan; Continue only if you already changed the goal sources.";
+  }
+  if (reason.startsWith("plan review stalled")) {
+    return "Planning stopped converging. Request replan with a directive, or Continue to let the architect revise the held plan.";
+  }
+  return null;
+}
 
 /**
  * @param {Record<string, any> | null | undefined} scope
@@ -155,6 +178,7 @@ export class PlanCard extends ColonyElement {
         : "";
     const approvable = scope.status === "planning" && plan;
     const isCapBlocked = isCapBlockedWithPlan(scope, plan);
+    const capNote = isCapBlocked ? capHint(scope.blocked_reason) : null;
     return html`<aside class="card">
       <p class="card-head">Plan</p>
       <div class="card-body">
@@ -250,7 +274,10 @@ export class PlanCard extends ColonyElement {
               </form>`
           : nothing}
         ${isCapBlocked
-          ? html`<div class="plan-actions cap-actions">
+          ? html`${capNote
+                ? html`<p class="wait-inline">${capNote}</p>`
+                : nothing}
+              <div class="plan-actions cap-actions">
                 <button
                   class="btn btn-solid"
                   @click=${() =>

@@ -66,6 +66,7 @@ import {
   createPlanReviewSubmitTool,
   PLAN_REVIEW_SYSTEM_PROMPT,
   planReviewVerdictTypeBox,
+  previousReviewFindingCount,
   type ArchitectStage,
   type InspectionManifest,
   type StageArtifacts,
@@ -2185,10 +2186,11 @@ export const PLAN_REVIEWER_ROLE_PROFILE: PiRoleProfile = {
   sandboxPrefix: "pi-plan-reviewer",
   systemPrompt: () => PLAN_REVIEW_SYSTEM_PROMPT,
   finalizerPrompt: () =>
-    "Review is complete. Submit exactly one plan_review_verdict by calling submit_plan_review_verdict: request_changes needs findings that name the task and the correction; approve needs `inspected` and a summary of at least 80 chars.",
+    "Review is complete. Submit exactly one plan_review_verdict by calling submit_plan_review_verdict: request_changes needs at least one blocker, and every finding names the task and the end state that must hold; approve carries no blocker and needs `inspected` and a summary of at least 80 chars. When the packet carries a previous review, give each of its findings a status in previous_findings.",
   schemaName: "plan_review_verdict",
   typeboxSchema: planReviewVerdictTypeBox,
-  submitTool: (capture) => createPlanReviewSubmitTool(capture),
+  submitTool: (capture, _sizeGate, packet) =>
+    createPlanReviewSubmitTool(capture, previousReviewFindingCount(packet)),
   validate: zodValidator(PlanReviewVerdictV1),
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",

@@ -50,6 +50,13 @@ const architectPlanFields = {
     )
     .min(1),
   tasks: z.array(architectTask).min(1).max(20),
+  /**
+   * Decisions only the operator can make, raised instead of worked around: a
+   * requirement that needs something outside this repository, or goal
+   * sources in conflict with nothing deciding which wins. Each names the
+   * conflict, the options, and the reading the plan assumed.
+   */
+  operator_decisions: z.array(z.string().min(1)).max(5).optional(),
 };
 
 function planRefinements<T extends z.infer<typeof ArchitectDecompositionV2>>(
@@ -226,33 +233,85 @@ export const ReviewerVerdictV2 = z
 export type ReviewerVerdictV2 = z.infer<typeof ReviewerVerdictV2>;
 
 /**
- * A reviewer's verdict on a proposed plan. Same loop as code review: findings
- * name the task, approve names what was inspected.
+ * One plan review finding. `owner` says who must act: the architect (the
+ * default) revises the plan; the operator must decide what no plan can settle
+ * from the repository - a capability outside it, or goal sources in conflict.
  */
-export const PlanReviewVerdictV1 = z
+const planReviewFinding = z.object({
+  severity: z.enum(["blocker", "major", "minor"]),
+  /** Index into the plan's tasks; absent for plan-wide findings. */
+  task: z.number().int().nonnegative().optional(),
+  note: z.string().min(1),
+  owner: z.enum(["architect", "operator"]).optional(),
+});
+
+/**
+ * The plan review verdict's shape without its submission rules. Stored
+ * verdicts read through this, so a verdict recorded under older rules (a
+ * rejection carrying majors only) still reads as what it was.
+ */
+export const StoredPlanReviewVerdictV1 = z
   .object({
     kind: z.literal("plan_review_verdict"),
     verdict: z.enum(["approve", "request_changes"]),
     summary: z.string().min(1),
-    findings: z
-      .array(
-        z.object({
-          severity: z.enum(["blocker", "major", "minor"]),
-          /** Index into the plan's tasks; absent for plan-wide findings. */
-          task: z.number().int().nonnegative().optional(),
-          note: z.string().min(1),
-        }),
-      )
-      .default([]),
+    findings: z.array(planReviewFinding).default([]),
     /** What the reviewer read against the plan: files, and what was checked. */
     inspected: z
       .array(z.object({ file: z.string().min(1), note: z.string().min(1) }))
       .default([]),
+    /**
+     * The status of each finding of the previous review, by its 1-based
+     * number, when this plan revises a rejected one.
+     */
+    previous_findings: z
+      .array(
+        z
+          .object({
+            finding: z.number().int().positive(),
+            status: z.enum(["resolved", "open"]),
+          })
+          .strict(),
+      )
+      .optional(),
   })
-  .strict()
-  .refine((v) => v.verdict !== "request_changes" || v.findings.length > 0, {
-    message: "request_changes requires at least one finding",
-  })
+  .strict();
+
+export type StoredPlanReviewVerdictV1 = z.infer<
+  typeof StoredPlanReviewVerdictV1
+>;
+
+/**
+ * A reviewer's verdict on a proposed plan. Same loop as code review: findings
+ * name the task, approve names what was inspected. Severity decides the
+ * verdict: a blocker sends the plan back; majors and minors ride into the
+ * task specs of the approved plan.
+ */
+export const PlanReviewVerdictV1 = StoredPlanReviewVerdictV1.refine(
+  (v) =>
+    v.verdict !== "request_changes" ||
+    v.findings.some((f) => f.severity === "blocker"),
+  {
+    message:
+      "request_changes requires at least one blocker finding; majors and minors alone approve and ride into the task specs",
+  },
+)
+  .refine(
+    (v) =>
+      v.verdict !== "approve" ||
+      v.findings.every((f) => f.severity !== "blocker"),
+    {
+      message:
+        "approve cannot carry a blocker finding; request_changes instead",
+    },
+  )
+  .refine(
+    (v) =>
+      v.findings.every(
+        (f) => f.owner !== "operator" || f.severity === "blocker",
+      ),
+    { message: "an operator-owned finding must be a blocker" },
+  )
   .refine((v) => v.verdict !== "approve" || v.inspected.length > 0, {
     message:
       "approve requires at least one inspected file with a note on what was checked",

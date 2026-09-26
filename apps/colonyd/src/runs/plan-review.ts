@@ -3,8 +3,6 @@ import {
   PlanReviewVerdictV1,
 } from "@colony/schemas";
 import { z } from "zod";
-import { formatPlanReviewFeedback } from "@colony/agent-runtime";
-import { createHash } from "node:crypto";
 import { context } from "@opentelemetry/api";
 import type { Fault, Scope } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
@@ -18,30 +16,30 @@ import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
 import { buildPlanReviewPacket } from "./packets.js";
+import {
+  BUDGET_EPOCH_ACTIONS,
+  goalInputs,
+  planHash,
+  previousPlanReview,
+} from "./plan-loop.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const planReviewSubject = z.object({ plan_hash: z.string() });
 
-/**
- * Review rounds a plan may go through before the scope blocks on a human.
- * Same cap as the code-review loop: findings are the correction signal, and
- * a plan that cannot converge in this many rounds has a problem the
- * architect cannot fix alone.
- */
-export const MAX_PLAN_REVIEW_ROUNDS = 10;
-
 export interface PlanReviewRunOptions {
   readonly leaseTtlMs?: number;
   readonly startModelId?: string;
   readonly excludedModelIds?: readonly string[];
+  /** The architect run that proposed the plan; names the review it revised. */
+  readonly proposedByRunId?: string;
 }
 
 /**
- * Review a proposed plan (scopes.plan_json) with the reviewer chain. An
- * approve leaves the plan in place for materialization/operator approval and
- * is recorded on the run; request_changes clears the plan and hands the
- * findings to the next architect run through the existing replan path.
+ * Review a proposed plan (scopes.plan_json) with the reviewer chain and
+ * record the verdict on the run. The plan stays in place either way: the
+ * tick materializes or holds an approved plan, and sends a rejected one back
+ * to the architect or stops for the operator (plan-loop.ts).
  */
 export async function runPlanReview(
   ctx: ColonydContext,
@@ -144,6 +142,9 @@ async function executePlanReview(
     const files = scope.project_name
       ? ctx.store.listProjectFiles(scope.project_name)
       : [];
+    const previous = options.proposedByRunId
+      ? previousPlanReview(ctx, scope.id, options.proposedByRunId, plan)
+      : null;
     const packet = buildPlanReviewPacket(
       scope,
       project,
@@ -151,6 +152,7 @@ async function executePlanReview(
       baseSha,
       plan,
       round,
+      previous,
     );
     const full = {
       ...packet,
@@ -222,6 +224,13 @@ async function executePlanReview(
         plan_hash: planHashValue,
         findings: verdict.findings,
         inspected: verdict.inspected,
+        goal_inputs: goalInputs(scope, project, files),
+        ...(previous
+          ? {
+              previous_review_run_id: previous.review.run.id,
+              previous_findings: verdict.previous_findings ?? [],
+            }
+          : {}),
       }),
     });
     runSpan?.end("succeeded");
@@ -236,7 +245,7 @@ async function executePlanReview(
       },
     });
     // The scope may have moved while the review ran (operator replan or
-    // abandon); only act on a plan that is still the one reviewed.
+    // abandon); a rejection counts only against the plan still in place.
     const current = ctx.store.getScope(scope.id);
     if (
       !current ||
@@ -246,10 +255,6 @@ async function executePlanReview(
       return;
     }
     if (verdict.verdict === "request_changes") {
-      ctx.store.requestReviewReplan(
-        scope.id,
-        formatPlanReviewFeedback(verdict, round),
-      );
       ctx.store.audit(SERVICE_ACTOR, "scope.plan_rejected", {
         scope_id: scope.id,
         run_id: runId,
@@ -313,10 +318,6 @@ function finishPlanReviewFailure(
   });
 }
 
-export function planHash(planJson: string): string {
-  return createHash("sha256").update(planJson).digest("hex");
-}
-
 /**
  * Return model ids whose timeout failures belong to the current proposal and
  * exact plan content. Runs before the proposal run (or before an operator
@@ -370,84 +371,10 @@ function planReviewResetAt(
       limit: 200,
     });
     for (let index = page.events.length - 1; index >= 0; index -= 1) {
-      const action = page.events[index]!.action;
-      if (
-        action === "scope.plan_review_continued" ||
-        action === "scope.plan_review_replanned" ||
-        action === "scope.unblocked"
-      )
+      if (BUDGET_EPOCH_ACTIONS[page.events[index]!.action] === true)
         return page.events[index]!.at;
     }
     if (!page.has_more || page.oldest_id === null) return undefined;
     beforeId = page.oldest_id;
   }
-}
-/**
- * The verdict recorded for exactly this plan: same content (hash) and
- * reviewed after the architect run that proposed it. "After" is the store's
- * run order, not a timestamp: millisecond ties between a review and the next
- * architect run made time-keyed lookups both miss a fresh verdict and
- * inherit a stale one. Keying on content alone would let an architect that
- * resubmits an identical rejected plan inherit the old verdict and never be
- * reviewed - or re-dispatched - again.
- */
-export function latestPlanReview(
-  ctx: ColonydContext,
-  scopeId: string,
-  planJson: string,
-  proposedByRunId: string,
-): { verdict: "approve" | "request_changes"; round: number } | null {
-  const hash = planHash(planJson);
-  const runs = ctx.store.runsForScope(scopeId);
-  const proposedAt = runs.findIndex((r) => r.id === proposedByRunId);
-  for (const run of runs.slice(proposedAt + 1).reverse()) {
-    if (
-      run.kind !== "plan_review" ||
-      run.status !== "succeeded" ||
-      !run.evidence_json
-    )
-      continue;
-    try {
-      const evidence = JSON.parse(run.evidence_json) as {
-        verdict?: unknown;
-        round?: unknown;
-        plan_hash?: unknown;
-      };
-      if (evidence.plan_hash !== hash) continue;
-      if (
-        (evidence.verdict === "approve" ||
-          evidence.verdict === "request_changes") &&
-        typeof evidence.round === "number"
-      ) {
-        return { verdict: evidence.verdict, round: evidence.round };
-      }
-    } catch {
-      // an unreadable verdict is no verdict
-    }
-  }
-  return null;
-}
-
-/**
- * Plan reviews on this scope that sent the plan back (rejections), counted
- * since the latest epoch marker. An operator continue/replan or unblock
- * starts a fresh rejection budget, mirroring the architectAttempts pattern:
- * listAudit returns its window oldest-first, so the LATEST marker is the
- * last match, not the first. No marker means a legacy scope (col-1e4f99fd):
- * count all of history.
- */
-export function planReviewRounds(ctx: ColonydContext, scopeId: string): number {
-  const events = ctx.store.listAudit({ scope_id: scopeId, limit: 500 }).events;
-  const marker = events
-    .filter(
-      (row) =>
-        row.action === "scope.plan_review_continued" ||
-        row.action === "scope.plan_review_replanned" ||
-        row.action === "scope.unblocked",
-    )
-    .at(-1);
-  return events.filter(
-    (row) =>
-      row.action === "scope.plan_rejected" && (!marker || row.id > marker.id),
-  ).length;
 }

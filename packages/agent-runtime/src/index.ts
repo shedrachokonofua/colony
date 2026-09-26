@@ -50,6 +50,7 @@ export {
   createArchitectSubmitTool,
   createPlanReviewSubmitTool,
   formatPlanReviewFeedback,
+  formatPlanReviewFinding,
   PLAN_REVIEW_SYSTEM_PROMPT,
   planReviewVerdictTypeBox,
 } from "./architect-stages.js";

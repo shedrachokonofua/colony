@@ -23,6 +23,20 @@ import { awaitPendingRuns, trackRun } from "../src/runs/registry.js";
 import { buildApp } from "../src/http.js";
 import type { GateFailure } from "../src/runs/merge-gate.js";
 import type { ValidateExecutor } from "../src/runs/validate.js";
+import { planHash, PLAN_REVIEW_STALL_WINDOW } from "../src/runs/plan-loop.js";
+
+interface ScriptedPlanFinding {
+  severity: "blocker" | "major" | "minor";
+  task?: number;
+  note: string;
+  owner?: "architect" | "operator";
+}
+
+const DEFAULT_PLAN_FINDING: ScriptedPlanFinding = {
+  severity: "blocker",
+  task: 1,
+  note: "evidence must exercise B",
+};
 
 const ACTOR = "human:op-1";
 const SHA_A = "a".repeat(40);
@@ -59,7 +73,15 @@ const script = {
   reviewerRejectFirst: false,
   reviewerAlwaysReject: false,
   planReviewRejectFirst: false,
+  /** Every plan review rejects with planReviewFinding. */
+  planReviewAlwaysReject: false,
+  planReviewFinding: DEFAULT_PLAN_FINDING,
+  /** Non-blocking findings an approving plan review carries. */
+  planReviewApproveFindings: [] as ScriptedPlanFinding[],
   planReviewCalls: 0,
+  /** Packets each architect and plan-review run received, in order. */
+  architectPackets: [] as AgentRuntimePacket[],
+  planReviewPackets: [] as AgentRuntimePacket[],
   distinctShas: false,
   singleTask: false,
   /** Last head the fake implementer pushed, per task. */
@@ -79,6 +101,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
       environment: AgentRunEnvironment,
     ) => {
       if (environment.role === "architect") {
+        script.architectPackets.push(packet);
         if (script.singleTask) {
           return {
             kind: "architect_decomposition",
@@ -133,14 +156,16 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
       }
       if (environment.role === "plan_reviewer") {
         script.planReviewCalls += 1;
-        if (script.planReviewRejectFirst && script.planReviewCalls === 1) {
+        script.planReviewPackets.push(packet);
+        if (
+          script.planReviewAlwaysReject ||
+          (script.planReviewRejectFirst && script.planReviewCalls === 1)
+        ) {
           return {
             kind: "plan_review_verdict",
             verdict: "request_changes",
             summary: "Task B's evidence does not prove B.",
-            findings: [
-              { severity: "major", task: 1, note: "evidence must exercise B" },
-            ],
+            findings: [script.planReviewFinding],
             inspected: [],
           };
         }
@@ -149,7 +174,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
           verdict: "approve",
           summary:
             "Approved: every task lands alone, the evidence commands prove each one, and the journey reaches the goal.",
-          findings: [],
+          findings: script.planReviewApproveFindings,
           inspected: [{ file: "src/a.ts", note: "checked against the plan" }],
         };
       }
@@ -533,7 +558,12 @@ beforeEach(async () => {
   script.reviewerRejectFirst = false;
   script.reviewerAlwaysReject = false;
   script.planReviewRejectFirst = false;
+  script.planReviewAlwaysReject = false;
+  script.planReviewFinding = DEFAULT_PLAN_FINDING;
+  script.planReviewApproveFindings = [];
   script.planReviewCalls = 0;
+  script.architectPackets = [];
+  script.planReviewPackets = [];
   script.distinctShas = false;
   script.singleTask = false;
   script.pushedShas.clear();
@@ -579,7 +609,7 @@ async function driveToDone(scopeId: string, maxTicks = 20): Promise<void> {
 }
 
 describe("colonyd fake end-to-end loop", () => {
-  it("plan review: request_changes replans with the findings, approve materializes", async () => {
+  it("plan review: a rejection goes back to the architect with the plan and findings, approve materializes", async () => {
     await handle.shutdown();
     handle = await bootHeadless(join(dir, `plan-review-${Date.now()}.db`), {
       reviewRequired: true,
@@ -589,31 +619,38 @@ describe("colonyd fake end-to-end loop", () => {
     const scopeId = await createScope("plan review loop");
     const store = handle.ctx.store;
     await tickAndSettle(); // draft -> planning; architect proposes
-    expect(store.getScope(scopeId)!.plan_json).not.toBeNull();
-    await tickAndSettle(); // plan review 1 -> request_changes -> replan
-    let scope = store.getScope(scopeId)!;
-    expect(scope.status).toBe("planning");
-    expect(scope.plan_json).toBeNull();
-    expect(scope.plan_feedback).toContain(
+    const proposed = store.getScope(scopeId)!.plan_json;
+    expect(proposed).not.toBeNull();
+    await tickAndSettle(); // plan review 1 -> request_changes, plan held
+    expect(store.getScope(scopeId)!.plan_json).toBe(proposed);
+    const rejection = store
+      .runsForScope(scopeId)
+      .find((r) => r.kind === "plan_review")!;
+    await tickAndSettle(); // the rejection goes back; the architect revises
+    const revision = script.architectPackets.at(-1)!;
+    expect(revision.plan_feedback).toContain(
       "Plan review round 1: request_changes",
     );
-    expect(scope.plan_feedback).toContain(
-      "[major] task 1: evidence must exercise B",
+    expect(revision.plan_feedback).toContain(
+      "[blocker] task 1: evidence must exercise B",
     );
+    expect(revision.revision_context).toMatchObject({
+      review_run_id: rejection.id,
+    });
     expect(store.listTasks(scopeId)).toHaveLength(0);
-    await tickAndSettle(); // architect re-runs with the findings
-    scope = store.getScope(scopeId)!;
-    expect(scope.plan_json).not.toBeNull();
-    expect(scope.plan_feedback).toBeNull();
-    // plan review 2 -> approve -> materialize (review dispatch and the
-    // materialization are separate ticks; converge, bounded).
+    // plan review 2 sees review 1, approves -> materialize (review dispatch
+    // and the materialization are separate ticks; converge, bounded).
     for (let i = 0; i < 6; i += 1) {
       await tickAndSettle();
       if (store.getScope(scopeId)!.status === "active") break;
     }
-    scope = store.getScope(scopeId)!;
+    const scope = store.getScope(scopeId)!;
     expect(scope.status).toBe("active");
     expect(store.listTasks(scopeId).length).toBeGreaterThan(0);
+    expect(script.planReviewPackets.at(-1)).toMatchObject({
+      round: 2,
+      previous_review: { run_id: rejection.id, round: 1, finding_count: 1 },
+    });
     const reviews = store
       .runsForScope(scopeId)
       .filter((r) => r.kind === "plan_review");
@@ -630,52 +667,111 @@ describe("colonyd fake end-to-end loop", () => {
     expect(task.spec).toContain("## Evidence");
   }, 30_000);
 
-  it("plan review: ten rejections block the scope", async () => {
+  it("plan review: an operator-owned blocker stops the loop at once, holding the plan", async () => {
     await handle.shutdown();
-    handle = await bootHeadless(join(dir, `plan-review-cap-${Date.now()}.db`), {
+    handle = await bootHeadless(join(dir, `plan-review-op-${Date.now()}.db`), {
       reviewRequired: true,
       planReview: true,
     });
-    // Every review rejects: the knob rejects the first call only, so keep
-    // resetting the counter before each review.
-    const scopeId = await createScope("plan review cap");
+    script.planReviewAlwaysReject = true;
+    script.planReviewFinding = {
+      severity: "blocker",
+      owner: "operator",
+      note: "Public routing lives in the shared ingress outside this repository; decide who owns the cutover.",
+    };
+    const scopeId = await createScope("plan review operator decision");
     const store = handle.ctx.store;
-    // Every review rejects (the knob rejects call 1; the counter resets
-    // once the plan is cleared). Each round: propose, review, reject.
-    script.planReviewRejectFirst = true;
-    const rejectedCount = () =>
-      store
-        .listAudit({ scope_id: scopeId, limit: 1000 })
-        .events.filter((row) => row.action === "scope.plan_rejected").length;
-    let rejections = 0;
-    for (let tick = 0; tick < 80 && rejections < 9; tick += 1) {
-      script.planReviewCalls = 0;
-      await tickAndSettle();
-      rejections = rejectedCount();
-    }
-    expect(rejections).toBe(9);
-    // Nine consecutive rejections stay under the cap: still planning,
-    // not blocked.
-    expect(store.getScope(scopeId)!.status).toBe("planning");
-    for (let tick = 0; tick < 80 && rejections < 10; tick += 1) {
-      script.planReviewCalls = 0;
-      await tickAndSettle();
-      rejections = rejectedCount();
-    }
-    expect(rejections).toBe(10);
-    // The next proposal meets the cap: blocked, not reviewed.
-    for (let tick = 0; tick < 11; tick += 1) {
+    for (let tick = 0; tick < 10; tick += 1) {
       await tickAndSettle();
       if (store.getScope(scopeId)!.status === "blocked") break;
     }
     const scope = store.getScope(scopeId)!;
     expect(scope.status).toBe("blocked");
     expect(scope.blocked_reason).toBe(
-      "plan review rejected 10 consecutive times",
+      "plan review needs an operator decision after 1 rejection: Public routing lives in the shared ingress outside this repository; decide who owns the cutover.",
     );
-    expect(rejectedCount()).toBe(10);
-    // The block keeps the latest revised plan for the operator.
     expect(scope.plan_json).not.toBeNull();
+    expect(
+      store.runsForScope(scopeId).filter((r) => r.kind === "architect"),
+    ).toHaveLength(1);
+    const res = await buildApp(handle.ctx).request(
+      `/scopes/${scopeId}/plan-review-continue`,
+      { method: "POST", headers: { "X-Actor-Id": ACTOR } },
+    );
+    expect(res.status).toBe(200);
+  }, 30_000);
+
+  it("plan review: an approval's non-blocking findings ride into the task specs", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(
+      join(dir, `plan-review-notes-${Date.now()}.db`),
+      {
+        reviewRequired: true,
+        planReview: true,
+      },
+    );
+    script.planReviewApproveFindings = [
+      {
+        severity: "major",
+        task: 1,
+        note: "Assert B's exit code, not its output.",
+      },
+      { severity: "minor", note: "Name the journey states consistently." },
+    ];
+    const scopeId = await createScope("plan review notes");
+    const store = handle.ctx.store;
+    for (let tick = 0; tick < 8; tick += 1) {
+      await tickAndSettle();
+      if (store.getScope(scopeId)!.status === "active") break;
+    }
+    expect(store.getScope(scopeId)!.status).toBe("active");
+    const [taskA, taskB] = store.listTasks(scopeId);
+    expect(taskB!.spec).toContain(
+      "## Plan review notes (round 1, non-blocking)",
+    );
+    expect(taskB!.spec).toContain(
+      "- [major] Assert B's exit code, not its output.",
+    );
+    expect(taskA!.spec).not.toContain("Assert B's exit code");
+    expect(taskA!.spec).toContain(
+      "- [minor] Name the journey states consistently.",
+    );
+  }, 30_000);
+
+  it("plan review: a stalled loop blocks holding the rejected plan", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `plan-review-cap-${Date.now()}.db`), {
+      reviewRequired: true,
+      planReview: true,
+    });
+    // Every review blocks task 1 again: the loop is not converging.
+    script.planReviewAlwaysReject = true;
+    const scopeId = await createScope("plan review cap");
+    const store = handle.ctx.store;
+    const rejectedCount = () =>
+      store
+        .listAudit({ scope_id: scopeId, limit: 1000 })
+        .events.filter((row) => row.action === "scope.plan_rejected").length;
+    for (let tick = 0; tick < 40; tick += 1) {
+      await tickAndSettle();
+      if (store.getScope(scopeId)!.status === "blocked") break;
+    }
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
+    expect(rejectedCount()).toBe(PLAN_REVIEW_STALL_WINDOW);
+    expect(scope.blocked_reason).toBe(
+      `plan review stalled after ${PLAN_REVIEW_STALL_WINDOW} rejections: task 1 (Task B) has had a blocker in each of the last ${PLAN_REVIEW_STALL_WINDOW} reviews`,
+    );
+    // The block holds the plan the last review rejected - no unreviewed
+    // revision is spent first.
+    const runs = store.runsForScope(scopeId);
+    const lastReview = runs.filter((r) => r.kind === "plan_review").at(-1)!;
+    expect(planHash(scope.plan_json!)).toBe(
+      JSON.parse(lastReview.evidence_json!).plan_hash,
+    );
+    expect(runs.filter((r) => r.kind === "architect")).toHaveLength(
+      PLAN_REVIEW_STALL_WINDOW,
+    );
 
     const app = buildApp(handle.ctx);
 
@@ -761,8 +857,14 @@ describe("colonyd fake end-to-end loop", () => {
       }),
     ).toBe(true);
 
-    // Test Escape Action (1): plan-review-continue
-    // scopeId is currently blocked at 10.
+    // Test Escape Action (1): plan-review-continue resumes the same planning
+    // line under a fresh budget: the held plan the reviewer rejected goes
+    // back to the architect as its amendment base instead of being reviewed
+    // again or re-planned from scratch.
+    const architectsBeforeContinue = script.architectPackets.filter(
+      (packet) => packet.scope_id === scopeId,
+    ).length;
+    const runsBeforeContinue = store.runsForScope(scopeId).length;
     const continueRes = await app.request(
       `/scopes/${scopeId}/plan-review-continue`,
       {
@@ -771,23 +873,20 @@ describe("colonyd fake end-to-end loop", () => {
       },
     );
     expect(continueRes.status).toBe(200);
-    expect(store.getScope(scopeId)!.status).toBe("planning");
-    // plan_json retained so tick can review
-    expect(store.getScope(scopeId)!.plan_json).not.toBeNull();
-    // Epoch reset: the historical 10 rejections no longer count, so the
-    // tick reviews the retained plan instead of re-blocking on arrival.
-    const reviewsBeforeContinue = store
-      .runsForScope(scopeId)
-      .filter((r) => r.kind === "plan_review").length;
-    script.planReviewCalls = 0;
-    script.planReviewRejectFirst = false;
+    script.planReviewAlwaysReject = false;
     await tickAndSettle();
-    const afterContinue = store.getScope(scopeId)!;
-    expect(afterContinue.status).not.toBe("blocked");
-    expect(
-      store.runsForScope(scopeId).filter((r) => r.kind === "plan_review")
-        .length,
-    ).toBeGreaterThan(reviewsBeforeContinue);
+    // The continue request's own tick races this one; the order of runs is
+    // what matters: the first run after continue is the architect's.
+    expect(store.runsForScope(scopeId)[runsBeforeContinue]?.kind).toBe(
+      "architect",
+    );
+    // Other scopes this test created also plan; read this scope's revision.
+    const revision = script.architectPackets.filter(
+      (packet) => packet.scope_id === scopeId,
+    )[architectsBeforeContinue]!;
+    expect(revision.revision_context).toMatchObject({
+      review_run_id: lastReview.id,
+    });
 
     // Test Escape Action (3): plan-review-replan
     // First let's put scopeId back into blocked state at 10

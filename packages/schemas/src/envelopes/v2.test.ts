@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
   ArchitectDecompositionV2,
+  PlanReviewVerdictV1,
   RepairIntentV1,
   ReviewerVerdictV2,
+  StoredPlanReviewVerdictV1,
 } from "./v2.js";
 
 function validDecomposition() {
@@ -258,5 +260,73 @@ describe("RepairIntentV1", () => {
         raw_log: "huge log blob",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("PlanReviewVerdictV1", () => {
+  const approve = {
+    kind: "plan_review_verdict",
+    verdict: "approve",
+    summary:
+      "Every task lands alone, each evidence command proves its task, and the journey ends at the goal.",
+    inspected: [{ file: "src/a.ts", note: "checked the seam" }],
+  };
+
+  it("lets severity decide the verdict", () => {
+    const majorsOnly = {
+      kind: "plan_review_verdict",
+      verdict: "request_changes",
+      summary: "Tighten B.",
+      findings: [{ severity: "major", task: 1, note: "weak evidence" }],
+    };
+    expect(PlanReviewVerdictV1.safeParse(majorsOnly).success).toBe(false);
+    expect(
+      PlanReviewVerdictV1.safeParse({
+        ...approve,
+        findings: majorsOnly.findings,
+      }).success,
+    ).toBe(true);
+    expect(
+      PlanReviewVerdictV1.safeParse({
+        ...approve,
+        findings: [{ severity: "blocker", task: 1, note: "cannot land" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts operator ownership only on a blocker", () => {
+    const base = {
+      kind: "plan_review_verdict",
+      verdict: "request_changes",
+      summary: "Needs the operator.",
+    };
+    expect(
+      PlanReviewVerdictV1.safeParse({
+        ...base,
+        findings: [
+          { severity: "blocker", owner: "operator", note: "shared ingress" },
+        ],
+      }).success,
+    ).toBe(true);
+    expect(
+      PlanReviewVerdictV1.safeParse({
+        ...base,
+        findings: [
+          { severity: "blocker", note: "cannot land" },
+          { severity: "major", owner: "operator", note: "shared ingress" },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("still reads a stored rejection recorded under the older rules", () => {
+    const legacy = {
+      kind: "plan_review_verdict",
+      verdict: "request_changes",
+      summary: "Tighten B.",
+      findings: [{ severity: "major", task: 1, note: "weak evidence" }],
+      inspected: [],
+    };
+    expect(StoredPlanReviewVerdictV1.safeParse(legacy).success).toBe(true);
   });
 });
