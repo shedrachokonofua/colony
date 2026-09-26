@@ -7,6 +7,7 @@ import type { Context } from "@opentelemetry/api";
 import type {
   AgentRunEnvironment,
   AgentRunResumeEnvironment,
+  AgentRunSteerResult,
   AgentRuntimeAdapter,
   AgentRuntimePacket,
   AgentRunMetadata,
@@ -62,6 +63,12 @@ export interface PiRunner {
     | "pi-plan-reviewer";
   run(request: PiRunRequest): Promise<PiRunResult>;
   cancel?(runId: string): Promise<void>;
+  /**
+   * Deliver an operator message to a live run's steering channel. Optional: a
+   * runner without one cannot steer and the adapter reports unsupported.
+   * Returns whether a live run took the message.
+   */
+  steer?(runId: string, message: string): boolean | Promise<boolean>;
   /**
    * Continues a reloaded session on a re-attached sandbox. Optional: a
    * runner without it cannot adopt a run, and the adapter reports that
@@ -442,6 +449,28 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     const canceled = { ...current, status: "canceled" as const };
     this.runs.set(runId, canceled);
     return withoutOutput(canceled);
+  }
+
+  /**
+   * Deliver an operator message to a live run through the runner's steering
+   * channel. Reports, never throws: steering is best-effort and the caller
+   * aborts the run when the message is not delivered.
+   */
+  async steerRun(runId: string, message: string): Promise<AgentRunSteerResult> {
+    const run = this.runs.get(runId);
+    if (!run || run.status !== "running") {
+      return { delivered: false, reason: "not_running" };
+    }
+    const steer = this.runner.steer;
+    if (!steer) return { delivered: false, reason: "unsupported" };
+    try {
+      const queued = await steer(runId, message);
+      return queued
+        ? { delivered: true }
+        : { delivered: false, reason: "not_running" };
+    } catch {
+      return { delivered: false, reason: "failed" };
+    }
   }
 }
 

@@ -194,6 +194,8 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
 
 export interface ActivePiRun {
   readonly abort: () => Promise<void> | void;
+  /** Queue an operator message for the run's steering channel. */
+  readonly steer: (message: string) => void;
 }
 
 export const DEFAULT_PI_RUN_TIMEOUT_MS = 15 * 60_000;
