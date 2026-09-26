@@ -49,6 +49,23 @@ function createDeferred(): {
   return { promise, resolve };
 }
 
+function previousFindingsResolved(packet: AgentRuntimePacket): {
+  previous_findings?: { finding: number; status: "resolved" }[];
+} {
+  const round = packet.review_round as
+    | { open_findings?: readonly unknown[] }
+    | undefined;
+  const count = round?.open_findings?.length ?? 0;
+  return count > 0
+    ? {
+        previous_findings: Array.from({ length: count }, (_, i) => ({
+          finding: i + 1,
+          status: "resolved" as const,
+        })),
+      }
+    : {};
+}
+
 export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
   private architectGate: {
     promise: Promise<void>;
@@ -290,6 +307,8 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
         summary:
           "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
         findings: [],
+        // Account for what the previous review left open: all resolved.
+        ...previousFindingsResolved(packet),
         inspected: [
           { file: "src/main.ts", note: "checked against the task spec" },
         ],

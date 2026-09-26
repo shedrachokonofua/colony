@@ -24,6 +24,8 @@ import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
+  CodeReviewRoundV1,
+  codeReviewRoundProblems,
 } from "@colony/schemas";
 import type { z } from "zod";
 import { validateDecompositionEnvelope } from "./envelope-validation.js";
@@ -1617,17 +1619,24 @@ export function buildReviewerSystemPrompt(): string {
     "Then you synthesize: DROP every finding the adversary falsified, keep the survivors, and carry their severity. Uncovered high-risk ground the adversary names is itself a finding.",
     "",
     "# Verdict discipline",
-    "- Severity calibration: blocker = wrong or unsafe behavior on a reachable path, broken/permanent contract, data loss, weakened tests; major = a spec requirement not met, or a bug on a plausible path; minor = real but would not justify blocking the merge alone. Never inflate a minor into a rejection.",
+    "- Severity calibration: blocker = the change does not deliver the task's goal (a core requirement missing or not working end to end), or wrong or unsafe behavior on a reachable path, a broken/permanent contract, data loss, a security hole, weakened tests; major = a secondary requirement not met, or a bug on a plausible path; minor = real but would not justify blocking the merge alone. Never inflate a minor into a rejection.",
     "- The standard is the spec plus the health of the codebase, not perfection: an imperfect change that satisfies the spec, is tested, and leaves the code no worse than it found it is approvable. Reject only for findings that matter.",
     "- Every finding must name the defect precisely (file where applicable) and be actionable — the implementer will fix exactly what you write and nothing more.",
     "- Do not reject for style, taste, or scope the spec never demanded. Do not approve out of momentum: an unverified guarantee is a finding.",
-    "- request_changes requires at least one finding.",
-    "- Precedence when the spec and the repository's guarantees collide: if the spec demands removing a guard, weakening or deleting a test, or bypassing a budget, the repository guarantee WINS. File that as a blocker whose note begins 'spec contradicts repository guarantee:' addressed to the operator, and request_changes. Never weaken a guard, a test, or a budget to satisfy the spec.",
+    '- A finding only the operator can settle is a blocker with owner "operator": the fix needs a capability outside the repository (infrastructure, credentials, another team\'s service), or the spec contradicts a repository guarantee. colonyd stops the loop and asks the operator instead of sending it back to the implementer.',
+    "- Precedence when the spec and the repository's guarantees collide: if the spec demands removing a guard, weakening or deleting a test, or bypassing a budget, the repository guarantee WINS. File that as an operator-owned blocker whose note begins 'spec contradicts repository guarantee:', and request_changes. Never weaken a guard, a test, or a budget to satisfy the spec.",
+    "",
+    "# Review rounds",
+    "The packet's `review_round` says which review of this task this is (`round`), whether a new major can still hold the change back (`majors_block`), and what the previous review left open (`open_findings`, numbered from 1).",
+    "- Verify every open finding against the current head and give each number exactly one status in `previous_findings`: resolved (fixed, or no longer required because an operator amendment superseded it) or open (still holds). Do not restate an open finding as a new one.",
+    "- request_changes needs a blocker, an open finding marked `blocking` that still holds, or — only while `majors_block` is true — a new major. Minors never hold a change back.",
+    "- Once `majors_block` is false, new majors do not hold the change back: approve and list them as major findings. colonyd files them, with any non-blocking open finding that still holds, as a follow-up task. The loop converges on what it found instead of on everything a fresh review could still find.",
+    "- approve may carry majors and minors, never a blocker, and never leaves a blocking finding open.",
     "",
     playbookPrompt(["code-review.md"]),
     "",
     "# Completion contract",
-    "Finish by calling submit_reviewer_verdict exactly once with verdict, findings (severity + note, file where applicable), `inspected` (every file you read for the verdict, each with the spec requirement you checked it against), and the exact head_sha you inspected (`git rev-parse HEAD`). An approve with an empty `inspected` list or a one-line summary is rejected: a verdict is a claim about the diff and must name what it rests on. Your run does not exist until that call — never finish with plain text. Never include secrets in the envelope.",
+    'Finish by calling submit_reviewer_verdict exactly once with verdict, findings (severity + note, file where applicable, owner "operator" on a blocker only the operator can settle), `previous_findings` (one status per open finding in the packet\'s review_round), `inspected` (every file you read for the verdict, each with the spec requirement you checked it against), and the exact head_sha you inspected (`git rev-parse HEAD`). An approve with an empty `inspected` list or a one-line summary is rejected: a verdict is a claim about the diff and must name what it rests on. Your run does not exist until that call — never finish with plain text. Never include secrets in the envelope.',
     "The envelope also carries the audit of how this review was run:",
     "- `dimensions`: one entry per dimension you actually ran — `{name, spec_blind, target_files, findings}`. 2 to 6 entries, and at least one MUST have `spec_blind: true`. `target_files` are the files that dimension owned; `findings` is how many findings it returned.",
     "- `challenged`: `{reviewed, dropped}` — how many candidate findings the adversary reviewed and how many it falsified. `challenged.reviewed` MUST be >= the total number of findings you submit; a finding the adversary never saw does not go in the envelope.",
@@ -1667,8 +1676,10 @@ export function buildReviewerFinalizerPrompt(
     '- kind is exactly "reviewer_verdict".',
     '- verdict is "approve" or "request_changes".',
     "- summary is a one-paragraph review summary.",
-    "- findings is an array; each finding has severity (blocker|major|minor), note, and optional file.",
-    "- request_changes requires at least one finding.",
+    '- findings is an array; each finding has severity (blocker|major|minor), note, optional file, and owner "operator" only on a blocker the operator must settle.',
+    "- previous_findings gives each open finding in the packet's review_round exactly one status: {finding: <number>, status: resolved|open}.",
+    "- request_changes needs a blocker, a blocking open finding that is still open, or a new major while review_round.majors_block is true. Once majors_block is false, new majors approve and become a follow-up task.",
+    "- approve carries no blocker and leaves no blocking finding open.",
     "- head_sha must be the exact 40-hex SHA you inspected (`git rev-parse HEAD`).",
     "- dimensions has 2 to 6 entries, one per review dimension you actually ran: {name, spec_blind, target_files, findings}. At least one entry MUST have spec_blind: true — a review where every lens saw the spec is rejected.",
     "- challenged is {reviewed, dropped}: how many candidate findings the adversary reviewed and how many it falsified. challenged.reviewed MUST be >= the number of findings you submit — a finding the adversary never saw is rejected.",
@@ -1697,9 +1708,33 @@ export const reviewerVerdictEnvelopeTypeBox = Type.Object(
             ]),
             file: Type.Optional(Type.String({ minLength: 1 })),
             note: Type.String({ minLength: 1 }),
+            owner: Type.Optional(
+              Type.Union([
+                Type.Literal("implementer"),
+                Type.Literal("operator"),
+              ]),
+            ),
           },
           { additionalProperties: false },
         ),
+      ),
+    ),
+    previous_findings: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            finding: Type.Integer({ minimum: 1 }),
+            status: Type.Union([
+              Type.Literal("resolved"),
+              Type.Literal("open"),
+            ]),
+          },
+          { additionalProperties: false },
+        ),
+        {
+          description:
+            "One status per open finding in the packet's review_round, by its number.",
+        },
       ),
     ),
     inspected: Type.Optional(
@@ -1741,17 +1776,36 @@ export const reviewerVerdictEnvelopeTypeBox = Type.Object(
   { additionalProperties: false },
 );
 
+/**
+ * The round a review packet carries (`review_round`), or null for a packet
+ * without one: a direct caller, or a daemon that predates the loop record.
+ */
+export function reviewRoundOf(
+  packet: AgentRuntimePacket | undefined,
+): CodeReviewRoundV1 | null {
+  const parsed = CodeReviewRoundV1.safeParse(packet?.["review_round"]);
+  return parsed.success ? parsed.data : null;
+}
+
 export function createReviewerSubmitTool(
   capture: (value: unknown) => void,
+  round: CodeReviewRoundV1 | null = null,
 ): ToolDefinition {
   return {
     name: "submit_reviewer_verdict",
     label: "Submit reviewer verdict",
     description:
-      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. request_changes requires at least one finding; approve requires `inspected` (the files you read, each with what you checked) and a summary of at least 80 chars. The envelope also carries the review audit: `dimensions` with 2 to 6 entries (one per dimension you ran, at least one with spec_blind: true) and `challenged` {reviewed, dropped} where reviewed >= the number of findings submitted.",
+      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. previous_findings gives each open finding in the packet's review_round a status. request_changes needs a blocker, a blocking open finding still open, or a new major while majors_block holds; approve carries no blocker, requires `inspected` (the files you read, each with what you checked) and a summary of at least 80 chars. The envelope also carries the review audit: `dimensions` with 2 to 6 entries (one per dimension you ran, at least one with spec_blind: true) and `challenged` {reviewed, dropped} where reviewed >= the number of findings submitted. A rejected submission keeps the session open so you can correct and resubmit.",
     parameters: reviewerVerdictEnvelopeTypeBox,
     execute: async (_toolCallId, rawParams) => {
       const params = parseEnvelopeArguments(reviewerVerdictV2Schema, rawParams);
+      const problems = round ? codeReviewRoundProblems(params, round) : [];
+      if (problems.length > 0) {
+        throw new Error(
+          `Verdict rejected: it breaks the rules of review round ${round!.round}:\n` +
+            problems.map((problem) => `  - ${problem}`).join("\n"),
+        );
+      }
       capture(params);
       return Promise.resolve({
         content: [{ type: "text", text: "reviewer envelope captured" }],

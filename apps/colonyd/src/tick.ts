@@ -22,11 +22,8 @@ import {
   getCurrentMrTask,
   hasActiveRepositoryMergeGate,
 } from "./runs/mr-admission.js";
-import {
-  reconcileRejectedReview,
-  reviewTimeoutModelExclusions,
-  runReview,
-} from "./runs/review.js";
+import { reviewTimeoutModelExclusions, runReview } from "./runs/review.js";
+import { reconcileRejectedReview } from "./runs/review-loop.js";
 import {
   runPlanReview,
   timedOutPlanReviewModelIds,
@@ -618,7 +615,7 @@ async function advanceMrOpenTasks(
           parseEvidence(latest.evidence_json)?.head_sha === headSha
         ) {
           // Crash self-heal: handler died between finishRun and requeue.
-          reconcileRejectedReview(ctx, task);
+          reconcileRejectedReview(ctx.store, task);
           continue;
         }
         if (reviews.some((run) => run.status === "running")) continue;
@@ -1125,14 +1122,15 @@ async function dispatchCiRepair(
     return;
   }
   const attempt = current.attempt + 1;
-  if (attempt >= ctx.env.maxAttempts) {
+  const repairs = consecutiveCiRepairs(ctx, current);
+  if (repairs > ctx.env.maxAttempts) {
     ctx.store.transitionTask(
       current.id,
       current.state_version,
       "blocked",
       SERVICE_ACTOR,
       {
-        blocked_reason: `ci_failure repair attempts exhausted (${attempt}/${ctx.env.maxAttempts}) at head ${intent.source_head_sha}`,
+        blocked_reason: `ci_failure repair attempts exhausted (${repairs - 1}/${ctx.env.maxAttempts}) at head ${intent.source_head_sha}`,
       },
     );
     ctx.store.audit(SERVICE_ACTOR, "gate.pipeline_blocked", {
@@ -1141,7 +1139,7 @@ async function dispatchCiRepair(
       detail: {
         outcome: "blocked",
         reason: "ci_failure repair attempts exhausted",
-        attempt,
+        repairs: repairs - 1,
         head_sha: intent.source_head_sha,
         fingerprint,
       },
@@ -1165,6 +1163,33 @@ async function dispatchCiRepair(
     task_id: task.id,
     detail: { fingerprint, trigger: intent, attempt },
   });
+}
+
+/**
+ * CI failures claimed for repair since the pipeline last went green or the
+ * operator last reset the task, the current claim included. A review only
+ * dispatches on a green pipeline, so its start marks one. CI repairs spend
+ * this budget, not the task's attempt counter: review rejections bump that
+ * too, and resurf col-d6ca6aa2.2 blocked on its first CI failure after two
+ * rejections (2026-09-26).
+ */
+function consecutiveCiRepairs(ctx: ColonydContext, task: Task): number {
+  const lastReview = ctx.store
+    .runsForTask(task.id)
+    .filter((run) => run.kind === "review")
+    .at(-1)?.started_at;
+  const reset = retryResetAt(ctx.store, "task", task.id);
+  const since = [lastReview, reset]
+    .filter((at): at is string => at !== undefined)
+    .sort()
+    .at(-1);
+  return ctx.store
+    .listRepairIntents(task.id)
+    .filter(
+      (intent) =>
+        intent.trigger_kind === "ci_failure" &&
+        (since === undefined || intent.created_at > since),
+    ).length;
 }
 
 // ---------------------------------------------------------------------------

@@ -56,12 +56,11 @@ import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
+  codeReviewRoundProblems,
 } from "@colony/schemas";
 import type { ProviderRepoRef } from "@colony/provider";
-import {
-  reconcileRejectedReview,
-  reviewTimeoutModelExclusions,
-} from "./runs/review.js";
+import { reviewTimeoutModelExclusions } from "./runs/review.js";
+import { nextReviewRound, recordReviewVerdict } from "./runs/review-loop.js";
 import { isAcyclic } from "./runs/architect.js";
 import { buildMrDescription, verifyEnvelopeFacts } from "./runs/implement.js";
 import {
@@ -764,9 +763,9 @@ function completeResumedArchitect(
 
 /**
  * Finish a resumed review segment the way executeReview finishes a fresh
- * run: validate the verdict and record approve/changes_requested evidence
- * (plus the rejected-review requeue reconcile). Without verdict evidence
- * the tick cannot tell approval from silence and dispatches a fresh review.
+ * run: validate the verdict against its round, then record it and act on it
+ * (requeue, block, or file a follow-up). Without verdict evidence the tick
+ * cannot tell approval from silence and dispatches a fresh review.
  */
 function completeResumedReview(
   ctx: Pick<ColonydContext, "store">,
@@ -774,17 +773,24 @@ function completeResumedReview(
   run: Run,
 ): void {
   const store = ctx.store;
+  const task = run.task_id ? (store.getTask(run.task_id) ?? null) : null;
+  const position = task ? nextReviewRound(store, task.id) : null;
   const parsed = output
     ? reviewerVerdictV2Schema.safeParse(output.envelope)
     : null;
-  if (!parsed || !parsed.success) {
+  const problems =
+    parsed?.success && position
+      ? codeReviewRoundProblems(parsed.data, position.round)
+      : [];
+  if (!parsed || !parsed.success || !task || !position || problems.length) {
+    const detail = problems.length ? problems.join("; ") : "envelope invalid";
     store.finishRun(run.id, "failed", {
-      error: "envelope invalid",
+      error: problems.length ? `envelope invalid: ${detail}` : detail,
       envelope_json: output ? JSON.stringify(output.envelope) : undefined,
       evidence_json: JSON.stringify({
         head_sha: run.base_sha ?? run.head_sha ?? "",
       }),
-      fault: modelFault("envelope_invalid", "envelope invalid"),
+      fault: modelFault("envelope_invalid", detail),
     });
     throw new Error("resumed review envelope invalid");
   }
@@ -799,57 +805,7 @@ function completeResumedReview(
     });
     throw new Error("resumed review head_sha mismatch");
   }
-  // envelope.head_sha === headSha here (a mismatch fails above).
-  const headRef = headSha;
-  if (envelope.verdict === "approve") {
-    store.finishRun(run.id, "succeeded", {
-      head_sha: headRef,
-      envelope_json: JSON.stringify(envelope),
-      evidence_json: JSON.stringify({
-        verdict: "approve",
-        head_sha: headRef,
-        dimensions: envelope.dimensions,
-        challenged: envelope.challenged,
-      }),
-    });
-    store.audit(SERVICE_ACTOR, "review.approved", {
-      scope_id: run.scope_id,
-      task_id: run.task_id,
-      run_id: run.id,
-      detail: {
-        head_sha: headRef,
-        dimensions: envelope.dimensions,
-        challenged: envelope.challenged,
-      },
-    });
-    return;
-  }
-  store.finishRun(run.id, "succeeded", {
-    head_sha: headRef,
-    envelope_json: JSON.stringify(envelope),
-    evidence_json: JSON.stringify({
-      verdict: "request_changes",
-      head_sha: headRef,
-      findings: envelope.findings,
-      dimensions: envelope.dimensions,
-      challenged: envelope.challenged,
-    }),
-  });
-  store.audit(SERVICE_ACTOR, "review.changes_requested", {
-    scope_id: run.scope_id,
-    task_id: run.task_id,
-    run_id: run.id,
-    detail: {
-      head_sha: headRef,
-      findings_count: envelope.findings.length,
-      dimensions: envelope.dimensions,
-      challenged: envelope.challenged,
-    },
-  });
-  const task = run.task_id ? (store.getTask(run.task_id) ?? null) : null;
-  if (task) {
-    reconcileRejectedReview(ctx as ColonydContext, task);
-  }
+  recordReviewVerdict(store, task, run.id, headSha, envelope, position);
 }
 
 /** Pick the wired adapter whose resumeRun continues this kind. */
@@ -911,6 +867,7 @@ function resumePacket(
       files,
       { id: scope.provider_repo_id, path: scope.provider_repo_path },
       run.base_sha ?? run.head_sha ?? "",
+      nextReviewRound(store, task.id).round,
     );
     return {
       ...packet,

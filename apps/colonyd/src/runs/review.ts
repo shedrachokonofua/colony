@@ -1,12 +1,9 @@
-import { ReviewerVerdictV2 as reviewerVerdictV2Schema } from "@colony/schemas";
-import { z } from "zod";
 import {
-  retryBackoffMs,
-  type Fault,
-  type Scope,
-  type Store,
-  type Task,
-} from "@colony/core";
+  ReviewerVerdictV2 as reviewerVerdictV2Schema,
+  codeReviewRoundProblems,
+} from "@colony/schemas";
+import { z } from "zod";
+import { type Fault, type Scope, type Store, type Task } from "@colony/core";
 import {
   faultForFailure,
   isModelFailure,
@@ -21,15 +18,11 @@ import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
 import { buildReviewPacket } from "./packets.js";
+import { nextReviewRound, recordReviewVerdict } from "./review-loop.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 import { getCurrentMrTask } from "./mr-admission.js";
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
-// 2026-09-02: three rounds was too few - reviewer findings are the loop's
-// main correction signal and rounds 4-6 were landing real fixes before the
-// cap parked the task on a human. Backoff caps at 5 min, so ten rounds is
-// bounded (~40 min of waits worst case).
-const MAX_CONSECUTIVE_REVIEW_REJECTIONS = 10;
 const MAX_CONSECUTIVE_REVIEW_FAILURES = 3;
 
 /**
@@ -181,6 +174,7 @@ async function executeReview(
     const files = scope.project_name
       ? ctx.store.listProjectFiles(scope.project_name)
       : [];
+    const position = nextReviewRound(ctx.store, task.id);
     const { repo: repoWithCredentials, ...packet } = buildReviewPacket(
       task,
       scope,
@@ -188,6 +182,7 @@ async function executeReview(
       files,
       repo,
       headSha,
+      position.round,
     );
     const full = {
       ...packet,
@@ -242,6 +237,24 @@ async function executeReview(
       return;
     }
     const envelope = parsed.data;
+    const roundProblems = codeReviewRoundProblems(envelope, position.round);
+    if (roundProblems.length > 0) {
+      const detail = roundProblems.join("; ");
+      failReview(
+        ctx,
+        scope,
+        task,
+        runId,
+        headSha,
+        `envelope invalid: ${detail}`,
+        {
+          runSpan,
+          envelopeJson: JSON.stringify(envelope),
+          fault: modelFault("envelope_invalid", detail),
+        },
+      );
+      return;
+    }
 
     if (envelope.head_sha !== headSha) {
       // The branch can move mid-review (an implement retry pushing to the
@@ -287,55 +300,8 @@ async function executeReview(
       }
     }
 
-    if (envelope.verdict === "approve") {
-      ctx.store.finishRun(runId, "succeeded", {
-        head_sha: headSha,
-        envelope_json: JSON.stringify(envelope),
-        evidence_json: JSON.stringify({
-          verdict: "approve",
-          head_sha: headSha,
-          dimensions: envelope.dimensions,
-          challenged: envelope.challenged,
-        }),
-      });
-      runSpan?.end("succeeded");
-      ctx.store.audit(SERVICE_ACTOR, "review.approved", {
-        scope_id: scope.id,
-        task_id: task.id,
-        run_id: runId,
-        detail: {
-          head_sha: headSha,
-          dimensions: envelope.dimensions,
-          challenged: envelope.challenged,
-        },
-      });
-      return;
-    }
-
-    ctx.store.finishRun(runId, "succeeded", {
-      head_sha: headSha,
-      envelope_json: JSON.stringify(envelope),
-      evidence_json: JSON.stringify({
-        verdict: "request_changes",
-        head_sha: headSha,
-        findings: envelope.findings,
-        dimensions: envelope.dimensions,
-        challenged: envelope.challenged,
-      }),
-    });
+    recordReviewVerdict(ctx.store, task, runId, headSha, envelope, position);
     runSpan?.end("succeeded");
-    ctx.store.audit(SERVICE_ACTOR, "review.changes_requested", {
-      scope_id: scope.id,
-      task_id: task.id,
-      run_id: runId,
-      detail: {
-        head_sha: headSha,
-        findings_count: envelope.findings.length,
-        dimensions: envelope.dimensions,
-        challenged: envelope.challenged,
-      },
-    });
-    reconcileRejectedReview(ctx, task);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     failReview(ctx, scope, task, runId, headSha, reason, {
@@ -434,69 +400,6 @@ function countConsecutiveFailedReviews(
     if (run.status === "succeeded") break;
     if (run.status !== "failed") break;
     if (!isModelFailure(run) || isTimeoutFault(run)) continue;
-    count += 1;
-  }
-  return count;
-}
-
-/**
- * Idempotent. Also called from the tick for crash self-healing when the
- * handler died between finishRun(request_changes) and requeue.
- */
-export function reconcileRejectedReview(ctx: ColonydContext, task: Task): void {
-  const current = ctx.store.getTask(task.id);
-  if (!current || current.state !== "mr_open") return;
-
-  const rejections = countConsecutiveReviewRejections(ctx, current);
-  if (rejections >= MAX_CONSECUTIVE_REVIEW_REJECTIONS) {
-    ctx.store.transitionTask(
-      current.id,
-      current.state_version,
-      "blocked",
-      SERVICE_ACTOR,
-      {
-        blocked_reason: `review rejected ${MAX_CONSECUTIVE_REVIEW_REJECTIONS} consecutive times`,
-      },
-    );
-    return;
-  }
-
-  const attempt = current.attempt + 1;
-  ctx.store.transitionTask(
-    current.id,
-    current.state_version,
-    "queued",
-    SERVICE_ACTOR,
-    {
-      attempt,
-      next_retry_at: new Date(
-        Date.now() + retryBackoffMs(attempt),
-      ).toISOString(),
-    },
-  );
-}
-
-function countConsecutiveReviewRejections(
-  ctx: ColonydContext,
-  task: Task,
-): number {
-  const runs = ctx.store
-    .runsForTask(task.id)
-    .filter((r) => r.kind === "review");
-  let count = 0;
-  for (const run of [...runs].reverse()) {
-    // Only model faults interrupt the streak: platform, unknown, and
-    // faultless rows are noise around the verdict sequence, and a timed-out
-    // model is excluded from redispatch rather than counted anywhere.
-    if (
-      run.status === "failed" &&
-      (!isModelFailure(run) || isTimeoutFault(run))
-    )
-      continue;
-    if (run.status !== "succeeded") break;
-    const evidence = parseReviewEvidence(run.evidence_json);
-    if (evidence.verdict === "approve") break;
-    if (evidence.verdict !== "request_changes") break;
     count += 1;
   }
   return count;

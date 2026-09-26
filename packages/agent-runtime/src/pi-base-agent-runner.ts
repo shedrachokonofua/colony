@@ -44,6 +44,7 @@ import {
   buildSubagentSystemPrompt,
   createImplementerSubmitTool,
   createReviewerSubmitTool,
+  reviewRoundOf,
   createSandboxId,
   implementerCompletionEnvelopeTypeBox,
   installRunGuards,
@@ -2166,7 +2167,8 @@ export const REVIEWER_ROLE_PROFILE: PiRoleProfile = {
   finalizerPrompt: buildReviewerFinalizerPrompt,
   schemaName: "reviewer_verdict",
   typeboxSchema: reviewerVerdictEnvelopeTypeBox,
-  submitTool: createReviewerSubmitTool,
+  submitTool: (capture, _sizeGate, packet) =>
+    createReviewerSubmitTool(capture, reviewRoundOf(packet)),
   validate: zodValidator(reviewerVerdictV2Schema),
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",

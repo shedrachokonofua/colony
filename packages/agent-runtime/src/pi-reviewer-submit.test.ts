@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { createReviewerSubmitTool } from "./pi-runner-common.js";
+import { createReviewerSubmitTool, reviewRoundOf } from "./pi-runner-common.js";
 
 const HEAD = "a".repeat(40);
 
@@ -191,5 +191,80 @@ describe("reviewer submit tool", () => {
     expect((seen[0] as { inspected: unknown[] }).inspected).toHaveLength(2);
     // request_changes does not require inspection - findings are the evidence.
     expect((seen[1] as { inspected: unknown[] }).inspected).toEqual([]);
+  });
+
+  it("holds a late review to its round: a lone new major cannot reject, an open blocker cannot approve", async () => {
+    let captured: unknown;
+    const tool = createReviewerSubmitTool(
+      (value) => {
+        captured = value;
+      },
+      reviewRoundOf({
+        review_round: {
+          round: 3,
+          majors_block: false,
+          open_findings: [
+            {
+              severity: "blocker",
+              note: "crash on retry",
+              blocking: true,
+              since_round: 2,
+            },
+          ],
+        },
+      }),
+    );
+    const base = {
+      kind: "reviewer_verdict",
+      summary:
+        "The retry path now commits once; the remaining gap is an unbounded body, filed as a follow-up major.",
+      inspected: [{ file: "src/http.ts", note: "retry path" }],
+      dimensions: VALID_DIMENSIONS,
+      challenged: { reviewed: 1, dropped: 0 },
+      head_sha: HEAD,
+    };
+    const lateMajor = [{ severity: "major", note: "unbounded body" }];
+    await expect(
+      tool.execute(
+        "t-late-major",
+        {
+          ...base,
+          verdict: "request_changes",
+          findings: lateMajor,
+          previous_findings: [{ finding: 1, status: "resolved" }],
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow(/review round 3[\s\S]*new majors do not hold/);
+    await expect(
+      tool.execute(
+        "t-open-blocker",
+        {
+          ...base,
+          verdict: "approve",
+          findings: [],
+          previous_findings: [{ finding: 1, status: "open" }],
+        },
+        undefined,
+        undefined,
+        undefined as never,
+      ),
+    ).rejects.toThrow(/cannot leave blocking previous finding 1 open/);
+    expect(captured).toBeUndefined();
+    await tool.execute(
+      "t-approve",
+      {
+        ...base,
+        verdict: "approve",
+        findings: lateMajor,
+        previous_findings: [{ finding: 1, status: "resolved" }],
+      },
+      undefined,
+      undefined,
+      undefined as never,
+    );
+    expect((captured as { verdict: string }).verdict).toBe("approve");
   });
 });

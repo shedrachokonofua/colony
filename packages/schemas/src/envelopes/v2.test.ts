@@ -207,6 +207,38 @@ describe("ReviewerVerdictV2", () => {
       );
     }
   });
+
+  it("lets severity and ownership shape the verdict", () => {
+    const oneReviewed = { reviewed: 1, dropped: 0 };
+    expect(
+      ReviewerVerdictV2.safeParse({
+        ...validApprove(),
+        findings: [{ severity: "blocker", note: "crashes on retry" }],
+        challenged: oneReviewed,
+      }).success,
+    ).toBe(false);
+    expect(
+      ReviewerVerdictV2.safeParse({
+        ...validApprove(),
+        verdict: "request_changes",
+        summary: "Needs the relay.",
+        findings: [
+          { severity: "major", owner: "operator", note: "bind the relay" },
+        ],
+        challenged: oneReviewed,
+      }).success,
+    ).toBe(false);
+    // A previous finding that still holds carries a rejection on its own.
+    expect(
+      ReviewerVerdictV2.safeParse({
+        ...validApprove(),
+        verdict: "request_changes",
+        summary: "Finding 1 still holds.",
+        findings: [],
+        previous_findings: [{ finding: 1, status: "open" }],
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("RepairIntentV1", () => {

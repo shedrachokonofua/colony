@@ -22,6 +22,7 @@ import {
   type ImplementExecutionContext,
 } from "./packets.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
+import { formatRejectionForRepair } from "./review-loop.js";
 import {
   amendBranchWithTrailer,
   buildMergeProvenanceLine,
@@ -820,15 +821,7 @@ function latestReviewRepair(
     .filter((r) => r.kind === "review" && r.status === "succeeded");
   for (const run of [...runs].reverse()) {
     if (!run.evidence_json) continue;
-    let evidence: {
-      verdict?: string;
-      head_sha?: string;
-      findings?: ReadonlyArray<{
-        severity?: string;
-        file?: string;
-        note?: string;
-      }>;
-    };
+    let evidence: { verdict?: string; head_sha?: string };
     try {
       evidence = JSON.parse(run.evidence_json) as typeof evidence;
     } catch {
@@ -843,18 +836,10 @@ function latestReviewRepair(
     const headSha =
       evidence.head_sha ?? run.head_sha ?? run.base_sha ?? undefined;
     if (!headSha) continue;
-    const findings = evidence.findings ?? [];
     const text =
       evidence.verdict === "approve"
         ? "Reviewer approved this head."
-        : findings.length === 0
-          ? run.evidence_json
-          : findings
-              .map((f) => {
-                const loc = f.file ? " `" + f.file + "`" : "";
-                return `- **${f.severity ?? "note"}**${loc}: ${f.note ?? ""}`;
-              })
-              .join("\n");
+        : (formatRejectionForRepair(run.evidence_json) ?? run.evidence_json);
 
     // If the current branch head is unavailable, the newest review still
     // determines whether a rejection remains unsuperseded. Keep that guard

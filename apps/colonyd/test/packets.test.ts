@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
 import { Store } from "@colony/core";
+import type { CodeReviewRoundV1 } from "@colony/schemas";
 import { createLocalArtifactStore } from "@colony/core";
 import { provisionScratchDir } from "@colony/agent-runtime";
 import type { ColonydContext } from "../src/context.js";
@@ -17,6 +18,11 @@ import {
 
 const HEADING = "## Operator-authored project background (project: demo)";
 const DOC = "# Demo context\n\nUse bun, never npm. Postgres on :5433.";
+const FIRST_REVIEW_ROUND: CodeReviewRoundV1 = {
+  round: 1,
+  majors_block: true,
+  open_findings: [],
+};
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -426,6 +432,7 @@ describe("project reference files in packets", () => {
       files,
       { id: "1", path: "so/demo" },
       "base",
+      FIRST_REVIEW_ROUND,
     );
 
     for (const packet of [arch, impl, rev]) {
@@ -1059,6 +1066,7 @@ async function reviewBody(taskSpec: string): Promise<string> {
     [],
     { id: "1", path: "so/demo" },
     "base",
+    FIRST_REVIEW_ROUND,
   ).body;
 }
 

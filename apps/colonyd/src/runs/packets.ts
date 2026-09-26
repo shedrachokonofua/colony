@@ -1,4 +1,8 @@
-import type { ArchitectDecompositionV2, RepairIntentV1 } from "@colony/schemas";
+import type {
+  ArchitectDecompositionV2,
+  CodeReviewRoundV1,
+  RepairIntentV1,
+} from "@colony/schemas";
 import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { formatPlanReviewFinding } from "@colony/agent-runtime";
@@ -7,6 +11,7 @@ import type {
   PreviousPlanReview,
   RevisionHistoryEntry,
 } from "./plan-loop.js";
+import { reviewRoundSection } from "./review-loop.js";
 
 /** Operator-facing section title per repair trigger. */
 const REPAIR_INTENT_TITLE: Record<RepairIntentV1["kind"], string> = {
@@ -158,6 +163,8 @@ export interface ReviewPacket {
   body: string;
   project: PacketProject | null;
   repo: AgentPacketRepo;
+  /** What this review round must account for; see CodeReviewRoundV1. */
+  review_round: CodeReviewRoundV1;
 }
 
 export function projectContextSection(
@@ -558,6 +565,7 @@ export function buildReviewPacket(
   files: readonly ProjectFile[],
   _repo: ProviderRepoRef,
   headSha: string,
+  round: CodeReviewRoundV1,
 ): ReviewPacket {
   return {
     kind: "review_task",
@@ -569,6 +577,7 @@ export function buildReviewPacket(
     target_branch: scope.default_branch,
     body: [
       buildReviewBody(task, scope.default_branch),
+      reviewRoundSection(round),
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -580,6 +589,7 @@ export function buildReviewPacket(
       branch: task.branch ?? `colony/${task.id}`,
       base_commit: headSha,
     },
+    review_round: round,
   };
 }
 
@@ -806,9 +816,9 @@ function buildReviewBody(task: Task, defaultBranch: string): string {
     "- Check the change lands green alone: new workspace packages must be in the lockfile, new files in CI's reach.",
     "- Do NOT re-run test suites: the MR pipeline already ran them and the merge gate blocks on its result. Targeted single-file test runs and small hand-written probes are fine; full or per-package suite runs are wasted budget.",
     "- Budget for the verdict: reading and probing should take most of your run, but ALWAYS leave time to submit. A defensible verdict on time beats a perfect one that times out.",
-    "Precedence when the spec and the repository's guarantees collide: if the spec demands removing a guard, weakening or deleting a test, or bypassing a budget, the repository guarantee wins. File that as a blocker whose note begins 'spec contradicts repository guarantee:' addressed to the operator, and request_changes. Never remove a guard, weaken a test, or bypass a budget to satisfy the spec.",
+    "Precedence when the spec and the repository's guarantees collide: if the spec demands removing a guard, weakening or deleting a test, or bypassing a budget, the repository guarantee wins. File that as a blocker with owner \"operator\" whose note begins 'spec contradicts repository guarantee:', and request_changes. Never remove a guard, weaken a test, or bypass a budget to satisfy the spec.",
     "Submit reviewer_verdict with the exact head SHA you inspected (`git rev-parse HEAD`).",
-    "request_changes requires at least one finding.",
+    'request_changes needs a blocker, a blocking finding the previous review left open that still holds, or a new major while this round lets majors block (see the review round section below). Minors never hold a change back. A blocker only the operator can settle carries owner "operator".',
     "The envelope also carries the review audit: `dimensions` with 2 to 6 entries, one per review dimension you ran (at least one with spec_blind: true), and `challenged` {reviewed, dropped} where reviewed >= the number of findings you submit — a finding the adversary never saw does not go in the envelope.",
   ].join("\n");
 }

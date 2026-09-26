@@ -114,6 +114,8 @@ flowchart LR
   T --> D[Developer per ready task]
   D --> R{Reviewer}
   R -->|request_changes| D
+  R -->|stalled / needs your decision| H2[Task blocks for you]
+  R -.->|majors after review 2| F[Follow-up task] --> T
   R -->|approve| MG[Merge gate]
   MG -->|fail / conflict| D
   MG -->|merge| T
@@ -151,11 +153,24 @@ flowchart LR
    exact merge request head and approves or requests changes with findings.
    Changes requested requeue the developer with the findings; approvals are
    tied to the SHA, so a new push is re-reviewed.
+   Each review first marks every finding the previous one left open
+   resolved or open. A blocker always sends the change back, and so does an
+   open finding that was blocking when raised; a new major does only in the
+   first two reviews of the task. After that, majors approve and Colony
+   files them as one follow-up task that depends on the approved one (a
+   follow-up's own leftovers are recorded, not filed again). Minors never
+   block. The task blocks and asks you when a blocker needs your decision
+   (a capability outside the repository, or a spec that contradicts a
+   repository guarantee), when a blocking finding stays open for three
+   reviews, or after ten rejections in a row. Unblocking starts a new
+   epoch: the stall clock and the rejection count restart.
    Each task has at most one active review. Independent tasks in the same
    scope can review concurrently, subject to per-model limits.
 6. **Gate and merge.** If the merge request head has a CI pipeline, it must
    have succeeded. Failed CI at the current head schedules bounded developer
-   repair with feedback and backoff; exhausted attempts block the task.
+   repair with feedback and backoff: after `COLONYD_MAX_ATTEMPTS` repairs
+   with no green pipeline in between, the task blocks. Review rejections do
+   not spend that budget.
    Pending or unknown CI does not consume attempts. The merge gate clones the target branch fresh,
    merges the candidate head into it, scans the incoming diff for
    credential patterns (GitLab and AWS tokens, private keys) and refuses
@@ -176,9 +191,9 @@ flowchart LR
    repair tasks to the graph); then the scope blocks and asks you.
 
 Implementation execution failures are bounded (`COLONYD_MAX_ATTEMPTS`,
-default 3) with exponential backoff. That budget counts failed executions
-and CI repair cycles (via `dispatchCiRepair`'s attempt increment),
-not operator revisions or conflict repair cycles; a successful execution
+default 3) with exponential backoff. That budget counts failed executions,
+not review rejections, CI repairs (their own budget, above), operator
+revisions, or conflict repair cycles; a successful execution
 or explicit operator unblock starts a new execution budget. Infrastructure
 failures (daemon restart or expired lease, provider `429`/`5xx`, sandbox
 provisioning failure) and cancellations do not consume it. Structured fault

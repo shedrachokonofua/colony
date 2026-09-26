@@ -1,6 +1,10 @@
 import { Type } from "@oh-my-pi/omptype/typebox";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { ArchitectDecompositionV2, PlanReviewVerdictV1 } from "@colony/schemas";
+import {
+  ArchitectDecompositionV2,
+  PlanReviewVerdictV1,
+  previousFindingsProblems,
+} from "@colony/schemas";
 import type { AgentRuntimePacket } from "./adapter.js";
 import { validateDecompositionEnvelope } from "./envelope-validation.js";
 import {
@@ -315,38 +319,6 @@ export function previousReviewFindingCount(
     : 0;
 }
 
-function previousFindingsProblems(
-  verdict: PlanReviewVerdictV1,
-  previousCount: number,
-): string[] {
-  if (previousCount === 0) return [];
-  const counts = new Map<number, number>();
-  for (const entry of verdict.previous_findings ?? []) {
-    counts.set(entry.finding, (counts.get(entry.finding) ?? 0) + 1);
-  }
-  const problems: string[] = [];
-  const missing: number[] = [];
-  for (let finding = 1; finding <= previousCount; finding += 1) {
-    if (!counts.has(finding)) missing.push(finding);
-  }
-  if (missing.length > 0) {
-    problems.push(`no status for previous finding ${missing.join(", ")}`);
-  }
-  const unknown = [...counts.keys()].filter((n) => n > previousCount);
-  if (unknown.length > 0) {
-    problems.push(
-      `the previous review has ${previousCount} findings; there is no finding ${unknown.join(", ")}`,
-    );
-  }
-  const repeated = [...counts].filter(([, n]) => n > 1).map(([f]) => f);
-  if (repeated.length > 0) {
-    problems.push(
-      `more than one status for previous finding ${repeated.join(", ")}`,
-    );
-  }
-  return problems;
-}
-
 export function createPlanReviewSubmitTool(
   capture: (value: unknown) => void,
   previousFindingCount = 0,
@@ -359,7 +331,10 @@ export function createPlanReviewSubmitTool(
     parameters: planReviewVerdictTypeBox,
     execute: async (_toolCallId, rawParams) => {
       const verdict = parseEnvelopeArguments(PlanReviewVerdictV1, rawParams);
-      const problems = previousFindingsProblems(verdict, previousFindingCount);
+      const problems = previousFindingsProblems(
+        verdict.previous_findings,
+        previousFindingCount,
+      );
       if (problems.length > 0) {
         throw new Error(
           "Verdict rejected: previous_findings must give each finding of the previous review a status (resolved or open):\n" +

@@ -21,6 +21,7 @@ import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
 import { awaitPendingRuns, trackRun } from "../src/runs/registry.js";
 import { buildApp } from "../src/http.js";
+import type { CodeReviewRoundV1 } from "@colony/schemas";
 import type { GateFailure } from "../src/runs/merge-gate.js";
 import type { ValidateExecutor } from "../src/runs/validate.js";
 import { planHash, PLAN_REVIEW_STALL_WINDOW } from "../src/runs/plan-loop.js";
@@ -37,6 +38,19 @@ const DEFAULT_PLAN_FINDING: ScriptedPlanFinding = {
   task: 1,
   note: "evidence must exercise B",
 };
+
+/** One scripted code review verdict. */
+interface ScriptedReview {
+  verdict: "approve" | "request_changes";
+  findings: {
+    severity: "blocker" | "major" | "minor";
+    file?: string;
+    note: string;
+    owner?: "implementer" | "operator";
+  }[];
+  /** Status given to every finding the previous review left open. */
+  previous: "resolved" | "open";
+}
 
 const ACTOR = "human:op-1";
 const SHA_A = "a".repeat(40);
@@ -72,6 +86,10 @@ const script = {
   reviewerFault: undefined as Fault | undefined,
   reviewerRejectFirst: false,
   reviewerAlwaysReject: false,
+  /** Verdicts for review calls 1..n, in order; later calls fall back. */
+  reviewerRounds: [] as ScriptedReview[],
+  /** Packets each code review run received, in order. */
+  reviewPackets: [] as AgentRuntimePacket[],
   planReviewRejectFirst: false,
   /** Every plan review rejects with planReviewFinding. */
   planReviewAlwaysReject: false,
@@ -182,6 +200,50 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
         const headSha =
           typeof packet.head_sha === "string" ? packet.head_sha : SHA_A;
         script.reviewerCalls += 1;
+        script.reviewPackets.push(packet);
+        const round = packet.review_round as
+          | { open_findings?: readonly unknown[] }
+          | undefined;
+        const openCount = round?.open_findings?.length ?? 0;
+        const previous = (status: "resolved" | "open") =>
+          openCount > 0
+            ? {
+                previous_findings: Array.from(
+                  { length: openCount },
+                  (_, i) => ({ finding: i + 1, status }),
+                ),
+              }
+            : {};
+        const scripted = script.reviewerRounds[script.reviewerCalls - 1];
+        if (scripted) {
+          return {
+            kind: "reviewer_verdict",
+            verdict: scripted.verdict,
+            summary:
+              "Scripted verdict: the diff was read against the spec end to end and every finding below names its file and defect.",
+            findings: scripted.findings,
+            ...previous(scripted.previous),
+            inspected: [
+              { file: "src/main.ts", note: "checked against the task spec" },
+            ],
+            dimensions: [
+              {
+                name: "spec-compliance",
+                spec_blind: false,
+                target_files: ["src/main.ts"],
+                findings: scripted.findings.length,
+              },
+              {
+                name: "defect-scan",
+                spec_blind: true,
+                target_files: ["src/main.ts"],
+                findings: 0,
+              },
+            ],
+            challenged: { reviewed: scripted.findings.length, dropped: 0 },
+            head_sha: headSha,
+          };
+        }
         if (
           script.reviewerAlwaysReject ||
           (script.reviewerRejectFirst && script.reviewerCalls === 1)
@@ -212,6 +274,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
               },
             ],
             challenged: { reviewed: 1, dropped: 0 },
+            ...previous("open"),
             head_sha: headSha,
           };
         }
@@ -255,6 +318,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
           summary:
             "Approved: the diff implements the spec end to end; acceptance commands run and pass, no regressions found.",
           findings: [],
+          ...previous("resolved"),
           inspected: [
             { file: "src/main.ts", note: "checked against the task spec" },
           ],
@@ -557,6 +621,8 @@ beforeEach(async () => {
   script.implementerFault = undefined;
   script.reviewerRejectFirst = false;
   script.reviewerAlwaysReject = false;
+  script.reviewerRounds = [];
+  script.reviewPackets = [];
   script.planReviewRejectFirst = false;
   script.planReviewAlwaysReject = false;
   script.planReviewFinding = DEFAULT_PLAN_FINDING;
@@ -1860,39 +1926,144 @@ describe("colonyd fake end-to-end loop", () => {
     ).toHaveLength(1);
   }, 30_000);
 
-  it("review rejection cap: ten consecutive request_changes block the task and scope", async () => {
+  it("review loop: a blocking finding open for three reviews blocks; an operator unblock starts a new epoch", async () => {
     await handle.shutdown();
-    handle = await bootHeadless(join(dir, `review-cap-${Date.now()}.db`), {
+    handle = await bootHeadless(join(dir, `review-stall-${Date.now()}.db`), {
       reviewRequired: true,
     });
     script.reviewerAlwaysReject = true;
     script.distinctShas = true;
     script.singleTask = true;
 
-    const scopeId = await createScope("review cap");
+    const scopeId = await createScope("review stall");
     await tickAndSettle(); // draft -> planning
     await tickAndSettle(); // dispatch A -> mr_open
     const taskA = handle.ctx.store.listTasks(scopeId)[0]!;
     expect(taskA.state).toBe("mr_open");
 
-    // Rounds 1..9: every rejection requeues with attempt+1 and no block.
-    for (let round = 1; round <= 9; round += 1) {
-      await tickAndSettle(); // review N -> queued attempt N
+    const reviewThenRepair = async (attempt: number) => {
+      await tickAndSettle(); // review -> queued
       const t = handle.ctx.store.getTask(taskA.id)!;
       expect(t.state).toBe("queued");
-      expect(t.attempt).toBe(round);
+      expect(t.attempt).toBe(attempt);
       handle.ctx.store.clearRetryDelay(taskA.id);
-      await tickAndSettle(); // implement N+1 -> mr_open
+      await tickAndSettle(); // implement -> mr_open
       expect(handle.ctx.store.getTask(taskA.id)!.state).toBe("mr_open");
-    }
-    await tickAndSettle(); // review 10 -> blocked
+    };
+    // Reviews 1 and 2 send the change back; review 1's finding stays open.
+    await reviewThenRepair(1);
+    await reviewThenRepair(2);
+    await tickAndSettle(); // review 3 -> blocked
     await tickAndSettle(); // closeScopes
 
-    const a = handle.ctx.store.getTask(taskA.id)!;
+    let a = handle.ctx.store.getTask(taskA.id)!;
     expect(a.state).toBe("blocked");
-    expect(a.blocked_reason).toBe("review rejected 10 consecutive times");
-    const scope = handle.ctx.store.getScope(scopeId)!;
-    expect(scope.status).toBe("blocked");
+    expect(a.blocked_reason).toBe(
+      "code review stalled after 3 rejections: a major raised in review 1 is still open after 3 reviews: version endpoint missing",
+    );
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("blocked");
+    const rounds = script.reviewPackets.map(
+      (packet) => packet.review_round as CodeReviewRoundV1,
+    );
+    expect(rounds.map((r) => [r.round, r.majors_block])).toEqual([
+      [1, true],
+      [2, true],
+      [3, false],
+    ]);
+    // Review 3 verified what reviews 1 and 2 left open.
+    expect(
+      rounds[2]!.open_findings.map((f) => [f.since_round, f.blocking]),
+    ).toEqual([
+      [1, true],
+      [2, true],
+    ]);
+
+    // The operator's unblock restarts the stall clock: the next rejection
+    // goes back to the implementer instead of blocking again at once.
+    const app = buildApp(handle.ctx);
+    const unblocked = await app.request(`/tasks/${taskA.id}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(unblocked.status).toBe(200);
+    // The unblock's own tick request races the test's ticks: drive until
+    // the fourth review has run.
+    for (let i = 0; i < 8 && script.reviewPackets.length < 4; i += 1) {
+      await tickAndSettle();
+    }
+    await settle();
+    const fourth = script.reviewPackets[3]!.review_round as CodeReviewRoundV1;
+    expect([fourth.round, fourth.majors_block]).toEqual([4, true]);
+    // Review 4 rejects again, but the stall clock restarted with the epoch.
+    a = handle.ctx.store.getTask(taskA.id)!;
+    expect(a.state).toBe("queued");
+  }, 60_000);
+
+  it("review loop: majors after the early reviews approve and file one follow-up task", async () => {
+    await handle.shutdown();
+    handle = await bootHeadless(join(dir, `review-follow-${Date.now()}.db`), {
+      reviewRequired: true,
+    });
+    script.distinctShas = true;
+    script.singleTask = true;
+    script.reviewerRounds = [
+      {
+        verdict: "request_changes",
+        findings: [{ severity: "major", file: "index.js", note: "no 404" }],
+        previous: "resolved",
+      },
+      {
+        verdict: "request_changes",
+        findings: [{ severity: "major", file: "index.js", note: "no retry" }],
+        previous: "resolved",
+      },
+      {
+        verdict: "approve",
+        findings: [
+          { severity: "major", file: "index.js", note: "unbounded body" },
+          { severity: "minor", file: "index.js", note: "naming" },
+        ],
+        previous: "resolved",
+      },
+    ];
+
+    const scopeId = await createScope("review follow-up");
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // dispatch A -> mr_open
+    const taskA = handle.ctx.store.listTasks(scopeId)[0]!;
+    for (let review = 1; review <= 2; review += 1) {
+      await tickAndSettle(); // review -> queued
+      expect(handle.ctx.store.getTask(taskA.id)!.state).toBe("queued");
+      handle.ctx.store.clearRetryDelay(taskA.id);
+      await tickAndSettle(); // implement -> mr_open
+    }
+    await tickAndSettle(); // review 3 approves with a late major
+
+    const tasks = handle.ctx.store.listTasks(scopeId);
+    expect(tasks).toHaveLength(2);
+    const followUp = tasks.find((t) => t.id !== taskA.id)!;
+    expect(followUp.title).toBe(
+      `Review follow-up for ${taskA.id}: ${taskA.title}`,
+    );
+    expect(followUp.spec).toContain("[major] `index.js`: unbounded body");
+    expect(followUp.spec).not.toContain("naming");
+    expect(handle.ctx.store.taskDeps(followUp.id)).toEqual([taskA.id]);
+
+    // The follow-up merges after the original, and its own leftovers are
+    // recorded instead of filed again.
+    script.reviewerRounds.push({
+      verdict: "approve",
+      findings: [{ severity: "major", note: "still unbounded elsewhere" }],
+      previous: "resolved",
+    });
+    await driveToDone(scopeId, 40);
+    expect(handle.ctx.store.getTask(taskA.id)!.state).toBe("merged");
+    expect(handle.ctx.store.getTask(followUp.id)!.state).toBe("merged");
+    expect(handle.ctx.store.listTasks(scopeId)).toHaveLength(2);
+    const skipped = handle.ctx.store
+      .listAudit({ task_id: followUp.id, limit: 1000 })
+      .events.filter((row) => row.action === "review.follow_up_skipped");
+    expect(skipped).toHaveLength(1);
   }, 60_000);
 
   it("infra-failed architect runs never spend the scope's attempt budget", async () => {

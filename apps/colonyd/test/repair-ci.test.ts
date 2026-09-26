@@ -286,6 +286,69 @@ describe("CI failure repair dispatch (E2E & lifecycle)", () => {
     expect(updatedIntents[0]!.run_id).toBeTruthy();
   });
 
+  it("review rejections do not spend the CI repair budget", async () => {
+    const h = await createHarness();
+    // Two review rejections bumped the attempt counter to maxAttempts - 1;
+    // resurf col-d6ca6aa2.2 blocked on its next CI failure (2026-09-26).
+    h.store.db
+      .prepare("UPDATE tasks SET attempt = ? WHERE id = ?")
+      .run(h.ctx.env.maxAttempts - 1, h.task.id);
+    h.provider.setPipelineStatusForSha(SHA_A, "failed");
+
+    await tick(h.ctx);
+    await awaitPendingRuns();
+
+    const task = h.store.getTask(h.task.id)!;
+    expect(task.state).toBe("queued");
+    expect(task.attempt).toBe(h.ctx.env.maxAttempts);
+  });
+
+  it("blocks when CI keeps failing after maxAttempts repairs, until a green pipeline intervenes", async () => {
+    const seed = (h: Harness) => {
+      for (let i = 0; i < h.ctx.env.maxAttempts; i += 1) {
+        h.store.claimRepairIntent({
+          fingerprint: `earlier-${i}`,
+          task_id: h.task.id,
+          trigger_kind: "ci_failure",
+          trigger_json: "{}",
+        });
+      }
+      h.store.db
+        .prepare("UPDATE repair_intents SET created_at = ? WHERE task_id = ?")
+        .run("2026-01-01T00:00:00.000Z", h.task.id);
+    };
+
+    const exhausted = await createHarness();
+    seed(exhausted);
+    exhausted.provider.setPipelineStatusForSha(SHA_A, "failed");
+    await tick(exhausted.ctx);
+    await awaitPendingRuns();
+    const blocked = exhausted.store.getTask(exhausted.task.id)!;
+    expect(blocked.state).toBe("blocked");
+    expect(blocked.blocked_reason).toContain(
+      `ci_failure repair attempts exhausted (${exhausted.ctx.env.maxAttempts}/${exhausted.ctx.env.maxAttempts}`,
+    );
+
+    // A review ran after those repairs: its head's pipeline was green.
+    const recovered = await createHarness();
+    seed(recovered);
+    const review = recovered.store.startRun({
+      scope_id: recovered.scope.id,
+      task_id: recovered.task.id,
+      kind: "review",
+      base_sha: SHA_B,
+      lease_ttl_ms: 60_000,
+    });
+    recovered.store.finishRun(review.id, "failed", {
+      error: "reviewer unavailable",
+      evidence_json: JSON.stringify({ head_sha: SHA_B }),
+    });
+    recovered.provider.setPipelineStatusForSha(SHA_A, "failed");
+    await tick(recovered.ctx);
+    await awaitPendingRuns();
+    expect(recovered.store.getTask(recovered.task.id)!.state).toBe("queued");
+  });
+
   it("canceled pipeline dispatches once", async () => {
     const h = await createHarness();
     h.provider.setPipelineStatusForSha(SHA_A, "canceled");

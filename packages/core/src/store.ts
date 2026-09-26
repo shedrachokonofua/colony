@@ -391,6 +391,14 @@ function clampRunPageLimit(limit: number | undefined): number {
   return Math.max(1, Math.min(limit ?? 25, 100));
 }
 
+/** The highest numeric suffix among a scope's task ids (`<scope>.<n>`). */
+function maxTaskNumber(tasks: readonly Pick<Task, "id">[]): number {
+  return tasks.reduce((max, task) => {
+    const suffix = Number(task.id.split(".").at(-1));
+    return Number.isInteger(suffix) ? Math.max(max, suffix) : max;
+  }, 0);
+}
+
 export class Store {
   readonly db: InstanceType<typeof Database>;
 
@@ -1324,10 +1332,7 @@ export class Store {
     if (tasks.length === 0)
       throw new Error("extension must add at least one task");
     const existing = this.listTasks(scope.id);
-    const maxNumber = existing.reduce((max, task) => {
-      const suffix = Number(task.id.split(".").at(-1));
-      return Number.isInteger(suffix) ? Math.max(max, suffix) : max;
-    }, 0);
+    const maxNumber = maxTaskNumber(existing);
     const ids = tasks.map(
       (_, index) => `${scope.id}.${maxNumber + index + 1}` as TaskId,
     );
@@ -1421,6 +1426,53 @@ export class Store {
     apply();
     return ids.map((id) => this.getTask(id)!);
   }
+
+  /**
+   * Add one task to a scope that keeps its plan and status: work a running
+   * scope discovered, such as review findings left for a follow-up. It may
+   * depend only on existing tasks, so it cannot close a cycle.
+   */
+  addTask(
+    scopeId: ScopeId | string,
+    input: {
+      readonly title: string;
+      readonly spec: string;
+      readonly depends_on: readonly string[];
+    },
+    actor: string,
+    detail?: Record<string, unknown>,
+  ): Task {
+    const scope = this.getScope(scopeId);
+    if (!scope) throw new Error(`unknown scope: ${scopeId}`);
+    const existing = this.listTasks(scope.id);
+    const existingIds = new Set<string>(existing.map((task) => task.id));
+    for (const dependency of input.depends_on) {
+      if (!existingIds.has(dependency)) {
+        throw new Error(`depends_on unknown task ${dependency}`);
+      }
+    }
+    const id = `${scope.id}.${maxTaskNumber(existing) + 1}` as TaskId;
+    const apply = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO tasks (id, scope_id, title, spec, state)
+           VALUES (?, ?, ?, ?, 'queued')`,
+        )
+        .run(id, scope.id, input.title, input.spec);
+      const insertDep = this.db.prepare(
+        `INSERT INTO task_deps (task_id, depends_on_task_id) VALUES (?, ?)`,
+      );
+      for (const dependency of input.depends_on) insertDep.run(id, dependency);
+      this.audit(actor, "task.added", {
+        scope_id: scope.id,
+        task_id: id,
+        detail: { depends_on: input.depends_on, ...detail },
+      });
+    });
+    apply();
+    return this.getTask(id)!;
+  }
+
   // ---------------------------------------------------------------------
   // Tasks
   // ---------------------------------------------------------------------

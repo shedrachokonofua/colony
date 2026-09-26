@@ -144,20 +144,40 @@ export const ImplementerCompletionV2 = z
 
 export type ImplementerCompletionV2 = z.infer<typeof ImplementerCompletionV2>;
 
+/**
+ * One code review finding. `owner` says who must act: the implementer (the
+ * default) changes the code; the operator must decide what no change in the
+ * repository can settle - a capability outside it, or a spec that
+ * contradicts a repository guarantee.
+ */
+const reviewFinding = z.object({
+  severity: z.enum(["blocker", "major", "minor"]),
+  file: z.string().min(1).optional(),
+  note: z.string().min(1),
+  owner: z.enum(["implementer", "operator"]).optional(),
+});
+
+/** A finding of the previous review, by its 1-based number, and whether it still holds. */
+const previousFindingStatus = z
+  .object({
+    finding: z.number().int().positive(),
+    status: z.enum(["resolved", "open"]),
+  })
+  .strict();
+
+export type PreviousFindingStatus = z.infer<typeof previousFindingStatus>;
+
 export const ReviewerVerdictV2 = z
   .object({
     kind: z.literal("reviewer_verdict"),
     verdict: z.enum(["approve", "request_changes"]),
     summary: z.string().min(1),
-    findings: z
-      .array(
-        z.object({
-          severity: z.enum(["blocker", "major", "minor"]),
-          file: z.string().min(1).optional(),
-          note: z.string().min(1),
-        }),
-      )
-      .default([]),
+    findings: z.array(reviewFinding).default([]),
+    /**
+     * The status of each finding the previous review left open, when the
+     * review packet carries them (CodeReviewRoundV1.open_findings).
+     */
+    previous_findings: z.array(previousFindingStatus).optional(),
     // What the reviewer actually read against the spec. An approve is a
     // claim about the diff; it must name the files behind it. 123 of 123
     // approvals in one 48h window carried zero findings and a summary under
@@ -200,9 +220,16 @@ export const ReviewerVerdictV2 = z
     head_sha: z.string().regex(/^[0-9a-f]{40}$/),
   })
   .strict()
-  .refine((v) => v.verdict !== "request_changes" || v.findings.length > 0, {
-    message: "request_changes requires at least one finding",
-  })
+  .refine(
+    (v) =>
+      v.verdict !== "request_changes" ||
+      v.findings.length > 0 ||
+      (v.previous_findings ?? []).some((p) => p.status === "open"),
+    {
+      message:
+        "request_changes requires at least one finding or a previous finding still open",
+    },
+  )
   .refine((v) => v.verdict !== "approve" || v.inspected.length > 0, {
     message:
       "approve requires at least one inspected file with a note on what was checked",
@@ -228,9 +255,143 @@ export const ReviewerVerdictV2 = z
     {
       message: "challenged.reviewed must cover every submitted finding",
     },
+  )
+  .refine(
+    (v) =>
+      v.verdict !== "approve" ||
+      v.findings.every((f) => f.severity !== "blocker"),
+    {
+      message:
+        "approve cannot carry a blocker finding; request_changes instead",
+    },
+  )
+  .refine(
+    (v) =>
+      v.findings.every(
+        (f) => f.owner !== "operator" || f.severity === "blocker",
+      ),
+    { message: "an operator-owned finding must be a blocker" },
   );
 
 export type ReviewerVerdictV2 = z.infer<typeof ReviewerVerdictV2>;
+
+/**
+ * A finding a code review left open, as the loop carries it into the next
+ * review: numbered by position (from 1), with the review round that first
+ * raised it and whether it still blocks approval. Majors raised once the
+ * early rounds are over are tracked, not blocking: on approval they become
+ * a follow-up task.
+ */
+export const OpenReviewFindingV1 = z
+  .object({
+    severity: z.enum(["blocker", "major"]),
+    file: z.string().min(1).optional(),
+    note: z.string().min(1),
+    blocking: z.boolean(),
+    since_round: z.number().int().positive(),
+  })
+  .strict();
+
+export type OpenReviewFindingV1 = z.infer<typeof OpenReviewFindingV1>;
+
+/**
+ * What one code review round must account for. colonyd derives it from the
+ * task's review history; the review packet carries it as `review_round`.
+ */
+export const CodeReviewRoundV1 = z
+  .object({
+    /** 1-based count of this task's reviews, this one included. */
+    round: z.number().int().positive(),
+    /** Whether a new major can hold the change back this round. */
+    majors_block: z.boolean(),
+    open_findings: z.array(OpenReviewFindingV1),
+  })
+  .strict();
+
+export type CodeReviewRoundV1 = z.infer<typeof CodeReviewRoundV1>;
+
+/**
+ * Where `statuses` fails to give each of `count` previous findings exactly
+ * one status. Empty when it does, or when there is nothing to account for.
+ */
+export function previousFindingsProblems(
+  statuses: readonly PreviousFindingStatus[] | undefined,
+  count: number,
+): string[] {
+  if (count === 0) return [];
+  const counts = new Map<number, number>();
+  for (const entry of statuses ?? []) {
+    counts.set(entry.finding, (counts.get(entry.finding) ?? 0) + 1);
+  }
+  const problems: string[] = [];
+  const missing: number[] = [];
+  for (let finding = 1; finding <= count; finding += 1) {
+    if (!counts.has(finding)) missing.push(finding);
+  }
+  if (missing.length > 0) {
+    problems.push(`no status for previous finding ${missing.join(", ")}`);
+  }
+  const unknown = [...counts.keys()].filter((n) => n > count);
+  if (unknown.length > 0) {
+    problems.push(
+      `there are ${count} previous findings; there is no finding ${unknown.join(", ")}`,
+    );
+  }
+  const repeated = [...counts].filter(([, n]) => n > 1).map(([f]) => f);
+  if (repeated.length > 0) {
+    problems.push(
+      `more than one status for previous finding ${repeated.join(", ")}`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * Where a schema-valid code review verdict breaks its round's rules; empty
+ * when it complies. The rules make the loop converge on what it found:
+ * - every finding the previous review left open gets exactly one status;
+ * - request_changes rests on a blocker, a blocking open finding that is
+ *   still open, or - while majors block - a new major;
+ * - approve leaves no blocking finding open.
+ */
+export function codeReviewRoundProblems(
+  verdict: ReviewerVerdictV2,
+  round: CodeReviewRoundV1,
+): string[] {
+  const problems = previousFindingsProblems(
+    verdict.previous_findings,
+    round.open_findings.length,
+  );
+  if (problems.length > 0) return problems;
+  const stillBlocking = (verdict.previous_findings ?? [])
+    .filter(
+      (entry) =>
+        entry.status === "open" &&
+        round.open_findings[entry.finding - 1]?.blocking === true,
+    )
+    .map((entry) => entry.finding)
+    .sort((a, b) => a - b);
+  if (verdict.verdict === "approve") {
+    return stillBlocking.length > 0
+      ? [
+          `approve cannot leave blocking previous finding ${stillBlocking.join(", ")} open; request_changes instead`,
+        ]
+      : [];
+  }
+  const holds =
+    stillBlocking.length > 0 ||
+    verdict.findings.some(
+      (f) =>
+        f.severity === "blocker" ||
+        (round.majors_block && f.severity === "major"),
+    );
+  if (holds) return [];
+  return [
+    round.majors_block
+      ? "request_changes needs a blocker, a major, or a blocking previous finding still open; minors alone approve"
+      : `request_changes needs a blocker or a blocking previous finding still open: from review round ${round.round} on, new majors do not hold the change back - approve and list them, and colonyd files them as a follow-up task`,
+  ];
+}
 
 /**
  * One plan review finding. `owner` says who must act: the architect (the
@@ -264,16 +425,7 @@ export const StoredPlanReviewVerdictV1 = z
      * The status of each finding of the previous review, by its 1-based
      * number, when this plan revises a rejected one.
      */
-    previous_findings: z
-      .array(
-        z
-          .object({
-            finding: z.number().int().positive(),
-            status: z.enum(["resolved", "open"]),
-          })
-          .strict(),
-      )
-      .optional(),
+    previous_findings: z.array(previousFindingStatus).optional(),
   })
   .strict();
 

@@ -20,7 +20,8 @@ import {
   hasActiveRepositoryMergeGate,
 } from "../src/runs/mr-admission.js";
 import { abortRun, awaitPendingRuns } from "../src/runs/registry.js";
-import { reconcileRejectedReview, runReview } from "../src/runs/review.js";
+import { runReview } from "../src/runs/review.js";
+import { reconcileRejectedReview } from "../src/runs/review-loop.js";
 import { tick } from "../src/tick.js";
 import { runMergeGate } from "../src/runs/merge-gate.js";
 
@@ -296,7 +297,7 @@ describe("MR-derived dispatch admission", () => {
         });
       }
     }
-    reconcileRejectedReview(h.ctx, h.task);
+    reconcileRejectedReview(h.store, h.task);
     expect(h.store.getTask(h.task.id)?.state).toBe("blocked");
   });
 
@@ -640,26 +641,15 @@ describe("MR-derived dispatch admission", () => {
 
   it("blocks task when failed pipeline repair attempts are exhausted", async () => {
     const h = await harness();
-    let current = h.store.getTask(h.task.id)!;
-    current = h.store.transitionTask(
-      current.id,
-      current.state_version,
-      "queued",
-      "test",
-      { attempt: 2, next_retry_at: null },
-    );
-    current = h.store.transitionTask(
-      current.id,
-      current.state_version,
-      "running",
-      "test",
-    );
-    h.store.transitionTask(
-      current.id,
-      current.state_version,
-      "mr_open",
-      "test",
-    );
+    // maxAttempts earlier CI repairs, with no green pipeline since.
+    for (let i = 0; i < h.ctx.env.maxAttempts; i += 1) {
+      h.store.claimRepairIntent({
+        fingerprint: `earlier-${i}`,
+        task_id: h.task.id,
+        trigger_kind: "ci_failure",
+        trigger_json: "{}",
+      });
+    }
     h.provider.pipelines.getStatus = async (_repo, id) => ({
       id,
       status: "failed",
@@ -674,10 +664,10 @@ describe("MR-derived dispatch admission", () => {
     expect(task.state).toBe("blocked");
     expect(task.blocked_reason).toContain("ci_failure repair");
     expect(task.blocked_reason).toContain("exhausted");
-    expect(task.attempt).toBe(2);
+    expect(task.attempt).toBe(0);
     const intents = h.store.listRepairIntents(h.task.id);
-    expect(intents).toHaveLength(1);
-    expect(intents[0]!.run_id).toBeNull();
+    expect(intents).toHaveLength(h.ctx.env.maxAttempts + 1);
+    expect(intents.every((intent) => intent.run_id === null)).toBe(true);
     const audits = h.store.listAudit({ task_id: h.task.id }).events;
     expect(audits.some((e) => e.action === "gate.pipeline_blocked")).toBe(true);
   });
