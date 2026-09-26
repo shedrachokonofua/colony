@@ -214,7 +214,9 @@ agents:
     fallback_models:
       [mimo-v2.6-pro, gemini-3.8-flash, glm-5.3-flash, deepseek-v4-pro]
     thinking_level: high
-    timeout_ms: 5400000
+    # 3 h: two 90-minute runs (col-d6ca6aa2.2, col-7548de26.3) were killed
+    # mid-repair on large tasks with work still unsubmitted.
+    timeout_ms: 10800000
     max_turns: 400
   # reviewer: grok-4.7 (AA 46; 2/2 in 31 s; honours a forced submit),
   # kimi-k3 (best review record 71/20; AA-LCR 88.7%), glm-5.3 (22/27;
