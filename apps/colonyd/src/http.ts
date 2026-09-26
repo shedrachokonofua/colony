@@ -28,6 +28,7 @@ import {
   OPERATOR_SUMMARY_WINDOWS,
 } from "./operator-summary.js";
 import { createOidcVerifier } from "./oidc.js";
+import { retryOrFailTaskWithBudget } from "./fault-budget.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
 import { runValidation } from "./runs/validate.js";
 import {
@@ -278,6 +279,23 @@ const fileListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+/**
+ * The steer a running implementer receives when the operator amends the
+ * task spec mid-run: the amendment is authoritative, supersedes conflicting
+ * requirements, and must be satisfied before the run submits anything.
+ */
+function specAmendmentSteerMessage(amendment: string): string {
+  return [
+    "<system-reminder>",
+    "The operator amended this task's spec while you were running. The amendment below is authoritative:",
+    "<spec-amendment>",
+    amendment,
+    "</spec-amendment>",
+    "It supersedes every conflicting requirement in the earlier spec and in any plan or work already based on them. It must be satisfied before you submit: re-read the task spec, reconcile your work with the amendment, and only then submit.",
+    "</system-reminder>",
+  ].join("\n");
+}
 
 export function buildApp(ctx: ColonydContext): Hono<Env> {
   const app = new Hono<Env>();
@@ -1441,7 +1459,10 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
 
   // Operator spec amendment: appended to the shared task spec so every role
   // (implementer, reviewer) reads the same authoritative requirements. An
-  // open MR is requeued so the implementer acts on the amendment.
+  // open MR is requeued so the implementer acts on the amendment. A run in
+  // flight must not finish on the superseded spec: a running implementer is
+  // steered onto the amendment (or aborted and requeued free), and an
+  // in-flight review is aborted so the tick reviews the amended spec.
   app.post("/tasks/:id/amend-spec", async (c) => {
     const task = ctx.store.getTask(c.req.param("id"));
     if (!task) return notFound(c, "task");
@@ -1458,8 +1479,77 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     }
     const parsed = feedbackBody.safeParse(await parseBody(c));
     if (!parsed.success) return badBody(c, parsed.error.message);
-    let updated = ctx.store.amendTaskSpec(task.id, parsed.data.feedback);
-    if (updated.state === "mr_open") {
+    const amendment = parsed.data.feedback;
+    let updated = ctx.store.amendTaskSpec(task.id, amendment);
+
+    const liveImplement = ctx.store
+      .runsForTask(task.id)
+      .find((run) => run.kind === "implement" && run.status === "running");
+    if (liveImplement) {
+      let delivered = false;
+      let steerFailure = "unsupported";
+      try {
+        const result = await ctx.agents.developer.steerRun?.(
+          liveImplement.id,
+          specAmendmentSteerMessage(amendment),
+        );
+        if (result?.delivered === true) {
+          delivered = true;
+        } else if (result?.delivered === false) {
+          steerFailure = result.reason;
+        }
+      } catch {
+        steerFailure = "failed";
+      }
+      if (delivered) {
+        ctx.store.audit(c.get("actor"), "task.spec_amendment_delivered", {
+          scope_id: task.scope_id,
+          task_id: task.id,
+          run_id: liveImplement.id,
+          detail: { amendment },
+        });
+      } else {
+        // The run can never learn about the amendment: abort it and requeue
+        // WITHOUT spending an attempt (the infra-retry path), so the next
+        // run starts from the amended spec.
+        await abortRunsAndWait([liveImplement.id]);
+        retryOrFailTaskWithBudget(
+          ctx,
+          task.id,
+          `spec_amended: steer ${steerFailure}`,
+          {
+            fault: {
+              layer: "colonyd",
+              code: "spec_amended",
+              detail: "operator amended the spec while the implementer ran",
+            },
+          },
+        );
+        ctx.store.audit(c.get("actor"), "task.spec_amendment_aborted", {
+          scope_id: task.scope_id,
+          task_id: task.id,
+          run_id: liveImplement.id,
+          detail: { reason: steerFailure },
+        });
+        updated = ctx.store.getTask(task.id) ?? updated;
+      }
+    }
+
+    // A verdict being written against the old spec is worthless: abort the
+    // review and leave the task in place for the tick, which dispatches a
+    // fresh review against the amended spec (reviews are cheap).
+    const liveReview = ctx.store
+      .runsForTask(task.id)
+      .find((run) => run.kind === "review" && run.status === "running");
+    if (liveReview) {
+      await abortRunsAndWait([liveReview.id]);
+      ctx.store.audit(c.get("actor"), "task.spec_amendment_review_aborted", {
+        scope_id: task.scope_id,
+        task_id: task.id,
+        run_id: liveReview.id,
+        detail: { amendment },
+      });
+    } else if (updated.state === "mr_open") {
       try {
         updated = ctx.store.transitionTask(
           updated.id,
@@ -1475,7 +1565,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     ctx.store.audit(c.get("actor"), "task.spec_amended", {
       scope_id: task.scope_id,
       task_id: task.id,
-      detail: { amendment: parsed.data.feedback },
+      detail: { amendment },
     });
     ctx.requestTick();
     return c.json(updated);

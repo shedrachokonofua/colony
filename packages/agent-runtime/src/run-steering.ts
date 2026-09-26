@@ -111,6 +111,8 @@ export class RunSteering {
   #nudges = 0;
   #continuations = 0;
   #pushed = false;
+  /** Operator messages queued mid-run (a live spec amendment). */
+  readonly #operatorMessages: string[] = [];
   /** Last failed bash command and its consecutive-failure count. */
   #lastFailedCommand = "";
   readonly #role: AgentRuntimeRole;
@@ -159,6 +161,20 @@ export class RunSteering {
       return;
     }
     this.#callsSinceProgress += 1;
+  }
+
+  /**
+   * Queue an operator message for the run. It rides the next tool result or
+   * continuation steer ahead of every generated nudge: an operator
+   * correction outranks drift advice.
+   */
+  enqueueOperatorMessage(message: string): void {
+    this.#operatorMessages.push(message);
+  }
+
+  /** The next queued operator message, or null when none is pending. */
+  takeOperatorMessage(): string | null {
+    return this.#operatorMessages.shift() ?? null;
   }
 
   /**
@@ -223,7 +239,7 @@ export class RunSteering {
               `The repository is read-only. If inspection is complete, call ${submissionTool(this.#role)} with concrete findings or the inspected basis for approval.`,
               "Use the remaining budget only to improve the verdict's evidence.",
             ];
-    return [
+    const steer = [
       this.#role === "developer"
         ? "Continue this task. It is not finished until a submission is accepted."
         : `Continue this ${this.#role === "architect" ? "planning task" : "inspection"}. It is not finished until a submission is accepted.`,
@@ -237,6 +253,11 @@ export class RunSteering {
       "NEVER redefine success as a smaller, easier, or already-completed subset of the spec.",
       ...roleGuidance,
     ].join("\n");
+    // A model that stopped mid-run still owes the operator its queued
+    // message; carry it ahead of the continuation instead of waiting for a
+    // tool call that may never come before the next submit.
+    const pending = this.#operatorMessages.splice(0);
+    return pending.length > 0 ? [...pending, steer].join("\n") : steer;
   }
   /**
    * Give a newly selected model its own continuation allowance. Drift and

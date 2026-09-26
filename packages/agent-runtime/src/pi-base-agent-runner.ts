@@ -554,6 +554,9 @@ export class PiBaseAgentRunner implements PiRunner {
           state.cancellationTriggered = true;
           await abortRun();
         },
+        steer: (message: string) => {
+          steering.enqueueOperatorMessage(message);
+        },
       });
 
       let sandboxTools: readonly ToolDefinition[] = [];
@@ -1980,6 +1983,18 @@ export class PiBaseAgentRunner implements PiRunner {
 
   async cancel(runId: string): Promise<void> {
     await this.activeRuns.get(runId)?.abort();
+  }
+
+  /**
+   * Deliver an operator message to a live run: queued into its steering
+   * channel and folded into the next tool result or continuation steer.
+   * False when the id has no live run to deliver to.
+   */
+  steer(runId: string, message: string): boolean {
+    const active = this.activeRuns.get(runId);
+    if (!active) return false;
+    active.steer(message);
+    return true;
   }
 }
 

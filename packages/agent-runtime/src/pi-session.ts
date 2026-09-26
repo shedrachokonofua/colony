@@ -890,26 +890,37 @@ export async function buildPiSession(
         },
         "pi_tool_observation",
       );
+      // An operator message queued mid-run outranks every generated nudge
+      // and rides the same fold: delivered on the next tool result rather
+      // than waiting for a turn boundary that may be a submission.
+      const operatorSteer = steering.takeOperatorMessage();
       const deadlineNudge = takeSubmitDeadlineNudge();
       const repeatNudge = deadlineNudge
         ? null
         : steering.takeRepeatFailureNudge();
       const nudge = deadlineNudge ?? repeatNudge ?? steering.takeDriftNudge();
-      if (!nudge) return base;
+      const injected = operatorSteer
+        ? nudge
+          ? `${operatorSteer}\n${nudge}`
+          : operatorSteer
+        : nudge;
+      if (!injected) return base;
       // Fold the reminder in ahead of the tool's own output, the way the omp
       // harness delivers non-interrupting rule reminders.
       options.logger?.warn?.(
         { runId, sandboxId, stage: hooks.stageNameOf?.() },
-        deadlineNudge
-          ? "pi_submit_deadline_nudge"
-          : repeatNudge
-            ? "pi_repeat_failure_nudge"
-            : "pi_drift_nudge",
+        operatorSteer
+          ? "pi_operator_steer"
+          : deadlineNudge
+            ? "pi_submit_deadline_nudge"
+            : repeatNudge
+              ? "pi_repeat_failure_nudge"
+              : "pi_drift_nudge",
       );
       return {
         ...base,
         content: [
-          { type: "text" as const, text: nudge },
+          { type: "text" as const, text: injected },
           ...(base?.content ?? context.result.content),
         ],
       };

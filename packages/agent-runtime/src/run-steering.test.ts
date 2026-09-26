@@ -200,3 +200,41 @@ describe("repeated-failure nudge", () => {
     }
   });
 });
+
+describe("operator messages", () => {
+  it("delivers queued messages in order and then nothing", () => {
+    const steering = new RunSteering({
+      role: "developer",
+      runTimeoutMs: 60 * 60_000,
+    });
+    steering.enqueueOperatorMessage("first amendment");
+    steering.enqueueOperatorMessage("second amendment");
+    expect(steering.takeOperatorMessage()).toBe("first amendment");
+    expect(steering.takeOperatorMessage()).toBe("second amendment");
+    expect(steering.takeOperatorMessage()).toBeNull();
+  });
+
+  it("carries a pending message onto the continuation steer exactly once", () => {
+    const steering = new RunSteering({
+      role: "developer",
+      runTimeoutMs: 60 * 60_000,
+    });
+    steering.enqueueOperatorMessage("the operator amended the task spec");
+    const steer = steering.takeContinuationSteer("col-1.2: wire the console");
+    expect(steer).toContain("the operator amended the task spec");
+    expect(steer).toContain("col-1.2: wire the console");
+    // The queue is drained by delivery: the next continuation is clean.
+    const next = steering.takeContinuationSteer("col-1.2: wire the console");
+    expect(next).not.toContain("the operator amended the task spec");
+    expect(steering.takeOperatorMessage()).toBeNull();
+  });
+
+  it("leaves continuation steers unchanged when nothing is queued", () => {
+    const steering = new RunSteering({
+      role: "developer",
+      runTimeoutMs: 60 * 60_000,
+    });
+    const steer = steering.takeContinuationSteer("col-1.2: wire the console");
+    expect(steer).toStartWith("Continue this task");
+  });
+});

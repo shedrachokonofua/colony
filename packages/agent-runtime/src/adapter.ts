@@ -93,6 +93,19 @@ export interface AgentRunOutput {
   readonly envelopeHash: string;
 }
 
+/**
+ * Outcome of steering a live run. `delivered` means the message entered the
+ * run's steering channel; otherwise why it did not, so callers can fall back
+ * to aborting the run instead of letting it finish on stale instructions.
+ */
+export type AgentRunSteerResult =
+  | { readonly delivered: true }
+  | {
+      readonly delivered: false;
+      /** No steering channel, no live run, or the channel itself failed. */
+      readonly reason: "unsupported" | "not_running" | "failed";
+    };
+
 /** What a resumed run needs beyond a fresh one: its surviving sandbox. */
 export interface AgentRunResumeEnvironment extends AgentRunEnvironment {
   readonly sandboxId: string;
@@ -108,6 +121,13 @@ export interface AgentRuntimeAdapter {
   getRunStatus(runId: string): Promise<AgentRunMetadata | null>;
   getRunOutput(runId: string): Promise<AgentRunOutput | null>;
   cancelRun(runId: string): Promise<AgentRunMetadata | null>;
+  /**
+   * Deliver an operator message to a live run through the runtime's steering
+   * channel. Optional: an adapter without a live steering channel need not
+   * implement it; callers fall back to aborting the run and requeueing the
+   * work. Never throws: steering is best-effort and its outcome is the result.
+   */
+  steerRun?(runId: string, message: string): Promise<AgentRunSteerResult>;
   /**
    * Continues a checkpointed run on its surviving sandbox. Optional: an
    * adapter without durable sessions cannot resume and need not implement
@@ -171,6 +191,13 @@ export interface FakeAgentRuntimeOptions {
     packet: AgentRuntimePacket,
     environment: AgentRunEnvironment,
   ) => { readonly reason: string; readonly fault?: Fault } | undefined;
+  /**
+   * Live steering seam for tests that exercise the steer path. Unset is the
+   * no-op default: `steerRun` reports unsupported and callers fall back to
+   * aborting the run. When set, `steerRun` delivers through it and reports
+   * delivered.
+   */
+  readonly steerForRun?: (runId: string, message: string) => void;
 }
 
 export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
@@ -244,6 +271,24 @@ export class FakeAgentRuntimeAdapter implements AgentRuntimeAdapter {
     const canceled = { ...run, status: "canceled" as const };
     this.runs.set(runId, canceled);
     return Promise.resolve(withoutOutput(canceled));
+  }
+
+  /**
+   * The fake has no live steering channel of its own: without a `steerForRun`
+   * seam this is the unsupported no-op result that sends callers to their
+   * abort-and-requeue fallback. A throwing seam reports failed, keeping the
+   * never-throws adapter contract.
+   */
+  steerRun(runId: string, message: string): Promise<AgentRunSteerResult> {
+    if (!this.options.steerForRun) {
+      return Promise.resolve({ delivered: false, reason: "unsupported" });
+    }
+    try {
+      this.options.steerForRun(runId, message);
+    } catch {
+      return Promise.resolve({ delivered: false, reason: "failed" });
+    }
+    return Promise.resolve({ delivered: true });
   }
 
   async resumeRun(
