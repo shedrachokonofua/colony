@@ -136,7 +136,7 @@ const agentSchema = z
     /** Ordered same-provider models tried when the primary run fails. */
     fallback_models: z.array(z.string().min(1)).default([]),
     thinking_level: z
-      .enum(["off", "minimal", "low", "medium", "high", "xhigh"])
+      .enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
       .optional(),
     /** Optional: override the provider's auth for this agent only. */
     auth: authSchema.optional(),
@@ -379,7 +379,8 @@ export interface ResolvedAgentConfig {
     | "low"
     | "medium"
     | "high"
-    | "xhigh";
+    | "xhigh"
+    | "max";
   readonly ceilings: {
     readonly timeoutMs: number;
     readonly maxTurns: number;

@@ -143,7 +143,8 @@ export interface PiRoleProfile {
     | "low"
     | "medium"
     | "high"
-    | "xhigh";
+    | "xhigh"
+    | "max";
   readonly defaultLimits: {
     readonly maxTurns: number;
   };

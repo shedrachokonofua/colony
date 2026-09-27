@@ -14,7 +14,8 @@ export type ColonyThinkingLevel =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | "max";
 
 const SDK_THINKING_LEVELS = {
   off: SdkThinkingLevel.Off,
@@ -23,6 +24,7 @@ const SDK_THINKING_LEVELS = {
   medium: SdkThinkingLevel.Medium,
   high: SdkThinkingLevel.High,
   xhigh: SdkThinkingLevel.XHigh,
+  max: SdkThinkingLevel.Max,
 } as const satisfies Record<ColonyThinkingLevel, SdkThinkingLevel>;
 
 export function toSdkThinkingLevel(

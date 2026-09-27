@@ -95,7 +95,8 @@ export interface PiRunnerBaseOptions {
     | "low"
     | "medium"
     | "high"
-    | "xhigh";
+    | "xhigh"
+    | "max";
   readonly maxTurns?: number;
   readonly runTimeoutMs?: number;
   /** Zero-output recovery backoff base. Tests shrink it; production defaults to 15s. */

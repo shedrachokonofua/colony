@@ -308,6 +308,9 @@ Fallbacks are same-provider and
 ordered. `plan_reviewer` inherits the `reviewer` entry if omitted.
 Per-role `thinking_level`, `timeout_ms`, and `max_turns` bound cost;
 per-model `cost` lets the console estimate spend per task.
+`thinking_level` runs `off` through `xhigh` and `max`; each model is
+clamped to the highest effort it supports at or below the setting, so
+`max` means "the most this model offers" across a whole fallback chain.
 
 Useful-progress timestamps advance on tool activity or successful,
 non-empty assistant output. Error-only usage events and aborted turns do

@@ -212,7 +212,10 @@ agents:
     model: muse-spark
     fallback_models:
       [mimo-v2.6-pro, gemini-3.8-flash, glm-5.3-flash, deepseek-v4-pro]
-    thinking_level: high
+    # max clamps per model to its top effort: muse-spark xhigh (was high),
+    # mimo-v2.6-pro high (its ceiling, unchanged), gemini-3.8-flash high,
+    # glm-5.3-flash xhigh, deepseek-v4-pro max.
+    thinking_level: max
     # 3 h: two 90-minute runs (col-d6ca6aa2.2, col-7548de26.3) were killed
     # mid-repair on large tasks with work still unsubmitted.
     timeout_ms: 10800000
