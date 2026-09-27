@@ -49,12 +49,11 @@ providers:
         name: muse-spark
         reasoning: true
         context_window: 1048576
-        # Operational cap, not the model's limit. Turn telemetry from a walled
-        # 30-minute run: median turn 404 output tokens, but outliers reached
-        # 30k tokens / 203 seconds, and 27 of the 30 minutes went to model
-        # generation. Bounding a single response keeps the run acting instead
-        # of monologuing.
-        max_tokens: 16384
+        # 2026-09-27: uncapped to match mimo-v2.6-pro. The old 16384 cap cut
+        # long reasoning turns short; under the same review rules mimo's
+        # uncapped turns drew 0.2 blockers / 0.8 majors per review against
+        # spark's 0.6 / 1.4, so quality wins over turn latency.
+        max_tokens: 131072
         # 2026-09-25: the pool (Command Code Contributor + subscription bridge)
         # served bursts of 4 and 6 concurrent xhigh agent turns 20/20 in
         # 1.1-6.2 s with no 429s; 4 leaves headroom under that ceiling.
@@ -119,7 +118,7 @@ providers:
         name: muse-spark-1.3
         reasoning: true
         context_window: 1048576
-        max_tokens: 16384
+        max_tokens: 131072
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
       - id: antigravity/gemini-3.8-flash
