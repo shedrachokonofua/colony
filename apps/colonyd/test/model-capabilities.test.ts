@@ -294,3 +294,78 @@ describe("production model capability metadata", () => {
     expect(forced?.enable_thinking).toBeUndefined();
   }, 120_000);
 });
+
+describe("declared model efforts", () => {
+  it("sends max to a gateway alias whose config declares a max ladder", async () => {
+    const requests: Record<string, unknown>[] = [];
+    const baseUrl = await startGateway(requests);
+    const dir = mkdtempSync(join(tmpdir(), "colony-model-efforts-config-"));
+    configDirs.push(dir);
+    const path = join(dir, "colony.yaml");
+    // The SDK does not know this alias: without `efforts` it infers a
+    // ladder that stops at xhigh and clamps a max request down to it.
+    writeFileSync(
+      path,
+      `agent_runtime: pi
+providers:
+  openai_compatible:
+    api: openai-completions
+    base_url: ${baseUrl}
+    auth: { kind: api_key, value: MODEL_CAPABILITY_TEST_KEY }
+    models:
+      - id: router/muse-spark-1.3-contributor
+        name: muse-spark
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+agents:
+  architect:
+    provider: openai_compatible
+    model: muse-spark
+    thinking_level: max
+    max_turns: 5
+`,
+      "utf8",
+    );
+    const architect = loadColonyConfig({
+      path,
+      env: { MODEL_CAPABILITY_TEST_KEY: "test-key" },
+    }).forAgent("architect");
+    const scratchDir = mkdtempSync(join(tmpdir(), "colony-model-efforts-"));
+    scratchDirs.push(scratchDir);
+    const runner = new PiBaseAgentRunner(
+      {
+        ...ARCHITECT_ROLE_PROFILE,
+        workspaceMode: "scratch",
+        requireRepositoryInspection: false,
+        defaultTools: [],
+        stages: () => [
+          {
+            name: "verify" as const,
+            systemPrompt: "Submit the verified architect decomposition.",
+            prompt: ({ packet }) => JSON.stringify(packet),
+            tools: "read_only" as const,
+            subagents: false,
+            turnCap: 1,
+            submitTool: (capture: (value: unknown) => void) =>
+              createArchitectSubmitTool(capture),
+          },
+        ],
+      },
+      {
+        model: modelFromConfig(architect),
+        scratchDir,
+        broker: { resolve: () => "test-key" },
+        thinkingLevel: architect.thinkingLevel,
+        maxTurns: 5,
+        runTimeoutMs: 120_000,
+        jiggleBackoffMs: 1,
+      },
+    );
+    await runner.run({
+      runId: "declared-efforts-max",
+      packet: { goal: "Plan the change", head_sha: "f".repeat(40) },
+      environment: { role: "architect" },
+    });
+    expect(requests[0]?.reasoning_effort).toBe("max");
+  }, 120_000);
+});

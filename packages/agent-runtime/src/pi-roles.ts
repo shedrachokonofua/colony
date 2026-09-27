@@ -1,5 +1,6 @@
 import { ThinkingLevel as SdkThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { Model } from "@oh-my-pi/pi-ai";
 import type { AgentRuntimeRole } from "./adapter.js";
 import type { SandboxRole } from "@colony/sandbox";
 
@@ -31,6 +32,24 @@ export function toSdkThinkingLevel(
   level: ColonyThinkingLevel,
 ): SdkThinkingLevel {
   return SDK_THINKING_LEVELS[level];
+}
+
+/** An effort a model can be asked for: every thinking level but `off`. */
+export type ColonyEffort = Exclude<ColonyThinkingLevel, "off">;
+
+/**
+ * Thinking metadata for a model whose supported efforts the config declares.
+ * The SDK infers a ladder only for catalogued ids; a gateway alias such as
+ * router/muse-spark-1.3-contributor gets a generic ladder without `max`, so
+ * a `max` request would be clamped below what the model accepts.
+ */
+export function declaredThinking(
+  efforts: readonly ColonyEffort[],
+): NonNullable<Model["thinking"]> {
+  return {
+    mode: "effort",
+    efforts: efforts.map((effort) => SDK_THINKING_LEVELS[effort]),
+  };
 }
 
 /**

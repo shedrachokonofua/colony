@@ -108,6 +108,14 @@ const modelSchema = z
     /** Lookup name agents reference (defaults to `id`). */
     name: z.string().min(1).optional(),
     reasoning: z.boolean().optional(),
+    /**
+     * Reasoning efforts the model accepts, least to most intensive. Overrides
+     * the SDK's inference, which only knows catalogued model ids.
+     */
+    efforts: z
+      .array(z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]))
+      .min(1)
+      .optional(),
     input: z.array(z.enum(["text", "image"])).optional(),
     context_window: z.number().int().positive().optional(),
     max_tokens: z.number().int().positive().optional(),
@@ -353,6 +361,14 @@ export interface ResolvedModelConfig {
   readonly id: string;
   readonly name: string;
   readonly reasoning?: boolean;
+  readonly efforts?: readonly (
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | "max"
+  )[];
   readonly compat?: ResolvedModelCompat;
   readonly contextWindow?: number;
   readonly maxTokens?: number;
@@ -783,6 +799,7 @@ function toResolvedModel(
     id: model.id,
     name: model.name ?? model.id,
     reasoning: model.reasoning,
+    ...(model.efforts ? { efforts: model.efforts } : {}),
     compat: model.compat,
     contextWindow: model.context_window,
     maxTokens: model.max_tokens,

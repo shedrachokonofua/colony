@@ -1,4 +1,5 @@
 import {
+  declaredThinking,
   FakeAgentRuntimeAdapter,
   PiAgentRuntimeAdapter,
   type PiModelSpec,
@@ -443,6 +444,10 @@ export function modelFromConfig(config: ResolvedAgentConfig): PiModelSpec {
     provider,
     baseUrl,
     reasoning: config.model.reasoning ?? false,
+    // Declared efforts own the ladder; otherwise the SDK infers it.
+    ...(config.model.efforts
+      ? { thinking: declaredThinking(config.model.efforts) }
+      : {}),
     compat: config.model.compat,
     input: ["text"],
     cost: {
