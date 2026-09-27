@@ -20,6 +20,7 @@ import {
   resolveServer,
 } from "./auth.js";
 import { ApiError, createClient, type ColonyClient } from "./client.js";
+import { credentialOps } from "./oidc.js";
 import { colorEnabled } from "./render.js";
 import * as scopes from "./commands/scopes.js";
 import * as scope from "./commands/scope.js";
@@ -33,6 +34,7 @@ import * as artifacts from "./commands/artifacts.js";
 import { context, run as projects } from "./commands/projects.js";
 import * as audit from "./commands/audit.js";
 import * as status from "./commands/status.js";
+import * as loginCmd from "./commands/login.js";
 import { createTuiApp } from "./tui/app.js";
 
 export interface CommandIo {
@@ -45,6 +47,14 @@ export type CommandModule = (
   client: ColonyClient,
   io: CommandIo,
 ) => Promise<number>;
+
+/** Commands that establish credentials rather than use them. */
+export type AuthCommandModule = (cmd: ParsedCommand) => Promise<number>;
+
+export const AUTH_COMMANDS: Record<string, AuthCommandModule> = {
+  login: loginCmd.run,
+  logout: loginCmd.runLogout,
+};
 
 /** Every CLI verb: reads plus the operator mutation commands. */
 export const COMMANDS: Record<string, CommandModule> = {
@@ -84,7 +94,7 @@ export function helpText(): string {
     "",
     "global flags:",
     "  --server <url>   colonyd base URL (default $COLONY_URL)",
-    "  --token <t>      API token (default $COLONY_TOKEN, then token file)",
+    "  --token <t>      API token (default $COLONY_TOKEN, then `colony login` credentials)",
     "  --actor <a>      audited actor id (default $COLONY_ACTOR, $USER)",
     "  --json           machine-readable output on stdout",
   );
@@ -99,6 +109,15 @@ export async function main(argv: string[]): Promise<number> {
     return usage(err);
   }
 
+  const authHandler = AUTH_COMMANDS[parsed.command];
+  if (authHandler) {
+    try {
+      return await authHandler(parsed);
+    } catch (err) {
+      return usage(err);
+    }
+  }
+
   const handler = COMMANDS[parsed.command];
   if (!handler) {
     process.stderr.write(
@@ -109,7 +128,12 @@ export async function main(argv: string[]): Promise<number> {
 
   let credentials;
   try {
-    credentials = resolveCredentials(parsed.flags, process.env, homedir());
+    credentials = await resolveCredentials(
+      parsed.flags,
+      process.env,
+      homedir(),
+      credentialOps(),
+    );
   } catch (err) {
     return usage(err);
   }
@@ -161,7 +185,12 @@ function usage(err: unknown): number {
     process.stderr.write(`colony: ${err.message}\n\n${helpText()}`);
     return 2;
   }
-  throw err;
+  if (err instanceof Error) {
+    process.stderr.write(`colony: ${err.message}\n`);
+    return 1;
+  }
+  process.stderr.write(`colony: ${String(err)}\n`);
+  return 1;
 }
 
 /** True only when this file is the process entry point, not an import. */
@@ -181,7 +210,12 @@ if (isDirectRun()) {
     if (process.stdin.isTTY) {
       let credentials;
       try {
-        credentials = resolveCredentials({}, process.env, homedir());
+        credentials = await resolveCredentials(
+          {},
+          process.env,
+          homedir(),
+          credentialOps(),
+        );
       } catch (err) {
         process.exit(usage(err));
       }

@@ -448,7 +448,7 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
             ? {
                 "WWW-Authenticate": `Bearer resource_metadata="${mcpMetadataUrl(
                   publicOrigin(ctx.env.publicHost, c.req.url),
-                )}", scope="mcp"`,
+                )}", scope="mcp offline_access"`,
               }
             : {},
         );

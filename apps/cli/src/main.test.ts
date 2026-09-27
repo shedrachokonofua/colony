@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { COMMANDS, helpText, main } from "./main.js";
+import { AUTH_COMMANDS, COMMANDS, helpText, main } from "./main.js";
 
 const original = globalThis.fetch;
 
@@ -34,6 +34,8 @@ describe("helpText", () => {
       "context",
       "audit",
       "status",
+      "login",
+      "logout",
     ]) {
       expect(help).toContain(name);
     }
@@ -62,6 +64,12 @@ describe("main", () => {
       "status",
     ]) {
       expect(COMMANDS[name]).toBeTypeOf("function");
+    }
+  });
+
+  it("dispatches credential commands to an auth handler", () => {
+    for (const name of ["login", "logout"]) {
+      expect(AUTH_COMMANDS[name]).toBeTypeOf("function");
     }
   });
 

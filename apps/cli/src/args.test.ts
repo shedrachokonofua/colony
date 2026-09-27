@@ -86,6 +86,40 @@ describe("parseArgs", () => {
     });
   });
 
+  it("parses login and logout", () => {
+    expect(parse(["logout"])).toEqual({
+      command: "logout",
+      positional: [],
+      flags: {},
+    });
+    expect(parse(["login"])).toEqual({
+      command: "login",
+      positional: [],
+      flags: {},
+    });
+    expect(
+      parse([
+        "login",
+        "--client-credentials",
+        "--client-id",
+        "op",
+        "--client-secret",
+        "s3cret",
+        "--issuer",
+        "https://auth.test/realms/aether",
+      ]),
+    ).toEqual({
+      command: "login",
+      positional: [],
+      flags: {
+        "client-credentials": true,
+        "client-id": "op",
+        "client-secret": "s3cret",
+        issuer: "https://auth.test/realms/aether",
+      },
+    });
+  });
+
   it("parses mutation subcommands", () => {
     expect(
       parse([

@@ -113,6 +113,17 @@ const SPECS: Record<string, CommandSpec> = {
     valueFlags: { scope: "scope", task: "task", n: "n" },
   },
   status: { usage: "status" },
+  login: {
+    usage:
+      "login [--client-credentials] [--client-id ID] [--client-secret SECRET] [--issuer URL]",
+    boolFlags: ["client-credentials"],
+    valueFlags: {
+      "client-id": "client-id",
+      "client-secret": "client-secret",
+      issuer: "issuer",
+    },
+  },
+  logout: { usage: "logout" },
 };
 
 export const SUBCOMMANDS: readonly string[] = Object.keys(SPECS);

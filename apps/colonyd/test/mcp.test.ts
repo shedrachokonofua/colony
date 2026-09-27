@@ -343,7 +343,7 @@ describe("mcp auth and metadata", () => {
     });
     expect(res.status).toBe(401);
     expect(res.headers.get("WWW-Authenticate")).toBe(
-      `Bearer resource_metadata="https://${HOST}/.well-known/oauth-protected-resource/mcp", scope="mcp"`,
+      `Bearer resource_metadata="https://${HOST}/.well-known/oauth-protected-resource/mcp", scope="mcp offline_access"`,
     );
   });
 
@@ -354,7 +354,7 @@ describe("mcp auth and metadata", () => {
     expect(await res.json()).toEqual({
       resource: `https://${HOST}/mcp`,
       authorization_servers: [ISSUER],
-      scopes_supported: ["mcp"],
+      scopes_supported: ["mcp", "offline_access"],
       bearer_methods_supported: ["header"],
     });
   });

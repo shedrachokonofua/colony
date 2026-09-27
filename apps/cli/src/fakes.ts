@@ -1,6 +1,7 @@
 /** Shared harness for command tests: a fake client and captured stdout. */
 
 import type { ColonyClient } from "./client.js";
+import type { FetchLike } from "./oidc.js";
 
 type Method = "get" | "post" | "put";
 
@@ -80,4 +81,44 @@ export function captureStdout(): { text: () => string; restore: () => void } {
 
 export function parseJsonOut(text: string): unknown {
   return JSON.parse(text);
+}
+
+export interface FetchCall {
+  url: string;
+  body: URLSearchParams;
+}
+
+/**
+ * Stub fetch routed by exact URL. An array route is consumed one response per
+ * call, repeating its last entry once exhausted (for polling sequences).
+ */
+export function stubFetch(routes: Record<string, unknown>): {
+  fetchFn: FetchLike;
+  calls: FetchCall[];
+} {
+  const calls: FetchCall[] = [];
+  const fetchFn = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const url = String(input);
+    calls.push({
+      url,
+      body: new URLSearchParams(
+        typeof init?.body === "string" ? init.body : "",
+      ),
+    });
+    const route = routes[url];
+    if (route === undefined) throw new Error(`unexpected fetch: ${url}`);
+    const payload = Array.isArray(route)
+      ? route.length > 1
+        ? route.shift()
+        : route[0]
+      : route;
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as FetchLike;
+  return { fetchFn, calls };
 }

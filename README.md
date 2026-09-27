@@ -618,9 +618,14 @@ for the new head instead of treating the old approval as current.
 
 **CLI.** Scope, task, run, and project operations as subcommands, `--json`
 for scripts. Not every route is covered: scope unblock, run abort,
-project-file upload, and plan-review recovery are API-only.
+project-file upload, and plan-review recovery are API-only. Sign in once
+with `colony login` (OAuth device flow) or `colony login
+--client-credentials`; credentials land in `~/.config/colony/credentials.json`
+(mode `0600`) and renew themselves before they expire. `colony logout`
+deletes them.
 
 ```sh
+colony login
 colony context my-project --set brief.md
 colony open goal.md --title "Reddit clone" --repo group/reddit-clone --project my-project
 colony scope col-d4bed30a
