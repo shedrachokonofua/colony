@@ -26,6 +26,12 @@ export interface OidcVerifierOptions {
   readonly issuer: string;
   /** OAuth client_id the token must be issued to (azp or aud). */
   readonly clientId: string;
+  /**
+   * Extra resource indicators accepted in addition to `clientId`: a token
+   * whose azp or aud matches one of these passes the audience check. Used
+   * for RFC 8707 resource audiences (the MCP endpoint's resource URL).
+   */
+  readonly acceptedAudiences?: readonly string[];
   /** Realm role required in realm_access.roles / roles. Empty: any user. */
   readonly requiredRole?: string;
   /** Test seam. Only the URL form is used, so stubs need not implement all of
@@ -149,9 +155,12 @@ export function createOidcVerifier(
         : payload.aud
           ? [payload.aud]
           : [];
+      const accepted = [options.clientId, ...(options.acceptedAudiences ?? [])];
       if (
-        payload.azp !== options.clientId &&
-        !audiences.includes(options.clientId)
+        !accepted.some(
+          (audience) =>
+            payload.azp === audience || audiences.includes(audience),
+        )
       ) {
         throw new OidcError("token was not issued to this client");
       }

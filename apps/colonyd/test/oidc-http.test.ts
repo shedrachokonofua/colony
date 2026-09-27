@@ -10,6 +10,7 @@ import { buildApp } from "../src/http.js";
 import { createOidcVerifier } from "../src/oidc.js";
 
 const ISSUER = "https://auth.test/realms/aether";
+const ORIGIN = "https://colony.test";
 const CLIENT = "colony";
 const KID = "test-key";
 
@@ -95,6 +96,35 @@ describe("oidc verifier", () => {
       Buffer.from(JSON.stringify(value)).toString("base64url");
     const token = `${encode({ alg: "none" })}.${encode({ iss: ISSUER })}.`;
     await expect(verifier.verify(token)).rejects.toThrow("unsupported");
+  });
+
+  it("accepts a token whose aud is the MCP resource URL", async () => {
+    const mcpVerifier = createOidcVerifier({
+      issuer: ISSUER,
+      clientId: CLIENT,
+      requiredRole: "admin",
+      fetchImpl: fakeFetch,
+      acceptedAudiences: [`${ORIGIN}/mcp`],
+    });
+    const token = signToken({ azp: "open-webui", aud: `${ORIGIN}/mcp` });
+    const identity = await mcpVerifier.verify(token);
+    expect(identity.username).toBe("shdrch");
+  });
+
+  it("still requires the admin role for MCP-resource tokens", async () => {
+    const mcpVerifier = createOidcVerifier({
+      issuer: ISSUER,
+      clientId: CLIENT,
+      requiredRole: "admin",
+      fetchImpl: fakeFetch,
+      acceptedAudiences: [`${ORIGIN}/mcp`],
+    });
+    const token = signToken({
+      azp: "open-webui",
+      aud: `${ORIGIN}/mcp`,
+      realm_access: { roles: ["memos-user"] },
+    });
+    await expect(mcpVerifier.verify(token)).rejects.toThrow("missing required");
   });
 });
 

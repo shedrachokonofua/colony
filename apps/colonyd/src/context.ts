@@ -48,6 +48,11 @@ export interface ColonydContext {
     readonly oidcIssuer: string;
     readonly oidcClientId: string;
     readonly oidcRequiredRole: string;
+    /**
+     * Public host name of this colonyd ($PUBLIC_HOST) for cross-service URLs
+     * (MCP resource/metadata). Empty/absent falls back to the request origin.
+     */
+    readonly publicHost?: string;
     /** Trace-UI deep-link base for the console; empty when unconfigured. */
     readonly traceUiBaseUrl: string;
     /** Console base deep-link URL; empty when unconfigured. */

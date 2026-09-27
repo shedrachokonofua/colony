@@ -19,6 +19,7 @@ COPY package.json bun.lock tsconfig.base.json tsconfig.json /workspace/
 COPY packages /workspace/packages
 COPY apps /workspace/apps
 COPY config /workspace/config
+COPY skills /workspace/skills
 
 # Manifests stage: harvest every workspace package.json with paths intact.
 # The deps layer below keys its cache on this stage's CONTENT, so unchanged

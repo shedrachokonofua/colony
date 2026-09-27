@@ -462,6 +462,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       oidcIssuer: environment.COLONY_OIDC_ISSUER,
       oidcClientId: environment.COLONY_OIDC_CLIENT_ID,
       oidcRequiredRole: environment.COLONY_OIDC_REQUIRED_ROLE,
+      publicHost: environment.PUBLIC_HOST,
       traceUiBaseUrl: environment.COLONY_TRACE_UI_BASE_URL ?? "",
       consoleBaseUrl: environment.COLONY_CONSOLE_BASE_URL ?? "",
     },

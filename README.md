@@ -638,6 +638,22 @@ colony task col-d4bed30a.7 approve-merge --sha <sha>   # scopes opened with --ma
 Install: `(cd apps/cli && bun link)`, then `COLONY_URL=http://localhost:4400`.
 Full reference in [apps/cli/README.md](apps/cli/README.md).
 
+**Agents (MCP).** `POST/GET/DELETE /mcp` is a stateless streamable-HTTP MCP
+endpoint for tool-only agents (Claude Desktop, Cursor, OpenWebUI, Hermes).
+Its tools — `colony_status`, `list_projects`, `list_scopes`, `get_scope`,
+`get_task`, `get_run`, `run_events`, `open_scope`, `approve_plan`, `replan`,
+`scope_action`, `task_action`, `colony_guide` — are a thin adapter over the
+routes below: same state guards, same audited actor. Authenticate with the
+same bearer token as the API (`X-Actor-Id` without OIDC). With `COLONY_OIDC_*`
+set, RFC 9728 metadata at `/.well-known/oauth-protected-resource/mcp`
+advertises the authorization server to OAuth-discovering clients, and 401s on
+`/mcp` carry the `WWW-Authenticate` challenge pointing at it.
+
+`colony_guide` and the `skill://colony/...` resources serve the tracked
+[colony skill](skills/colony): mental model, golden workflows, safety rules,
+and references for lifecycle, playbooks, failure investigation, and Aether
+deploys. Shell agents should load `skills/colony/` directly.
+
 **HTTP API.** Routes in `apps/colonyd/src/http.ts`: `/projects` (brief,
 files, running), `/scopes` (plan approval, replan, pause, resume, unblock,
 acceptance, revalidate), `/tasks` (stop, cancel, restore, unblock, amend,

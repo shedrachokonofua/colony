@@ -27,6 +27,13 @@ import {
   buildOperatorSummary,
   OPERATOR_SUMMARY_WINDOWS,
 } from "./operator-summary.js";
+import {
+  handleMcp,
+  handleProtectedResourceMetadata,
+  mcpMetadataUrl,
+  mcpResourceUrl,
+  publicOrigin,
+} from "./mcp.js";
 import { createOidcVerifier } from "./oidc.js";
 import { retryOrFailTaskWithBudget } from "./fault-budget.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
@@ -63,7 +70,7 @@ const GZIPPABLE_UI_EXTS: Record<string, true> = {
   ".svg": true,
 };
 
-type Env = { Variables: { actor: string } };
+export type Env = { Variables: { actor: string } };
 
 const createScopeBody = z
   .object({
@@ -383,6 +390,12 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     return uiResponse(rel, acceptsGzip(c)) ?? c.notFound();
   });
 
+  // RFC 9728 protected-resource metadata for MCP clients. Public on purpose:
+  // unauthenticated clients need it to discover the authorization server.
+  app.get("/.well-known/oauth-protected-resource/mcp", (c) =>
+    handleProtectedResourceMetadata(ctx, c),
+  );
+
   // Actor middleware for every remaining route. With OIDC configured the
   // actor is the verified Keycloak identity; otherwise (local dev, fake
   // provider) the caller self-declares via X-Actor-Id.
@@ -393,41 +406,51 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
           issuer: ctx.env.oidcIssuer,
           clientId: ctx.env.oidcClientId,
           requiredRole: ctx.env.oidcRequiredRole || undefined,
+          // Tokens minted for the MCP resource URL (RFC 8707 audience) are
+          // accepted alongside tokens issued to the console client.
+          ...(ctx.env.publicHost
+            ? {
+                acceptedAudiences: [
+                  mcpResourceUrl(publicOrigin(ctx.env.publicHost)),
+                ],
+              }
+            : {}),
         })
       : undefined);
   app.use(async (c, next) => {
     if (verifier) {
       const auth = c.req.header("Authorization") ?? "";
+      let failure: string | undefined;
       if (!auth.startsWith("Bearer ")) {
-        return c.json(
-          {
-            error: {
-              code: "UNAUTHORIZED",
-              message: "Bearer token required",
-            },
-          },
-          401,
-        );
+        failure = "Bearer token required";
+      } else {
+        try {
+          const identity = await verifier.verify(auth.slice(7));
+          // Keycloak service accounts get preferred_username
+          // "service-account-<client_id>"; ledger them as svc:, not human:.
+          c.set(
+            "actor",
+            identity.username.startsWith("service-account-")
+              ? `svc:${identity.username.slice("service-account-".length)}`
+              : `human:${identity.username}`,
+          );
+        } catch (err) {
+          failure = err instanceof Error ? err.message : "invalid token";
+        }
       }
-      try {
-        const identity = await verifier.verify(auth.slice(7));
-        // Keycloak service accounts get preferred_username
-        // "service-account-<client_id>"; ledger them as svc:, not human:.
-        c.set(
-          "actor",
-          identity.username.startsWith("service-account-")
-            ? `svc:${identity.username.slice("service-account-".length)}`
-            : `human:${identity.username}`,
-        );
-      } catch (err) {
+      if (failure !== undefined) {
         return c.json(
-          {
-            error: {
-              code: "UNAUTHORIZED",
-              message: err instanceof Error ? err.message : "invalid token",
-            },
-          },
+          { error: { code: "UNAUTHORIZED", message: failure } },
           401,
+          // An /mcp 401 carries the RFC 9728 challenge so MCP clients can
+          // discover the authorization server (and scope) to get a token.
+          c.req.path === "/mcp"
+            ? {
+                "WWW-Authenticate": `Bearer resource_metadata="${mcpMetadataUrl(
+                  publicOrigin(ctx.env.publicHost, c.req.url),
+                )}", scope="mcp"`,
+              }
+            : {},
         );
       }
       await next();
@@ -448,6 +471,11 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
     c.set("actor", id.trim());
     await next();
   });
+
+  // MCP: streamable HTTP, stateless. Mounted after the actor middleware like
+  // every other API surface, and its tools call the routes below in-process
+  // with the caller's credentials — no parallel business logic.
+  app.on(["POST", "GET", "DELETE"], "/mcp", (c) => handleMcp(ctx, app, c));
 
   app.post("/scopes", async (c) => {
     const parsed = createScopeBody.safeParse(await parseBody(c));
