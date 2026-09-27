@@ -140,7 +140,14 @@ export const ImplementerCompletionV2 = z
       .default([]),
     blocked_reason: z.string().optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (v) => v.status !== "blocked" || (v.blocked_reason ?? "").trim() !== "",
+    {
+      message:
+        "blocked requires blocked_reason: what outside this repository stops the task. Unfinished work is not blocked - push it and keep working",
+    },
+  );
 
 export type ImplementerCompletionV2 = z.infer<typeof ImplementerCompletionV2>;
 

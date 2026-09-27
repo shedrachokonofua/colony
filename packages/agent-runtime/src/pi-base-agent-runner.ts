@@ -352,13 +352,16 @@ export class PiBaseAgentRunner implements PiRunner {
      */
     let forcedSubmitTriggered = false;
     /**
-     * Bounded blocked_reason of a deadline-forced blocked implementer
-     * envelope: such an envelope is not a success (colonyd parks a blocked
-     * task on the operator while a timeout requeues and continues from the
-     * pushed branch), so the run takes the timeout's classification and
-     * carries the reason into its fault detail.
+     * Bounded blocked_reason of an implementer envelope reported "blocked"
+     * once the deadline window opened: near the wall, "blocked" means
+     * "unfinished". It is not a success (colonyd parks a blocked task on the
+     * operator, while a timeout requeues and continues from the pushed
+     * branch), so the run takes the timeout's classification and carries the
+     * reason into its fault detail.
      */
     let forcedBlockedReason: string | undefined;
+    /** When the deadline reminders start; set once the wall timer arms. */
+    let deadlineWindowOpensAt = Number.POSITIVE_INFINITY;
     let clearForcedSubmitTimer: (() => void) | undefined;
     let capturedEnvelope: unknown;
     let resolveCapturedEnvelope: (() => void) | undefined;
@@ -408,19 +411,19 @@ export class PiBaseAgentRunner implements PiRunner {
     const sizeGate = this.options.architectSizeGate?.();
     const submitTool = this.profile.submitTool(
       (value) => {
-        // A deadline-forced blocked envelope must not land as a success:
-        // colonyd treats a blocked implementer task as a hard operator
-        // block, while a timeout requeues and continues from the pushed
-        // branch. The forced salvage may only land real work - a forced
-        // "blocked" report ends the run with the wall timeout's own
-        // classification instead. A voluntary blocked submission before
-        // the forced phase keeps its meaning.
+        // A blocked envelope inside the deadline window must not land as a
+        // success: colonyd treats a blocked implementer task as a hard
+        // operator block, while a timeout requeues and continues from the
+        // pushed branch. col-d6ca6aa2.3 (2026-09-26) reported "blocked", no
+        // reason, "Needs follow-up turn" 4 minutes into the window and sat
+        // blocked for 10.5 hours. A blocked report before the window keeps
+        // its meaning.
         const status =
           value !== null && typeof value === "object" && "status" in value
             ? value.status
             : undefined;
         if (
-          forcedSubmitTriggered &&
+          (forcedSubmitTriggered || Date.now() >= deadlineWindowOpensAt) &&
           this.profile.role === "developer" &&
           status === "blocked"
         ) {
@@ -443,7 +446,7 @@ export class PiBaseAgentRunner implements PiRunner {
           state.failureFault ??= {
             layer: "model",
             code: "wall_timeout",
-            detail: `forced submission was blocked at the deadline (blocked: ${forcedBlockedReason})`,
+            detail: `blocked submission at the deadline (blocked: ${forcedBlockedReason})`,
           };
           resolveCapturedEnvelope?.();
           return;
@@ -603,7 +606,9 @@ export class PiBaseAgentRunner implements PiRunner {
       // the free-running session is stopped and the submission is forced
       // through the finalizer. The margin rides the wall timer's own clock
       // so the forced phase always completes inside it.
-      const { forcedSubmitMarginMs } = submissionWindows(wallTimeoutMs);
+      const { forcedSubmitMarginMs, reserveMs } =
+        submissionWindows(wallTimeoutMs);
+      deadlineWindowOpensAt = Date.now() + wallTimeoutMs - reserveMs;
       clearTimeoutGuard = withRunTimeout(
         runId,
         this.options.runTimeoutMs,

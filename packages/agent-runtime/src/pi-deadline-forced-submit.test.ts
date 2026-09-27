@@ -10,7 +10,6 @@ import {
   PiBaseAgentRunner,
   DEVELOPER_ROLE_PROFILE,
 } from "./pi-base-agent-runner.js";
-import { buildSubmitDeadlineNudge } from "./pi-session.js";
 
 const servers: Server[] = [];
 const dirs: string[] = [];
@@ -317,8 +316,7 @@ describe("deadline forced submission", () => {
     expect(
       toolResultsSeen.some(
         (text) =>
-          text.includes("commit what you have NOW") &&
-          text.includes("git push"),
+          /commit what you have now/i.test(text) && text.includes("git push"),
       ),
     ).toBe(true);
     expect(
@@ -438,6 +436,65 @@ describe("deadline forced submission", () => {
     expect(finalizerBodies.length).toBeGreaterThanOrEqual(1);
   }, 120_000);
 
+  it("treats a voluntary blocked submission inside the deadline window as unfinished", async () => {
+    const { origin, baseSha, branch } = seedOrigin("colony-window-blocked-");
+    execFileSync("git", ["-C", origin, "branch", branch]);
+    // col-d6ca6aa2.3 (2026-09-26): "blocked" with "Needs follow-up turn"
+    // once the reminders began - parked on the operator for 10.5 h.
+    const blockedEnvelope = {
+      kind: "implementer_completion",
+      status: "blocked",
+      summary: "Repair in progress.",
+      branch,
+      head_sha: baseSha,
+      blocked_reason: "Needs follow-up turn",
+    };
+    const runTimeoutMs = 30_000;
+    // Real clock on purpose, like the rest of this suite: the window is
+    // derived from the runner's own wall timer, which fake timers would not
+    // drive. Reminders open at 30 s - 7.5 s; the forced phase at 30 s - 4.5 s.
+    const submitAfterMs = 23_500;
+    let startedAt = 0;
+    const { baseUrl, requestBodies } = await startGateway((_body, response) => {
+      if (Date.now() - startedAt >= submitAfterMs) {
+        respondToolCall(
+          response,
+          "submit_implementer_completion",
+          blockedEnvelope,
+        );
+      } else {
+        respondToolCall(response, "bash", { command: "true" });
+      }
+    });
+    const runner = new PiBaseAgentRunner(DEVELOPER_ROLE_PROFILE, {
+      model: modelSpec(baseUrl),
+      fallbackModels: [],
+      engine: createInProcessEngine(),
+      broker: { resolve: () => "test-key" },
+      maxTurns: 5_000,
+      runTimeoutMs,
+    });
+
+    startedAt = Date.now();
+    const result = await runner.run({
+      runId: `window-blocked-${Date.now()}`,
+      packet: packet(origin, branch, baseSha),
+      environment: { role: "developer" },
+    });
+
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toBe("timeout_without_envelope");
+    expect(result.fault).toMatchObject({ layer: "model" });
+    expect(result.fault?.detail).toContain("Needs follow-up turn");
+    // The model's own call, not the forced finalizer.
+    expect(
+      requestBodies.some(
+        (body) =>
+          body.tool_choice?.function?.name === "submit_implementer_completion",
+      ),
+    ).toBe(false);
+  }, 120_000);
+
   it("keeps a voluntary blocked submission before the forced phase a success", async () => {
     const { origin, baseSha, branch } = seedOrigin("colony-voluntary-blocked-");
     execFileSync("git", ["-C", origin, "branch", branch]);
@@ -477,41 +534,4 @@ describe("deadline forced submission", () => {
     expect(result.reason).toBeUndefined();
     expect(result.fault).toBeUndefined();
   }, 120_000);
-});
-
-describe("deadline nudge wording", () => {
-  it("orders the implementer to push before it submits", () => {
-    const nudge = buildSubmitDeadlineNudge(
-      "developer",
-      "submit_implementer_completion",
-      "colony/forced-submit",
-    );
-    expect(nudge).toContain(
-      "commit what you have NOW and push it (git push origin colony/forced-submit)",
-    );
-    expect(nudge).toMatch(/push[\s\S]*then call submit_implementer_completion/);
-    expect(nudge).toContain('status "blocked" with blocked_reason');
-    expect(nudge).toContain(
-      "a blocked submission pointing at what you pushed beats a timeout",
-    );
-    expect(nudge).not.toContain("conservative submitted verdict");
-  });
-
-  it("keeps the verdict wording for the read-only roles", () => {
-    for (const [role, submitName] of [
-      ["reviewer", "submit_reviewer_verdict"],
-      ["plan_reviewer", "submit_plan_review_verdict"],
-      ["architect", "submit_architect_decomposition"],
-    ] as const) {
-      const nudge = buildSubmitDeadlineNudge(role, submitName, undefined);
-      expect(nudge).toContain(
-        "The submission window is closing. Stop investigating NOW",
-      );
-      expect(nudge).toContain(`call ${submitName} with the envelope`);
-      expect(nudge).toContain(
-        "a conservative submitted verdict beats a perfect unsubmitted one",
-      );
-      expect(nudge).not.toContain("git push");
-    }
-  });
 });

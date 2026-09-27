@@ -152,7 +152,7 @@ export function buildSubmitDeadlineNudge(
   return [
     "<system-reminder>",
     role === "developer"
-      ? `The run is almost out of time. Stop coding and investigating: commit what you have NOW and push it (git push origin ${branch ?? "<work branch>"}), then call ${submitName} with the pushed head - status "complete" with the commands you ran if the spec is satisfied, otherwise status "blocked" with blocked_reason. Work that is not pushed is lost when the run ends; a blocked submission pointing at what you pushed beats a timeout.`
+      ? `The run is almost out of time. Commit what you have NOW and push it (git push origin ${branch ?? "<work branch>"}): work that is not pushed is lost when the run ends, and the next run continues from the pushed branch. If the spec is satisfied and verified, call ${submitName} with the pushed head, status "complete", and the commands you ran. If it is not finished, keep working on the highest-value remaining piece and push again; do not report unfinished work as "blocked" - "blocked" is only for something no change in this repository can fix.`
       : `The submission window is closing. Stop investigating NOW and call ${submitName} with the envelope built from what you already know. An unsubmitted run counts for nothing; a conservative submitted verdict beats a perfect unsubmitted one.`,
     "</system-reminder>",
   ].join("\n");
