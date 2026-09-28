@@ -1,3 +1,4 @@
+import { attachSkillsForRun } from "./skills.js";
 import {
   type ArchitectDecompositionV2,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
@@ -261,6 +262,7 @@ async function executeArchitect(
       },
     };
 
+    await attachSkillsForRun(ctx, runId, planningScope.project_name, full);
     // Binding the dispatch to the span context is what makes the SDK's
     // invoke_agent/chat/execute_tool spans children of this run's trace.
     const metadata = await inRunSpanContext(runSpan, () =>

@@ -1,5 +1,6 @@
+import { gitSkillSourceAccess } from "./runs/skills.js";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { serve } from "@hono/node-server";
 import { env, loadColonyConfig } from "@colony/config";
 import {
@@ -451,6 +452,15 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
         if (run.sandbox_id) adoptedIds.add(run.sandbox_id);
       }
     },
+    // Project skills: pin through the provider, check out into a SHA-keyed
+    // cache beside the database (immutable per SHA).
+    skillAccess: gitSkillSourceAccess({
+      cacheDir: join(dirname(environment.COLONYD_DB_PATH), "skills-cache"),
+      gitlabBaseUrl: environment.GITLAB_BASE_URL,
+      token: environment.GITLAB_TOKEN ?? "",
+      pin: async (repoPath, ref) =>
+        (await provider.commits.get({ id: repoPath, path: repoPath }, ref)).sha,
+    }),
     env: {
       gitlabBaseUrl: environment.GITLAB_BASE_URL,
       gitlabToken: environment.GITLAB_TOKEN,

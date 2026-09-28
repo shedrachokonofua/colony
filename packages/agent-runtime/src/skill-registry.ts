@@ -114,13 +114,23 @@ function parseSkillMetadata(
 function matchFrontmatter(content: string, key: string): string | undefined {
   const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
   if (!frontmatter?.[1]) return undefined;
-  const line = frontmatter[1]
-    .split("\n")
-    .find((candidate) => candidate.startsWith(`${key}:`));
-  return line
-    ?.slice(key.length + 1)
-    .trim()
-    .replace(/^["']|["']$/g, "");
+  const lines = frontmatter[1].split("\n");
+  const index = lines.findIndex((candidate) => candidate.startsWith(`${key}:`));
+  if (index < 0) return undefined;
+  const inline = lines[index]!.slice(key.length + 1).trim();
+  // Block scalars (`key: >-`, `key: |`): the value is the indented lines below.
+  if (/^[>|][+-]?$/.test(inline)) {
+    const block: string[] = [];
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() && !/^\s/.test(next)) break;
+      block.push(next.trim());
+    }
+    const joined = inline.startsWith(">")
+      ? block.join(" ").replace(/\s+/g, " ")
+      : block.join("\n");
+    return joined.trim() || undefined;
+  }
+  return inline.replace(/^["']|["']$/g, "");
 }
 
 function matchHeadingName(content: string): string | undefined {

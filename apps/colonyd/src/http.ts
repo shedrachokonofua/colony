@@ -1,3 +1,5 @@
+import type { ProjectSkillSource } from "@colony/core";
+import { validateSkillSources } from "./runs/skills.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { gzipSync } from "node:zlib";
@@ -652,6 +654,38 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       },
     });
     return c.json({ project });
+  });
+
+  // Project skills (docs/designs/001-project-skills.md): git sources whose
+  // SKILL.md directories every run of the project receives. Replace-all
+  // writes; `[]` clears. Resolution happens per run, so a bad source fails
+  // runs, not this write.
+  app.get("/projects/:name/skills", (c) => {
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+    return c.json({
+      skill_sources: ctx.store.getProjectSkillSources(project.name),
+    });
+  });
+
+  app.put("/projects/:name/skills", async (c) => {
+    const name = c.req.param("name");
+    const body: unknown = await parseBody(c);
+    const sources =
+      body && typeof body === "object" && "skill_sources" in body
+        ? body.skill_sources
+        : undefined;
+    const problem = validateSkillSources(sources);
+    if (problem) return badBody(c, problem);
+    ctx.store.ensureProject(name);
+    const saved = ctx.store.setProjectSkillSources(
+      name,
+      sources as ProjectSkillSource[],
+    );
+    ctx.store.audit(c.get("actor"), "project.skills_updated", {
+      detail: { name, skill_sources: saved },
+    });
+    return c.json({ skill_sources: saved });
   });
 
   // -------------------------------------------------------------------

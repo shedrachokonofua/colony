@@ -1,3 +1,4 @@
+import { attachSkillsForRun } from "./skills.js";
 import {
   type ArchitectDecompositionV2,
   PlanReviewVerdictV1,
@@ -161,6 +162,7 @@ async function executePlanReview(
         credentials: minted ? { token: minted.token } : undefined,
       },
     };
+    await attachSkillsForRun(ctx, runId, scope.project_name, full);
     const startRunOptions = {
       role: "plan_reviewer" as const,
       runId,

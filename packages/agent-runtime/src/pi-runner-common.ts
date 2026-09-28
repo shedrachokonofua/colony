@@ -256,6 +256,7 @@ export function provisionScratchDir(
   }
   seedPlaybooks(dir);
   materializeProjectFiles(dir, packet);
+  materializeProjectSkills(dir, packet);
   return dir;
 }
 
@@ -300,6 +301,45 @@ function seedPlaybooks(dir: string): void {
     }
   } catch {
     // best-effort; never fail provisioning over playbooks
+  }
+}
+
+/**
+ * Materialize project skills (docs/designs/001-project-skills.md) into
+ * `.colony/skills/project/<name>/` from the packet manifest, read-only.
+ * The daemon already validated names and limits and fails the run on any
+ * resolution error, so this only guards paths. Stale skills from a reused
+ * run dir are removed first. `.colony/` is git-excluded by seedPlaybooks.
+ */
+export function materializeProjectSkills(
+  dir: string,
+  packet: AgentRuntimePacket,
+): void {
+  const skillsDir = join(dir, ".colony", "skills", "project");
+  rmSync(skillsDir, { recursive: true, force: true });
+  const rawProject = (packet as Record<string, unknown>)["project"];
+  if (!rawProject || typeof rawProject !== "object") return;
+  const skills = (rawProject as Record<string, unknown>)["skills"];
+  if (!Array.isArray(skills) || skills.length === 0) return;
+  const root = resolve(skillsDir);
+  for (const skill of skills) {
+    if (!skill || typeof skill !== "object") continue;
+    const record = skill as Record<string, unknown>;
+    const name = String(record["name"] ?? "");
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) continue;
+    const files = record["files"];
+    if (!Array.isArray(files)) continue;
+    for (const file of files) {
+      if (!file || typeof file !== "object") continue;
+      const entry = file as Record<string, unknown>;
+      const rel = String(entry["path"] ?? "");
+      const content = entry["content"];
+      if (typeof content !== "string") continue;
+      const target = resolve(skillsDir, name, rel);
+      if (!rel || !target.startsWith(`${root}/${name}/`)) continue;
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, content, { encoding: "utf8", mode: 0o444 });
+    }
   }
 }
 
@@ -461,6 +501,7 @@ export function provisionRepoWorkspace(
       });
       seedPlaybooks(dir);
       materializeProjectFiles(dir, packet);
+      materializeProjectSkills(dir, packet);
       return dir;
     } catch (err) {
       lastFailure = { stage: "packet_seed", error: err };

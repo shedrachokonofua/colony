@@ -1,3 +1,4 @@
+import type { SkillSourceAccess } from "./runs/skills.js";
 import type { ColonyConfig } from "@colony/config";
 import type { ArtifactStore, Store } from "@colony/core";
 import type { SandboxEngine } from "@colony/sandbox";
@@ -17,6 +18,8 @@ export interface ColonydContext {
   readonly logger: Logger;
   /** Durable artifact storage built from config.artifacts. */
   readonly artifacts: ArtifactStore;
+  /** Project skills source access (pin + checkout); absent in tests without skills. */
+  readonly skillAccess?: SkillSourceAccess;
   readonly gateExecutor?: GateExecutor;
   /** Test seam: overrides the credential-free validation command runner. */
   readonly validateExecutor?: ValidateExecutor;

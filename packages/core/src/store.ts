@@ -31,6 +31,13 @@ import {
 } from "./task-cost.js";
 import type { Fault } from "./fault.js";
 
+/** One git source of project skills: SKILL.md directories matching `paths`. */
+export interface ProjectSkillSource {
+  readonly repo_path: string;
+  readonly ref: string;
+  readonly paths: readonly string[];
+}
+
 export interface Project {
   readonly name: string;
   readonly context_doc: string | null;
@@ -735,6 +742,32 @@ export class Store {
     const project = this.getProject(name);
     if (!project) throw new Error(`unknown project: ${name}`);
     return project;
+  }
+
+  /**
+   * Project skill sources (docs/designs/001-project-skills.md): git repos whose
+   * SKILL.md directories every run of the project receives. Stored as JSON;
+   * callers validate shape. Audited writes go through the colonyd API.
+   */
+  getProjectSkillSources(name: string): ProjectSkillSource[] {
+    const row = this.db
+      .prepare(`SELECT skill_sources FROM projects WHERE name = ?`)
+      .get(name) as { skill_sources: string | null } | undefined;
+    if (!row?.skill_sources) return [];
+    return JSON.parse(row.skill_sources) as ProjectSkillSource[];
+  }
+
+  setProjectSkillSources(
+    name: string,
+    sources: readonly ProjectSkillSource[],
+  ): ProjectSkillSource[] {
+    const result = this.db
+      .prepare(
+        `UPDATE projects SET skill_sources = ?, updated_at = ? WHERE name = ?`,
+      )
+      .run(sources.length ? JSON.stringify(sources) : null, nowIso(), name);
+    if (result.changes === 0) throw new Error(`unknown project: ${name}`);
+    return this.getProjectSkillSources(name);
   }
 
   /**

@@ -496,6 +496,11 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "fault-backfill-remap",
     apply: migrateFaultBackfillRemap,
   },
+  {
+    version: 19,
+    name: "project-skill-sources",
+    apply: (db) => addColumn(db, "projects", "skill_sources", "TEXT"),
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

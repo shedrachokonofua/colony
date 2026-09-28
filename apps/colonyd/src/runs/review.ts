@@ -1,3 +1,4 @@
+import { attachSkillsForRun } from "./skills.js";
 import {
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
   codeReviewRoundProblems,
@@ -191,6 +192,8 @@ async function executeReview(
         credentials: minted ? { token: minted.token } : undefined,
       },
     };
+
+    await attachSkillsForRun(ctx, runId, scope.project_name, full);
 
     const metadata = await inRunSpanContext(runSpan, () =>
       reviewer.startRun(full, {

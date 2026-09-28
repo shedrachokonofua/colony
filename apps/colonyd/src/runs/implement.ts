@@ -1,3 +1,4 @@
+import { attachSkillsForRun } from "./skills.js";
 import {
   type ImplementerCompletionV2,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
@@ -245,6 +246,7 @@ async function executeImplement(
         credentials: minted ? { token: minted.token } : undefined,
       },
     };
+    await attachSkillsForRun(ctx, runId, scope.project_name, full);
     const metadata = await inRunSpanContext(runSpan, () =>
       ctx.agents.developer.startRun(full, {
         role: "developer",

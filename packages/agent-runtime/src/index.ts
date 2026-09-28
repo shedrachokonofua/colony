@@ -28,6 +28,7 @@ export {
   reviewerVerdictEnvelopeTypeBox,
   provisionRepoWorkspace,
   provisionScratchDir,
+  materializeProjectSkills,
 } from "./pi-runner-common.js";
 export type { PiModelSpec, PiRunnerLogger } from "./pi-runner-common.js";
 export { declaredThinking } from "./pi-roles.js";
