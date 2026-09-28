@@ -11,6 +11,7 @@
 import { execFile } from "node:child_process";
 import {
   mkdir,
+  mkdtemp,
   readdir,
   readFile,
   rename,
@@ -18,7 +19,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { discoverSkillRegistry } from "@colony/agent-runtime";
 import type { ProjectSkillSource, Store } from "@colony/core";
@@ -316,6 +317,11 @@ export function attachProjectSkills<
  * Git-backed access: pins through the provider, checks out into a SHA-keyed
  * cache (immutable per SHA, so a hit needs no network). The token is used
  * only in the child process URL and never stored or logged.
+ *
+ * Runs that pin the same new SHA at once share one checkout: a second
+ * writer used to delete the directory the first run was already reading
+ * skill files from. A checkout is published by renaming a unique temp dir
+ * that already holds `.done`, so the SHA dir is either absent or complete.
  */
 export function gitSkillSourceAccess(opts: {
   readonly cacheDir: string;
@@ -323,45 +329,64 @@ export function gitSkillSourceAccess(opts: {
   readonly token: string;
   readonly pin: (repoPath: string, ref: string) => Promise<string>;
 }): SkillSourceAccess {
+  const inFlight = new Map<string, Promise<string>>();
+
+  async function populate(repoPath: string, sha: string, dir: string) {
+    if (await isComplete(dir)) return dir;
+    await mkdir(dirname(dir), { recursive: true });
+    const tmp = await mkdtemp(`${dir}.tmp-`);
+    const url = new URL(
+      `${opts.gitlabBaseUrl.replace(/\/+$/, "")}/${repoPath}.git`,
+    );
+    if (opts.token) {
+      url.username = "oauth2";
+      url.password = opts.token;
+    }
+    const git = (...args: string[]) =>
+      execFileAsync("git", args, { cwd: tmp, timeout: 120_000 });
+    try {
+      await git("init", "-q");
+      await git("fetch", "-q", "--depth", "1", url.toString(), sha);
+      await git("checkout", "-q", "FETCH_HEAD");
+      await rm(join(tmp, ".git"), { recursive: true, force: true });
+      await writeFile(join(tmp, ".done"), sha);
+    } catch (err) {
+      await rm(tmp, { recursive: true, force: true });
+      const redacted = message(err)
+        .split(opts.token || "\u0000")
+        .join("***");
+      throw new Error(
+        `cannot fetch ${repoPath}@${sha.slice(0, 12)}: ${redacted}`,
+      );
+    }
+    if (await isComplete(dir)) {
+      // Completed meanwhile (another colonyd): keep it, it may be in use.
+      await rm(tmp, { recursive: true, force: true });
+      return dir;
+    }
+    // Only an incomplete leftover (crash mid-publish) is ever removed.
+    await rm(dir, { recursive: true, force: true });
+    await rename(tmp, dir);
+    return dir;
+  }
+
   return {
     pin: opts.pin,
-    async checkout(repoPath, sha) {
+    checkout(repoPath, sha) {
       const dir = join(opts.cacheDir, repoPath.replace(/\//g, "__"), sha);
-      const done = await stat(join(dir, ".done")).catch(() => null);
-      if (done) return dir;
-      const tmp = `${dir}.tmp-${process.pid}-${Date.now()}`;
-      await rm(tmp, { recursive: true, force: true });
-      await mkdir(tmp, { recursive: true });
-      const url = new URL(
-        `${opts.gitlabBaseUrl.replace(/\/+$/, "")}/${repoPath}.git`,
+      const pending = inFlight.get(dir);
+      if (pending) return pending;
+      const work = populate(repoPath, sha, dir).finally(() =>
+        inFlight.delete(dir),
       );
-      if (opts.token) {
-        url.username = "oauth2";
-        url.password = opts.token;
-      }
-      const git = (...args: string[]) =>
-        execFileAsync("git", args, { cwd: tmp, timeout: 120_000 });
-      try {
-        await git("init", "-q");
-        await git("fetch", "-q", "--depth", "1", url.toString(), sha);
-        await git("checkout", "-q", "FETCH_HEAD");
-      } catch (err) {
-        await rm(tmp, { recursive: true, force: true });
-        const redacted = message(err)
-          .split(opts.token || "\u0000")
-          .join("***");
-        throw new Error(
-          `cannot fetch ${repoPath}@${sha.slice(0, 12)}: ${redacted}`,
-        );
-      }
-      await rm(join(tmp, ".git"), { recursive: true, force: true });
-      await rm(dir, { recursive: true, force: true });
-      await rename(tmp, dir);
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, ".done"), sha);
-      return dir;
+      inFlight.set(dir, work);
+      return work;
     },
   };
+}
+
+async function isComplete(dir: string): Promise<boolean> {
+  return (await stat(join(dir, ".done")).catch(() => null)) !== null;
 }
 
 async function listFiles(dir: string, prefix = ""): Promise<string[]> {
