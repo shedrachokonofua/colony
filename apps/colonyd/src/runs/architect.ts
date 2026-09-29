@@ -116,6 +116,9 @@ export function findArchitectRevisionContext(
     plan_hash: review.planHash,
     planning_epoch: epoch,
     feedback,
+    finding_tasks: review.verdict.findings.map(
+      (finding) => finding.task ?? null,
+    ),
     review_history: revisionHistory(ctx, rejections),
     goal_changes: changedGoalInputs(
       review.goalInputs,

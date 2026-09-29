@@ -3,7 +3,6 @@ import type { ArchitectDecompositionV2 } from "@colony/schemas";
 import {
   changedGoalInputs,
   decidePlanLoop,
-  diffPlans,
   goalInputs,
   MAX_PLAN_REVIEW_ROUNDS,
   parsePlanReviewBlockReason,
@@ -140,29 +139,6 @@ describe("plan loop decision", () => {
   });
 });
 
-describe("plan changes", () => {
-  it("matches tasks by title and reads dependencies by title, not index", () => {
-    const before = plan([
-      { title: "A" },
-      { title: "B", depends_on: [0] },
-      { title: "Old" },
-    ]);
-    const after = plan([
-      { title: "New" },
-      { title: "A" },
-      { title: "B", depends_on: [1], spec: "Do B properly." },
-    ]);
-    const changes = diffPlans(before, after);
-    expect(changes.tasks).toEqual([
-      { index: 0, title: "New", change: "new", fields: [] },
-      { index: 1, title: "A", change: "unchanged", fields: [] },
-      { index: 2, title: "B", change: "changed", fields: ["spec"] },
-    ]);
-    expect(changes.removed).toEqual(["Old"]);
-    expect(changes.plan).toEqual([]);
-  });
-});
-
 describe("approval notes", () => {
   it("attaches non-blocking findings to the tasks they name, plan-wide ones to every task", () => {
     const approved = withReviewNotes(
@@ -179,12 +155,15 @@ describe("approval notes", () => {
       },
       3,
     );
-    expect(approved.tasks[0]!.spec).toBe(
-      "Do A.\n\n## Plan review notes (round 3, non-blocking)\n- [minor] Name states consistently.",
-    );
-    expect(approved.tasks[1]!.spec).toBe(
-      "Do B.\n\n## Plan review notes (round 3, non-blocking)\n- [major] Assert B's exit code.\n- [minor] Name states consistently.",
-    );
+    const heading = "## Plan review findings to satisfy (round 3)";
+    const [a, b] = approved.tasks.map((task) => task.spec);
+    expect(a).toStartWith("Do A.\n\n");
+    expect(a).toContain(heading);
+    expect(a).toContain("- [minor] Name states consistently.");
+    expect(a).not.toContain("Assert B's exit code.");
+    expect(b).toContain(heading);
+    expect(b).toContain("- [major] Assert B's exit code.");
+    expect(b).toContain("- [minor] Name states consistently.");
   });
 });
 

@@ -62,6 +62,7 @@ import {
 } from "./pi-runner-common.js";
 import {
   architectDecompositionEnvelopeTypeBox,
+  architectRevisionGuard,
   buildArchitectStages,
   createArchitectSubmitTool,
   createPlanReviewSubmitTool,
@@ -2306,7 +2307,11 @@ export const ARCHITECT_ROLE_PROFILE: PiRoleProfile = {
           capture as Parameters<typeof createArchitectExtensionSubmitTool>[0],
           extensionTasksFromPacket(packet),
         )
-      : createArchitectSubmitTool(capture, sizeGate),
+      : createArchitectSubmitTool(
+          capture,
+          sizeGate,
+          architectRevisionGuard(packet),
+        ),
   validate: zodValidator(architectDecompositionV2Schema),
   defaultTools: DEFAULT_ARCHITECT_TOOLS,
   defaultThinkingLevel: "medium",

@@ -702,6 +702,7 @@ describe("colonyd fake end-to-end loop", () => {
     );
     expect(revision.revision_context).toMatchObject({
       review_run_id: rejection.id,
+      finding_tasks: [1],
     });
     expect(store.listTasks(scopeId)).toHaveLength(0);
     // plan review 2 sees review 1, approves -> materialize (review dispatch
@@ -793,7 +794,7 @@ describe("colonyd fake end-to-end loop", () => {
     expect(store.getScope(scopeId)!.status).toBe("active");
     const [taskA, taskB] = store.listTasks(scopeId);
     expect(taskB!.spec).toContain(
-      "## Plan review notes (round 1, non-blocking)",
+      "## Plan review findings to satisfy (round 1)",
     );
     expect(taskB!.spec).toContain(
       "- [major] Assert B's exit code, not its output.",

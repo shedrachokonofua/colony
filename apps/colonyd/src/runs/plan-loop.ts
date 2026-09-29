@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   type ArchitectDecompositionV2,
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
+  diffPlans,
+  type PlanChanges,
   StoredPlanReviewVerdictV1,
 } from "@colony/schemas";
 import type { AuditRow, Project, ProjectFile, Run, Scope } from "@colony/core";
@@ -472,78 +474,6 @@ export function advanceRejectedPlan(
 // architect.
 // ---------------------------------------------------------------------------
 
-/** Task-level differences between a rejected plan and its revision. */
-export interface PlanChanges {
-  readonly tasks: readonly {
-    readonly index: number;
-    readonly title: string;
-    readonly change: "unchanged" | "changed" | "new";
-    readonly fields: readonly string[];
-  }[];
-  readonly removed: readonly string[];
-  /** Plan-level fields that changed. */
-  readonly plan: readonly string[];
-}
-
-export function diffPlans(
-  before: ArchitectDecompositionV2,
-  after: ArchitectDecompositionV2,
-): PlanChanges {
-  const priorByTitle = new Map(
-    before.tasks.map((task) => [task.title, task] as const),
-  );
-  const dependencyTitles = (
-    plan: ArchitectDecompositionV2,
-    dependsOn: readonly number[],
-  ) =>
-    dependsOn
-      .map((index) => plan.tasks[index]?.title ?? `#${index}`)
-      .sort()
-      .join("\0");
-  const tasks = after.tasks.map((task, index) => {
-    const prior = priorByTitle.get(task.title);
-    if (!prior) {
-      return { index, title: task.title, change: "new" as const, fields: [] };
-    }
-    const fields: string[] = [];
-    if (prior.spec !== task.spec) fields.push("spec");
-    if (JSON.stringify(prior.files) !== JSON.stringify(task.files))
-      fields.push("files");
-    if (JSON.stringify(prior.evidence) !== JSON.stringify(task.evidence))
-      fields.push("evidence");
-    if (
-      dependencyTitles(before, prior.depends_on) !==
-      dependencyTitles(after, task.depends_on)
-    )
-      fields.push("depends_on");
-    return {
-      index,
-      title: task.title,
-      change: fields.length > 0 ? ("changed" as const) : ("unchanged" as const),
-      fields,
-    };
-  });
-  const currentTitles = new Set(after.tasks.map((task) => task.title));
-  const planFields = [
-    "summary",
-    "requirements",
-    "journey",
-    "acceptance",
-    "operator_decisions",
-  ] as const;
-  return {
-    tasks,
-    removed: before.tasks
-      .map((task) => task.title)
-      .filter((title) => !currentTitles.has(title)),
-    plan: planFields.filter(
-      (field) =>
-        JSON.stringify(before[field] ?? null) !==
-        JSON.stringify(after[field] ?? null),
-    ),
-  };
-}
-
 /** The rejection a plan revised, and the plan that rejection judged. */
 export interface PreviousPlanReview {
   readonly review: PlanReviewRecord;
@@ -623,9 +553,11 @@ export function revisionHistory(
 
 /**
  * The approved plan with the reviewer's non-blocking findings attached to
- * the task specs they name. Plan-wide findings (no or an unknown task index)
- * go to every task: implementers and code reviewers read the spec, so a note
- * anywhere else is lost.
+ * the task specs they name, as part of the task's acceptance. Plan-wide
+ * findings (no or an unknown task index) go to every task: implementers and
+ * code reviewers read the spec, so a finding anywhere else is lost. Findings
+ * attached as advice did not carry: half of the implementation mistakes in
+ * the 2026-09-29 outcome audit had been raised in plan review first.
  */
 export function withReviewNotes(
   plan: ArchitectDecompositionV2,
@@ -651,7 +583,8 @@ export function withReviewNotes(
         spec: [
           task.spec.trimEnd(),
           "",
-          `## Plan review notes (round ${round}, non-blocking)`,
+          `## Plan review findings to satisfy (round ${round})`,
+          "Plan review raised these without blocking the plan. They are part of this task: address each one and prove it with a test or check that fails without the fix, or state in the completion summary why it does not apply. The code reviewer checks each one.",
           ...own.map((finding) => `- [${finding.severity}] ${finding.note}`),
         ].join("\n"),
       };

@@ -1,16 +1,13 @@
 import type {
   ArchitectDecompositionV2,
   CodeReviewRoundV1,
+  PlanChanges,
   RepairIntentV1,
 } from "@colony/schemas";
 import type { Project, ProjectFile, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { formatPlanReviewFinding } from "@colony/agent-runtime";
-import type {
-  PlanChanges,
-  PreviousPlanReview,
-  RevisionHistoryEntry,
-} from "./plan-loop.js";
+import type { PreviousPlanReview, RevisionHistoryEntry } from "./plan-loop.js";
 import { reviewRoundSection } from "./review-loop.js";
 
 /** Operator-facing section title per repair trigger. */
@@ -57,6 +54,12 @@ export interface ArchitectRevisionContext {
   plan_hash: string;
   planning_epoch: string;
   feedback: string;
+  /**
+   * The task index each finding of the rejecting review names, in that
+   * review's numbering (null: plan-wide). The architect's submit tool holds
+   * a revision to changing only these tasks unless it declares the others.
+   */
+  finding_tasks: readonly (number | null)[];
   /** Earlier rejections in this planning line, oldest first, bounded. */
   review_history: readonly RevisionHistoryEntry[];
   /** Goal inputs the operator changed since the rejected plan was reviewed. */
@@ -270,24 +273,57 @@ export function buildArchitectPacket(
   };
 }
 
-function planChangeLines(changes: PlanChanges): string[] {
+function planChangeLines(
+  changes: PlanChanges,
+  plan: ArchitectDecompositionV2,
+): string[] {
+  const declared = new Map(
+    (plan.unflagged_changes ?? []).map(
+      (change) => [change.task, change.reason] as const,
+    ),
+  );
+  const reason = (title: string): string => {
+    const why = declared.get(title);
+    return why ? ` - architect: ${why}` : "";
+  };
   const lines = changes.tasks.map((task) =>
     task.change === "changed"
-      ? `- task ${task.index} "${task.title}": changed (${task.fields.join(", ")})`
+      ? `- task ${task.index} "${task.title}": changed (${task.fields.join(", ")})${reason(task.title)}`
       : `- task ${task.index} "${task.title}": ${task.change}`,
   );
-  for (const title of changes.removed) lines.push(`- removed: "${title}"`);
+  for (const title of changes.removed) {
+    lines.push(`- removed: "${title}"${reason(title)}`);
+  }
   lines.push(
     changes.plan.length > 0
       ? `- plan-level changes: ${changes.plan.join(", ")}`
       : "- plan-level fields unchanged",
   );
+  if (declared.size > 0) {
+    lines.push(
+      "The architect changed the tasks marked `architect:` although no finding named them; check those changes as closely as the flagged ones.",
+    );
+  }
   return lines;
+}
+
+function disputedFindingLines(plan: ArchitectDecompositionV2): string[] {
+  const disputed = plan.disputed_findings ?? [];
+  if (disputed.length === 0) return [];
+  return [
+    "",
+    "## Findings the architect disputes",
+    "The architect did not apply these findings and gives repository evidence that they do not hold. Check each against that evidence: resolved if the evidence holds; otherwise keep it open and say in the finding why the evidence fails.",
+    ...disputed.map(
+      (dispute) => `- finding ${dispute.finding}: ${dispute.evidence}`,
+    ),
+  ];
 }
 
 function previousReviewSection(
   previous: PreviousPlanReview,
   baseSha: string,
+  plan: ArchitectDecompositionV2,
 ): string {
   const { review, changes } = previous;
   const lines = [
@@ -299,6 +335,7 @@ function previousReviewSection(
     ),
     "",
     "Give each numbered finding a status in previous_findings (resolved or open), and repeat every open one in findings.",
+    ...disputedFindingLines(plan),
   ];
   const reviewBase = review.run.base_sha;
   if (reviewBase && reviewBase !== baseSha) {
@@ -309,7 +346,7 @@ function previousReviewSection(
   lines.push("", "## What changed since that review");
   if (changes) {
     lines.push(
-      ...planChangeLines(changes),
+      ...planChangeLines(changes, plan),
       "A new finding on an unchanged task must say why the previous review missed it.",
     );
   } else {
@@ -339,7 +376,7 @@ export function buildPlanReviewPacket(
       operatorPlanDirectivesSection(scope),
       `Plan review round ${round}. Judge the proposed plan against this repository and submit plan_review_verdict.`,
       "Return request_changes if the plan omits or contradicts any non-superseded operator directive.",
-      previous ? previousReviewSection(previous, baseSha) : "",
+      previous ? previousReviewSection(previous, baseSha, plan) : "",
       projectContextSection(project),
       projectFilesSection(files),
     ]

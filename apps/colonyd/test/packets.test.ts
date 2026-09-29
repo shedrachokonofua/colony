@@ -2,8 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "bun:test";
-import { Store } from "@colony/core";
-import type { CodeReviewRoundV1 } from "@colony/schemas";
+import { Store, type Run } from "@colony/core";
+import { type CodeReviewRoundV1, diffPlans } from "@colony/schemas";
 import { createLocalArtifactStore } from "@colony/core";
 import { provisionScratchDir } from "@colony/agent-runtime";
 import type { ColonydContext } from "../src/context.js";
@@ -193,6 +193,87 @@ describe("project context packets", () => {
     expect(review.body).toContain(
       "Return request_changes if the plan omits or contradicts",
     );
+  });
+
+  it("shows the plan reviewer the architect's disputes and its declared changes to unflagged tasks", async () => {
+    const { store, app } = appWithStore();
+    const created = await createScope(app, {
+      goal: "contract",
+      title: "contract",
+      repo: { path: "so/demo" },
+    });
+    const task = (title: string, spec: string, depends_on: number[] = []) => ({
+      title,
+      spec,
+      depends_on,
+      files: [`src/${title.toLowerCase()}.ts`],
+      evidence: ["true"],
+    });
+    const base = {
+      kind: "architect_decomposition" as const,
+      summary: "Contract.",
+      requirements: [{ id: "R1", text: "contract", tasks: [0, 1] }],
+      journey: [{ after_task: 1, working_state: "consumed" }],
+      acceptance: [{ description: "observable", command: "true" }],
+    };
+    const rejected = {
+      ...base,
+      tasks: [
+        task("Producer", "Export the contract from store.ts."),
+        task("Consumer", "Consume the contract.", [0]),
+      ],
+    };
+    const revised = {
+      ...base,
+      tasks: [
+        task("Producer", "Export the contract from api.ts."),
+        task("Consumer", "Consume the contract and validate it.", [0]),
+      ],
+      unflagged_changes: [
+        { task: "Producer", reason: "the validated contract lives in api.ts" },
+      ],
+      disputed_findings: [
+        {
+          finding: 2,
+          evidence: "packages/core/src/store.ts:12 already exports it",
+        },
+      ],
+    };
+    const review = buildPlanReviewPacket(
+      store.getScope(created.id)!,
+      null,
+      [],
+      "abc123",
+      revised,
+      2,
+      {
+        review: {
+          run: { id: "review-1", base_sha: "abc123" } as unknown as Run,
+          verdict: {
+            kind: "plan_review_verdict",
+            verdict: "request_changes",
+            summary: "Two consumer problems.",
+            findings: [
+              { severity: "blocker", task: 1, note: "Validate the contract." },
+              { severity: "blocker", task: 1, note: "Export is missing." },
+            ],
+            inspected: [],
+          },
+          round: 1,
+          planHash: "hash",
+          goalInputs: null,
+        },
+        changes: diffPlans(rejected, revised),
+      },
+    );
+    expect(review.body).toContain("## Findings the architect disputes");
+    expect(review.body).toContain(
+      "- finding 2: packages/core/src/store.ts:12 already exports it",
+    );
+    expect(review.body).toContain(
+      '- task 0 "Producer": changed (spec) - architect: the validated contract lives in api.ts',
+    );
+    expect(review.body).toContain('- task 1 "Consumer": changed (spec)');
   });
 
   it("gives a scope with no project a null project field and no background section", async () => {

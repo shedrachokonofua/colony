@@ -2,8 +2,11 @@ import { Type } from "@oh-my-pi/omptype/typebox";
 import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import {
   ArchitectDecompositionV2,
+  GATE_CONFIG_FORMAT,
   PlanReviewVerdictV1,
   previousFindingsProblems,
+  type RejectingFinding,
+  revisionPatchProblems,
 } from "@colony/schemas";
 import type { AgentRuntimePacket } from "./adapter.js";
 import { validateDecompositionEnvelope } from "./envelope-validation.js";
@@ -149,6 +152,38 @@ export const architectDecompositionEnvelopeTypeBox = Type.Object(
           "Decisions only the operator can make: a requirement that needs something outside this repository, or goal sources in conflict with nothing deciding which wins. Each names the conflict, the options, and the reading this plan assumed. Omit when there are none.",
       }),
     ),
+    disputed_findings: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            finding: Type.Integer({ minimum: 1 }),
+            evidence: Type.String({ minLength: 1 }),
+          },
+          { additionalProperties: false },
+        ),
+        {
+          maxItems: 20,
+          description:
+            "Revisions only: findings of the rejected review, numbered as it listed them, that you did not apply because they do not hold against the repository. evidence is the file:line or command output that refutes the finding; the next review re-checks it. Omit when there are none.",
+        },
+      ),
+    ),
+    unflagged_changes: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            task: Type.String({ minLength: 1 }),
+            reason: Type.String({ minLength: 1 }),
+          },
+          { additionalProperties: false },
+        ),
+        {
+          maxItems: 20,
+          description:
+            "Revisions only: each task of the rejected plan, by its title there, that no finding named but this revision changed, renamed, or removed, with the reason (usually a reference a fix touches). Every other unflagged task must stay exactly as it was, or the submission is rejected. Omit when there are none.",
+        },
+      ),
+    ),
   },
   { additionalProperties: false },
 );
@@ -266,9 +301,40 @@ export function createPlanDraftSubmitTool(
   };
 }
 
+/**
+ * What a revision's final submission is held to: the plan its review
+ * rejected and the task each finding of that review named.
+ */
+export interface ArchitectRevisionGuard {
+  readonly rejectedPlan: ArchitectDecompositionV2;
+  readonly findings: readonly RejectingFinding[];
+}
+
+/**
+ * The revision guard for a packet, or undefined when the run is not a
+ * revision the guard can judge: a first plan, a context from a colonyd that
+ * predates finding_tasks, or a revision after the operator changed the goal
+ * (then the plan may legitimately change anywhere).
+ */
+export function architectRevisionGuard(
+  packet: AgentRuntimePacket | undefined,
+): ArchitectRevisionGuard | undefined {
+  const revision = packet ? revisionContextOf(packet) : null;
+  if (!revision?.finding_tasks || revision.goal_changes.length > 0) {
+    return undefined;
+  }
+  return {
+    rejectedPlan: revision.rejected_plan,
+    findings: revision.finding_tasks.map((task) =>
+      task === null ? {} : { task },
+    ),
+  };
+}
+
 export function createArchitectSubmitTool(
   capture: (value: unknown) => void,
   sizeGate?: ArchitectSizeGate,
+  revision?: ArchitectRevisionGuard,
 ): ToolDefinition {
   return {
     name: "submit_architect_decomposition",
@@ -287,6 +353,19 @@ export function createArchitectSubmitTool(
           "Submission rejected: decomposition failed mechanical validation:\n" +
             errors.map((e) => `  - [${e.rule}] ${e.message}`).join("\n"),
         );
+      }
+      if (revision) {
+        const problems = revisionPatchProblems(
+          revision.rejectedPlan,
+          revision.findings,
+          params,
+        );
+        if (problems.length > 0) {
+          throw new Error(
+            "Submission rejected: a revision patches the rejected plan. Change only the tasks the findings name, or declare each other change:\n" +
+              problems.map((problem) => `  - ${problem}`).join("\n"),
+          );
+        }
       }
       capture(params);
       return Promise.resolve({
@@ -403,6 +482,11 @@ interface RevisionContextPrompt {
   readonly plan_hash: string;
   readonly planning_epoch: string;
   readonly feedback: string;
+  /**
+   * The task index each finding of the rejecting review names (null:
+   * plan-wide); null when colonyd sent none, so the patch rule cannot apply.
+   */
+  readonly finding_tasks: readonly (number | null)[] | null;
   readonly review_history: readonly RevisionHistoryEntry[];
   readonly goal_changes: readonly string[];
 }
@@ -470,6 +554,15 @@ function revisionContextOf(
         (label): label is string => typeof label === "string",
       )
     : [];
+  const findingTasks =
+    Array.isArray(context.finding_tasks) &&
+    context.finding_tasks.every(
+      (task: unknown) =>
+        task === null ||
+        (typeof task === "number" && Number.isInteger(task) && task >= 0),
+    )
+      ? (context.finding_tasks as (number | null)[])
+      : null;
   return {
     rejected_plan: plan.data,
     review_run_id: context.review_run_id,
@@ -477,6 +570,7 @@ function revisionContextOf(
     plan_hash: context.plan_hash,
     planning_epoch: context.planning_epoch,
     feedback: context.feedback,
+    finding_tasks: findingTasks,
     review_history: history.filter(
       (entry): entry is RevisionHistoryEntry => entry !== null,
     ),
@@ -570,6 +664,8 @@ const GOAL_SOURCES_RULE =
 const IAC_EVIDENCE_RULE =
   "For infrastructure, deployment, and CI changes (IaC, Dockerfiles, proxy and pipeline configuration), evidence is a repository check that reads the changed configuration and fails on its old shape - a script or test in the repository, or a validator the checkout has - never a grep that also matches unrelated resources. Applying, deploying, and live smoke tests belong in scope acceptance, not task evidence.";
 
+const GATE_CONFIG_RULE = `When a task creates or changes colony.gate.yaml, its spec states the file's exact commands. ${GATE_CONFIG_FORMAT}`;
+
 const PLAN_SYSTEM_PROMPT = [
   "# Role",
   "You are the Colony Architect, discovering and planning. Inspect the goal against the repository, then produce a task DAG that autonomous implementers execute independently. Each implementer sees ONLY its task spec, so every spec must be complete.",
@@ -590,6 +686,7 @@ const PLAN_SYSTEM_PROMPT = [
   "- journey: state what works after each task lands. The final state delivers the whole goal; fold non-observable scaffolding into the task that makes it usable.",
   "- Every task names verified or explicitly created files and exact evidence commands. Evidence must fail on the default branch and pass on the task branch.",
   `- ${IAC_EVIDENCE_RULE}`,
+  `- ${GATE_CONFIG_RULE}`,
   "",
   "# Decisions only the operator can make",
   "When a requirement needs something outside this repository (shared infrastructure, another repository, an unpublished package), or goal sources conflict with nothing deciding which wins, do not invent a workaround the reviewer will reject. Plan around the most defensible reading and list the decision in operator_decisions: the conflict or missing capability, the options, and the reading you planned for.",
@@ -612,6 +709,7 @@ const VERIFY_SYSTEM_PROMPT = [
   "- references: when a task deletes, renames, or moves a resource, variable, route, script, or export, search the repository for every reference to it (CI jobs, IaC variables and outputs, Dockerfiles, scripts, imports) and handle each in the same task.",
   "- contracts: where task B consumes what task A produces, both specs state the same exact paths, exported symbols, and shapes. Restate them verbatim in both.",
   "- depends_on: an edge for every produced-consumed relation; no edge where there is none.",
+  `- colony.gate.yaml: ${GATE_CONFIG_RULE}`,
   "- operator_decisions: keep each decision the draft raised unless the repository settles it; add one when a claim cannot be made true from this repository.",
   "Delegate independent per-task verification together; give each subagent the goal, the mechanical inspection manifest, and one task.",
   "",
@@ -621,6 +719,9 @@ const VERIFY_SYSTEM_PROMPT = [
   "",
   "# Fix, do not annotate",
   "Correct the plan in place: adjust files, evidence, specs, edges, journey, and requirement mapping so the submitted plan is true. Do not add caveats for the implementer to resolve.",
+  "",
+  "# Revising a rejected plan",
+  "When the prompt carries a review of your previous plan, this plan is a patch of the rejected one: change only the tasks its findings name, plus the references those fixes touch. List every other task you change, rename, or remove in unflagged_changes, by its title in the rejected plan and with the reason; otherwise the submission is rejected. Findings you refuted instead of applying go in disputed_findings with their evidence.",
   "",
   terminalRule(
     "submit_architect_decomposition",
@@ -655,10 +756,10 @@ export const PLAN_REVIEW_SYSTEM_PROMPT = [
   'Some blockers no plan can fix: the goal needs something outside this repository (shared infrastructure, another repository, an unpublished package), or goal sources conflict with nothing deciding which wins. File each as one blocker with owner "operator" that names the conflicting sources or the missing capability, and the options. The scope stops and asks the operator, so do not reject each workaround the architect invents for the same cause. When the plan lists operator_decisions, judge each one: confirm it with an operator-owned blocker, or reject it with an architect-owned finding that says how the repository and goal sources settle it.',
   "",
   "# Previous review",
-  "When the packet carries a previous review, first check each of its numbered findings against this plan and give it a status in previous_findings: resolved or open. Repeat every open finding in findings. The plan changes show what the architect touched: a new finding on an unchanged task must say why the previous review missed it.",
+  "When the packet carries a previous review, first check each of its numbered findings against this plan and give it a status in previous_findings: resolved or open. Repeat every open finding in findings. The plan changes show what the architect touched: a new finding on an unchanged task must say why the previous review missed it. A revision changes only the tasks the findings named unless it declares others in unflagged_changes: judge those declared changes as closely as the flagged ones. When the plan lists disputed_findings, re-check each disputed finding against the architect's evidence: resolved if the evidence holds; otherwise keep it open and say why the evidence fails.",
   "",
   "# Verdict discipline",
-  "- A finding names the task index, the defect, and the end state that must hold. The architect applies corrections literally: when your correction deletes, renames, or moves something, name the references you checked (CI jobs, IaC variables and outputs, Dockerfiles, scripts, imports) and every one that must change with it.",
+  "- A finding names the task index, the defect, and the end state that must hold. The architect checks each correction against the repository and disputes one that does not hold, so ground every factual claim in files you read. When your correction deletes, renames, or moves something, name the references you checked (CI jobs, IaC variables and outputs, Dockerfiles, scripts, imports) and every one that must change with it.",
   "- Do not reject for taste or decomposition philosophy.",
   "- Approve requires `inspected`: the files you read and what you checked each against.",
   "",
@@ -681,7 +782,37 @@ function feedbackBlock(packet: AgentRuntimePacket): string[] {
     "## Review of your previous plan",
     feedback,
     "",
-    "The previous plan was rejected. Fix every architect-owned finding. A correction names an end state: trace every reference the change touches rather than applying only the edit it spells out. A finding you believe no plan can satisfy from this repository is an operator decision: list it in operator_decisions instead of inventing a workaround. Findings marked operator went to the operator, who let planning continue: re-read the goal sources, which may have changed, and plan for the reading they now support.",
+    "The previous plan was rejected. Revise it as a patch, not a rewrite: rewriting tasks nobody flagged is where most new defects come from.",
+    "- Change only the tasks the findings name, plus the references a fix touches. Every other task stays exactly as it was; when a fix does require changing, renaming, or removing one, list it in unflagged_changes (its title in the rejected plan, and why). The final submission is rejected otherwise.",
+    "- Before applying a correction, check its factual claims against the repository: read the files it cites. A correction names an end state: trace every reference the change touches rather than applying only the edit it spells out.",
+    "- A finding that does not hold against the repository is not applied: list it in disputed_findings with the file:line or command output that refutes it. The next review re-checks it against that evidence.",
+    "- A finding you believe no plan can satisfy from this repository is an operator decision: list it in operator_decisions instead of inventing a workaround. Findings marked operator went to the operator, who let planning continue: re-read the goal sources, which may have changed, and plan for the reading they now support.",
+  ];
+}
+
+/**
+ * The patch rule's scope by title, for both stages: the verify stage never
+ * sees the rejected plan, and findings name tasks by rejected-plan index.
+ */
+function revisionScopeBlock(packet: AgentRuntimePacket): string[] {
+  const guard = architectRevisionGuard(packet);
+  if (!guard) return [];
+  const flagged = new Set<string>();
+  for (const finding of guard.findings) {
+    const task =
+      finding.task === undefined
+        ? undefined
+        : guard.rejectedPlan.tasks[finding.task];
+    if (task) flagged.add(task.title);
+  }
+  const titles = guard.rejectedPlan.tasks.map((task) => task.title);
+  const list = (names: readonly string[]): string =>
+    names.length > 0 ? names.map((name) => `"${name}"`).join(", ") : "none";
+  return [
+    "",
+    "## What this revision may change",
+    `Tasks the findings name (titles in the rejected plan): ${list(titles.filter((title) => flagged.has(title)))}.`,
+    `Every other task keeps its rejected-plan text unless you list it in unflagged_changes with the reason: ${list(titles.filter((title) => !flagged.has(title)))}.`,
   ];
 }
 
@@ -698,6 +829,7 @@ export function buildArchitectStages(): readonly ArchitectStage[] {
         [
           buildPacketPrompt(packet),
           ...feedbackBlock(packet),
+          ...revisionScopeBlock(packet),
           ...revisionBlock(packet),
           "",
           "## Discover and plan",
@@ -725,6 +857,7 @@ export function buildArchitectStages(): readonly ArchitectStage[] {
           "## Draft plan",
           JSON.stringify(draft, null, 2),
           ...feedbackBlock(packet),
+          ...revisionScopeBlock(packet),
           "",
           "## Verify",
           "Check the draft against the repository, fix it in place, and submit the final plan.",

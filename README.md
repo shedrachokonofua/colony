@@ -131,9 +131,14 @@ flowchart LR
    acceptance commands.
 2. **Review the plan.** With `review.mode: required`, a plan reviewer reads
    the plan against the checked-out repository. Only a blocker sends it
-   back; majors and minors ride into the approved task specs as notes. Each
-   revision amends the rejected plan, and the next review first marks the
-   previous findings resolved or open. The scope blocks and asks you,
+   back; majors and minors ride into the approved task specs as findings
+   the task must satisfy, and the code reviewer checks each one. Each
+   revision patches the rejected plan: it changes only the tasks the
+   findings name, declares any other task it changes with the reason (the
+   submission is rejected otherwise), and may dispute a finding with
+   repository evidence instead of applying it. The next review first marks
+   the previous findings resolved or open, re-checking each dispute against
+   its evidence. The scope blocks and asks you,
    holding the rejected plan, when a blocker needs your decision (something
    outside the repository, or goal sources in conflict), when the loop
    stalls (the same task blocked in four reviews running, or blockers not
@@ -177,8 +182,10 @@ flowchart LR
    `.env` or `PACKET.json`, validates the prospective tree with every command
    in the repository's `colony.gate.yaml` (each under `timeout_seconds`,
    default 600; the file and its non-empty command list are required), re-
-   checks the merge request head, and merges that exact commit. Missing or
-   invalid gate configuration blocks the task for operator correction; a
+   checks the merge request head, and merges that exact commit. A gate
+   configuration the merge request itself broke goes back to the developer
+   with the expected format, like a failing command; any other missing or
+   invalid gate configuration blocks the task for operator correction. A
    conflict or failing command requeues the task; three consecutive gate
    failures at one head block it. If GitLab refuses the merge while a
    pipeline is still registering, the gate waits 60 s and retries; three

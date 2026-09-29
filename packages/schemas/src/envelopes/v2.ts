@@ -57,6 +57,39 @@ const architectPlanFields = {
    * conflict, the options, and the reading the plan assumed.
    */
   operator_decisions: z.array(z.string().min(1)).max(5).optional(),
+  /**
+   * Findings of the rejected review, numbered as that review listed them,
+   * that this revision refutes instead of applying, each with the repository
+   * evidence (file:line, command output) that shows the finding does not
+   * hold. The next review re-checks each against that evidence.
+   */
+  disputed_findings: z
+    .array(
+      z
+        .object({
+          finding: z.number().int().positive(),
+          evidence: z.string().min(1),
+        })
+        .strict(),
+    )
+    .max(20)
+    .optional(),
+  /**
+   * Tasks of the rejected plan, by their title there, that no finding named
+   * but this revision changed or removed anyway, each with the reason. A
+   * revision is a patch: any other unflagged task stays exactly as it was.
+   */
+  unflagged_changes: z
+    .array(
+      z
+        .object({
+          task: z.string().min(1),
+          reason: z.string().min(1),
+        })
+        .strict(),
+    )
+    .max(20)
+    .optional(),
 };
 
 function planRefinements<T extends z.infer<typeof ArchitectDecompositionV2>>(

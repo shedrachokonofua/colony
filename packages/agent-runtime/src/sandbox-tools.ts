@@ -10,6 +10,7 @@ import {
   type LsOperations,
 } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import { DEFAULT_EXEC_TIMEOUT_MS, type SandboxHandle } from "@colony/sandbox";
+import { GATE_CONFIG_FILE } from "@colony/schemas";
 import type { RunAuditSink } from "./audit-sink.js";
 import { redactText } from "./redact.js";
 import type { PiRunnerLogger } from "./pi-runner-common.js";
@@ -850,4 +851,26 @@ export async function verifyPushedHead(
     .find((row) => row.trim().endsWith(`refs/heads/${branch}`));
   const remoteHead = line ? (line.split(/\s+/)[0] ?? null) : null;
   return { ok: remoteHead === headSha, remoteHead };
+}
+
+/**
+ * The `colony.gate.yaml` blob at `headSha` as seen from inside the sandbox,
+ * or `undefined` when the file is absent at that commit or the read fails
+ * (unknown SHA, broken git). Used by the implementer's submit gate to reject
+ * an envelope that lands an invalid merge gate config before colonyd burns a
+ * gate run on it. `undefined` must never block: absence and unreadability
+ * are the merge gate's problem, not this check's.
+ */
+export async function readGateConfigAtHead(
+  handle: SandboxHandle,
+  headSha: string,
+): Promise<string | undefined> {
+  if (!/^[0-9a-fA-F]{7,40}$/.test(headSha)) return undefined;
+  const capture = await execCapture(
+    handle,
+    `git show ${JSON.stringify(`${headSha}:${GATE_CONFIG_FILE}`)}`,
+    { cwd: ".", timeoutMs: 30_000 },
+  );
+  if (capture.exitCode !== 0) return undefined;
+  return capture.output.toString("utf8");
 }

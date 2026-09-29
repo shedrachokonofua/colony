@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  architectRevisionGuard,
   createArchitectSubmitTool,
   createPlanReviewSubmitTool,
 } from "./architect-stages.js";
+import type { AgentRuntimePacket } from "./adapter.js";
 import { createArchitectExtensionSubmitTool } from "./architect-extension.js";
 
 function decomposition(
@@ -98,6 +100,74 @@ describe("architect submission", () => {
       undefined as never,
     );
     expect(captured).toEqual(corrected);
+  });
+
+  describe("revising a rejected plan", () => {
+    const consumer = {
+      title: "Consumer",
+      spec: "Consume the store contract exported from packages/core/src/store.ts.",
+      depends_on: [0],
+    };
+    const rejected = decomposition([producer, consumer]);
+    // The rejecting review named only the consumer (task 1).
+    const revisionPacket = (goalChanges: string[] = []) =>
+      ({
+        kind: "architect_scope",
+        goal: "Ship it.",
+        revision_context: {
+          rejected_plan: rejected,
+          review_run_id: "review-1",
+          review_base_sha: null,
+          plan_hash: "hash",
+          planning_epoch: "legacy",
+          feedback:
+            "Plan review round 1: request_changes.\n1. [blocker] task 1: no.",
+          finding_tasks: [1],
+          review_history: [],
+          goal_changes: goalChanges,
+        },
+      }) as unknown as AgentRuntimePacket;
+    const submit = async (
+      packet: AgentRuntimePacket,
+      plan: unknown,
+    ): Promise<unknown> => {
+      let captured: unknown;
+      const tool = createArchitectSubmitTool(
+        (value) => {
+          captured = value;
+        },
+        undefined,
+        architectRevisionGuard(packet),
+      );
+      await tool.execute("s", plan, undefined, undefined, undefined as never);
+      return captured;
+    };
+    const rewrittenProducer = decomposition([
+      { ...producer, spec: "Add the contract in packages/core/src/api.ts." },
+      { ...consumer, spec: `${consumer.spec} Validate it with zod.` },
+    ]);
+
+    it("rejects a rewrite of a task no finding named, naming it", async () => {
+      await expect(submit(revisionPacket(), rewrittenProducer)).rejects.toThrow(
+        'task "Producer" changed (spec)',
+      );
+    });
+
+    it("accepts the same change once declared with a reason", async () => {
+      const declared = {
+        ...rewrittenProducer,
+        unflagged_changes: [
+          { task: "Producer", reason: "The contract moves to api.ts." },
+        ],
+      };
+      expect(await submit(revisionPacket(), declared)).toEqual(declared);
+    });
+
+    it("does not hold a revision to the patch rule after the goal changed", async () => {
+      expect(
+        await submit(revisionPacket(["scope goal"]), rewrittenProducer),
+      ).toEqual(rewrittenProducer);
+    });
   });
 
   it("rejects unrelated tasks that share a file path", async () => {

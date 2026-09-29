@@ -371,3 +371,145 @@ describe("implementer submit gate: pushed head", () => {
     expect(result.reason).toBe("repair_no_change");
   }, 20_000);
 });
+
+describe("implementer submit gate: colony.gate.yaml", () => {
+  it("blocks a submit landing an invalid gate config, accepts it once fixed and pushed", async () => {
+    const root = mkdtempSync(join(tmpdir(), "colony-gate-config-"));
+    dirs.push(root);
+    const origin = join(root, "origin");
+    execFileSync("git", ["init", "-q", "-b", "main", origin]);
+    execFileSync(
+      "git",
+      ["-C", origin, "commit", "-q", "--allow-empty", "-m", "init"],
+      { env: GIT_ENV },
+    );
+    execFileSync("git", [
+      "-C",
+      origin,
+      "config",
+      "receive.denyCurrentBranch",
+      "updateInstead",
+    ]);
+    const baseSha = execFileSync("git", ["-C", origin, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    const branch = "colony/gate-config";
+    const remoteHead = () =>
+      execFileSync("git", ["-C", origin, "rev-parse", branch], {
+        encoding: "utf8",
+      }).trim();
+    const envelope = (head_sha: string) => ({
+      kind: "implementer_completion",
+      status: "complete",
+      summary: "Gate config landed.",
+      branch,
+      head_sha,
+      commands: [{ cmd: "bun test", exit_code: 0 }],
+    });
+    const commitAs = "git -c user.name=t -c user.email=t@t commit -q -m";
+
+    let turns = 0;
+    const seen: string[] = [];
+    let lastEnvelope: unknown;
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        turns += 1;
+        const parsed = JSON.parse(body) as {
+          messages: { role: string; content?: unknown }[];
+        };
+        const lastTool = [...parsed.messages]
+          .reverse()
+          .find((m) => m.role === "tool");
+        if (lastTool) seen.push(String(lastTool.content));
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          connection: "keep-alive",
+          "cache-control": "no-cache",
+        });
+        if (turns === 1) {
+          // Land colony.gate.yaml in the invented version/checks format.
+          response.end(
+            sseToolCall("bash", {
+              command:
+                "printf 'version: 1\\nchecks:\\n  - name: ci\\n    run: bun test\\n' > colony.gate.yaml && git add colony.gate.yaml && " +
+                `${commitAs} 'add gate config' && git push -q origin ${branch}`,
+            }),
+          );
+        } else if (turns === 2 || turns > 3) {
+          lastEnvelope = envelope(remoteHead());
+          response.end(
+            sseToolCall("submit_implementer_completion", lastEnvelope),
+          );
+        } else {
+          // Fix the gate config to the documented format and push.
+          response.end(
+            sseToolCall("bash", {
+              command:
+                "printf 'commands:\\n  - \"true\"\\n' > colony.gate.yaml && git add colony.gate.yaml && " +
+                `${commitAs} 'fix gate config' && git push -q origin ${branch}`,
+            }),
+          );
+        }
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("missing port");
+    const model: PiModelSpec = {
+      id: "m",
+      name: "m",
+      api: "openai-completions",
+      provider: "test-gateway",
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 8_192,
+    };
+    const runner = new PiBaseAgentRunner(DEVELOPER_ROLE_PROFILE, {
+      model,
+      fallbackModels: [],
+      engine: createInProcessEngine(),
+      broker: { resolve: () => "test-key" },
+      maxTurns: 8,
+      runTimeoutMs: 60_000,
+    });
+
+    const result = await runner.run({
+      runId: `gate-config-${Date.now()}`,
+      packet: {
+        goal: "Land the change",
+        body: "b",
+        head_sha: baseSha,
+        repo: {
+          url: origin,
+          branch,
+          base_commit: baseSha,
+          credentials: { token: "local-noop" },
+        },
+      } as never,
+      environment: { role: "developer" },
+    });
+
+    expect(turns).toBeGreaterThanOrEqual(4);
+    expect(
+      seen.some((text) => text.includes("is not a valid merge gate config")),
+    ).toBe(true);
+    expect(
+      seen.some((text) => text.includes("commands must be a non-empty array")),
+    ).toBe(true);
+    expect(
+      seen.some((text) => text.includes("Colony reads no other keys")),
+    ).toBe(true);
+    expect(result.envelope).toEqual(lastEnvelope);
+    expect(result.reason).toBeUndefined();
+  }, 60_000);
+});

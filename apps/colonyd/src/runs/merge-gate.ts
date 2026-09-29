@@ -4,8 +4,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
 import { sanitizeTrace } from "@colony/provider";
+import {
+  GATE_CONFIG_FILE,
+  GATE_CONFIG_FORMAT,
+  parseGateConfig,
+} from "@colony/schemas";
 import {
   buildIsolatedCommandEnv,
   VALIDATE_ENV_ALLOWLIST,
@@ -78,6 +82,12 @@ export interface GateFailure {
    * include parser errors or the configuration contents here.
    */
   readonly detail?: string;
+  /**
+   * `no_gate_config` only: whether the incoming diff touches
+   * `colony.gate.yaml`. A gate the MR itself broke is the MR's defect
+   * (repairable); anything else is an operator problem.
+   */
+  readonly gate_config_changed?: boolean;
   readonly files?: readonly string[];
   readonly commands?: readonly GateCommandResult[];
 }
@@ -617,29 +627,30 @@ interface GateFailureTrigger {
   readonly evidence: readonly string[];
 }
 
+/** A won repair-intent claim: its fingerprint and dispatch trigger. */
+interface GateFailureRepairIntent {
+  readonly fingerprint: string;
+  readonly trigger: GateFailureTrigger;
+}
+
 /** Decorate an existing requeue with a merge-gate-failure repair intent. The
- *  claim is exactly-once per (task, gated head, failing command): a repeated
+ *  claim is exactly-once per (task, gated head, failing criterion): a repeated
  *  claim falls through to the unchanged requeue-or-block logic, which stays
  *  the authority on backoff, attempts, and blocking. */
 function claimGateFailureIntent(
   ctx: ColonydContext,
   task: Task,
   headSha: string,
-  evidence: Record<string, unknown>,
-):
-  | { readonly fingerprint: string; readonly trigger: GateFailureTrigger }
-  | undefined {
-  const { criterion, tail } = gateCommandFailure(evidence);
+  criterion: string,
+  evidenceLines: readonly string[],
+): GateFailureRepairIntent | undefined {
   const fingerprint = createHash("sha256")
     .update(`${task.id}|merge_gate_failure|${headSha}|${criterion}`)
     .digest("hex");
   const trigger = {
     kind: "merge_gate_failure",
     source_head_sha: headSha,
-    evidence: [
-      `command failed: ${criterion}`,
-      ...tail.slice(-MAX_TAIL_LINES).filter((line) => line.trim().length > 0),
-    ],
+    evidence: evidenceLines,
   } as const;
   const fresh = ctx.store.claimRepairIntent({
     fingerprint,
@@ -662,21 +673,38 @@ function requeueOrBlockAfterGateFailure(
   if (!current || current.state !== "mr_open") return;
 
   const reason = typeof evidence.reason === "string" ? evidence.reason : "";
+  const detail =
+    typeof evidence.detail === "string"
+      ? evidence.detail
+      : "colony.gate.yaml is missing or invalid";
+  // A gate config this MR itself changed and broke is the MR's defect: the
+  // implementer owns the repair. A missing/invalid gate the diff never
+  // touched is an operator/configuration defect.
+  const gateConfigChanged = evidence.gate_config_changed === true;
   // A repairable command failure is a code defect an implementer can fix;
   // a merge conflict belongs to the tick's conflict branch and a transient
-  // refusal is not repairable at all. Only the first claims an intent.
-  const gateIntent =
-    reason === "command_failed"
-      ? claimGateFailureIntent(ctx, task, headSha, evidence)
-      : undefined;
-  // A missing or invalid gate is an operator/configuration defect, not an
-  // implementation failure. Block immediately so the automatic implement
-  // retry loop cannot churn on a repository-wide admission problem.
-  if (reason === "no_gate_config") {
-    const detail =
-      typeof evidence.detail === "string"
-        ? evidence.detail
-        : "colony.gate.yaml is missing or invalid";
+  // refusal is not repairable at all. Only repairable failures claim an
+  // intent.
+  let gateIntent: GateFailureRepairIntent | undefined;
+  if (reason === "command_failed") {
+    const { criterion, tail } = gateCommandFailure(evidence);
+    gateIntent = claimGateFailureIntent(ctx, task, headSha, criterion, [
+      `command failed: ${criterion}`,
+      ...tail.slice(-MAX_TAIL_LINES).filter((line) => line.trim().length > 0),
+    ]);
+  } else if (reason === "no_gate_config" && gateConfigChanged) {
+    gateIntent = claimGateFailureIntent(
+      ctx,
+      task,
+      headSha,
+      `no_gate_config:${detail}`,
+      [`colony.gate.yaml is invalid: ${detail}`, GATE_CONFIG_FORMAT],
+    );
+  }
+  // A missing or invalid gate the MR did not touch is an operator/configuration
+  // defect, not an implementation failure. Block immediately so the automatic
+  // implement retry loop cannot churn on a repository-wide admission problem.
+  if (reason === "no_gate_config" && !gateConfigChanged) {
     ctx.store.transitionTask(
       current.id,
       current.state_version,
@@ -913,7 +941,15 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   }
 
   const gateConfig = readGateConfig(input.workspace);
-  if ("reason" in gateConfig) return gateConfig;
+  if ("reason" in gateConfig) {
+    // Whether the MR itself touched colony.gate.yaml decides if a broken
+    // gate is this MR's defect (repairable) or an operator problem. The
+    // incoming diff is only available here, pre-merge.
+    return {
+      ...gateConfig,
+      gate_config_changed: changedFiles.includes(GATE_CONFIG_FILE),
+    };
+  }
 
   const scratchDir = await atGateExecutionBoundary("workspace", () =>
     mkdtemp(join(tmpdir(), "colonyd-gate-env-")),
@@ -960,69 +996,20 @@ interface GateConfig {
 type GateConfigResult = GateConfig | GateFailure;
 
 function readGateConfig(workspace: string): GateConfigResult {
-  const configPath = join(workspace, "colony.gate.yaml");
+  const configPath = join(workspace, GATE_CONFIG_FILE);
   if (!existsSync(configPath)) {
     return {
       reason: "no_gate_config",
-      detail: "colony.gate.yaml is missing",
+      detail: `${GATE_CONFIG_FILE} is missing`,
     };
   }
-
-  let parsed: unknown;
-  try {
-    parsed = parseYaml(readFileSync(configPath, "utf8"));
-  } catch {
-    // Do not expose parser diagnostics: YAML errors can echo a secret value
-    // from the repository configuration.
-    return {
-      reason: "no_gate_config",
-      detail: "colony.gate.yaml is malformed YAML",
-    };
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {
-      reason: "no_gate_config",
-      detail: "colony.gate.yaml must contain a mapping",
-    };
-  }
-
-  const raw = parsed as Record<string, unknown>;
-  if (!Array.isArray(raw.commands) || raw.commands.length === 0) {
-    return {
-      reason: "no_gate_config",
-      detail: "commands must be a non-empty array",
-    };
-  }
-  if (
-    !raw.commands.every(
-      (command): command is string =>
-        typeof command === "string" && command.trim().length > 0,
-    )
-  ) {
-    return {
-      reason: "no_gate_config",
-      detail: "commands must contain only non-blank strings",
-    };
-  }
-
-  let timeoutSeconds = DEFAULT_COMMAND_TIMEOUT_SECONDS;
-  if ("timeout_seconds" in raw) {
-    const timeout = raw.timeout_seconds;
-    if (
-      typeof timeout !== "number" ||
-      !Number.isFinite(timeout) ||
-      timeout <= 0
-    ) {
-      return {
-        reason: "no_gate_config",
-        detail: "timeout_seconds must be a positive finite number",
-      };
-    }
-    timeoutSeconds = timeout;
+  const parsed = parseGateConfig(readFileSync(configPath, "utf8"));
+  if (!parsed.ok) {
+    return { reason: "no_gate_config", detail: parsed.detail };
   }
   return {
-    commands: raw.commands,
-    timeoutSeconds,
+    commands: parsed.commands,
+    timeoutSeconds: parsed.timeoutSeconds ?? DEFAULT_COMMAND_TIMEOUT_SECONDS,
   };
 }
 

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -16,6 +17,7 @@ import { Store as ColonyStore } from "@colony/core";
 import { createLocalArtifactStore } from "@colony/core";
 import { abortRun, abortRunAndWait } from "../src/runs/registry.js";
 import { FakeProviderAdapter } from "@colony/provider";
+import { GATE_CONFIG_FORMAT } from "@colony/schemas";
 import {
   GateExecutionError,
   defaultGateExecutor,
@@ -397,12 +399,15 @@ describe("runMergeGate success evidence", () => {
     } as unknown as ColonydContext;
   }
 
-  async function setupFlow(gateConfig: string | null = PASSING_GATE_CONFIG) {
+  async function setupFlow(
+    gateConfig: string | null = PASSING_GATE_CONFIG,
+    branchGateConfig?: string,
+  ) {
     // Clone URL = <gitlabBaseUrl>/<provider_repo_path>.git; mirror that
     // layout under the temp dir so the deterministic executor can clone.
     const repoParent = tempDir("colony-gate-flow-");
     const repoDir = join(repoParent, "so", "proj.git");
-    mkRepoAt(repoDir, gateConfig);
+    mkRepoAt(repoDir, gateConfig, branchGateConfig);
     const headSha = git(repoDir, ["rev-parse", "clean"]).trim();
 
     const dbDir = tempDir("colony-gate-db-");
@@ -777,6 +782,124 @@ describe("runMergeGate success evidence", () => {
     store.close();
   });
 
+  it("blocks an invalid gate config the MR did not change", async () => {
+    const { ctx, scope, task, opened, headSha, store } =
+      await setupFlow("commands: []\n");
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+
+    const current = store.getTask(task!.id)!;
+    expect(current.state).toBe("blocked");
+    expect(current.blocked_reason).toBe(
+      "merge gate configuration required: commands must be a non-empty array",
+    );
+    expect(current.attempt).toBe(0);
+    expect(store.listRepairIntents(task!.id)).toHaveLength(0);
+    const gate = store
+      .runsForTask(task!.id)
+      .find((run) => run.kind === "merge_gate")!;
+    expect(JSON.parse(gate.evidence_json!)).toMatchObject({
+      reason: "no_gate_config",
+      detail: "commands must be a non-empty array",
+      gate_config_changed: false,
+    });
+    store.close();
+  });
+
+  const INVENTED_GATE_FORMAT = [
+    "version: 1",
+    "checks:",
+    "  - name: ci",
+    '    run: "bun test"',
+    "",
+  ].join("\n");
+
+  it("requeues a colony.gate.yaml the MR broke with a format repair intent", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow(
+      PASSING_GATE_CONFIG,
+      INVENTED_GATE_FORMAT,
+    );
+
+    await runMergeGate(ctx, scope as Scope, opened as Task, headSha);
+
+    const current = store.getTask(task!.id)!;
+    expect(current.state).toBe("queued");
+    expect(current.attempt).toBe(1);
+    const gate = store
+      .runsForTask(task!.id)
+      .find((run) => run.kind === "merge_gate")!;
+    expect(JSON.parse(gate.evidence_json!)).toMatchObject({
+      reason: "no_gate_config",
+      detail: "commands must be a non-empty array",
+      gate_config_changed: true,
+    });
+    const intents = store.listRepairIntents(task!.id);
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.fingerprint).toBe(
+      createHash("sha256")
+        .update(
+          `${task!.id}|merge_gate_failure|${headSha}|no_gate_config:commands must be a non-empty array`,
+        )
+        .digest("hex"),
+    );
+    expect(JSON.parse(intents[0]!.trigger_json)).toEqual({
+      kind: "merge_gate_failure",
+      source_head_sha: headSha,
+      evidence: [
+        "colony.gate.yaml is invalid: commands must be a non-empty array",
+        GATE_CONFIG_FORMAT,
+      ],
+    });
+    store.close();
+  });
+
+  it("blocks after the cap when one head keeps failing on its own gate config", async () => {
+    const { ctx, scope, task, opened, headSha, store } = await setupFlow(
+      PASSING_GATE_CONFIG,
+      INVENTED_GATE_FORMAT,
+    );
+    for (let round = 1; round <= 3; round += 1) {
+      await runMergeGate(
+        ctx,
+        scope as Scope,
+        store.getTask(task!.id)! as Task,
+        headSha,
+      );
+      const current = store.getTask(task!.id)!;
+      if (round < 3) {
+        expect(current.state).toBe("queued");
+        // The implement retry re-commits at the same head: back to mr_open.
+        const running = store.transitionTask(
+          current.id,
+          current.state_version,
+          "running",
+          "svc:test",
+        );
+        store.transitionTask(
+          running.id,
+          running.state_version,
+          "mr_open",
+          "svc:test",
+          { branch: "clean", mr_iid: opened.mr_iid },
+        );
+      }
+    }
+
+    const current = store.getTask(task!.id)!;
+    expect(current.state).toBe("blocked");
+    expect(current.blocked_reason).toBe(
+      `gate failed 3 consecutive times at ${headSha}`,
+    );
+    // Identical failures share one fingerprint: exactly one repair dispatch.
+    expect(store.listRepairIntents(task!.id)).toHaveLength(1);
+    expect(
+      store
+        .listAudit({ task_id: task!.id, limit: 100 })
+        .events.filter((event) => event.action === "gate.repair_dispatched"),
+    ).toHaveLength(1);
+    store.close();
+  });
+
   it("records cancellation without requeueing the task", async () => {
     const { ctx, scope, task, opened, headSha, store } = await setupFlow();
     const { promise: started, resolve: markStarted } =
@@ -810,6 +933,7 @@ describe("runMergeGate success evidence", () => {
   function mkRepoAt(
     path: string,
     gateConfig: string | null = PASSING_GATE_CONFIG,
+    branchGateConfig?: string,
   ): string {
     mkdirSync(path, { recursive: true });
     git(path, ["init", "-b", "main"]);
@@ -822,6 +946,9 @@ describe("runMergeGate success evidence", () => {
     commitAll(path, "init");
     git(path, ["checkout", "-b", "clean"]);
     writeFileSync(join(path, "note.txt"), "harmless\n", "utf8");
+    if (branchGateConfig !== undefined) {
+      writeFileSync(join(path, "colony.gate.yaml"), branchGateConfig, "utf8");
+    }
     commitAll(path, "add harmless file");
     git(path, ["checkout", "main"]);
     return path;

@@ -35,8 +35,12 @@ State machine, SQLite persistence, and backoff live in `packages/core`; run enve
 The merge gate clones the target branch fresh, prospectively merges the task
 head, scans for secrets/artifacts, and validates the combined tree with every
 command in `colony.gate.yaml` before rechecking the MR head and merging the
-gated SHA. The file and its non-empty command list are mandatory; malformed
-configuration blocks the task for operator correction. Gates serialize per
+gated SHA. The file and its non-empty command list are mandatory
+(`packages/schemas/src/gate-config.ts` is the one validator). Configuration
+the MR itself changed and broke goes back to the implementer as a repair,
+and the implementer's submit is refused while the pushed head carries an
+invalid gate file; any other malformed or missing configuration blocks the
+task for operator correction. Gates serialize per
 provider repository, across scopes. Their subprocesses are asynchronous and
 cancellable; heartbeats keep long-running checks leased. Dispatch rechecks
 current task/scope state after provider reads, and an in-flight gate rechecks

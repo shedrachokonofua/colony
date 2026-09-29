@@ -242,15 +242,16 @@ agents:
   # The plan reviewer must not be the plan's author: muse-spark leads the
   # architect chain, so no muse model reviews plans. gpt-6-astra leads
   # (AA 53, the gateway's highest; 2/2 with all 5 planted flaws, 33 s).
-  # grok-4.7 is now measured: 2/2, all 5 flaws, voluntary submit in 32 s
-  # (4.6 submitted 0/10 plan reviews in production). Then kimi-k3 (12/0 plan
+  # grok-4.7 is out: in the 2026-09-29 audit of 324 plan-review blockers it
+  # found the fewest real blockers per review (1.4, astra 3.5), raised the
+  # most wrong or questionable ones (23%), and made 14 of the 18 rejections
+  # that held no real blocker. Then kimi-k3 (12/0 plan
   # reviews; AA-LCR 88.7%), glm-5.3, mimo-v2.6-pro (AA-LCR 86.3%), and
   # step-5-preview (AA 44, AA-LCR 88.3%; 2/2 all 5 flaws; Step Plan pool).
   plan_reviewer:
     provider: openai_compatible
     model: gpt-6-astra
     fallback_models:
-      - grok-4.7
       - kimi-k3
       - glm-5.3
       - mimo-v2.6-pro

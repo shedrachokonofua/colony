@@ -19,6 +19,7 @@ import {
 import { GoalTool } from "@oh-my-pi/pi-coding-agent/goals/tools/goal-tool";
 import type { Fault } from "@colony/core";
 import type { SandboxHandle } from "@colony/sandbox";
+import { GATE_CONFIG_FORMAT, parseGateConfig } from "@colony/schemas";
 import type { CredentialBroker } from "./credential-broker.js";
 import type { RunAuditSink } from "./audit-sink.js";
 import type {
@@ -43,7 +44,7 @@ import {
 } from "./pi-roles.js";
 import { RunSteering } from "./run-steering.js";
 import { RunEvidenceCollector } from "./run-evidence.js";
-import { verifyPushedHead } from "./sandbox-tools.js";
+import { readGateConfigAtHead, verifyPushedHead } from "./sandbox-tools.js";
 import { createSubagentTool } from "./subagent-tool.js";
 import { inTraceContext } from "./trace-context.js";
 
@@ -902,6 +903,23 @@ export async function buildPiSession(
                 ? `origin/${args.branch} is at ${pushed.remoteHead}, not the envelope's head_sha ${args.head_sha}. Push your final commit (git push origin ${args.branch}), confirm with git ls-remote --heads origin ${args.branch}, then submit the SHA that is actually on the remote.`
                 : `origin/${args.branch} does not exist on the remote. Push the work branch (git push origin ${args.branch}) before submitting.`,
             };
+          }
+          // A gate config the head lands in an invalid state would fail the
+          // merge gate after the run ends; catch it here while the model can
+          // still fix and resubmit. An absent or unreadable file is not this
+          // check's call.
+          const gateConfig = await readGateConfigAtHead(
+            hooks.handle,
+            args.head_sha,
+          );
+          if (gateConfig !== undefined) {
+            const parsed = parseGateConfig(gateConfig);
+            if (!parsed.ok) {
+              return {
+                block: true,
+                reason: `colony.gate.yaml at ${args.head_sha} is not a valid merge gate config: ${parsed.detail}. ${GATE_CONFIG_FORMAT} Fix it, push, and submit again.`,
+              };
+            }
           }
         }
       }
