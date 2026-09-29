@@ -142,6 +142,21 @@ export class GitLabProviderError extends Error {
     this.name = "GitLabProviderError";
   }
 }
+
+/** GitLab rejects merge request titles longer than 255 characters. */
+const MR_TITLE_MAX_CHARS = 255;
+
+/**
+ * Clamp an MR title to GitLab's 255-character limit at the boundary: keep
+ * the leading text and mark truncation with a trailing ellipsis. Characters
+ * (code points), not bytes or UTF-16 units, are what GitLab counts.
+ */
+function clampMrTitle(title: string): string {
+  const chars = Array.from(title);
+  if (chars.length <= MR_TITLE_MAX_CHARS) return title;
+  return `${chars.slice(0, MR_TITLE_MAX_CHARS - 1).join("")}…`;
+}
+
 export class GitLabProviderAdapter implements ProviderAdapter {
   readonly provider = "gitlab" as const;
   private readonly baseUrl: string;
@@ -373,7 +388,7 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         {
           method: "POST",
           body: JSON.stringify({
-            title: input.title,
+            title: clampMrTitle(input.title),
             description: input.description,
             source_branch: input.source_branch,
             target_branch: input.target_branch,
@@ -389,7 +404,8 @@ export class GitLabProviderAdapter implements ProviderAdapter {
         {
           method: "PUT",
           body: JSON.stringify({
-            title: input.title,
+            title:
+              input.title === undefined ? undefined : clampMrTitle(input.title),
             description: input.description,
           }),
         },

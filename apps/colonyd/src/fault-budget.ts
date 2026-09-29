@@ -8,6 +8,7 @@ import {
 } from "@colony/core";
 import { SERVICE_ACTOR, type ColonydContext } from "./context.js";
 import { sanitizeTrace } from "@colony/provider";
+import { GitLabProviderError } from "@colony/provider-gitlab";
 import { z } from "zod";
 
 /** Detail retained on a synthesized fault; long enough to be actionable. */
@@ -104,6 +105,30 @@ export function faultForFailure(
   return { layer: "unknown", code: "unknown", detail: errorExcerpt };
 }
 
+/**
+ * The fault a deterministic provider rejection carries: an HTTP 4xx the
+ * provider will answer identically on retry (a MR title GitLab caps at 255
+ * characters retried for hours, col-79c7045a.7), so it must never fall
+ * through to the free unknown fallback. Returns undefined for everything
+ * that is not such a rejection, keeping the caller's fallback untouched.
+ */
+export function providerRejectionFault(error: unknown): Fault | undefined {
+  if (!(error instanceof GitLabProviderError)) return undefined;
+  const { status } = error;
+  if (status < 400 || status > 499) return undefined;
+  // The transient 4xx can still succeed on retry — 408 timeout, 409
+  // conflict, 425 too-early, 429 rate limit — like every 5xx and every
+  // non-HTTP failure: they stay on the free-retry path.
+  if (status === 408 || status === 409 || status === 425 || status === 429) {
+    return undefined;
+  }
+  return {
+    layer: "provider",
+    code: "provider_rejected",
+    detail: sanitizeTrace(error.message).slice(0, FAULT_DETAIL_LIMIT),
+  };
+}
+
 /** True when a failed run died to a model timeout rather than a verdict. */
 export function isTimeoutFault(
   run: Pick<Run, "status" | "fault_json"> | null | undefined,
@@ -131,6 +156,37 @@ export function consecutiveModelFailures(runs: readonly Run[]): number {
     failures += 1;
   }
   return failures;
+}
+
+/**
+ * The trailing consecutive identical unclassified implementation failures:
+ * walking back over implement runs, failed runs whose fault layer is unknown
+ * with the same detail, stopped by the first run that is not one. A
+ * non-failed run (succeeded, canceled), a faulted run of any other layer and
+ * a divergent detail all break the streak; runs of other kinds are ignored.
+ */
+function identicalUnknownFailureStreak(runs: readonly Run[]):
+  | {
+      readonly count: number;
+      readonly detail: string;
+    }
+  | undefined {
+  let detail: string | undefined;
+  let count = 0;
+  for (let index = runs.length - 1; index >= 0; index -= 1) {
+    const run = runs[index]!;
+    if (run.kind !== "implement") continue;
+    if (run.status !== "failed") break;
+    const fault = parseFault(run.fault_json);
+    if (fault?.layer !== "unknown" || typeof fault.detail !== "string") break;
+    if (detail === undefined) {
+      detail = fault.detail;
+    } else if (fault.detail !== detail) {
+      break;
+    }
+    count += 1;
+  }
+  return detail === undefined ? undefined : { count, detail };
 }
 
 /** Find the latest explicit reset without losing it behind a noisy audit page. */
@@ -179,9 +235,17 @@ export function retryResetAt(
  *
  * Model-layer faults consume the attempt budget and increment consecutive
  * model failures. If failures >= maxAttempts, transitions the task to blocked.
- * Non-model faults (infra/platform/unknown/canceled) requeue free without
- * consuming the budget, clear any active repair intent run_id, and audit
- * task.infra_retry.
+ * A provider_rejected fault — a deterministic provider HTTP rejection that
+ * cannot succeed on retry — blocks the task immediately with the sanitized
+ * provider message as the blocked_reason. As a backstop, when the trailing
+ * consecutive implement runs since the last retry reset are failed runs
+ * whose faults are all layer unknown with the identical detail and that
+ * streak reaches maxAttempts, the task blocks too, with a blocked_reason
+ * naming the repetition and the detail. Any other non-model fault
+ * (infra/platform/unknown/canceled) requeues free without consuming the
+ * budget, clears any active repair intent run_id, and audits
+ * task.infra_retry; a non-failed run (succeeded, canceled) or a divergent
+ * fault detail breaks the unclassified streak.
  */
 export function retryOrFailTaskWithBudget(
   ctx: Pick<ColonydContext, "store" | "env">,
@@ -209,14 +273,51 @@ export function retryOrFailTaskWithBudget(
     ? !consumes
     : last?.status === "canceled" || (last?.status === "failed" && !consumes);
 
+  const fault =
+    options?.fault ??
+    (last?.status === "failed"
+      ? (parseFault(last.fault_json) ?? undefined)
+      : undefined);
+
+  if (fault?.layer === "provider" && fault.code === "provider_rejected") {
+    // The provider answered deterministically: retrying cannot succeed.
+    ctx.store.transitionTask(
+      task.id,
+      task.state_version,
+      "blocked",
+      SERVICE_ACTOR,
+      {
+        blocked_reason: `provider rejected this task: ${sanitizeTrace(
+          fault.detail ?? reason,
+        )}`,
+      },
+    );
+    return;
+  }
+
   const since = retryResetAt(ctx.store, "task", task.id);
-  const failures = consecutiveModelFailures(
-    ctx.store
-      .runsForTask(task.id)
-      .filter((run) => !since || run.started_at > since),
-  );
+  const window = ctx.store
+    .runsForTask(task.id)
+    .filter((run) => !since || run.started_at > since);
+  const failures = consecutiveModelFailures(window);
 
   const attempt = consumes ? task.attempt + 1 : task.attempt;
+
+  const streak = identicalUnknownFailureStreak(window);
+  if (streak && streak.count >= ctx.env.maxAttempts) {
+    ctx.store.transitionTask(
+      task.id,
+      task.state_version,
+      "blocked",
+      SERVICE_ACTOR,
+      {
+        blocked_reason: `the same unclassified failure repeated ${streak.count} times: ${sanitizeTrace(
+          streak.detail,
+        )}`,
+      },
+    );
+    return;
+  }
 
   if (deferred) {
     // If this task was running an unresolved repair intent, unbind its run_id

@@ -771,6 +771,75 @@ describe("GitLabProviderAdapter mergeRequests", () => {
   });
 });
 
+describe("GitLabProviderAdapter merge request titles", () => {
+  it("clamps a 277-character title to 255 characters and leaves short titles unchanged", async () => {
+    const sent: Array<{ method: string; title: string | undefined }> = [];
+    const fetchMock = (url: string | URL | Request, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const rawBody = typeof init?.body === "string" ? init.body : undefined;
+      const body = rawBody
+        ? (JSON.parse(rawBody) as Record<string, unknown>)
+        : {};
+      sent.push({
+        method,
+        title: typeof body.title === "string" ? body.title : undefined,
+      });
+      return Promise.resolve(
+        json({
+          id: 1001,
+          iid: 5,
+          project_id: 20,
+          title: typeof body.title === "string" ? body.title : "MR",
+          state: "opened",
+        }),
+      );
+    };
+    const adapter = new GitLabProviderAdapter({
+      baseUrl: "https://gitlab.test",
+      token: "bot",
+      fetch: fetchMock,
+    });
+    const repo = { id: "20", path: "colony/dev" } as const;
+
+    // The incident's shape: 37-char follow-up prefix + 240-char parent title.
+    const longTitle = "Review follow-up for col-79c7045a.1: " + "x".repeat(240);
+    expect(longTitle.length).toBe(277);
+
+    await adapter.mergeRequests.open(repo, {
+      title: longTitle,
+      description: "",
+      source_branch: "feature/csv",
+      target_branch: "main",
+    });
+    const opened = sent.at(-1)!.title!;
+    expect(Array.from(opened).length).toBeLessThanOrEqual(255);
+    expect(opened.endsWith("…")).toBe(true);
+    expect(opened.startsWith(longTitle.slice(0, 254))).toBe(true);
+
+    const shortTitle = "Add CSV export";
+    await adapter.mergeRequests.update(repo, "20:5", { title: shortTitle });
+    expect(sent.at(-1)!.title).toBe(shortTitle);
+
+    // Any other call sending an MR title is clamped the same way.
+    await adapter.mergeRequests.update(repo, "20:5", { title: longTitle });
+    const updated = sent.at(-1)!.title!;
+    expect(Array.from(updated).length).toBeLessThanOrEqual(255);
+    expect(updated.endsWith("…")).toBe(true);
+
+    // The limit counts characters, not UTF-16 units or bytes: 255 astral
+    // characters stay untouched.
+    const astral = "😀".repeat(255);
+    expect(astral.length).toBe(510);
+    await adapter.mergeRequests.open(repo, {
+      title: astral,
+      description: "",
+      source_branch: "feature/csv",
+      target_branch: "main",
+    });
+    expect(sent.at(-1)!.title).toBe(astral);
+  });
+});
+
 describe("GitLabProviderAdapter merge preflight and transport failures", () => {
   const repo = { id: "20", path: "colony/dev" } as const;
   const urlPath = (url: Parameters<typeof fetch>[0]): string =>

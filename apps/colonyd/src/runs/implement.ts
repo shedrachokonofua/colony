@@ -14,6 +14,7 @@ import { SERVICE_ACTOR } from "../context.js";
 import {
   faultForFailure,
   modelFault,
+  providerRejectionFault,
   retryOrFailTaskWithBudget,
 } from "../fault-budget.js";
 import { trackRun } from "./registry.js";
@@ -583,12 +584,14 @@ async function executeImplement(
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     // startRun may have thrown before metadata existed, and a succeeded
-    // start carries no fault: either way the catch has no runner fault.
+    // start carries no fault: either way the catch has no runner fault. A
+    // deterministic provider HTTP rejection is classified here instead of
+    // the unknown fallback — retrying it cannot succeed (col-79c7045a.7).
     const fault = faultForFailure(
       ctx.store,
       { scope_id: scope.id, task_id: task.id, run_id: runId },
       reason,
-      undefined,
+      providerRejectionFault(err),
     );
     ctx.store.finishRun(runId, "failed", {
       error: reason,
