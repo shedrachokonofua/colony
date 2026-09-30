@@ -138,12 +138,12 @@ providers:
         max_tokens: 65536
         max_parallel_runs: 4
         cost: { input: 0, output: 0 }
-      # GPT-6 Astra via the ChatGPT subscription (LiteLLM chatgpt/*; the route
+      # GPT-6.1 Sol via the ChatGPT subscription (LiteLLM chatgpt/*; the route
       # is streaming-only, which Pi's transport satisfies). The subscription
-      # also serves the household's only OpenWebUI model, so Colony uses it
-      # for plan review alone - its lowest-volume role - one run at a time.
-      - id: chatgpt/gpt-6-astra
-        name: gpt-6-astra
+      # also serves the household's OpenWebUI model, so Colony uses it for
+      # plan review alone - its lowest-volume role - one run at a time.
+      - id: chatgpt/gpt-6.1-sol
+        name: gpt-6.1-sol
         reasoning: true
         # Operational cap: AA lists a 1M API context, but the subscription
         # route's limit is unverified.
@@ -240,8 +240,9 @@ agents:
     timeout_ms: 2700000
     max_turns: 200
   # The plan reviewer must not be the plan's author: muse-spark leads the
-  # architect chain, so no muse model reviews plans. gpt-6-astra leads
-  # (AA 53, the gateway's highest; 2/2 with all 5 planted flaws, 33 s).
+  # architect chain, so no muse model reviews plans. gpt-6.1-sol leads
+  # (replaced gpt-6-astra on 2026-09-30; same subscription route, streamed
+  # forced tool call verified through Colony's LiteLLM key).
   # grok-4.7 is out: in the 2026-09-29 audit of 324 plan-review blockers it
   # found the fewest real blockers per review (1.4, astra 3.5), raised the
   # most wrong or questionable ones (23%), and made 14 of the 18 rejections
@@ -250,7 +251,7 @@ agents:
   # step-5-preview (AA 44, AA-LCR 88.3%; 2/2 all 5 flaws; Step Plan pool).
   plan_reviewer:
     provider: openai_compatible
-    model: gpt-6-astra
+    model: gpt-6.1-sol
     fallback_models:
       - kimi-k3
       - glm-5.3
