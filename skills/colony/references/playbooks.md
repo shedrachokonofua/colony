@@ -48,11 +48,16 @@ A task or scope is `blocked` with a `blocked_reason`.
    no longer blocked.
 4. Scope: `scope_action unblock` — back to planning (no tasks), active (has
    tasks), or validating with a fresh validate budget.
-5. Plan-review block (scope `blocked` but keeps its plan): use the
-   plan-review escape endpoints (API-only):
-   `POST /scopes/:id/plan-review-continue` (fresh review budget),
-   `POST /scopes/:id/plan-review-approve` (human override),
-   `POST /scopes/:id/plan-review-replan` (reject with feedback).
+5. Plan-review block (scope `blocked` but keeps its plan):
+   `scope_action plan-review-continue` (back to the architect under a fresh
+   review budget), `scope_action plan-review-approve` (human override:
+   materialize the held plan as is), or `replan` with feedback (reject it;
+   `replan` reaches a held plan as well as a pending one).
+6. Main-pipeline block (reason names a head SHA and jobs): fix the named
+   jobs first — run the manual job, retry the infra-failed job, or land the
+   CI fix on the default branch — then `scope_action unblock`. The gate
+   re-checks the default branch pipeline before validation starts, so an
+   unblock before the pipeline is healthy blocks again.
 
 ## 5. Review an open MR
 
@@ -79,6 +84,14 @@ The task is `mr_open`.
 - Run wedged but healthy otherwise: `task_action stop` (`colony task <id>
 stop`) — abort and requeue without spending an attempt.
 - Queued but delayed: `task_action retry` — dispatch now.
+- A decision agents must follow (a provider choice, a URL, an authz rule, a
+  first-deploy fact): `add_directive` (`POST /scopes/:id/directives`). It is
+  appended to the scope's durable directives, which every later architect,
+  plan reviewer, implementer and code reviewer reads, in any unfinished
+  state — including `blocked` and `active` scopes with no plan to replan.
+  It changes neither plan nor status; runs in flight keep their packet.
+  Prefer it to growing the project brief: it is scoped, audited and
+  timestamped.
 
 ## 7. Discard work (last resort)
 

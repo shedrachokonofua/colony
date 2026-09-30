@@ -284,6 +284,15 @@ export interface ProviderPipelineJob {
   readonly id: ProviderId;
   readonly name: string;
   readonly status: string;
+  /** Pipeline stage (GitLab job `stage`); jobs list in pipeline order, so
+   *  stages appear in execution order. */
+  readonly stage?: string;
+  /** GitLab `allow_failure`: a failed or manual job with this set never
+   *  blocks the pipeline. */
+  readonly allow_failure?: boolean;
+  /** GitLab `failure_reason` for a failed job (script_failure,
+   *  runner_system_failure, ...). */
+  readonly failure_reason?: string;
   readonly web_url?: string;
   readonly metadata: ProviderMetadata;
 }
@@ -474,7 +483,14 @@ export interface ProviderAdapter {
   readonly pipelines: {
     getStatus(repo: ProviderRepoRef, id: ProviderId): Promise<ProviderPipeline>;
     trigger(repo: ProviderRepoRef, ref: string): Promise<ProviderPipeline>;
+    /** Failed/canceled jobs only: the diagnostics list. */
     listJobs(
+      repo: ProviderRepoRef,
+      pipelineId: ProviderId,
+    ): Promise<readonly ProviderPipelineJob[]>;
+    /** Every job of the pipeline in pipeline order, whatever its status:
+     *  the classifier input. */
+    listAllJobs(
       repo: ProviderRepoRef,
       pipelineId: ProviderId,
     ): Promise<readonly ProviderPipelineJob[]>;
@@ -612,6 +628,15 @@ export function redactBootstrapResult(
     env,
     redacted_env: redactedEnv(env),
   };
+}
+
+/** A scripted pipeline job: tests set these per commit SHA. */
+export interface FakePipelineJob {
+  readonly name: string;
+  readonly status: string;
+  readonly stage?: string;
+  readonly allow_failure?: boolean;
+  readonly failure_reason?: string;
 }
 
 export class FakeProviderAdapter implements ProviderAdapter {
@@ -905,28 +930,42 @@ export class FakeProviderAdapter implements ProviderAdapter {
     },
   };
 
-  /** Set pipeline status for a commit SHA. */
-  setPipelineStatusForSha(sha: string, status: string): void {
+  /** Set pipeline status for a commit SHA. `null` records "no pipeline for
+   *  this SHA": getStatus then throws the provider-shaped 404
+   *  (`pipeline_not_found`) exactly like the GitLab adapter. */
+  setPipelineStatusForSha(sha: string, status: string | null): void {
     this.pipelineStatusBySha.set(sha, status);
   }
 
   /** Pipeline status per commit SHA; unset SHAs report success. */
-  readonly pipelineStatusBySha = new Map<string, string>();
+  readonly pipelineStatusBySha = new Map<string, string | null>();
 
-  /** Failed/canceled job names per commit SHA; drives listJobs/getTrace. */
-  readonly pipelineJobsBySha = new Map<
-    string,
-    readonly { name: string; status: string }[]
-  >();
+  /** Job list per commit SHA; drives listJobs/listAllJobs/getTrace. */
+  readonly pipelineJobsBySha = new Map<string, readonly FakePipelineJob[]>();
+
+  /** Set the full job list of a commit SHA's pipeline. */
+  setPipelineJobsForSha(sha: string, jobs: readonly FakePipelineJob[]): void {
+    this.pipelineJobsBySha.set(sha, jobs);
+  }
+
   /** Trace text per job id, sanitized on read. */
   readonly traceTextByJobId = new Map<string, string>();
 
   readonly pipelines: ProviderAdapter["pipelines"] = {
-    getStatus: async (_repo, id) => ({
-      id,
-      status: this.pipelineStatusBySha.get(id) ?? "success",
-      metadata: this.meta(id),
-    }),
+    getStatus: async (_repo, id) => {
+      const status = this.pipelineStatusBySha.get(id);
+      if (status === null) {
+        throw Object.assign(new Error(`no pipeline for sha ${String(id)}`), {
+          status: 404,
+          body: "pipeline_not_found",
+        });
+      }
+      return {
+        id,
+        status: status ?? "success",
+        metadata: this.meta(id),
+      };
+    },
     trigger: async (repo, ref) => ({
       id: `pipeline-${repo.id}-${ref}`,
       status: "pending",
@@ -942,6 +981,28 @@ export class FakeProviderAdapter implements ProviderAdapter {
         id: `job-${pipelineId}-${job.name}`,
         name: job.name,
         status: job.status,
+        web_url: `https://fake.example/${pipelineId}/jobs/${job.name}`,
+        metadata: this.meta(`job-${pipelineId}-${job.name}`),
+      }));
+    },
+    listAllJobs: async (_repo, pipelineId) => {
+      const status = this.pipelineStatusBySha.get(pipelineId) ?? "success";
+      const jobs =
+        this.pipelineJobsBySha.get(pipelineId) ??
+        (status === "failed" || status === "canceled"
+          ? [{ name: "test", status }]
+          : []);
+      return jobs.map((job) => ({
+        id: `job-${pipelineId}-${job.name}`,
+        name: job.name,
+        status: job.status,
+        ...(job.stage !== undefined ? { stage: job.stage } : {}),
+        ...(job.allow_failure !== undefined
+          ? { allow_failure: job.allow_failure }
+          : {}),
+        ...(job.failure_reason !== undefined
+          ? { failure_reason: job.failure_reason }
+          : {}),
         web_url: `https://fake.example/${pipelineId}/jobs/${job.name}`,
         metadata: this.meta(`job-${pipelineId}-${job.name}`),
       }));

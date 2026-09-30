@@ -144,7 +144,10 @@ flowchart LR
    stalls (the same task blocked in four reviews running, or blockers not
    falling over four), or after twenty rejections. Continue sends the held
    plan back for revision under a fresh budget; approve accepts it as is;
-   replan adds a durable directive.
+   replan adds a durable directive. A directive can also be added on its own
+   (`POST /scopes/:id/directives`, MCP `add_directive`) in any unfinished
+   state without touching the plan; implementers and code reviewers receive
+   the directives too.
 3. **Approve.** With `hitl.mode: gated` you read the plan in the console and
    approve it or send it back with feedback. With `hitl.mode: yolo` the
    plan is applied automatically, unless the scope was opened `--manual`.
@@ -191,11 +194,32 @@ flowchart LR
    pipeline is still registering, the gate waits 60 s and retries; three
    refusals block.
    Gates serialize per provider repository, across scopes, so parallel tasks land one at a time.
+   After a merge lands, a **main pipeline watch** re-reads the default
+   branch's pipeline (bounded to one provider pass per scope per minute).
+   Red on the change itself files one `Main pipeline repair for <sha7>`
+   task that fixes the cause on the default branch; while that repair is
+   unfinished the scope's other queued tasks wait, so work never piles onto
+   a broken main. Each repair's merge re-checks the new head; after two
+   repairs merge without the pipeline going green, the scope blocks and
+   asks you. Infrastructure failures (`runner_system_failure`, stuck jobs,
+   …) and pipelines stopped at a manual job with work queued behind it
+   (a manual `apply` before the deploy jobs) are not repaired — they are
+   listed in `GET /operator/summary` (`waiting_on_you.main_pipeline`) and
+   block validation until you act. A trailing optional manual job with
+   nothing behind it (a production deploy) does not count, whatever GitLab's
+   aggregate status says. A head without a pipeline counts as pending for
+   five minutes (`COLONYD_MAIN_PIPELINE_GRACE_MS`), since GitLab creates it
+   a moment after the merge; after that it is a repo without CI, which is
+   unaffected.
 7. **Validate.** When every task is terminal and at least one merged, Colony
    clones the default branch fresh and runs the acceptance commands with no
    credentials. Pass: `done`. Fail: the architect gets the failure evidence
    and up to two repair rounds (fix the acceptance criteria, or append
    repair tasks to the graph); then the scope blocks and asks you.
+   Validation only starts behind a quiet main pipeline: a running pipeline
+   retries later at no cost, and a pipeline that is red, infra-failed, or
+   waiting on a manual job blocks the scope with the jobs to fix or run
+   before validation can start.
 
 Implementation execution failures are bounded (`COLONYD_MAX_ATTEMPTS`,
 default 3) with exponential backoff. That budget counts failed executions,

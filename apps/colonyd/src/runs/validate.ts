@@ -19,6 +19,7 @@ import type { ProviderRepoRef } from "@colony/provider";
 import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
+import { mainPipelineValidationGate } from "../main-watch.js";
 import { trackRun } from "./registry.js";
 import { buildCloneUrl } from "./merge-gate.js";
 import type { ArchitectExtensionInput } from "./packets.js";
@@ -199,6 +200,23 @@ async function dispatchValidation(
   ctx: ColonydContext,
   scope: Scope,
 ): Promise<void> {
+  // A quiet default branch is a precondition, checked before any run row
+  // exists: `running` retries later for free, a red main pipeline files its
+  // repair (or blocks the scope for the operator) instead of validating
+  // around it, and a repo with no CI validates as before. This is the only
+  // path to a validate run — the tick and POST /scopes/:id/unblock both
+  // arrive here.
+  const gate = await mainPipelineValidationGate(ctx, scope);
+  if (gate.kind !== "proceed") return;
+  // The gate awaited provider facts, so another dispatch (the tick behind a
+  // requestTick, say) can enter here too. The run row is the double-dispatch
+  // guard and it does not exist yet; this check and startRun below are one
+  // synchronous stretch, so no caller can interleave between them.
+  if (
+    ctx.store.activeRuns("validate").some((run) => run.scope_id === scope.id)
+  ) {
+    return;
+  }
   // Materialized scopes always carry acceptance criteria; if one is missing
   // record a failed run so the guard prevents re-dispatch every tick.
   if (scope.acceptance_json === null) {

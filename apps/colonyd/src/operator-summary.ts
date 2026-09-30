@@ -1,12 +1,14 @@
 import {
+  MAX_MAIN_PIPELINE_REPAIRS,
   parseFault,
   type Fault,
+  type MainPipelineCheckRow,
   type Run,
   type Store,
   type Task,
 } from "@colony/core";
 import { sanitizeTrace } from "@colony/provider";
-import { isTimeoutFault } from "./fault-budget.js";
+import { isPlatformFailure, isTimeoutFault } from "./fault-budget.js";
 
 /** The only two windows an operator page asks for; anything else is a 400. */
 export const OPERATOR_SUMMARY_WINDOWS = ["24h", "7d"] as const;
@@ -65,6 +67,15 @@ export interface BlockedScope {
   readonly age: string | null;
 }
 
+/** A default-branch pipeline waiting on its operator: infrastructure to
+ *  retry, a manual job to run, or a repair streak the watch gave up on. */
+export interface MainPipelineEntry {
+  readonly scope_id: string;
+  readonly sha: string;
+  readonly classification: MainPipelineCheckRow["classification"];
+  readonly job_names: readonly string[];
+}
+
 export interface LiveRun {
   readonly id: string;
   readonly kind: Run["kind"];
@@ -81,8 +92,15 @@ export interface ModelMetrics {
   readonly runs: number;
   readonly succeeded: number;
   readonly failed: number;
+  /** Failed runs carrying a non-model fault (harness, sandbox, provider, colonyd, unknown). */
+  readonly platform_failed: number;
   readonly timeouts: number;
-  readonly completion_rate: number;
+  /**
+   * Succeeded over the runs the model is accountable for: succeeded plus
+   * failed minus platform failures. Running and canceled runs are not
+   * outcomes. Null when the window holds no accountable outcome.
+   */
+  readonly completion_rate: number | null;
   readonly median_ms: number | null;
   readonly p90_ms: number | null;
 }
@@ -128,6 +146,7 @@ export interface WaitingOnYou {
   readonly awaiting_merge: AwaitingMerge[];
   readonly blocked_tasks: BlockedTask[];
   readonly blocked_scopes: BlockedScope[];
+  readonly main_pipeline: MainPipelineEntry[];
 }
 
 export interface OperatorSummary {
@@ -228,6 +247,7 @@ export function buildOperatorSummary(
   const awaitingMerge: AwaitingMerge[] = [];
   const blockedTasks: BlockedTask[] = [];
   const blockedScopes: BlockedScope[] = [];
+  const mainPipeline: MainPipelineEntry[] = [];
 
   const mrOpen: { task: Task }[] = [];
   for (const scope of store.listScopes()) {
@@ -239,6 +259,34 @@ export function buildOperatorSummary(
         scope_id: scope.id,
         blocked_reason: redacted(scope.blocked_reason),
         age: ageOf(scope.updated_at, nowMs),
+      });
+    }
+    // A main check waits on its operator when it is infra-red, sitting on a
+    // manual job, or script-red past the watch's repair-task bound.
+    const mainCheck = store.getMainCheck(scope.id);
+    if (
+      mainCheck &&
+      (mainCheck.classification === "failed_infra" ||
+        mainCheck.classification === "awaiting_manual" ||
+        (mainCheck.classification === "failed_script" &&
+          store.mainRepairStreak(scope.id) >= MAX_MAIN_PIPELINE_REPAIRS))
+    ) {
+      let job_names: readonly string[] = [];
+      try {
+        const parsed: unknown = JSON.parse(mainCheck.job_names_json);
+        if (Array.isArray(parsed)) {
+          job_names = parsed.filter(
+            (name): name is string => typeof name === "string",
+          );
+        }
+      } catch {
+        // A malformed names list must not take the summary down with it.
+      }
+      mainPipeline.push({
+        scope_id: scope.id,
+        sha: mainCheck.sha,
+        classification: mainCheck.classification,
+        job_names,
       });
     }
     for (const task of store.listTasks(scope.id)) {
@@ -339,6 +387,7 @@ export function buildOperatorSummary(
       awaiting_merge: cap(awaitingMerge),
       blocked_tasks: cap(blockedTasks),
       blocked_scopes: cap(blockedScopes),
+      main_pipeline: cap(mainPipeline),
     },
     live: live.map((run) => ({
       id: run.id,
@@ -420,7 +469,13 @@ function perModelMetrics(runs: readonly Run[]): Record<string, ModelMetrics> {
   const durations = new Map<string, number[]>();
   const counters = new Map<
     string,
-    { runs: number; succeeded: number; failed: number; timeouts: number }
+    {
+      runs: number;
+      succeeded: number;
+      failed: number;
+      platform_failed: number;
+      timeouts: number;
+    }
   >();
   for (const run of runs) {
     const model = run.model_id ?? "unknown";
@@ -428,11 +483,15 @@ function perModelMetrics(runs: readonly Run[]): Record<string, ModelMetrics> {
       runs: 0,
       succeeded: 0,
       failed: 0,
+      platform_failed: 0,
       timeouts: 0,
     };
     counter.runs += 1;
     if (run.status === "succeeded") counter.succeeded += 1;
     if (run.status === "failed") counter.failed += 1;
+    // The retry budget's own predicate: a sandbox outage or a harness
+    // watchdog is not the model's failure, so it must not read as one.
+    if (isPlatformFailure(run)) counter.platform_failed += 1;
     // Deliberate deviation from objective D's literal 'timeout_no_envelope':
     // isTimeoutFault is the one predicate that decides timeouts everywhere
     // else in colonyd, and it covers wall_timeout/timeout_no_envelope/
@@ -455,13 +514,16 @@ function perModelMetrics(runs: readonly Run[]): Record<string, ModelMetrics> {
   for (const model of [...counters.keys()].sort()) {
     const counter = counters.get(model)!;
     const sample = (durations.get(model) ?? []).slice().sort((a, b) => a - b);
+    const accountable =
+      counter.succeeded + counter.failed - counter.platform_failed;
     out[model] = {
       runs: counter.runs,
       succeeded: counter.succeeded,
       failed: counter.failed,
+      platform_failed: counter.platform_failed,
       timeouts: counter.timeouts,
       completion_rate:
-        counter.runs === 0 ? 0 : counter.succeeded / counter.runs,
+        accountable === 0 ? null : counter.succeeded / accountable,
       median_ms: percentileAt(sample, 0.5),
       p90_ms: percentileAt(sample, 0.9),
     };

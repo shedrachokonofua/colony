@@ -387,13 +387,20 @@ export class OperatorPage extends ColonyElement {
               rows: perModel.map(([model, m]) => {
                 const stats = /** @type {Record<string, any>} */ (m);
                 const rate = stats.completion_rate;
+                const platform = stats.platform_failed ?? 0;
+                // The rate's denominator: outcomes the model answers for.
+                const accountable = stats.succeeded + stats.failed - platform;
+                const completion =
+                  typeof rate === "number"
+                    ? `${Math.round(rate * 100)}% of ${accountable}`
+                    : "—";
                 return {
                   key: model,
                   cells: [
                     html`<span class="mono">${model}</span>`,
-                    typeof rate === "number"
-                      ? `${Math.round(rate * 100)}% of ${stats.runs}`
-                      : "—",
+                    platform > 0
+                      ? `${completion} · ${platform} platform`
+                      : completion,
                     stats.timeouts,
                     stats.median_ms === null
                       ? "—"

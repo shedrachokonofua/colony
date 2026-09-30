@@ -165,6 +165,13 @@ const toolError = (message: string): CallToolResult => ({
   content: [{ type: "text", text: message }],
 });
 
+/** The concatenated text content of a tool result (route bodies are text). */
+function resultText(result: CallToolResult): string {
+  return result.content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("");
+}
+
 const id = (label: string): z.ZodString => z.string().min(1).describe(label);
 
 const limit = z.coerce
@@ -440,7 +447,7 @@ function registerTools(
     {
       title: "Request replan",
       description:
-        "Reject the scope's pending plan with durable feedback; the architect revises it. Use when the plan is wrong or unsafe — do not approve a plan you intend to fix later. Only valid with a plan held (otherwise 409 NO_PLAN_PENDING).",
+        "Reject the scope's held plan with durable feedback; the architect revises it. Use when the plan is wrong or unsafe — do not approve a plan you intend to fix later. Works on a plan awaiting approval (planning) and on a plan the plan-review loop blocked with the plan held; otherwise 409 NO_PLAN_PENDING. To record a decision without rejecting a plan, use add_directive.",
       inputSchema: {
         scope_id: id("Scope id holding a plan."),
         feedback: z
@@ -453,11 +460,53 @@ function registerTools(
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ scope_id, feedback }) =>
+    async ({ scope_id, feedback }) => {
+      const scope = encodeURIComponent(scope_id);
+      const pending = await route({
+        method: "POST",
+        path: `/scopes/${scope}/replan`,
+        body: { feedback },
+      });
+      if (
+        !pending.isError ||
+        !resultText(pending).includes("NO_PLAN_PENDING")
+      ) {
+        return pending;
+      }
+      // A plan the review loop blocked is held, not pending: the same
+      // operator intent has its own route there.
+      const held = await route({
+        method: "POST",
+        path: `/scopes/${scope}/plan-review-replan`,
+        body: { feedback },
+      });
+      return held.isError ? pending : held;
+    },
+  );
+
+  server.registerTool(
+    "add_directive",
+    {
+      title: "Add operator directive",
+      description:
+        "Record an authoritative operator decision on a scope in any unfinished state (planning, active, validating, blocked, paused): a provider choice, a URL, an authz rule, a first-deploy fact. It is appended to the scope's durable directives, which every later architect, plan reviewer, implementer and code reviewer receives; runs already in flight keep their packet. It does not reject a plan or change status — use replan to reject a plan, task_action amend to steer one task.",
+      inputSchema: {
+        scope_id: id("Scope id."),
+        text: z
+          .string()
+          .min(1)
+          .max(4000)
+          .describe(
+            "The decision, stated as the end state or rule agents must follow.",
+          ),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    ({ scope_id, text }) =>
       route({
         method: "POST",
-        path: `/scopes/${encodeURIComponent(scope_id)}/replan`,
-        body: { feedback },
+        path: `/scopes/${encodeURIComponent(scope_id)}/directives`,
+        body: { text },
       }),
   );
 
@@ -466,13 +515,21 @@ function registerTools(
     {
       title: "Scope action",
       description:
-        "Lifecycle control on a scope. pause: reversible hold — aborts live runs, requeues their tasks and parks the scope (planning/active/validating/blocked only). resume: return a paused scope to the status it left. revalidate: retry acceptance validation (validating only). unblock: retry a blocked scope. abandon: PERMANENT — discards the scope and cancels every task in it; cannot be undone. Prefer pause over abandon; get_scope first — state guards answer 409 with the reason.",
+        "Lifecycle control on a scope. pause: reversible hold — aborts live runs, requeues their tasks and parks the scope (planning/active/validating/blocked only). resume: return a paused scope to the status it left. revalidate: retry acceptance validation (validating only). unblock: retry a blocked scope. plan-review-continue: for a scope the plan-review loop blocked with its plan held, send the plan back to the architect under a fresh review budget. plan-review-approve: for that same block, approve and materialize the held plan as is (human override). abandon: PERMANENT — discards the scope and cancels every task in it; cannot be undone. Prefer pause over abandon; get_scope first — state guards answer 409 with the reason.",
       inputSchema: {
         scope_id: id("Scope id."),
         action: z
-          .enum(["pause", "resume", "abandon", "revalidate", "unblock"])
+          .enum([
+            "pause",
+            "resume",
+            "abandon",
+            "revalidate",
+            "unblock",
+            "plan-review-continue",
+            "plan-review-approve",
+          ])
           .describe(
-            "pause|resume (reversible hold), revalidate|unblock (retry), abandon (PERMANENT discard).",
+            "pause|resume (reversible hold), revalidate|unblock|plan-review-continue (retry), plan-review-approve (override), abandon (PERMANENT discard).",
           ),
       },
       annotations: { readOnlyHint: false, destructiveHint: true },

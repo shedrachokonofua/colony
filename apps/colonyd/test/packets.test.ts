@@ -532,6 +532,99 @@ describe("project reference files in packets", () => {
     }
   });
 
+  it("an operator directive added to an active scope reaches the implementer and code reviewer", async () => {
+    const { store, app } = appWithStore();
+    const scope = await createScope(app, {
+      goal: "steer an active scope",
+      title: "steer an active scope",
+      repo: { path: "so/demo" },
+    });
+    store.setScopeStatus(scope.id, "planning", "human:op-1");
+    store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "test",
+        requirements: [{ id: "R1", text: "goal holds", tasks: [0] }],
+        journey: [{ after_task: 0, working_state: "goal holds" }],
+        acceptance: [{ description: "d", command: "true" }],
+        tasks: [
+          {
+            title: "task1",
+            spec: "spec1",
+            depends_on: [],
+            files: ["src/task1.ts"],
+            evidence: ["true"],
+          },
+        ],
+      },
+      "human:op-1",
+    );
+    const before = store.getScope(scope.id)!;
+    const decision =
+      "Keycloak lives at https://auth.shdr.ch, never keycloak.seven30.dev.";
+    const res = await app.request(`/scopes/${scope.id}/directives`, {
+      method: "POST",
+      headers: { ...ACTOR.headers, "content-type": "application/json" },
+      body: JSON.stringify({ text: decision }),
+    });
+    expect(res.status).toBe(200);
+    const s = store.getScope(scope.id)!;
+    // The plan and status are untouched: this is not a replan.
+    expect(s.status).toBe("active");
+    expect(s.plan_json).toBe(before.plan_json);
+    expect(
+      store
+        .listAudit({ scope_id: scope.id, limit: 50 })
+        .events.map((e) => e.action),
+    ).toContain("scope.directive_added");
+
+    const task = store.listTasks(scope.id)[0]!;
+    const repo = { id: "1", path: "so/demo" };
+    const impl = buildImplementPacket(
+      task,
+      s,
+      null,
+      [],
+      repo,
+      "colony/x",
+      "base",
+    );
+    const rev = buildReviewPacket(
+      task,
+      s,
+      null,
+      [],
+      repo,
+      "base",
+      FIRST_REVIEW_ROUND,
+    );
+    expect(impl.body).toContain("## Operator directives for this scope");
+    expect(impl.body).toContain(decision);
+    expect(rev.body).toContain(decision);
+    expect(rev.body).toContain(
+      "A change that contradicts a directive is a finding.",
+    );
+    expect(impl.body).not.toContain("contradicts a directive is a finding");
+  });
+
+  it("refuses a directive on a finished scope", async () => {
+    const { store, app } = appWithStore();
+    const scope = await createScope(app, {
+      goal: "finished",
+      title: "finished",
+      repo: { path: "so/demo" },
+    });
+    store.setScopeStatus(scope.id, "abandoned", "human:op-1");
+    const res = await app.request(`/scopes/${scope.id}/directives`, {
+      method: "POST",
+      headers: { ...ACTOR.headers, "content-type": "application/json" },
+      body: JSON.stringify({ text: "too late" }),
+    });
+    expect(res.status).toBe(409);
+    expect(store.getScope(scope.id)!.plan_directives).toBe("");
+  });
+
   it("implement packet instructs pre-submit rebase and lands existing MRs", async () => {
     const { store, app } = appWithStore();
     const scope = await createScope(app, {

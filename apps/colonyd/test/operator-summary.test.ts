@@ -74,8 +74,9 @@ interface Summary {
         runs: number;
         succeeded: number;
         failed: number;
+        platform_failed: number;
         timeouts: number;
-        completion_rate: number;
+        completion_rate: number | null;
         median_ms: number | null;
         p90_ms: number | null;
       }
@@ -443,6 +444,63 @@ describe("GET /operator/summary", () => {
     expect(model.completion_rate).toBe(0.5);
     expect(model.median_ms).toBe(10 * 60_000);
     expect(model.p90_ms).toBe(20 * 60_000);
+  });
+
+  it("keeps platform failures out of a model's completion rate", async () => {
+    const { app, store } = setup();
+    const scope = seedScope(store, { goal: "platform" });
+    const model_id = "router/muse-spark-1.3";
+    const at = iso(-3_600_000);
+    const finished = new Date(Date.parse(at) + 60_000).toISOString();
+    const base = {
+      scopeId: scope.id,
+      kind: "implement" as const,
+      model_id,
+      started_at: at,
+      finished_at: finished,
+    };
+    seedRun(store, { ...base, status: "succeeded" });
+    seedRun(store, {
+      ...base,
+      status: "failed",
+      fault: { layer: "model", code: "max_turns" },
+    });
+    seedRun(store, {
+      ...base,
+      status: "failed",
+      fault: { layer: "sandbox", code: "sandbox_cr_missing" },
+    });
+    seedRun(store, {
+      ...base,
+      status: "failed",
+      fault: { layer: "harness", code: "watchdog_wedge" },
+    });
+
+    const summary = await get(app, "?window=24h");
+    const model = summary.metrics.per_model[model_id]!;
+    expect(model.runs).toBe(4);
+    expect(model.failed).toBe(3);
+    expect(model.platform_failed).toBe(2);
+    // One success against one model failure; the sandbox outage and the
+    // harness watchdog are not the model's to answer for.
+    expect(model.completion_rate).toBe(0.5);
+  });
+
+  it("reports no completion rate when every failure is the platform's", async () => {
+    const { app, store } = setup();
+    const scope = seedScope(store, { goal: "outage" });
+    seedRun(store, {
+      scopeId: scope.id,
+      kind: "implement",
+      model_id: "kimi/k3",
+      started_at: iso(-3_600_000),
+      finished_at: iso(-3_500_000),
+      status: "failed",
+      fault: { layer: "sandbox", code: "sandbox_cr_missing" },
+    });
+
+    const summary = await get(app, "?window=24h");
+    expect(summary.metrics.per_model["kimi/k3"]!.completion_rate).toBeNull();
   });
 
   it("redacts a credential-bearing unclassified fault and never echoes the run error", async () => {

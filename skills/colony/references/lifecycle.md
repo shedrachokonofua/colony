@@ -107,6 +107,9 @@ time. Recurring shapes:
 - plan-review rejections exhausted the plan-review budget (scope keeps
   `plan_json` — recoverable via the plan-review escape endpoints,
   see [playbooks.md](playbooks.md));
+- the main pipeline is red past its repair bound (the reason names the head
+  SHA and the failing jobs), failed on infrastructure, or waits on a manual
+  job (`waiting_on_you.main_pipeline` in `GET /operator/summary`);
 - operator action recorded its own reason.
 
 Always read the reason **and** the runs/events behind it before unblocking.

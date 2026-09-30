@@ -756,6 +756,41 @@ export class GitLabProviderAdapter implements ProviderAdapter {
           }),
         );
     },
+    // Every job whatever its status: the classification input. Sorted by id
+    // ascending — the creation order, so stages appear in pipeline order.
+    listAllJobs: async (repo, pipelineId) => {
+      type GitLabJob = GitLabEntity & {
+        readonly name?: string;
+        readonly status?: string;
+        readonly stage?: string;
+        readonly allow_failure?: boolean;
+        readonly failure_reason?: string;
+        readonly web_url?: string;
+      };
+      const jobs = await this.repoApi<GitLabJob[]>(
+        repo.id,
+        `/pipelines/${encodePath(pipelineId)}/jobs?per_page=100`,
+      );
+      return jobs
+        .slice()
+        .sort((a, b) => Number(a.id) - Number(b.id))
+        .map(
+          (job): ProviderPipelineJob => ({
+            id: String(job.id),
+            name: job.name ?? String(job.id),
+            status: job.status ?? "unknown",
+            ...(job.stage !== undefined ? { stage: job.stage } : {}),
+            ...(job.allow_failure !== undefined
+              ? { allow_failure: job.allow_failure }
+              : {}),
+            ...(job.failure_reason !== undefined
+              ? { failure_reason: job.failure_reason }
+              : {}),
+            ...(job.web_url ? { web_url: job.web_url } : {}),
+            metadata: { ...meta(this.provider, job), id: String(job.id) },
+          }),
+        );
+    },
     getTrace: async (repo, jobId) => {
       // A 200 with an empty body is a job that never produced output
       // (canceled before start, or an expired artifact): requestPage leaves

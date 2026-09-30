@@ -106,6 +106,10 @@ const feedbackBody = z
   .object({ feedback: z.string().min(1).max(4000) })
   .strict();
 
+const directiveBody = z
+  .object({ text: z.string().trim().min(1).max(4000) })
+  .strict();
+
 const acceptanceBody = z
   .object({
     acceptance: z
@@ -933,6 +937,39 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       detail: { feedback: parsed.data.feedback },
     });
     ctx.requestTick();
+    return c.json(updated);
+  });
+
+  // Operator decision for a scope in any unfinished state: appended to the
+  // durable directives every later architect, plan reviewer, implementer and
+  // code reviewer reads. Unlike /replan it leaves the plan and status alone,
+  // so a blocked or active scope can be steered without a pending plan.
+  app.post("/scopes/:id/directives", async (c) => {
+    const scope = ctx.store.getScope(c.req.param("id"));
+    if (!scope) return notFound(c, "scope");
+    if (["done", "abandoned"].includes(scope.status)) {
+      return c.json(
+        {
+          error: {
+            code: "SCOPE_FINISHED",
+            message: "cannot add a directive to a finished scope",
+          },
+        },
+        409,
+      );
+    }
+    const parsed = directiveBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    const actor = c.get("actor");
+    const updated = ctx.store.appendOperatorDirective(
+      scope.id,
+      parsed.data.text,
+      actor,
+    );
+    ctx.store.audit(actor, "scope.directive_added", {
+      scope_id: scope.id,
+      detail: { text: parsed.data.text },
+    });
     return c.json(updated);
   });
 

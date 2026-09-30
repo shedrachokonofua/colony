@@ -53,6 +53,15 @@ const envSchema = z.object({
   COLONY_RESUME_LEASE_TTL_MS: z.coerce.number().int().default(900_000),
   COLONYD_MAX_CONCURRENT: z.coerce.number().int().default(1),
   COLONYD_MAX_ATTEMPTS: z.coerce.number().int().default(3),
+  /** Minimum gap (ms) between main-pipeline watch provider calls per scope:
+   *  the watch reads the default-branch pipeline after merges land, bounded
+   *  so it can never become a poll-per-tick. */
+  COLONYD_MAIN_WATCH_INTERVAL_MS: z.coerce.number().int().default(60_000),
+  /** How long (ms) a default-branch head may show no pipeline before the
+   *  watch settles on "no CI": GitLab creates a merge commit's pipeline a
+   *  moment after the merge, and a head read inside that window must not
+   *  pass as a repo without CI. */
+  COLONYD_MAIN_PIPELINE_GRACE_MS: z.coerce.number().int().default(300_000),
   /** Single-token mode: use GITLAB_TOKEN directly in packet credentials. */
   COLONYD_SINGLE_TOKEN: boolFromEnv.default(false),
 

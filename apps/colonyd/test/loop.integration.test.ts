@@ -10,6 +10,7 @@ import {
   it,
 } from "bun:test";
 import { resetEnvCache } from "@colony/config";
+import { taskId } from "@colony/domain";
 import {
   FakeAgentRuntimeAdapter,
   type AgentRunEnvironment,
@@ -21,6 +22,7 @@ import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
 import { awaitPendingRuns, trackRun } from "../src/runs/registry.js";
 import { buildApp } from "../src/http.js";
+import { buildOperatorSummary } from "../src/operator-summary.js";
 import type { CodeReviewRoundV1 } from "@colony/schemas";
 import type { GateFailure } from "../src/runs/merge-gate.js";
 import type { ValidateExecutor } from "../src/runs/validate.js";
@@ -57,6 +59,11 @@ const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 const SHA_C = "c".repeat(40);
 const SHA_D = "d".repeat(40);
+/** Default-branch heads the main-pipeline scenarios move between. */
+const MAIN_SHA_1 = "e".repeat(40);
+const MAIN_SHA_2 = "f".repeat(40);
+const MAIN_SHA_3 = "0".repeat(40);
+const MAIN_SHA_4 = "1".repeat(40);
 
 let dir: string;
 let provider: FakeProviderAdapter;
@@ -500,6 +507,11 @@ async function bootHeadless(
   process.env["COLONYD_DB_PATH"] = dbPath;
   process.env["COLONYD_MAX_ATTEMPTS"] = "3";
   process.env["COLONYD_MAX_CONCURRENT"] = "1";
+  // The watch is bounded to one provider pass per interval in production;
+  // scenarios drive many ticks per second and must see every change.
+  process.env["COLONYD_MAIN_WATCH_INTERVAL_MS"] = "0";
+  // Likewise the no-pipeline grace: scenarios that want the race set it.
+  process.env["COLONYD_MAIN_PIPELINE_GRACE_MS"] = "0";
   process.env["COLONY_CONFIG_PATH"] = options.reviewRequired
     ? reviewConfigPath
     : configPath;
@@ -2618,4 +2630,452 @@ describe("colonyd fake end-to-end loop", () => {
       await seam.shutdown();
     }
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Main pipeline watch: what the factory does with the default branch after
+// task merges land on it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive `taskId` to merged. `onMerge` runs the moment the provider reports
+ * the merge — before any tick can observe it — so scenarios advance the
+ * default branch exactly as production does when a merge lands on it.
+ */
+async function driveTaskToMerged(
+  taskId: string,
+  onMerge: () => Promise<void> | void,
+): Promise<void> {
+  for (let i = 0; i < 40; i += 1) {
+    await tickAndSettle();
+    const task = handle.ctx.store.getTask(taskId);
+    const mr =
+      task?.mr_iid !== undefined && task?.mr_iid !== null
+        ? await provider.mergeRequests.get(
+            { id: repoId },
+            `${repoId}:${task.mr_iid}`,
+          )
+        : null;
+    // The merge gate lands the merge AND transitions the task in one settle,
+    // so the provider-side merge is the moment to advance main: any later is
+    // a tick observing a merged task against an unmoved default branch.
+    if (mr?.state === "merged" || task?.state === "merged") {
+      await onMerge();
+      return;
+    }
+  }
+  throw new Error(`task ${taskId} never merged`);
+}
+
+describe("main pipeline watch", () => {
+  it("files exactly one repair for a failed_script main pipeline and holds the next task until main is green", async () => {
+    // Production shape (Brink, 2026-09-30): a merge landed and the default
+    // branch's pipeline failed at the merged head. The factory must repair
+    // main before it dispatches the task queued behind the merge.
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_1);
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "failed");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      {
+        name: "unit-tests",
+        status: "failed",
+        stage: "test",
+        failure_reason: "script_failure",
+      },
+    ]);
+    provider.traceTextByJobId.set(
+      `job-${MAIN_SHA_1}-unit-tests`,
+      "before\nAssertionError: B must hold\nafter",
+    );
+    const scopeId = await createScope("main pipeline repair hold");
+    const store = handle.ctx.store;
+    const taskAId = `${scopeId}.1`;
+    const taskBId = `${scopeId}.2`;
+    // addTask numbers the repair after the plan's tasks. Park its first
+    // attempts so the hold is observable without racing the repair's own
+    // merge (the fake gate would merge it within three ticks).
+    const repairId = taskId(`${scopeId}.3`);
+    script.implementerFailures.set(repairId, 2);
+
+    // A merges; at that same tick the watch files the repair and B waits.
+    for (let i = 0; i < 30; i += 1) {
+      await tickAndSettle();
+      if (store.getTask(taskAId)?.state === "merged") break;
+    }
+    expect(store.getTask(taskAId)?.state).toBe("merged");
+    const repairs = () =>
+      store
+        .listTasks(scopeId)
+        .filter((t) => t.title.startsWith("Main pipeline repair for "));
+    expect(repairs()).toHaveLength(1);
+    const repair = repairs()[0]!;
+    expect(repair.id).toBe(repairId);
+    expect(repair.title).toBe(
+      `Main pipeline repair for ${MAIN_SHA_1.slice(0, 7)}: unit-tests`,
+    );
+    expect(repair.spec).toContain(MAIN_SHA_1);
+    expect(repair.spec).toContain("AssertionError: B must hold");
+    expect(store.taskDeps(repair.id)).toHaveLength(0);
+
+    // The repair is dispatched; B is not. A red main holds it for as many
+    // ticks as it stays red, and the head never earns a second repair.
+    for (let i = 0; i < 6; i += 1) {
+      await tickAndSettle();
+      expect(repairs()).toHaveLength(1);
+      expect(store.getTask(taskBId)?.state).toBe("queued");
+    }
+    expect(script.implementerCalls.has(taskBId)).toBe(false);
+    expect(
+      store.runsForTask(repairId).filter((r) => r.kind === "implement").length,
+    ).toBeGreaterThanOrEqual(1);
+
+    // The repair merges and the fix is green at the new head: B resumes.
+    script.implementerFailures.delete(repairId);
+    store.clearRetryDelay(repairId);
+    await driveTaskToMerged(repairId, async () => {
+      await provider.branches.create({ id: repoId }, "main", MAIN_SHA_2);
+      provider.setPipelineStatusForSha(MAIN_SHA_2, "success");
+    });
+    await tickAndSettle();
+    expect(store.getTask(taskBId)?.state).not.toBe("queued");
+    expect(script.implementerCalls.has(taskBId)).toBe(true);
+    const actions = store
+      .listAudit({ scope_id: scopeId, limit: 1000 })
+      .events.map((row) => row.action);
+    expect(
+      actions.filter((a) => a === "delivery.main_repair_filed"),
+    ).toHaveLength(1);
+    expect(actions).toContain("delivery.main_status");
+  }, 60_000);
+
+  it("awaiting_manual blocks validation naming the manual job; unblock after it runs validates", async () => {
+    // Production shape (Brief, 2026-09-30): the scope must not validate
+    // while the main pipeline sits on a manual `apply`.
+    script.singleTask = true;
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_1);
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "manual");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      { name: "build", status: "success", stage: "build" },
+      {
+        name: "apply",
+        status: "manual",
+        stage: "apply",
+        allow_failure: false,
+      },
+      { name: "deploy-verify", status: "created", stage: "verify" },
+    ]);
+    const scopeId = await createScope("manual apply before validation");
+    const store = handle.ctx.store;
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      if (store.getScope(scopeId)?.status === "blocked") break;
+    }
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
+    expect(scope.blocked_reason).toContain(MAIN_SHA_1.slice(0, 7));
+    expect(scope.blocked_reason).toContain("apply");
+    expect(scope.blocked_reason).toContain("deploy-verify");
+    // Nothing validated, and nothing was repaired: this waits on a human.
+    expect(
+      store.runsForScope(scopeId).filter((r) => r.kind === "validate"),
+    ).toHaveLength(0);
+    expect(
+      store
+        .listTasks(scopeId)
+        .some((t) => t.title.startsWith("Main pipeline repair for ")),
+    ).toBe(false);
+    expect(
+      buildOperatorSummary(store, { window: "24h" }).waiting_on_you
+        .main_pipeline,
+    ).toContainEqual({
+      scope_id: scopeId,
+      sha: MAIN_SHA_1,
+      classification: "awaiting_manual",
+      job_names: ["apply", "deploy-verify"],
+    });
+
+    // The operator runs `apply`, the pipeline completes green, and the
+    // unblock lets the gate re-check: validation passes and the scope done.
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "success");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      { name: "build", status: "success", stage: "build" },
+      { name: "apply", status: "success", stage: "apply" },
+      { name: "deploy-verify", status: "success", stage: "verify" },
+    ]);
+    const app = buildApp(handle.ctx);
+    const res = await app.request(`/scopes/${scopeId}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(res.status).toBe(200);
+    await driveToDone(scopeId);
+    expect(store.getScope(scopeId)!.status).toBe("done");
+    expect(
+      store
+        .runsForScope(scopeId)
+        .some((r) => r.kind === "validate" && r.status === "succeeded"),
+    ).toBe(true);
+  }, 60_000);
+
+  it("a repo with no pipeline for the default branch validates as before", async () => {
+    script.singleTask = true;
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_1);
+    provider.setPipelineStatusForSha(MAIN_SHA_1, null);
+    const scopeId = await createScope("no ci on main");
+    const store = handle.ctx.store;
+    await driveToDone(scopeId);
+    expect(store.getScope(scopeId)!.status).toBe("done");
+    expect(
+      store
+        .runsForScope(scopeId)
+        .some((r) => r.kind === "validate" && r.status === "succeeded"),
+    ).toBe(true);
+    expect(store.getMainCheck(scopeId)?.classification).toBe("none");
+    expect(
+      store
+        .listTasks(scopeId)
+        .some((t) => t.title.startsWith("Main pipeline repair for ")),
+    ).toBe(false);
+  }, 60_000);
+
+  it("a merged head whose pipeline is not created yet waits instead of validating as a repo without CI", async () => {
+    // GitLab creates the merge commit's pipeline a moment after the merge,
+    // and the watch reads the head in the tick that observes the merge. A
+    // 404 inside that window must neither validate nor settle as "none" —
+    // or the pipeline that then fails would never be read.
+    script.singleTask = true;
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_1);
+    provider.setPipelineStatusForSha(MAIN_SHA_1, null);
+    // The harness boots with the grace at 0; this scenario needs the window.
+    const env: { mainPipelineGraceMs?: number } = handle.ctx.env;
+    env.mainPipelineGraceMs = 600_000;
+    const scopeId = await createScope("pipeline not created yet");
+    const store = handle.ctx.store;
+    const taskId = `${scopeId}.1`;
+    for (let i = 0; i < 30; i += 1) {
+      await tickAndSettle();
+      if (store.getTask(taskId)?.state === "merged") break;
+    }
+    expect(store.getTask(taskId)?.state).toBe("merged");
+    for (let i = 0; i < 4; i += 1) await tickAndSettle();
+    expect(store.getScope(scopeId)!.status).not.toBe("done");
+    expect(store.runsForScope(scopeId).some((r) => r.kind === "validate")).toBe(
+      false,
+    );
+    expect(store.getMainCheck(scopeId)?.classification).toBe("running");
+
+    // The pipeline appears and fails: the watch still reads this head.
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "failed");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      {
+        name: "unit-tests",
+        status: "failed",
+        stage: "test",
+        failure_reason: "script_failure",
+      },
+    ]);
+    for (let i = 0; i < 4; i += 1) await tickAndSettle();
+    expect(
+      store
+        .listTasks(scopeId)
+        .filter((t) => t.title.startsWith("Main pipeline repair for "))
+        .map((t) => t.title),
+    ).toEqual([
+      `Main pipeline repair for ${MAIN_SHA_1.slice(0, 7)}: unit-tests`,
+    ]);
+  }, 60_000);
+
+  it("failed_infra blocks validation naming the jobs to retry, without filing a repair", async () => {
+    script.singleTask = true;
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_1);
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "failed");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      {
+        name: "integration",
+        status: "failed",
+        stage: "test",
+        failure_reason: "runner_system_failure",
+      },
+    ]);
+    const scopeId = await createScope("infra red main");
+    const store = handle.ctx.store;
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      if (store.getScope(scopeId)?.status === "blocked") break;
+    }
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
+    expect(scope.blocked_reason).toContain(MAIN_SHA_1.slice(0, 7));
+    expect(scope.blocked_reason).toContain("integration");
+    expect(
+      store
+        .listTasks(scopeId)
+        .some((t) => t.title.startsWith("Main pipeline repair for ")),
+    ).toBe(false);
+    expect(
+      store.runsForScope(scopeId).filter((r) => r.kind === "validate"),
+    ).toHaveLength(0);
+    expect(
+      buildOperatorSummary(store, { window: "24h" }).waiting_on_you
+        .main_pipeline,
+    ).toContainEqual({
+      scope_id: scopeId,
+      sha: MAIN_SHA_1,
+      classification: "failed_infra",
+      job_names: ["integration"],
+    });
+  }, 60_000);
+
+  it("two merged repairs without a green pipeline block the scope; a later success resets the streak", async () => {
+    script.singleTask = true;
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_1);
+    const redJobs = (name: string) => [
+      {
+        name,
+        status: "failed",
+        stage: "test",
+        failure_reason: "script_failure",
+      },
+    ];
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "failed");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, redJobs("unit-tests"));
+    const scopeId = await createScope("repair streak bound");
+    const store = handle.ctx.store;
+
+    // Task merges; the first red head earns repair 1.
+    for (let i = 0; i < 30; i += 1) {
+      await tickAndSettle();
+      if (store.getTask(`${scopeId}.1`)?.state === "merged") break;
+    }
+    const repairs = () =>
+      store
+        .listTasks(scopeId)
+        .filter((t) => t.title.startsWith("Main pipeline repair for "));
+    expect(repairs()).toHaveLength(1);
+
+    // Repair 1 merges onto a head that is red too: repair 2 is filed for it.
+    await driveTaskToMerged(repairs()[0]!.id, async () => {
+      await provider.branches.create({ id: repoId }, "main", MAIN_SHA_2);
+      provider.setPipelineStatusForSha(MAIN_SHA_2, "failed");
+      provider.setPipelineJobsForSha(MAIN_SHA_2, redJobs("unit-tests"));
+    });
+    await tickAndSettle();
+    expect(repairs()).toHaveLength(2);
+    expect(repairs()[1]!.title).toContain(MAIN_SHA_2.slice(0, 7));
+
+    // Repair 2 merges onto a third red head. Two merged repairs, no green in
+    // between: the bound trips — no third repair, the scope blocks for the
+    // operator naming the head and the failing jobs.
+    await driveTaskToMerged(repairs()[1]!.id, async () => {
+      await provider.branches.create({ id: repoId }, "main", MAIN_SHA_3);
+      provider.setPipelineStatusForSha(MAIN_SHA_3, "failed");
+      provider.setPipelineJobsForSha(MAIN_SHA_3, redJobs("unit-tests"));
+    });
+    await tickAndSettle();
+    expect(repairs()).toHaveLength(2);
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
+    expect(scope.blocked_reason).toContain(MAIN_SHA_3.slice(0, 7));
+    expect(scope.blocked_reason).toContain("unit-tests");
+    expect(
+      buildOperatorSummary(store, { window: "24h" }).waiting_on_you
+        .main_pipeline,
+    ).toContainEqual({
+      scope_id: scopeId,
+      sha: MAIN_SHA_3,
+      classification: "failed_script",
+      job_names: ["unit-tests"],
+    });
+
+    // A later success resets the streak: the operator fixes main by hand and
+    // unblocks, and the next green check clears the bound.
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_4);
+    provider.setPipelineStatusForSha(MAIN_SHA_4, "success");
+    provider.setPipelineJobsForSha(MAIN_SHA_4, [
+      { name: "unit-tests", status: "success", stage: "test" },
+    ]);
+    const app = buildApp(handle.ctx);
+    const res = await app.request(`/scopes/${scopeId}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(res.status).toBe(200);
+    await tickAndSettle();
+    expect(store.getMainCheck(scopeId)?.classification).toBe("success");
+    expect(store.mainRepairStreak(scopeId)).toBe(0);
+  }, 60_000);
+
+  it("the unblock path's direct validation call re-checks main", async () => {
+    // POST /scopes/:id/unblock calls runValidation directly for a
+    // validation-blocked scope (bypassing tick dispatch); the gate must
+    // re-check the default branch pipeline on that path too.
+    script.singleTask = true;
+    await provider.branches.create({ id: repoId }, "main", MAIN_SHA_1);
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "success");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      { name: "build", status: "success", stage: "build" },
+    ]);
+    const scopeId = await createScope("unblock re-checks main");
+    const store = handle.ctx.store;
+    // A validation that never produced a verdict re-runs; while its rerun is
+    // pending, main starts waiting on a manual job.
+    script.validateInfraFailOnce = true;
+    for (let i = 0; i < 25; i += 1) {
+      await tickAndSettle();
+      if (
+        store
+          .runsForScope(scopeId)
+          .some((r) => r.kind === "validate" && r.status === "failed")
+      ) {
+        break;
+      }
+    }
+    expect(
+      store.runsForScope(scopeId).filter((r) => r.kind === "validate"),
+    ).toHaveLength(1);
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "manual");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      { name: "build", status: "success", stage: "build" },
+      {
+        name: "apply",
+        status: "manual",
+        stage: "apply",
+        allow_failure: false,
+      },
+      // The deploy the manual apply gates: without work behind it a
+      // trailing manual job does not hold delivery.
+      { name: "deploy", status: "created", stage: "deploy" },
+    ]);
+    const app = buildApp(handle.ctx);
+    const res = await app.request(`/scopes/${scopeId}/revalidate`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(res.status).toBe(200);
+    for (let i = 0; i < 10; i += 1) {
+      await settle();
+      if (store.getScope(scopeId)?.status === "blocked") break;
+    }
+    const scope = store.getScope(scopeId)!;
+    expect(scope.status).toBe("blocked");
+    expect(scope.blocked_reason).toContain("apply");
+    expect(
+      store.runsForScope(scopeId).filter((r) => r.kind === "validate"),
+    ).toHaveLength(1);
+
+    // The operator runs the job; the validation-blocked unblock dispatches
+    // validation directly and the gate lets it through.
+    provider.setPipelineStatusForSha(MAIN_SHA_1, "success");
+    provider.setPipelineJobsForSha(MAIN_SHA_1, [
+      { name: "build", status: "success", stage: "build" },
+      { name: "apply", status: "success", stage: "apply" },
+      { name: "deploy", status: "success", stage: "deploy" },
+    ]);
+    const res2 = await app.request(`/scopes/${scopeId}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": ACTOR },
+    });
+    expect(res2.status).toBe(200);
+    await driveToDone(scopeId);
+    expect(store.getScope(scopeId)!.status).toBe("done");
+  }, 60_000);
 });

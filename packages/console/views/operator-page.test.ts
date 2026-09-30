@@ -85,10 +85,22 @@ function summary(overrides = {}) {
           runs: 3,
           succeeded: 2,
           failed: 1,
+          platform_failed: 0,
           timeouts: 1,
           completion_rate: 2 / 3,
           median_ms: 420_000,
           p90_ms: 900_000,
+        },
+        // A sandbox outage failed two of its runs: the rate covers the other two.
+        "muse-spark": {
+          runs: 4,
+          succeeded: 1,
+          failed: 3,
+          platform_failed: 2,
+          timeouts: 0,
+          completion_rate: 0.5,
+          median_ms: 60_000,
+          p90_ms: 60_000,
         },
       },
       faults_by_layer: { model: 1, unknown: 2 },
@@ -354,6 +366,7 @@ describe("operator-page metrics", () => {
     ]);
     expect(rows(tables[1])).toEqual([
       ["deepseek-v4-flash", "67% of 3", "1", "7m 00s"],
+      ["muse-spark", "50% of 2 · 2 platform", "0", "1m 00s"],
     ]);
     expect(rows(tables[2])).toEqual([
       ["model", "1"],

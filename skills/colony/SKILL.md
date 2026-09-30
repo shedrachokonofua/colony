@@ -41,8 +41,10 @@ The same HTTP API behind everything; pick by agent kind:
    waiting, merges awaiting sign-off, blocked work, live/stalled runs.
 2. **Read before acting.** `get_scope` → `get_task` → `get_run` →
    `run_events`. Never act on an ID you have not just read.
-3. **Act.** `approve_plan` / `replan`, `scope_action`, `task_action`
-   (CLI: `colony approve`, `colony replan`, `colony pause`, `colony task`).
+3. **Act.** `approve_plan` / `replan`, `add_directive`, `scope_action`,
+   `task_action` (CLI: `colony approve`, `colony replan`, `colony pause`,
+   `colony task`). Record decisions agents must follow with `add_directive`,
+   not by editing the project brief.
 4. **Verify.** Re-read the entity; the new state and the audit trail are
    the proof, not the tool's return.
 

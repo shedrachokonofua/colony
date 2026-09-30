@@ -6,3 +6,4 @@ export * from "./store.js";
 export * from "./delivery-status.js";
 export * from "./artifacts.js";
 export * from "./task-cost.js";
+export * from "./main-pipeline.js";

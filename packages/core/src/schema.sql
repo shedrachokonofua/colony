@@ -169,3 +169,15 @@ CREATE TABLE IF NOT EXISTS pipeline_observations (
   web_url TEXT,
   observed_at TEXT NOT NULL
 );
+
+-- The latest default-branch pipeline check per scope: the main watch is the
+-- only writer. green_at marks the last success/none observation and starts
+-- the epoch the repair-streak bound counts merged repairs from.
+CREATE TABLE IF NOT EXISTS main_pipeline_checks (
+  scope_id TEXT PRIMARY KEY REFERENCES scopes(id),
+  sha TEXT NOT NULL,
+  classification TEXT NOT NULL CHECK (classification IN ('none','running','failed_script','failed_infra','awaiting_manual','success','canceled')),
+  job_names_json TEXT NOT NULL DEFAULT '[]',
+  checked_at TEXT NOT NULL,
+  green_at TEXT
+);

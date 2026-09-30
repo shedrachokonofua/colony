@@ -124,6 +124,7 @@ const EXPECTED_TOOLS = [
   "open_scope",
   "approve_plan",
   "replan",
+  "add_directive",
   "scope_action",
   "task_action",
   "colony_guide",
@@ -248,6 +249,52 @@ describe("mcp tools", () => {
       const result = paused as CallToolResult;
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain("NOT_PAUSABLE");
+    } finally {
+      await close();
+    }
+  });
+
+  it("replans a plan the review loop blocked, and records a directive without touching status", async () => {
+    const { app, store } = setup();
+    const scope = store.createScope({
+      goal: "held plan",
+      title: "held plan",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    store.setScopeStatus(scope.id, "planning", "human:op");
+    const plan = JSON.stringify({ kind: "architect_decomposition", tasks: [] });
+    store.setScopePlan(scope.id, plan);
+    store.setScopeStatus(scope.id, "blocked", "svc:colonyd", {
+      blocked_reason: "plan review rejected 10 consecutive times",
+      plan_json: plan,
+    });
+    const { client, close } = await connect(app);
+    try {
+      const directive = (await client.callTool({
+        name: "add_directive",
+        arguments: {
+          scope_id: scope.id,
+          text: "Email goes through Cloudflare.",
+        },
+      })) as CallToolResult;
+      expect(directive.isError).toBeFalsy();
+      const afterDirective = store.getScope(scope.id)!;
+      expect(afterDirective.status).toBe("blocked");
+      expect(afterDirective.plan_directives).toContain(
+        "Email goes through Cloudflare.",
+      );
+
+      // No plan is pending approval, yet the blocked plan is held: replan
+      // reaches it instead of answering NO_PLAN_PENDING.
+      const replanned = (await client.callTool({
+        name: "replan",
+        arguments: { scope_id: scope.id, feedback: "Split task 1." },
+      })) as CallToolResult;
+      expect(replanned.isError).toBeFalsy();
+      const after = store.getScope(scope.id)!;
+      expect(after.status).toBe("planning");
+      expect(after.plan_directives).toContain("Split task 1.");
     } finally {
       await close();
     }

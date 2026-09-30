@@ -6,6 +6,7 @@ import {
 } from "@colony/provider";
 import { createHash } from "node:crypto";
 import {
+  mainPipelineRepairOf,
   retryBackoffMs,
   TERMINAL_TASK_STATES,
   type PipelineObservationRow,
@@ -50,6 +51,7 @@ import {
 } from "./fault-budget.js";
 import { abortRunsAndWait, activeTrackedRunIds } from "./runs/registry.js";
 import { destroyRunSandbox } from "./runs/sandboxes.js";
+import { watchMainPipelines } from "./main-watch.js";
 
 /** How long after a push the provider's MR head may still report the previous commit. */
 const PROVIDER_HEAD_LAG_MS = 3 * 60_000;
@@ -102,6 +104,9 @@ export async function tick(ctx: ColonydContext): Promise<void> {
     await phase(ctx, "advance_mr_open", () =>
       advanceMrOpenTasks(ctx, dispatch),
     );
+    // After merge observations, before anything dispatches or validates:
+    // a red default branch files (or blocks on) its repair first.
+    await phase(ctx, "main_watch", () => watchMainPipelines(ctx, now));
     await phase(ctx, "scope_planning", () =>
       advanceScopePlanning(ctx, dispatch),
     );
@@ -1478,6 +1483,24 @@ async function closeScopes(ctx: ColonydContext): Promise<void> {
     const stuck = new Set(blocked.map((t) => t.id));
     for (let grew = true; grew; ) {
       grew = false;
+      // A main-pipeline repair holds every other queued task in the scope;
+      // when the repair itself cannot run, the tasks it holds cannot either.
+      if (
+        unfinished.some(
+          (t) => stuck.has(t.id) && mainPipelineRepairOf(t) !== null,
+        )
+      ) {
+        for (const t of unfinished) {
+          if (
+            t.state === "queued" &&
+            mainPipelineRepairOf(t) === null &&
+            !stuck.has(t.id)
+          ) {
+            stuck.add(t.id);
+            grew = true;
+          }
+        }
+      }
       for (const t of unfinished) {
         if (stuck.has(t.id) || t.state !== "queued") continue;
         if (ctx.store.taskDeps(t.id).some((dep) => stuck.has(dep))) {
@@ -1593,6 +1616,7 @@ export const TICK_PHASES = [
   "expire_leases",
   "poll_provider",
   "advance_mr_open",
+  "main_watch",
   "scope_planning",
   "dispatch_implementers",
   "scope_closure",

@@ -131,7 +131,17 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     options.validateEngine ??
     (await createEngine(config.sandbox.engine, config));
 
-  const store = new Store(environment.COLONYD_DB_PATH);
+  // Cost flags mean what the architect's submit-time size gate means. That
+  // gate exists only on the pi runtime, which resolves its developer agent
+  // at boot (createAgentWiring); the fake runtime has neither.
+  const store = new Store(
+    environment.COLONYD_DB_PATH,
+    config.agentRuntime === "pi"
+      ? {
+          implementerBudgetMs: config.forAgent("developer").ceilings.timeoutMs,
+        }
+      : {},
+  );
 
   const artifacts = createArtifactStore(config.artifacts);
 
@@ -468,6 +478,8 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
       singleToken: environment.COLONYD_SINGLE_TOKEN,
       maxConcurrent: environment.COLONYD_MAX_CONCURRENT,
       maxAttempts: environment.COLONYD_MAX_ATTEMPTS,
+      mainWatchIntervalMs: environment.COLONYD_MAIN_WATCH_INTERVAL_MS,
+      mainPipelineGraceMs: environment.COLONYD_MAIN_PIPELINE_GRACE_MS,
       resumeLeaseTtlMs: environment.COLONY_RESUME_LEASE_TTL_MS,
       oidcIssuer: environment.COLONY_OIDC_ISSUER,
       oidcClientId: environment.COLONY_OIDC_CLIENT_ID,

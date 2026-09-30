@@ -47,6 +47,17 @@ export interface ColonydContext {
     readonly singleToken: boolean;
     readonly maxConcurrent: number;
     readonly maxAttempts: number;
+    /**
+     * Minimum gap between main-pipeline watch provider calls per scope.
+     * Optional: test contexts omit it and get the production bound.
+     */
+    readonly mainWatchIntervalMs?: number;
+    /**
+     * How long a default-branch head may have no pipeline before it reads as
+     * "no CI" rather than "pipeline not created yet". Optional like the
+     * watch interval: test contexts omit it and get the production bound.
+     */
+    readonly mainPipelineGraceMs?: number;
     readonly resumeLeaseTtlMs: number;
     readonly oidcIssuer: string;
     readonly oidcClientId: string;

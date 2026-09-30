@@ -430,6 +430,7 @@ export function buildDemoOperatorSummary(now, window = "24h") {
           runs: 3,
           succeeded: 2,
           failed: 1,
+          platform_failed: 0,
           timeouts: 0,
           completion_rate: 2 / 3,
           median_ms: 7 * 60_000,

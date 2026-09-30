@@ -240,6 +240,28 @@ function operatorPlanDirectivesSection(scope: Scope): string {
   ].join("\n");
 }
 
+/**
+ * The scope's durable operator directives as an implementer or code
+ * reviewer reads them. Operators record decisions here that no task spec
+ * carries (a provider choice, a URL, an authz rule); without this section
+ * only the architect and plan reviewer ever saw them.
+ */
+function operatorDirectivesSection(
+  scope: Scope,
+  role: "implementer" | "reviewer",
+): string {
+  if (!scope.plan_directives.trim()) return "";
+  return [
+    "## Operator directives for this scope",
+    scope.plan_directives,
+    "",
+    "These are authoritative operator decisions. Where one conflicts with the task spec, the directive wins; later directives supersede earlier ones only where they explicitly conflict.",
+    ...(role === "reviewer"
+      ? ["A change that contradicts a directive is a finding."]
+      : []),
+  ].join("\n");
+}
+
 export function buildArchitectPacket(
   scope: Scope,
   project: Project | null,
@@ -539,6 +561,7 @@ export function buildImplementPacket(
           continuity.currentRejectedHeadSha === undefined &&
           repairIntent === undefined,
       }),
+      operatorDirectivesSection(scope, "implementer"),
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -615,6 +638,7 @@ export function buildReviewPacket(
     body: [
       buildReviewBody(task, scope.default_branch),
       reviewRoundSection(round),
+      operatorDirectivesSection(scope, "reviewer"),
       projectContextSection(project),
       projectFilesSection(files),
     ]

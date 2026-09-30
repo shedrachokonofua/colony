@@ -29,6 +29,10 @@ import {
   buildTaskCostModel,
   predictTaskCost,
 } from "./task-cost.js";
+import {
+  MAIN_PIPELINE_REPAIR_PREFIX,
+  type MainPipelineClassificationKind,
+} from "./main-pipeline.js";
 import type { Fault } from "./fault.js";
 
 /** One git source of project skills: SKILL.md directories matching `paths`. */
@@ -254,6 +258,18 @@ export interface PipelineObservationRow {
   readonly observed_at: string;
 }
 
+/** The latest default-branch pipeline check per scope. Only the main watch
+ *  writes it; the operator summary and the repair-streak bound read it. */
+export interface MainPipelineCheckRow {
+  readonly scope_id: string;
+  readonly sha: string;
+  readonly classification: MainPipelineClassificationKind;
+  readonly job_names_json: string;
+  readonly checked_at: string;
+  /** Last success/none observation: the repair-streak epoch start. */
+  readonly green_at: string | null;
+}
+
 export interface AuditRow {
   readonly id: number;
   readonly at: string;
@@ -329,6 +345,15 @@ const IN_FLIGHT_TASK_STATES: readonly TaskState[] = TASK_STATES.filter(
     state !== "blocked" &&
     !TERMINAL_TASK_STATES.has(state),
 );
+
+/**
+ * SQL expression appending one directive (bound twice) to
+ * `scopes.plan_directives`, blank-line separated.
+ */
+const APPEND_DIRECTIVE_SQL = `CASE
+               WHEN plan_directives = '' THEN ?
+               ELSE plan_directives || char(10) || char(10) || ?
+             END`;
 
 export type ScopeApprovals = "auto" | "manual";
 
@@ -421,8 +446,20 @@ function maxTaskNumber(tasks: readonly Pick<Task, "id">[]): number {
 
 export class Store {
   readonly db: InstanceType<typeof Database>;
+  /**
+   * The implementer session budget task cost predictions are flagged
+   * against. colonyd passes the developer timeout — the same budget the
+   * architect's submit-time size gate uses — so a stored `flagged` means
+   * what the gate means.
+   */
+  private readonly implementerBudgetMs: number;
 
-  constructor(dbPath: string) {
+  constructor(
+    dbPath: string,
+    options: { readonly implementerBudgetMs?: number } = {},
+  ) {
+    this.implementerBudgetMs =
+      options.implementerBudgetMs ?? DEFAULT_IMPLEMENTER_BUDGET_MS;
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     // journal_mode persists in the file but is set here for fresh DBs;
@@ -1178,10 +1215,7 @@ export class Store {
         `UPDATE scopes
          SET plan_json = NULL,
              plan_feedback = NULL,
-             plan_directives = CASE
-               WHEN plan_directives = '' THEN ?
-               ELSE plan_directives || char(10) || char(10) || ?
-             END,
+             plan_directives = ${APPEND_DIRECTIVE_SQL},
              updated_at = ?
          WHERE id = ?`,
       )
@@ -1189,6 +1223,32 @@ export class Store {
     const scope = this.getScope(id);
     if (!scope)
       throw new Error(`scope lost after operator replan request: ${id}`);
+    return scope;
+  }
+
+  /**
+   * Append an operator decision to the scope's durable directives without
+   * touching its plan or status. Every later architect, plan reviewer,
+   * implementer and code reviewer of the scope receives it; runs already
+   * in flight keep the packet they started with.
+   */
+  appendOperatorDirective(
+    id: ScopeId | string,
+    text: string,
+    actor: string,
+  ): Scope {
+    const now = nowIso();
+    const directive = `## Operator directive (${actor}, ${now})\n${text.trim()}`;
+    this.db
+      .prepare(
+        `UPDATE scopes
+         SET plan_directives = ${APPEND_DIRECTIVE_SQL},
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(directive, directive, now, id);
+    const scope = this.getScope(id);
+    if (!scope) throw new Error(`scope lost after operator directive: ${id}`);
     return scope;
   }
 
@@ -1283,8 +1343,7 @@ export class Store {
     scopeId: ScopeId | string,
     plan: ArchitectDecompositionV2,
     actor: string,
-
-    budgetMs: number = DEFAULT_IMPLEMENTER_BUDGET_MS,
+    budgetMs: number = this.implementerBudgetMs,
   ): Task[] {
     const scope = this.getScope(scopeId);
     if (!scope) {
@@ -1652,7 +1711,10 @@ export class Store {
 
   /**
    * Tasks dispatchable now: queued, all dependencies merged, retry time
-   * elapsed, and the owning scope active.
+   * elapsed, and the owning scope active. While the scope's main-pipeline
+   * repair task is unfinished only that repair dispatches: it lands first,
+   * the watch re-checks the default branch behind it, and the held tasks
+   * resume when the pipeline is green again.
    */
   readyTasks(scopeId?: ScopeId | string): Task[] {
     const now = nowIso();
@@ -1665,9 +1727,21 @@ export class Store {
            SELECT 1 FROM task_deps d JOIN tasks dep ON dep.id = d.depends_on_task_id
            WHERE d.task_id = t.id AND dep.state <> 'merged'
          )
+         AND (
+           t.title LIKE @repairPrefix || '%'
+           OR NOT EXISTS (
+             SELECT 1 FROM tasks r
+             WHERE r.scope_id = t.scope_id
+               AND r.title LIKE @repairPrefix || '%'
+               AND r.state NOT IN ('merged','canceled')
+           )
+         )
          ${scopeId ? "AND t.scope_id = @scopeId" : ""}
        ORDER BY t.id`;
-    const params: Record<string, SQLQueryBindings> = { now };
+    const params: Record<string, SQLQueryBindings> = {
+      now,
+      repairPrefix: MAIN_PIPELINE_REPAIR_PREFIX,
+    };
     if (scopeId) params.scopeId = String(scopeId);
     return this.db.prepare(sql).all(named(params)) as Task[];
   }
@@ -1825,6 +1899,85 @@ export class Store {
     return (this.db
       .prepare(`SELECT * FROM pipeline_observations WHERE task_id = ?`)
       .get(taskId) ?? null) as PipelineObservationRow | null;
+  }
+
+  /** The latest default-branch check for a scope, or null when the watch
+   *  has never classified it. */
+  getMainCheck(scopeId: ScopeId | string): MainPipelineCheckRow | null {
+    return (this.db
+      .prepare(`SELECT * FROM main_pipeline_checks WHERE scope_id = ?`)
+      .get(scopeId) ?? null) as MainPipelineCheckRow | null;
+  }
+
+  /**
+   * Persist the latest main-pipeline check for a scope and hand back the row
+   * it replaced, so the caller audits changes only. `green_at` — the epoch
+   * the repair-streak bound counts from — resets on success/none ("a later
+   * success resets the streak") and survives every other verdict.
+   */
+  recordMainCheck(input: {
+    readonly scope_id: ScopeId | string;
+    readonly sha: string;
+    readonly classification: MainPipelineClassificationKind;
+    readonly job_names?: readonly string[];
+    readonly checked_at?: string;
+  }): { previous: MainPipelineCheckRow | null; row: MainPipelineCheckRow } {
+    const previous = this.getMainCheck(input.scope_id);
+    const checked_at = input.checked_at ?? nowIso();
+    const green_at =
+      input.classification === "success" || input.classification === "none"
+        ? checked_at
+        : (previous?.green_at ?? null);
+    this.db
+      .prepare(
+        `INSERT INTO main_pipeline_checks
+           (scope_id, sha, classification, job_names_json, checked_at, green_at)
+         VALUES (@scope_id, @sha, @classification, @job_names_json, @checked_at, @green_at)
+         ON CONFLICT(scope_id) DO UPDATE SET
+           sha = excluded.sha,
+           classification = excluded.classification,
+           job_names_json = excluded.job_names_json,
+           checked_at = excluded.checked_at,
+           green_at = excluded.green_at`,
+      )
+      .run(
+        named({
+          scope_id: String(input.scope_id),
+          sha: input.sha,
+          classification: input.classification,
+          job_names_json: JSON.stringify(input.job_names ?? []),
+          checked_at,
+          green_at,
+        }),
+      );
+    return {
+      previous,
+      row: this.getMainCheck(input.scope_id)!,
+    };
+  }
+
+  /**
+   * Main-pipeline repair tasks merged since the pipeline last went green.
+   * At MAX the watch stops filing repairs and blocks the scope for the
+   * operator instead.
+   */
+  mainRepairStreak(scopeId: ScopeId | string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM tasks t
+         LEFT JOIN main_pipeline_checks c ON c.scope_id = t.scope_id
+         WHERE t.scope_id = @scope_id
+           AND t.state = 'merged'
+           AND t.title LIKE @repairPrefix || '%'
+           AND (c.green_at IS NULL OR t.created_at > c.green_at)`,
+      )
+      .get(
+        named({
+          scope_id: String(scopeId),
+          repairPrefix: MAIN_PIPELINE_REPAIR_PREFIX,
+        }),
+      ) as { n: number };
+    return row.n;
   }
 
   /** Persist the minted provider token id so crash-reap can revoke it. */

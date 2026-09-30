@@ -406,6 +406,23 @@ CREATE TABLE IF NOT EXISTS pipeline_observations (
 );
 `;
 
+/**
+ * Migration 19: main pipeline checks — the latest default-branch pipeline
+ * classification per scope, so the main watch and the operator summary read
+ * stored facts. Mirrors the main_pipeline_checks DDL in schema.sql; a fresh
+ * database already has the table.
+ */
+const MAIN_PIPELINE_CHECKS_DDL = `
+CREATE TABLE IF NOT EXISTS main_pipeline_checks (
+  scope_id TEXT PRIMARY KEY REFERENCES scopes(id),
+  sha TEXT NOT NULL,
+  classification TEXT NOT NULL CHECK (classification IN ('none','running','failed_script','failed_infra','awaiting_manual','success','canceled')),
+  job_names_json TEXT NOT NULL DEFAULT '[]',
+  checked_at TEXT NOT NULL,
+  green_at TEXT
+);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-reconcile", apply: legacyReconcile },
   {
@@ -500,6 +517,11 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 19,
     name: "project-skill-sources",
     apply: (db) => addColumn(db, "projects", "skill_sources", "TEXT"),
+  },
+  {
+    version: 20,
+    name: "main-pipeline-checks",
+    apply: (db) => db.exec(MAIN_PIPELINE_CHECKS_DDL),
   },
 ];
 
