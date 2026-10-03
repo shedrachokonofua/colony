@@ -523,6 +523,11 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "main-pipeline-checks",
     apply: (db) => db.exec(MAIN_PIPELINE_CHECKS_DDL),
   },
+  {
+    version: 21,
+    name: "run-served-model",
+    apply: (db) => addColumn(db, "runs", "served_model_id", "TEXT"),
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

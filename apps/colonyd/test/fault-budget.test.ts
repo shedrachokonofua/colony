@@ -211,4 +211,28 @@ describe("retryOrFailTaskWithBudget blocking rules", () => {
     retryOrFailTaskWithBudget(ctx, task.id, "boom");
     expect(store.getTask(task.id)!.state).toBe("queued");
   });
+
+  it("a provider quota fault requeues free and never retries before the provider's hint", () => {
+    const store = openStore();
+    const task = seedRunningTask(store);
+    const ctx = ctxFor(store, 3);
+    // A Moira tier_exhausted refusal: provider quota, not a model failure,
+    // with the provider's own earliest reset.
+    const notBefore = new Date(Date.now() + 3_600_000).toISOString();
+    failImplement(store, task, {
+      layer: "provider",
+      code: "quota_exhausted",
+      detail: "tier_exhausted: flash",
+      retryNotBefore: notBefore,
+    });
+
+    retryOrFailTaskWithBudget(ctx, task.id, "tier exhausted");
+
+    const after = store.getTask(task.id)!;
+    expect(after.state).toBe("queued");
+    expect(after.attempt).toBe(task.attempt);
+    expect(Date.parse(after.next_retry_at!)).toBeGreaterThanOrEqual(
+      Date.parse(notBefore),
+    );
+  });
 });

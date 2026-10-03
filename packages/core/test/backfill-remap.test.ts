@@ -88,7 +88,7 @@ describe("migration 18 fault backfill remap", () => {
 
       const migrated = new Store(v17Path);
       try {
-        expect(LATEST_SCHEMA_VERSION).toBe(20);
+        expect(LATEST_SCHEMA_VERSION).toBe(21);
         const faultOf = (id: string) =>
           JSON.parse(migrated.getRun(id)!.fault_json!) as Fault;
 

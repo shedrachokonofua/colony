@@ -200,6 +200,13 @@ export interface Run {
   readonly evidence_json: string | null;
   readonly token_id: string | null;
   readonly model_id: string | null;
+  /**
+   * Concrete model that served the run at the gateway (e.g. a Moira tier's
+   * chosen deployment), recorded per call from response headers. Null while
+   * no call has revealed one; consumers fall back to `model_id` (the
+   * configured route).
+   */
+  readonly served_model_id: string | null;
   /** Run root span's trace id; links spans recorded elsewhere to this run. */
   readonly trace_id: string | null;
   readonly error: string | null;
@@ -2002,6 +2009,13 @@ export class Store {
   setRunModel(runId: string, modelId: string): void {
     this.db
       .prepare(`UPDATE runs SET model_id = ? WHERE id = ?`)
+      .run(modelId, runId);
+  }
+
+  /** Record the concrete model the gateway served this run with. */
+  setRunServedModel(runId: string, modelId: string): void {
+    this.db
+      .prepare(`UPDATE runs SET served_model_id = ? WHERE id = ?`)
       .run(modelId, runId);
   }
 

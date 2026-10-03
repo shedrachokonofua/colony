@@ -103,6 +103,15 @@ export interface ModelMetrics {
   readonly completion_rate: number | null;
   readonly median_ms: number | null;
   readonly p90_ms: number | null;
+  /**
+   * Implement runs of this model whose pushed head reached a review verdict
+   * (review run `head_sha` equals the implement run's `head_sha` on the same
+   * task), how many of those verdicts approved, and their approval rate.
+   * Null when no pushed head of this model was reviewed.
+   */
+  readonly reviewed: number;
+  readonly approved: number;
+  readonly approval_rate: number | null;
 }
 
 export interface RestartIncidents {
@@ -406,7 +415,7 @@ export function buildOperatorSummary(
       verdicts:
         (auditCounts.get(VERDICT_APPROVED_ACTION) ?? 0) +
         (auditCounts.get(VERDICT_CHANGES_ACTION) ?? 0),
-      per_model: perModelMetrics(windowRuns),
+      per_model: perModelMetrics(windowRuns, store),
       faults_by_layer: faultsByLayer,
       faults_by_layer_code: faultsByLayerCode,
       restart_incidents: {
@@ -465,7 +474,10 @@ function processStart(): Date {
   return new Date(Date.now() - Math.floor(process.uptime() * 1000));
 }
 
-function perModelMetrics(runs: readonly Run[]): Record<string, ModelMetrics> {
+function perModelMetrics(
+  runs: readonly Run[],
+  store: Pick<Store, "runsForTask">,
+): Record<string, ModelMetrics> {
   const durations = new Map<string, number[]>();
   const counters = new Map<
     string,
@@ -475,16 +487,24 @@ function perModelMetrics(runs: readonly Run[]): Record<string, ModelMetrics> {
       failed: number;
       platform_failed: number;
       timeouts: number;
+      reviewed: number;
+      approved: number;
     }
   >();
+  // Review verdicts are joined per task outside the window too: a head is
+  // usually reviewed after its implement run windowed in, and the metric is
+  // about the head's verdict, not when the verdict landed.
+  const verdictsByTask = new Map<string, Map<string, string>>();
   for (const run of runs) {
-    const model = run.model_id ?? "unknown";
+    const model = run.served_model_id ?? run.model_id ?? "unknown";
     const counter = counters.get(model) ?? {
       runs: 0,
       succeeded: 0,
       failed: 0,
       platform_failed: 0,
       timeouts: 0,
+      reviewed: 0,
+      approved: 0,
     };
     counter.runs += 1;
     if (run.status === "succeeded") counter.succeeded += 1;
@@ -499,6 +519,18 @@ function perModelMetrics(runs: readonly Run[]): Record<string, ModelMetrics> {
     // onto wall_timeout (packages/core/src/fault.ts). Its code set is
     // module-private and must not be duplicated here.
     if (isTimeoutFault(run)) counter.timeouts += 1;
+    if (run.kind === "implement" && run.head_sha && run.task_id) {
+      let verdicts = verdictsByTask.get(run.task_id);
+      if (verdicts === undefined) {
+        verdicts = reviewVerdictsByHead(store, run.task_id);
+        verdictsByTask.set(run.task_id, verdicts);
+      }
+      const verdict = verdicts.get(run.head_sha);
+      if (verdict !== undefined) {
+        counter.reviewed += 1;
+        if (verdict === "approve") counter.approved += 1;
+      }
+    }
     counters.set(model, counter);
 
     if (run.finished_at) {
@@ -526,7 +558,67 @@ function perModelMetrics(runs: readonly Run[]): Record<string, ModelMetrics> {
         accountable === 0 ? null : counter.succeeded / accountable,
       median_ms: percentileAt(sample, 0.5),
       p90_ms: percentileAt(sample, 0.9),
+      reviewed: counter.reviewed,
+      approved: counter.approved,
+      approval_rate:
+        counter.reviewed === 0 ? null : counter.approved / counter.reviewed,
     };
   }
   return out;
+}
+
+/**
+ * Latest review verdict per reviewed head for one task: the review run's
+ * `head_sha` (its evidence, else its own row) equals the implement run's
+ * pushed head on the same task. Runs arrive oldest first, so a re-review of
+ * the same head overwrites its verdict.
+ */
+function reviewVerdictsByHead(
+  store: Pick<Store, "runsForTask">,
+  taskId: string,
+): Map<string, string> {
+  const byHead = new Map<string, string>();
+  for (const run of store.runsForTask(taskId)) {
+    if (run.kind !== "review" || run.status !== "succeeded") continue;
+    const head = reviewHeadOf(run);
+    const verdict = reviewVerdictOf(run);
+    if (head !== null && verdict !== null) byHead.set(head, verdict);
+  }
+  return byHead;
+}
+
+function reviewHeadOf(run: Run): string | null {
+  const evidence = parseReviewOutcome(run.evidence_json);
+  return evidence.head ?? run.head_sha;
+}
+
+function reviewVerdictOf(run: Run): string | null {
+  return parseReviewOutcome(run.evidence_json).verdict;
+}
+
+/** The `{head_sha, verdict}` pair a terminal review recorded, tolerantly. */
+function parseReviewOutcome(evidenceJson: string | null): {
+  head: string | null;
+  verdict: string | null;
+} {
+  if (!evidenceJson) return { head: null, verdict: null };
+  try {
+    const parsed: unknown = JSON.parse(evidenceJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { head: null, verdict: null };
+    }
+    const fields = parsed as Record<string, unknown>;
+    return {
+      head:
+        typeof fields.head_sha === "string" && fields.head_sha.length > 0
+          ? fields.head_sha
+          : null,
+      verdict:
+        typeof fields.verdict === "string" && fields.verdict.length > 0
+          ? fields.verdict
+          : null,
+    };
+  } catch {
+    return { head: null, verdict: null };
+  }
 }

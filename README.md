@@ -228,7 +228,11 @@ revisions, or conflict repair cycles; a successful execution
 or explicit operator unblock starts a new execution budget. Infrastructure
 failures (daemon restart or expired lease, provider `429`/`5xx`, sandbox
 provisioning failure) and cancellations do not consume it. Structured fault
-classification takes precedence over legacy error-message matching.
+classification takes precedence over legacy error-message matching: a
+gateway quota-tier refusal (`tier_exhausted`, HTTP 429) is a provider
+quota fault by its structured `error.type` alone, never by message text,
+and the task requeues without an attempt — retrying no earlier than the
+provider's `Retry-After` or quota `earliest_reset`, whichever is later.
 
 Every state change is reconciled by a single-flight tick that reads facts
 back from the Git host. On restart, eligible architect, implementer, and
@@ -335,7 +339,14 @@ Fallbacks work at three points:
 The run records the model that actually finished it, the fallback event is
 in the run's event stream, and the architect, developer, and reviewer
 models behind a merged task are written into the merge provenance.
-Fallbacks are same-provider and
+When a gateway routes an alias (e.g. a `moira/<tier>` quota tier) to one
+concrete deployment per call, the response headers name what actually
+served each call; Colony records that as the run's served model
+(`pi_served_model` events, `runs.served_model_id`) and keys `per_model`
+operator metrics by it, falling back to the configured id. Those metrics
+also carry per-implementer-model approval rates, joined as review verdict
+on the implement run's pushed head (`review.head_sha = implement.head_sha`
+on the same task). Fallbacks are same-provider and
 ordered. `plan_reviewer` inherits the `reviewer` entry if omitted.
 Per-role `thinking_level`, `timeout_ms`, and `max_turns` bound cost;
 per-model `cost` lets the console estimate spend per task.

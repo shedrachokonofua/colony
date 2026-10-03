@@ -76,8 +76,10 @@ export function appendTrailer(message: string, trailer: string): string {
 
 /**
  * Collect the model ids actually used by a set of runs: each run's recorded
- * `model_id` plus every model-fallback destination (`from`/`to`) recorded in
- * its run events. Deterministic: sorted, deduplicated.
+ * `model_id` and `served_model_id` (the concrete model the gateway served it
+ * with), plus every model-fallback destination (`from`/`to`) and every
+ * `pi_served_model` model recorded in its run events. Deterministic: sorted,
+ * deduplicated.
  */
 export function collectRunModelIds(
   runs: readonly Run[],
@@ -86,16 +88,21 @@ export function collectRunModelIds(
   const ids = new Set<string>();
   for (const run of runs) {
     if (run.model_id) ids.add(run.model_id);
+    if (run.served_model_id) ids.add(run.served_model_id);
     for (const event of listRunEvents(run.id)) {
-      if (event.event !== "pi_model_fallback") continue;
       let detail: Record<string, unknown>;
       try {
         detail = JSON.parse(event.detail_json) as Record<string, unknown>;
       } catch {
         continue;
       }
-      for (const key of ["from", "to"]) {
-        const value = detail[key];
+      if (event.event === "pi_model_fallback") {
+        for (const key of ["from", "to"]) {
+          const value = detail[key];
+          if (typeof value === "string" && value) ids.add(value);
+        }
+      } else if (event.event === "pi_served_model") {
+        const value = detail["model"];
         if (typeof value === "string" && value) ids.add(value);
       }
     }

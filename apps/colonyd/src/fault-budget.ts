@@ -352,6 +352,13 @@ export function retryOrFailTaskWithBudget(
     return;
   }
 
+  // A provider-directed retry hint on the fault (an HTTP Retry-After or a
+  // quota window's earliest reset) may only push the retry later than the
+  // ordinary backoff, never earlier.
+  const providerNotBefore = fault?.retryNotBefore
+    ? Date.parse(fault.retryNotBefore)
+    : Number.NaN;
+  const retryAtMs = Date.now() + retryBackoffMs(Math.max(1, failures));
   ctx.store.transitionTask(
     task.id,
     task.state_version,
@@ -360,7 +367,9 @@ export function retryOrFailTaskWithBudget(
     {
       attempt,
       next_retry_at: new Date(
-        Date.now() + retryBackoffMs(Math.max(1, failures)),
+        Number.isFinite(providerNotBefore)
+          ? Math.max(retryAtMs, providerNotBefore)
+          : retryAtMs,
       ).toISOString(),
     },
   );

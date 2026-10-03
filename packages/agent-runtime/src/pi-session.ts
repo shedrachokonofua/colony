@@ -44,6 +44,10 @@ import {
 } from "./pi-roles.js";
 import { RunSteering } from "./run-steering.js";
 import { RunEvidenceCollector } from "./run-evidence.js";
+import {
+  armGatewayObserver,
+  type GatewayExchange,
+} from "./gateway-observer.js";
 import { readGateConfigAtHead, verifyPushedHead } from "./sandbox-tools.js";
 import { createSubagentTool } from "./subagent-tool.js";
 import { inTraceContext } from "./trace-context.js";
@@ -237,6 +241,13 @@ export interface PiRunState {
    * ago cannot demote a healthy provider.
    */
   quotaScanFloor: number;
+  /**
+   * The most recent gateway HTTP exchange an observed call made, success or
+   * failure. Classification consults it structurally (a `tier_exhausted`
+   * error body is provider quota); a later exchange supersedes an earlier
+   * one, so only the provider's newest answer can decide a failure.
+   */
+  lastGatewayExchange?: GatewayExchange;
   /**
    * Why the terminal tool last refused a submission. Recorded by the guard
    * subscription's end-event seam and read at finalization, so a run that
@@ -625,6 +636,7 @@ export async function buildPiSession(
       });
       signal.throwIfAborted();
       const { session: child } = await createAgentSession(childOptions);
+      armGatewayObserver(child.agent, noteGatewayExchange);
       let report = "";
       let modelFailure: string | undefined;
       let guardFailure: string | undefined;
@@ -765,6 +777,25 @@ export async function buildPiSession(
     options.auditSink,
     runToken ? [runToken] : [],
   );
+  // Every gateway exchange feeds the run: the concrete model that served
+  // the call becomes evidence (`pi_served_model`, one row per served model),
+  // and the newest exchange — success or failure — is what failure
+  // classification reads structurally.
+  const noteGatewayExchange = (exchange: GatewayExchange): void => {
+    state.lastGatewayExchange = exchange;
+    const served = exchange.servedModel;
+    if (served) {
+      evidence.servedModel({
+        model: served.model,
+        ...(served.modelId !== undefined ? { model_id: served.modelId } : {}),
+        ...(served.modelName !== undefined
+          ? { model_name: served.modelName }
+          : {}),
+        ...(served.apiBase !== undefined ? { api_base: served.apiBase } : {}),
+        ...(served.callId !== undefined ? { call_id: served.callId } : {}),
+      });
+    }
+  };
   /**
    * Arm one session with the run's guards and hooks. The run session and
    * every stage session get the same protection; only the submit tool name
@@ -776,6 +807,7 @@ export async function buildPiSession(
     observeInspection?: (toolName: string, args: unknown) => void,
   ): (() => void) => {
     activeSession = target;
+    armGatewayObserver(target.agent, noteGatewayExchange);
     // Recovery belongs to one session/model leg: a staged session and a
     // fresh guard installation must never inherit a prior leg's stall or
     // submission rejection.

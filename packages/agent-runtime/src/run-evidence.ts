@@ -56,6 +56,16 @@ export interface PiUsageDetail {
   readonly error_message: string | undefined;
 }
 
+/** The persisted `pi_served_model` detail: what the gateway served with. */
+export interface ServedModelDetail {
+  /** Concrete model that served the call (`x-litellm-model-group`). */
+  readonly model: string;
+  readonly model_id?: string;
+  readonly model_name?: string;
+  readonly api_base?: string;
+  readonly call_id?: string;
+}
+
 /** `run_summary` aggregates over one run's completed turns and tool calls. */
 export interface RunSummaryDetail {
   readonly turns: number;
@@ -161,6 +171,8 @@ export class RunEvidenceCollector {
   private turns = 0;
   /** Terminal-state latch: a run can span many agent_end continuation segments. */
   private runSummaryEmitted = false;
+  /** Last `pi_served_model` model emitted; routing changes re-emit. */
+  private lastServedModel: string | undefined;
   /** Serializes async emits so `run_summary` cannot overtake a `tool_call`. */
   private emitChain: Promise<void> = Promise.resolve();
   private totals = {
@@ -330,6 +342,18 @@ export class RunEvidenceCollector {
         this.secrets,
       ),
     });
+  }
+
+  /**
+   * Observe the concrete model the gateway served a call with. Emits one
+   * `pi_served_model` row per served model per run — the first call and any
+   * routing change — mirroring how `pi_model_fallback` records candidate
+   * switches, so a run's events name every model that actually served it.
+   */
+  servedModel(detail: ServedModelDetail): void {
+    if (this.lastServedModel === detail.model) return;
+    this.lastServedModel = detail.model;
+    this.emit("pi_served_model", redactValue(detail, this.secrets) as object);
   }
 
   /** Aggregates since run start; the caller emits it exactly once at the end. */

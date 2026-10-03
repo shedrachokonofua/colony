@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS runs (
   evidence_json TEXT,                        -- commands, exit codes, gate results, artifacts
   token_id TEXT,                             -- provider access-token id; crash-reap revoke
   model_id TEXT,                             -- LLM model the run started with (nullable)
+  served_model_id TEXT,                      -- concrete model that served the run (gateway routing); falls back to model_id
   trace_id TEXT,                             -- run root span's trace id; links spans to the run
   error TEXT,
   fault_json TEXT,                           -- structured Fault at finish; backfilled for legacy failed runs

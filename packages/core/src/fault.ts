@@ -27,6 +27,12 @@ export interface Fault {
   code: string;
   detail?: string;
   backfilled?: boolean;
+  /**
+   * Earliest sane retry as an ISO-8601 instant, provider-directed (an HTTP
+   * `Retry-After` or a quota window's reset). A requeue must not run before
+   * it; absent means the ordinary backoff alone decides.
+   */
+  retryNotBefore?: string;
 }
 
 export function isModelFault(f: Fault | null | undefined): boolean {
@@ -41,19 +47,25 @@ export function parseFault(raw: string | null | undefined): Fault | null {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
-    const { layer, code, detail, backfilled } = parsed as Record<
-      string,
-      unknown
-    >;
+    const { layer, code, detail, backfilled, retryNotBefore } =
+      parsed as Record<string, unknown>;
     if (typeof layer !== "string" || !isFaultLayer(layer)) return null;
     if (typeof code !== "string" || code.length === 0) return null;
     if (detail !== undefined && typeof detail !== "string") return null;
     if (backfilled !== undefined && typeof backfilled !== "boolean") {
       return null;
     }
+    if (
+      retryNotBefore !== undefined &&
+      (typeof retryNotBefore !== "string" ||
+        !Number.isFinite(Date.parse(retryNotBefore)))
+    ) {
+      return null;
+    }
     const fault: Fault = { layer, code };
     if (detail !== undefined) fault.detail = detail;
     if (backfilled !== undefined) fault.backfilled = backfilled;
+    if (retryNotBefore !== undefined) fault.retryNotBefore = retryNotBefore;
     return fault;
   } catch {
     return null;

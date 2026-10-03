@@ -149,6 +149,7 @@ describe("collectRunModelIds", () => {
       evidence_json: null,
       token_id: null,
       model_id: modelId,
+      served_model_id: null,
       trace_id: null,
       error: null,
       last_progress_at: null,
@@ -175,6 +176,27 @@ describe("collectRunModelIds", () => {
     const runs = [run("r1", "model-a")];
     const ids = collectRunModelIds(runs, () => []);
     expect(ids).toEqual(["model-a"]);
+  });
+
+  it("collects the concrete served model alongside the configured route", () => {
+    const routed = run("r1", "moira/strong");
+    const runs = [{ ...routed, served_model_id: "xiaomi/mimo-v2.6-pro" }];
+    const ids = collectRunModelIds(runs, (rid) => [
+      {
+        id: 1,
+        run_id: rid,
+        at: "",
+        event: "pi_served_model",
+        detail_json: JSON.stringify({ model: "zai/glm-5.3" }),
+      },
+    ]);
+    // The route, the run's recorded served model, and the event's served
+    // model all name what served this work.
+    expect(ids).toEqual([
+      "moira/strong",
+      "xiaomi/mimo-v2.6-pro",
+      "zai/glm-5.3",
+    ]);
   });
 
   it("collects multiple models including fallback destinations", () => {

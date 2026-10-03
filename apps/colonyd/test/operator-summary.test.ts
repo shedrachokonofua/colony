@@ -79,6 +79,9 @@ interface Summary {
         completion_rate: number | null;
         median_ms: number | null;
         p90_ms: number | null;
+        reviewed: number;
+        approved: number;
+        approval_rate: number | null;
       }
     >;
     faults_by_layer: Record<string, number>;
@@ -192,6 +195,10 @@ function seedRun(
     scopeId: string;
     kind: Run["kind"];
     model_id?: string;
+    served_model_id?: string;
+    task_id?: string;
+    head_sha?: string;
+    evidence?: Record<string, unknown>;
     started_at: string;
     finished_at?: string;
     status?: Run["status"];
@@ -205,6 +212,7 @@ function seedRun(
   const leaseMs = input.leaseMs ?? 900_000;
   const run = store.startRun({
     scope_id: input.scopeId,
+    task_id: input.task_id,
     kind: input.kind,
     lease_ttl_ms: leaseMs,
     model_id: input.model_id,
@@ -214,6 +222,7 @@ function seedRun(
     .prepare(
       `UPDATE runs SET started_at = ?, finished_at = ?, status = ?, error = ?,
        fault_json = ?, last_progress_at = ?, active_tool = ?,
+       served_model_id = ?, head_sha = ?, evidence_json = ?,
        lease_expires_at = ? WHERE id = ?`,
     )
     .run(
@@ -224,6 +233,9 @@ function seedRun(
       input.fault ? JSON.stringify(input.fault) : null,
       input.last_progress_at ?? null,
       input.active_tool ?? null,
+      input.served_model_id ?? null,
+      input.head_sha ?? null,
+      input.evidence ? JSON.stringify(input.evidence) : null,
       new Date(Date.parse(input.started_at) + leaseMs).toISOString(),
       run.id,
     );
@@ -501,6 +513,105 @@ describe("GET /operator/summary", () => {
 
     const summary = await get(app, "?window=24h");
     expect(summary.metrics.per_model["kimi/k3"]!.completion_rate).toBeNull();
+  });
+
+  it("keys per_model by the concrete served model, falling back to the configured id", async () => {
+    const { app, store } = setup();
+    const scope = seedScope(store, { goal: "served" });
+    // Moira routed the configured tier to a concrete deployment.
+    seedRun(store, {
+      scopeId: scope.id,
+      kind: "implement",
+      model_id: "moira/strong",
+      served_model_id: "xiaomi/mimo-v2.6-pro",
+      started_at: iso(-3 * 3_600_000),
+      finished_at: iso(-2 * 3_600_000),
+      status: "succeeded",
+    });
+    // No served model recorded: the configured route is the key.
+    seedRun(store, {
+      scopeId: scope.id,
+      kind: "implement",
+      model_id: "moira/strong",
+      started_at: iso(-3 * 3_600_000),
+      finished_at: iso(-2 * 3_600_000),
+      status: "succeeded",
+    });
+
+    const summary = await get(app, "?window=24h");
+    expect(summary.metrics.per_model["xiaomi/mimo-v2.6-pro"]!.runs).toBe(1);
+    expect(summary.metrics.per_model["moira/strong"]!.runs).toBe(1);
+  });
+
+  it("rates implementer-model approvals from review verdicts on each pushed head", async () => {
+    const { app, store } = setup();
+    const scope = seedScope(store, {
+      goal: "approvals",
+      status: "planning",
+    });
+    const task = mrOpenTask(store, scope.id);
+    const H1 = "1111111111111111111111111111111111111111";
+    const H2 = "2222222222222222222222222222222222222222";
+    const H3 = "3333333333333333333333333333333333333333";
+    const base = {
+      scopeId: scope.id,
+      kind: "implement" as const,
+      model_id: "moira/strong",
+      served_model_id: "xiaomi/mimo-v2.6-pro",
+      task_id: task.id,
+      started_at: iso(-3 * 3_600_000),
+      finished_at: iso(-2 * 3_600_000),
+      status: "succeeded" as const,
+    };
+    seedRun(store, { ...base, head_sha: H1 });
+    seedRun(store, { ...base, head_sha: H2 });
+    // Same model, pushed head never reviewed: no verdict, no rate.
+    seedRun(store, { ...base, head_sha: H3 });
+    const review = (
+      head_sha: string,
+      verdict: "approve" | "request_changes",
+    ): void => {
+      seedRun(store, {
+        scopeId: scope.id,
+        kind: "review",
+        model_id: "grok-4.7",
+        task_id: task.id,
+        head_sha,
+        evidence: { verdict, head_sha },
+        started_at: iso(-2 * 3_600_000),
+        finished_at: iso(-90 * 60_000),
+        status: "succeeded",
+      });
+    };
+    review(H1, "approve");
+    review(H2, "request_changes");
+    // A verdict on the same head in another task must not leak across the
+    // task-scoped join.
+    const otherScope = seedScope(store, {
+      goal: "approvals-other",
+      status: "planning",
+    });
+    const other = mrOpenTask(store, otherScope.id);
+    seedRun(store, {
+      scopeId: otherScope.id,
+      kind: "implement",
+      model_id: "moira/strong",
+      served_model_id: "zai/glm-5.3",
+      task_id: other.id,
+      head_sha: H1,
+      started_at: iso(-3 * 3_600_000),
+      finished_at: iso(-2 * 3_600_000),
+      status: "succeeded",
+    });
+
+    const summary = await get(app, "?window=24h");
+    const served = summary.metrics.per_model["xiaomi/mimo-v2.6-pro"]!;
+    expect(served.reviewed).toBe(2);
+    expect(served.approved).toBe(1);
+    expect(served.approval_rate).toBe(0.5);
+    const otherModel = summary.metrics.per_model["zai/glm-5.3"]!;
+    expect(otherModel.reviewed).toBe(0);
+    expect(otherModel.approval_rate).toBeNull();
   });
 
   it("redacts a credential-bearing unclassified fault and never echoes the run error", async () => {

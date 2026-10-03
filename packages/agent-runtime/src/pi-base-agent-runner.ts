@@ -89,6 +89,10 @@ import {
   type PiRunState,
 } from "./pi-session.js";
 import {
+  classifyGatewayExchange,
+  type GatewayExchange,
+} from "./gateway-observer.js";
+import {
   buildSandboxLaunchProfile,
   type SandboxEngine,
   type SandboxHandle,
@@ -1031,6 +1035,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 state.failureFault ??= classifyPromptFailure(
                   lastError,
                   runToken,
+                  state.lastGatewayExchange,
                 ) ?? {
                   layer: "provider",
                   code: "connection_exhausted",
@@ -1062,6 +1067,7 @@ export class PiBaseAgentRunner implements PiRunner {
               state.failureFault ??= classifyPromptFailure(
                 errText,
                 runToken,
+                state.lastGatewayExchange,
               ) ?? {
                 layer: "harness",
                 code: classifyHarnessFailure(errText),
@@ -1534,6 +1540,7 @@ export class PiBaseAgentRunner implements PiRunner {
               state.failureFault ??= classifyPromptFailure(
                 lastError,
                 runToken,
+                state.lastGatewayExchange,
               ) ?? {
                 layer: "provider",
                 code: "connection_exhausted",
@@ -1807,6 +1814,7 @@ export class PiBaseAgentRunner implements PiRunner {
                   state.failureFault ??= classifyPromptFailure(
                     errText,
                     runToken,
+                    state.lastGatewayExchange,
                   ) ?? {
                     layer: "harness",
                     code: classifyHarnessFailure(errText),
@@ -1916,7 +1924,11 @@ export class PiBaseAgentRunner implements PiRunner {
               errText.replace(/\s+/g, " ").trim(),
               runToken,
             ).slice(0, 160)}`;
-            state.failureFault ??= classifyPromptFailure(errText, runToken) ?? {
+            state.failureFault ??= classifyPromptFailure(
+              errText,
+              runToken,
+              state.lastGatewayExchange,
+            ) ?? {
               layer: "harness",
               code: classifyHarnessFailure(errText),
               detail: sanitizeSecret(errText, runToken).slice(0, 240),
@@ -2163,10 +2175,16 @@ export function classifyProvisionFailure(message: string): Fault["code"] {
 }
 
 /**
- * The provider fault for a prompt that threw, or undefined when the text
- * names no provider condition - an SDK/harness fault outlives finalization
- * as the run's own opaque error rather than wearing a provider code it
- * never earned.
+ * The provider fault for a prompt that threw, or undefined when neither the
+ * gateway's structured error body nor the text names a provider condition -
+ * an SDK/harness fault outlives finalization as the run's own opaque error
+ * rather than wearing a provider code it never earned.
+ *
+ * Structured classification first: when the run's newest gateway exchange
+ * carries a quota-tier refusal (`tier_exhausted` error body), that is
+ * provider quota regardless of the message text, with the provider's own
+ * retry hint attached. Everything else falls through to the historical
+ * text matching below unchanged.
  *
  * Shared by every path that sees a prompt throw: the connection-exhaustion
  * arm and the protocol arm of `driveSession`, and the continuation steer.
@@ -2193,7 +2211,10 @@ export function classifyHarnessFailure(message: string): Fault["code"] {
 export function classifyPromptFailure(
   message: string,
   secret?: string,
+  exchange?: GatewayExchange,
 ): Fault | undefined {
+  const structured = classifyGatewayExchange(exchange);
+  if (structured) return structured;
   const code = /\b429\b/.test(message)
     ? "http_429"
     : /\b50[0234]\b|\b529\b/.test(message)

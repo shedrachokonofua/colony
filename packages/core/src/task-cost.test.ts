@@ -29,6 +29,7 @@ function runFixture(
     evidence_json: null,
     token_id: null,
     model_id: null,
+    served_model_id: null,
     trace_id: null,
     error: null,
     last_progress_at: null,

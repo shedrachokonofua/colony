@@ -110,6 +110,9 @@ export function createRunEventSink(store: Store): RunEventSink {
       if (event === "pi_model_fallback" && typeof fields?.to === "string") {
         store.setRunModel(runId, fields.to);
       }
+      if (event === "pi_served_model" && typeof fields?.model === "string") {
+        store.setRunServedModel(runId, fields.model);
+      }
       if (
         event === "pi_tool_start" &&
         typeof fields?.tool === "string" &&
