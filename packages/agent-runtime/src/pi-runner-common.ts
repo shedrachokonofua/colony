@@ -82,6 +82,27 @@ export interface PiModelSpec {
   readonly headers?: Record<string, string>;
 }
 
+/**
+ * Pins the run's prompt-cache identity onto a spec's compat before registry
+ * registration. pi-ai's chat-completions transport maps the agent's
+ * `promptCacheKey` onto the `prompt_cache_key` body field only for first-party
+ * OpenAI/kimi hosts; `compat.extraBody` is the documented seam for extra
+ * request-body fields on the generic OpenAI-compatible gateways Colony routes
+ * through (LiteLLM), which is where Moira's session pinning and provider cache
+ * bucketing read the key.
+ */
+export function runPromptCacheCompat(
+  compat: ModelSpec["compat"],
+  runId: string,
+): ModelSpec["compat"] {
+  const extraBody =
+    compat && "extraBody" in compat ? compat.extraBody : undefined;
+  return {
+    ...compat,
+    extraBody: { ...extraBody, prompt_cache_key: runId },
+  } as ModelSpec["compat"];
+}
+
 export interface PiRunnerBaseOptions {
   readonly broker?: CredentialBroker;
   readonly logger?: PiRunnerLogger;

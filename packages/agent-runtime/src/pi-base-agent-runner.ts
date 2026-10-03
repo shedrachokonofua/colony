@@ -56,6 +56,7 @@ import {
   provisionScratchDir,
   resolvePiModel,
   reviewerVerdictEnvelopeTypeBox,
+  runPromptCacheCompat,
   runnerBroker,
   waitForIdleOrCapturedEnvelope,
   withRunTimeout,
@@ -536,7 +537,8 @@ export class PiBaseAgentRunner implements PiRunner {
             // Preserve route-level compatibility policy across registry
             // resolution and runtime fallback (e.g. disabling reasoning when
             // a named tool choice is forced on a thinking-incompatible relay).
-            compat: candidate.compat,
+            // The run id rides every request body as `prompt_cache_key`.
+            compat: runPromptCacheCompat(candidate.compat, runId),
             // Colony's config leaves these nullable; the registry wants numbers.
             contextWindow: candidate.contextWindow ?? 128_000,
             maxTokens: candidate.maxTokens ?? 16_384,

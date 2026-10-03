@@ -550,6 +550,11 @@ export async function buildPiSession(
         : {}),
       model: perSession.parent?.model ?? primaryModel,
       thinkingLevel,
+      // One prompt-cache identity per run: the run session, staged sessions,
+      // and delegated subagents all present the run id to the provider, so
+      // every model call of the run — fallback legs included — lands in one
+      // cache bucket and pins as one session upstream (Moira).
+      providerPromptCacheKey: runId,
       authStorage,
       modelRegistry,
       getApiKey: async (candidate: { provider: string }) =>

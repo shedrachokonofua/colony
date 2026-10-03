@@ -356,6 +356,10 @@ shorter runs. Queued work cannot start after cancellation or that cutoff, and
 interrupted children return errors rather than successful partial reports.
 These limits reserve submission time without extending the run's wall clock.
 
+Every model call of a run carries the run id as `prompt_cache_key`, so
+gateway logs and provider prompt caches stay keyed to one run across
+sessions, subagents, and fallback models.
+
 ## Architecture
 
 ```mermaid
