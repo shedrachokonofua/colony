@@ -184,6 +184,24 @@ providers:
         # turns went 20/20 on the Step Plan, no 429s.
         max_parallel_runs: 4
         cost: { input: 0, output: 0 }
+      # Moira's `strong` tier (AA 43-47): Moira picks the member with quota
+      # (MiMo on Xiaomi/Command Code/OpenCode Go, Muse Contributor, GLM 5.3,
+      # Kimi K3, Step 5, Qwen 3.8 Max) and pins each run to it via the run
+      # id Colony sends as prompt_cache_key. Until LiteLLM adapts requests
+      # per deployment, this entry must suit every member: the smallest
+      # window (Qwen 1,000,000), Step's output ceiling (65,536), and no
+      # forced tool_choice (MiMo and Step mishandle it; finalizers steer).
+      # Moira maps the requested effort to each member's closest in-band one.
+      - id: moira/strong
+        name: moira-strong
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 1000000
+        max_tokens: 65536
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 4
+        cost: { input: 0, output: 0 }
 
 agents:
   # Budgets sized from observed run durations (12h window, 2026-08-18):
@@ -206,18 +224,19 @@ agents:
   # step-5-preview as developer (1/2: never submitted), and
   # gemini-3.8-flash as architect (1/2: missed docs and SQL conventions).
   #
-  # developer: muse-spark (20/4 implement; 2/2 in 21 s), mimo-v2.6-pro
-  # (AA 46; 2/2 voluntary), gemini-3.8-flash (34/16, mostly infra; 2/2 only
-  # via the forced finalizer, which it honours), glm-5.3-flash (2/2 in 32 s;
-  # rate-limited history), deepseek-v4-pro (2/2 in 8 s; Ollama Cloud pool).
+  # developer: moira-strong (2026-10-03). A fixed lead stalls when its quota
+  # runs dry (Muse subscription exhausted until 2026-10-05; the Xiaomi MiMo
+  # plan at 62% of its yearly pool), so Moira chooses among strong-tier
+  # models with quota. No fallback: the whole tier exhausted at once is
+  # unlikely, Moira's tier_exhausted 429 requeues the task like any provider
+  # rate limit, and a Moira outage fails open to LiteLLM's moira/strong
+  # alias (Kimi K3). Earlier evidence: under one reviewer (grok-4.7) MiMo
+  # implementations were approved 21/43 against Muse's 21/75.
   developer:
     provider: openai_compatible
-    model: muse-spark
-    fallback_models:
-      [mimo-v2.6-pro, gemini-3.8-flash, glm-5.3-flash, deepseek-v4-pro]
-    # max clamps per model to its top effort: muse-spark max (was high),
-    # mimo-v2.6-pro high (its ceiling, unchanged), gemini-3.8-flash high,
-    # glm-5.3-flash xhigh, deepseek-v4-pro max.
+    model: moira-strong
+    # Moira maps max to each member's closest in-band effort (Muse xhigh,
+    # GLM 5.3 and K3 max, MiMo/Step/Qwen default).
     thinking_level: max
     # 3 h: two 90-minute runs (col-d6ca6aa2.2, col-7548de26.3) were killed
     # mid-repair on large tasks with work still unsubmitted.

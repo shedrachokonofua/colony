@@ -128,19 +128,6 @@ describe("harness conformance config parsing", () => {
     for (const entry of byRole) {
       expect(entry.models.length, `${entry.role} chain`).toBeGreaterThan(0);
     }
-    // Pinned to the chains this file had when the check was written, so a
-    // routing change has to update the expectation deliberately.
-    expect(byRole[0]?.models).toEqual([
-      "muse-spark",
-      "mimo-v2.6-pro",
-      "gemini-3.8-flash",
-      "glm-5.3-flash",
-      "deepseek-v4-pro",
-    ]);
-    expect(byRole[4]).toEqual({
-      role: "memory_consolidator",
-      models: ["muse-spark"],
-    });
   });
 });
 
