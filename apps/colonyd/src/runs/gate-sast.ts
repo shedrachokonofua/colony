@@ -65,7 +65,8 @@ export function buildSastCommand(
     throw new Error(`invalid SAST baseline commit: ${baselineSha}`);
   }
   return [
-    'out="$TMPDIR/colony-semgrep.json"',
+    // Kubernetes sandboxes leave TMPDIR unset (the pod's own substrate).
+    'out="${TMPDIR:-/tmp}/colony-semgrep.json"',
     [
       "semgrep scan",
       `--config ${shellQuote(rulesDir)}`,
