@@ -241,7 +241,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
                 findings: scripted.findings.length,
               },
               {
-                name: "defect-scan",
+                name: "security",
                 spec_blind: true,
                 target_files: ["src/main.ts"],
                 findings: 0,
@@ -274,7 +274,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
                 findings: 1,
               },
               {
-                name: "defect-scan",
+                name: "security",
                 spec_blind: true,
                 target_files: ["index.js"],
                 findings: 0,
@@ -309,7 +309,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
                 findings: 0,
               },
               {
-                name: "defect-scan",
+                name: "security",
                 spec_blind: true,
                 target_files: ["src/main.ts"],
                 findings: 0,
@@ -337,7 +337,7 @@ function fakeAgents(): FakeAgentRuntimeAdapter {
               findings: 0,
             },
             {
-              name: "defect-scan",
+              name: "security",
               spec_blind: true,
               target_files: ["src/main.ts"],
               findings: 0,

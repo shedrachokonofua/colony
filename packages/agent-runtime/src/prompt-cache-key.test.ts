@@ -180,7 +180,7 @@ const reviewerEnvelope = (
       findings: 0,
     },
     {
-      name: "defects",
+      name: "security",
       spec_blind: true,
       target_files: ["source.ts"],
       findings: 0,

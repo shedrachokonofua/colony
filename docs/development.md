@@ -32,23 +32,26 @@ One process, `apps/colonyd`:
 
 State machine, SQLite persistence, and backoff live in `packages/core`; run envelopes in `packages/schemas`. Envelopes are evidence, never authority: colonyd verifies branch/SHA facts with the provider before any transition.
 
-The merge gate clones the target branch fresh, prospectively merges the task
-head, scans for secrets/artifacts, and validates the combined tree with every
-command in `colony.gate.yaml` before rechecking the MR head and merging the
-gated SHA. The file and its non-empty command list are mandatory
-(`packages/schemas/src/gate-config.ts` is the one validator). Configuration
-the MR itself changed and broke goes back to the implementer as a repair,
-and the implementer's submit is refused while the pushed head carries an
-invalid gate file; any other malformed or missing configuration blocks the
-task for operator correction. Gates serialize per
-provider repository, across scopes. Their subprocesses are asynchronous and
-cancellable; heartbeats keep long-running checks leased. Dispatch rechecks
-current task/scope state after provider reads, and an in-flight gate rechecks
-its merge authority before sending the merge request.
-Checks share the validation environment policy: only allowlisted variables,
-the executable PATH, and per-gate HOME/TMPDIR reach their non-login shell.
-Scratch and workspace cleanup are asynchronous and also run on failure or
-cancellation.
+The merge gate clones the target branch fresh, scans the incoming diff for
+secrets/artifacts, applies the dependency policy
+(`apps/colonyd/src/runs/dependency-policy.ts`, hosts from
+`merge_gate.registry_hosts`), prospectively merges the task head, scrubs the
+provider token from the clone (`runs/workspace-credentials.ts`), and runs
+everything that executes repository code in a `gate` sandbox from the
+configured engine: the optional diff-aware semgrep step (`runs/gate-sast.ts`,
+`merge_gate.sast`) and every command in `colony.gate.yaml`. Then it rechecks
+the MR head and merges the gated SHA. The file and its non-empty command list
+are mandatory (`packages/schemas/src/gate-config.ts` is the one validator).
+Configuration the MR itself changed and broke goes back to the implementer as
+a repair, and the implementer's submit is refused while the pushed head
+carries an invalid gate file; any other malformed or missing configuration
+blocks the task for operator correction. Dependency and SAST failures go back
+as repairs with their findings; a semgrep that cannot run is a platform fault
+(deferred, no attempt charged). Gates serialize per provider repository,
+across scopes. Cancellation destroys the gate sandbox; heartbeats keep
+long-running checks leased. Dispatch rechecks current task/scope state after
+provider reads, and an in-flight gate rechecks its merge authority before
+sending the merge request.
 
 ## Running locally
 

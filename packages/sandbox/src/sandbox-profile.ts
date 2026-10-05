@@ -5,7 +5,12 @@ import {
   assertValidRunExtensions,
 } from "./run-extensions.js";
 
-export const SANDBOX_ROLES = ["developer", "reviewer", "validate"] as const;
+export const SANDBOX_ROLES = [
+  "developer",
+  "reviewer",
+  "validate",
+  "gate",
+] as const;
 export type SandboxRole = (typeof SANDBOX_ROLES)[number];
 
 export const SANDBOX_ROLE_LABEL = "colony.shdr.ch/sandbox-role" as const;
@@ -207,7 +212,10 @@ export function buildSandboxLaunchProfile(
     },
   ];
 
-  if (role === "validate") {
+  // Validate (acceptance criteria) and gate (colony.gate.yaml commands, SAST)
+  // both run repository-authored commands on a scrubbed clone: exec only, no
+  // credentials, no tool gateway token, read-only root.
+  if (role === "validate" || role === "gate") {
     return {
       role,
       actorRole: "reviewer",

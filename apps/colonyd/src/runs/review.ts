@@ -181,6 +181,9 @@ async function executeReview(
       scope,
       project,
       files,
+      scope.project_name
+        ? ctx.store.getProjectSecurityChecklist(scope.project_name)
+        : null,
       repo,
       headSha,
       position.round,

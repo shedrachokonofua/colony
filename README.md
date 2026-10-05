@@ -174,25 +174,42 @@ flowchart LR
    epoch: the stall clock and the rejection count restart.
    Each task has at most one active review. Independent tasks in the same
    scope can review concurrently, subject to per-model limits.
+   Every review runs a spec-blind `security` lens (verdicts without it are
+   rejected). It applies Colony's security baseline (tenancy from the
+   session, authorization predicates, injection, SSRF, file parsing,
+   secrets, dependency and CI changes, fail-closed defaults) plus the
+   project's security checklist, which colonyd holds rather than the
+   repository: `PUT /projects/:name/security-checklist`
+   `{"security_checklist": "<markdown>"}` (`null` clears it).
 6. **Gate and merge.** If the merge request head has a CI pipeline, it must
    have succeeded. Failed CI at the current head schedules bounded developer
    repair with feedback and backoff: after `COLONYD_MAX_ATTEMPTS` repairs
    with no green pipeline in between, the task blocks. Review rejections do
    not spend that budget.
    Pending or unknown CI does not consume attempts. The merge gate clones the target branch fresh,
-   merges the candidate head into it, scans the incoming diff for
-   credential patterns (GitLab and AWS tokens, private keys) and refuses
-   `.env` or `PACKET.json`, validates the prospective tree with every command
-   in the repository's `colony.gate.yaml` (each under `timeout_seconds`,
-   default 600; the file and its non-empty command list are required), re-
-   checks the merge request head, and merges that exact commit. A gate
-   configuration the merge request itself broke goes back to the developer
-   with the expected format, like a failing command; any other missing or
-   invalid gate configuration blocks the task for operator correction. A
-   conflict or failing command requeues the task; three consecutive gate
-   failures at one head block it. If GitLab refuses the merge while a
-   pipeline is still registering, the gate waits 60 s and retries; three
-   refusals block.
+   scans the incoming diff for credential patterns (GitLab and AWS tokens,
+   private keys) and refuses `.env` or `PACKET.json`, and applies the
+   dependency policy: every new or changed direct dependency is recorded in
+   the gate evidence, and anything that resolves outside
+   `merge_gate.registry_hosts` (lockfile entries, tarball specs,
+   `.npmrc`/`bunfig.toml` registries), git or URL dependencies, path
+   dependencies that leave the repository, and new `trustedDependencies`
+   fail the gate. It then merges the candidate head, scrubs the provider
+   token from the clone, and runs everything that executes repository code
+   in a credential-free `gate` sandbox: with `merge_gate.sast: true`, a
+   diff-aware semgrep scan (high severity only, findings that already exist
+   on the target branch ignored, inline suppressions ignored), then every
+   command in the repository's `colony.gate.yaml` (each under
+   `timeout_seconds`, default 600; the file and its non-empty command list
+   are required). Finally it re-checks the merge request head and merges
+   that exact commit. A gate configuration the merge request itself broke
+   goes back to the developer with the expected format, like a failing
+   command; any other missing or invalid gate configuration blocks the task
+   for operator correction. A conflict, failing command, policy violation, or
+   static analysis finding requeues the task with the evidence; three
+   consecutive gate failures at one head block it. If GitLab refuses the
+   merge while a pipeline is still registering, the gate waits 60 s and
+   retries; three refusals block.
    Gates serialize per provider repository, across scopes, so parallel tasks land one at a time.
    After a merge lands, a **main pipeline watch** re-reads the default
    branch's pipeline (bounded to one provider pass per scope per minute).
@@ -437,13 +454,13 @@ the original checkout and excludes ignored files and dependency/build trees.
 
 ## Sandboxes
 
-`sandbox.engine` chooses where agent runs and scope validation execute.
-The merge gate remains a child of `colonyd`, not a sandbox-engine workload.
-Its checks use validation's environment allowlist (`CI`, `NO_COLOR`,
-`FORCE_COLOR`), the executable `PATH`, and a private `HOME`/`TMPDIR` outside
-the clone. Daemon configuration and provider tokens are not inherited as
-environment variables. This is configuration isolation, not a filesystem or
-security boundary; checks still have the daemon user's access.
+`sandbox.engine` chooses where agent runs, scope validation, and the merge
+gate's repository commands execute. The gate keeps its clone, diff scans,
+and prospective merge on the daemon (they need the provider token), then
+scrubs the token from the clone and hands it to a `gate` sandbox for the
+SAST step and the `colony.gate.yaml` commands. Validation and gate
+sandboxes get no credentials and only `CI`, `NO_COLOR`, and `FORCE_COLOR`
+from the environment.
 
 **`in-process`** (default). Agent commands are shell children of `colonyd`
 with the run's workspace as working directory, a private `HOME`/`TMPDIR`,
@@ -458,14 +475,19 @@ run `colonyd` in a container that has nothing else in it.
 service-account token, all capabilities dropped, `RuntimeDefault` seccomp,
 an ephemeral workspace volume. The prepared workspace is streamed into the
 pod; commands run over `pods/exec`; the pod is destroyed when the run ends.
-Developer sandboxes get 2 CPU / 4 GiB; reviewer and validation sandboxes
-1 CPU / 2 GiB. Egress is whatever your NetworkPolicy allows, keyed on the
-`colony.shdr.ch/sandbox-role` pod label. Acceptance validation runs in the
-sandbox too; only the merge gate stays on the daemon.
+Developer sandboxes get 2 CPU / 4 GiB; reviewer, validation, and gate
+sandboxes 1 CPU / 2 GiB. Egress is whatever your NetworkPolicy allows, keyed
+on the `colony.shdr.ch/sandbox-role` pod label.
 
-The sandbox image (`docker/sandbox/Dockerfile`) contains Node 24, Bun, git,
-tar, and Chromium; it carries no Colony code. Add your project's toolchain
-to it and set `sandbox.kubernetes.image`.
+The sandbox image (`docker/sandbox/Dockerfile`) carries no Colony code. Its
+toolset is declared once in
+[`packages/sandbox/src/image-tools.json`](packages/sandbox/src/image-tools.json):
+the image build fails when a declared tool is missing, an excluded one
+(curl, wget, jq, docker) exists, or the vendored semgrep rules do not
+validate, and agent prompts describe the toolset from the same file. Today
+that is bash, Node 24, npm, Bun, git, tar, Python 3, semgrep with pinned
+JavaScript/TypeScript rules, and Chromium. Add your project's toolchain to
+the image and the manifest, and set `sandbox.kubernetes.image`.
 
 ## Install
 

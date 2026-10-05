@@ -6,7 +6,7 @@ import { createInProcessEngine } from "@colony/sandbox-in-process";
 import { createEngine, ENGINE_REGISTRY } from "../src/agent-runtime.js";
 import { resetEnvCache } from "@colony/config";
 import type { ColonyConfig } from "@colony/config";
-import { DEFAULT_KUBERNETES_SANDBOX } from "@colony/config";
+import { DEFAULT_KUBERNETES_SANDBOX, DEFAULT_MERGE_GATE } from "@colony/config";
 import { FakeAgentRuntimeAdapter } from "@colony/agent-runtime";
 import { FakeProviderAdapter } from "@colony/provider";
 import { boot, type ColonydHandle } from "../src/main.js";
@@ -20,6 +20,7 @@ function stubConfig(): ColonyConfig {
     },
     hitlMode: "gated",
     reviewMode: "off",
+    mergeGate: DEFAULT_MERGE_GATE,
     artifacts: { kind: "local", local: { dir: "data/artifacts" } },
     sessionsDir: "data/sessions",
     notifications: { enabled: false },
@@ -100,7 +101,7 @@ describe("colonyd boot validate-engine wiring", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("provisions ctx.validateEngine from the configured engine at boot", async () => {
+  it("provisions ctx.commandEngine from the configured engine at boot", async () => {
     process.env["NODE_ENV"] = "test";
     process.env["AGENT_RUNTIME"] = "fake";
     process.env["GITLAB_TOKEN"] = "";
@@ -118,13 +119,13 @@ describe("colonyd boot validate-engine wiring", () => {
       headless: true,
     });
 
-    expect(handle.ctx.validateEngine).toBeDefined();
-    expect(typeof handle.ctx.validateEngine?.provision).toBe("function");
+    expect(handle.ctx.commandEngine).toBeDefined();
+    expect(typeof handle.ctx.commandEngine?.provision).toBe("function");
 
     await handle.shutdown();
   });
 
-  it("honors a BootOptions.validateEngine override", async () => {
+  it("honors a BootOptions.commandEngine override", async () => {
     process.env["NODE_ENV"] = "test";
     process.env["AGENT_RUNTIME"] = "fake";
     process.env["GITLAB_TOKEN"] = "";
@@ -140,11 +141,11 @@ describe("colonyd boot validate-engine wiring", () => {
         architect: new FakeAgentRuntimeAdapter(),
         developer: new FakeAgentRuntimeAdapter(),
       },
-      validateEngine: override,
+      commandEngine: override,
       headless: true,
     });
 
-    expect(handle.ctx.validateEngine).toBe(override);
+    expect(handle.ctx.commandEngine).toBe(override);
 
     await handle.shutdown();
   });

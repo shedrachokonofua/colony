@@ -178,7 +178,7 @@ async function harness(
           findings: 0,
         },
         {
-          name: "defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["src/change.ts"],
           findings: 0,

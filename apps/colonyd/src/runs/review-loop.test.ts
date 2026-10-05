@@ -30,7 +30,12 @@ function verdict(
     findings: [],
     inspected: [],
     dimensions: [
-      { name: "d", spec_blind: true, target_files: ["a.ts"], findings: 0 },
+      {
+        name: "security",
+        spec_blind: true,
+        target_files: ["a.ts"],
+        findings: 0,
+      },
     ],
     challenged: { reviewed: 0, dropped: 0 },
     head_sha: "a".repeat(40),

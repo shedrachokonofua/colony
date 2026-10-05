@@ -23,6 +23,9 @@ import {
   defaultGateExecutor,
   runMergeGate,
 } from "../src/runs/merge-gate.js";
+import { DEFAULT_MERGE_GATE } from "@colony/config";
+import { createInProcessEngine } from "@colony/sandbox-in-process";
+import type { SandboxEngine } from "@colony/sandbox";
 
 const dirs: string[] = [];
 
@@ -140,6 +143,8 @@ async function executeGate(
     targetBranch: "main",
     taskBranch,
     headSha,
+    engine: createInProcessEngine(),
+    policy: DEFAULT_MERGE_GATE,
     signal,
   });
 }
@@ -333,6 +338,8 @@ describe("defaultGateExecutor secret scan", () => {
       targetBranch: "main",
       taskBranch: "leak",
       headSha: leakSha,
+      engine: createInProcessEngine(),
+      policy: DEFAULT_MERGE_GATE,
     });
     if (result && "reason" in result) {
       expect(result.reason).toBe("secret_scan");
@@ -353,6 +360,8 @@ describe("defaultGateExecutor secret scan", () => {
       targetBranch: "main",
       taskBranch: "clean",
       headSha: cleanSha,
+      engine: createInProcessEngine(),
+      policy: DEFAULT_MERGE_GATE,
     });
     // Success payload carries the pre-merge diff (target...head); after the
     // prospective merge the same three-dot diff is empty, so this cannot be
@@ -362,6 +371,132 @@ describe("defaultGateExecutor secret scan", () => {
     } else {
       expect.unreachable("gate should have succeeded");
     }
+  });
+});
+
+describe("defaultGateExecutor sandbox boundary", () => {
+  it("runs gate commands only inside a gate sandbox on a scrubbed clone", async () => {
+    // The check reads the clone's origin from inside the command: it must
+    // already be the credential-free display URL when repository code runs.
+    const { repo, cleanSha } = seedRepo(
+      [
+        "commands:",
+        '  - "git remote get-url origin | grep -qx https://example.com/repo.git"',
+        "",
+      ].join("\n"),
+    );
+    const inner = createInProcessEngine();
+    const roles: string[] = [];
+    const commands: string[] = [];
+    const engine: SandboxEngine = {
+      async provision(profile, workspace) {
+        roles.push(profile.role);
+        const handle = await inner.provision(profile, workspace);
+        return {
+          sandboxId: handle.sandboxId,
+          exec: (request, onEvent) => {
+            commands.push(request.command);
+            return handle.exec(request, onEvent);
+          },
+          readFile: (path) => handle.readFile(path),
+          writeFile: (path, content) => handle.writeFile(path, content),
+          destroy: () => handle.destroy(),
+        };
+      },
+      connect: (id) => inner.connect(id),
+    };
+    const workspace = join(tempDir("colony-gate-ws-"), "clone");
+    const result = await defaultGateExecutor({
+      workspace,
+      cloneUrl: repo,
+      displayUrl: "https://example.com/repo.git",
+      targetBranch: "main",
+      taskBranch: "clean",
+      headSha: cleanSha,
+      engine,
+      policy: DEFAULT_MERGE_GATE,
+    });
+    expect(result).toEqual({ files_changed: ["note.txt"] });
+    expect(roles).toEqual(["gate"]);
+    expect(commands).toEqual([
+      "git remote get-url origin | grep -qx https://example.com/repo.git",
+    ]);
+  });
+});
+
+describe("defaultGateExecutor dependency policy", () => {
+  function seedDependencyRepo(dependencies: Record<string, string>): {
+    repo: string;
+    headSha: string;
+  } {
+    const repo = tempDir("colony-gate-deps-");
+    git(repo, ["init", "-b", "main"]);
+    git(repo, ["config", "user.email", "colony-test@example.com"]);
+    git(repo, ["config", "user.name", "colony-test"]);
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({ name: "app", dependencies: { zod: "^4.0.0" } }),
+      "utf8",
+    );
+    writeFileSync(
+      join(repo, "colony.gate.yaml"),
+      ["commands:", '  - "true"', ""].join("\n"),
+      "utf8",
+    );
+    commitAll(repo, "init");
+    git(repo, ["checkout", "-b", "deps"]);
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({
+        name: "app",
+        dependencies: { zod: "^4.0.0", ...dependencies },
+      }),
+      "utf8",
+    );
+    commitAll(repo, "add dependencies");
+    const headSha = git(repo, ["rev-parse", "HEAD"]).trim();
+    git(repo, ["checkout", "main"]);
+    return { repo, headSha };
+  }
+
+  async function gate(repo: string, headSha: string) {
+    return defaultGateExecutor({
+      workspace: join(tempDir("colony-gate-ws-"), "clone"),
+      cloneUrl: repo,
+      displayUrl: repo,
+      targetBranch: "main",
+      taskBranch: "deps",
+      headSha,
+      engine: createInProcessEngine(),
+      policy: DEFAULT_MERGE_GATE,
+    });
+  }
+
+  it("rejects a git dependency before any command runs", async () => {
+    const { repo, headSha } = seedDependencyRepo({
+      "left-pad": "github:someone/left-pad",
+    });
+    const result = await gate(repo, headSha);
+    expect(result).toMatchObject({
+      reason: "dependency_policy",
+      violations: [{ file: "package.json", package: "left-pad" }],
+    });
+  });
+
+  it("admits a registry dependency and records it as gate evidence", async () => {
+    const { repo, headSha } = seedDependencyRepo({ hono: "^4.13.0" });
+    const result = await gate(repo, headSha);
+    expect(result).toEqual({
+      files_changed: ["package.json"],
+      dependency_changes: [
+        {
+          manifest: "package.json",
+          section: "dependencies",
+          name: "hono",
+          spec: "^4.13.0",
+        },
+      ],
+    });
   });
 });
 

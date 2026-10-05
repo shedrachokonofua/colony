@@ -229,6 +229,11 @@ const contextBody = z
   .object({ context_doc: z.string().max(100_000).nullable() })
   .strict();
 
+/** The reviewer's project security checklist; `null` clears it. */
+const securityChecklistBody = z
+  .object({ security_checklist: z.string().max(20_000).nullable() })
+  .strict();
+
 // ---------------------------------------------------------------------------
 // Project file validation constants
 // ---------------------------------------------------------------------------
@@ -658,6 +663,35 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
       },
     });
     return c.json({ project });
+  });
+
+  // The project's security checklist: what the code reviewer's mandatory
+  // `security` lens checks in every review, on top of Colony's baseline.
+  // colonyd holds it so the agent under review cannot edit it away.
+  app.get("/projects/:name/security-checklist", (c) => {
+    const project = ctx.store.getProject(c.req.param("name"));
+    if (!project) return notFound(c, "project");
+    return c.json({
+      security_checklist: ctx.store.getProjectSecurityChecklist(project.name),
+    });
+  });
+
+  app.put("/projects/:name/security-checklist", async (c) => {
+    const name = c.req.param("name");
+    const parsed = securityChecklistBody.safeParse(await parseBody(c));
+    if (!parsed.success) return badBody(c, parsed.error.message);
+    ctx.store.ensureProject(name);
+    const checklist = ctx.store.setProjectSecurityChecklist(
+      name,
+      parsed.data.security_checklist,
+    );
+    ctx.store.audit(c.get("actor"), "project.security_checklist_updated", {
+      detail: {
+        name,
+        bytes: checklist === null ? 0 : Buffer.byteLength(checklist),
+      },
+    });
+    return c.json({ security_checklist: checklist });
   });
 
   // Project skills (docs/designs/001-project-skills.md): git sources whose

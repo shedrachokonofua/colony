@@ -291,7 +291,7 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
               findings: 1,
             },
             {
-              name: "defect-scan",
+              name: "security",
               spec_blind: true,
               target_files: ["index.js"],
               findings: 0,
@@ -320,7 +320,7 @@ export class ScriptedAgentRuntimeAdapter extends FakeAgentRuntimeAdapter {
             findings: 0,
           },
           {
-            name: "defect-scan",
+            name: "security",
             spec_blind: true,
             target_files: ["src/main.ts"],
             findings: 0,

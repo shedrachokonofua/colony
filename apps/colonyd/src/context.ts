@@ -23,8 +23,9 @@ export interface ColonydContext {
   readonly gateExecutor?: GateExecutor;
   /** Test seam: overrides the credential-free validation command runner. */
   readonly validateExecutor?: ValidateExecutor;
-  /** Sandbox engine used to provision scope-validation handles. */
-  readonly validateEngine?: SandboxEngine;
+  /** Credential-free sandboxes for repository-authored commands: scope
+   *  acceptance criteria (validate) and merge-gate commands + SAST (gate). */
+  readonly commandEngine?: SandboxEngine;
   /**
    * Engine used to destroy the sandbox of a run that ended without its
    * in-process handler (lease expiry, crash reap). The run row's

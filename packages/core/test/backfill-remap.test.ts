@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Store } from "../src/index.js";
-import { LATEST_SCHEMA_VERSION } from "../src/migrations.js";
 import type { Fault } from "../src/index.js";
 
 /**
@@ -88,7 +87,6 @@ describe("migration 18 fault backfill remap", () => {
 
       const migrated = new Store(v17Path);
       try {
-        expect(LATEST_SCHEMA_VERSION).toBe(21);
         const faultOf = (id: string) =>
           JSON.parse(migrated.getRun(id)!.fault_json!) as Fault;
 

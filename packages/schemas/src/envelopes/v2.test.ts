@@ -151,7 +151,7 @@ describe("ReviewerVerdictV2", () => {
           findings: 0,
         },
         {
-          name: "adversarial-defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["src/main.ts"],
           findings: 0,
@@ -189,6 +189,46 @@ describe("ReviewerVerdictV2", () => {
       expect(parsed.error.issues.map((i) => i.message).join(" ")).toContain(
         "spec_blind",
       );
+    }
+  });
+
+  it.each([
+    ["no security lens", [{ name: "defect-scan", spec_blind: true }]],
+    [
+      "a security lens that saw the spec",
+      [{ name: "security", spec_blind: false }],
+    ],
+    [
+      "two security lenses",
+      [
+        { name: "security", spec_blind: true },
+        { name: "security", spec_blind: true },
+      ],
+    ],
+  ])("rejects a verdict with %s", (_, lenses) => {
+    for (const verdict of ["approve", "request_changes"] as const) {
+      const parsed = ReviewerVerdictV2.safeParse({
+        ...validApprove(),
+        verdict,
+        findings:
+          verdict === "request_changes"
+            ? [{ severity: "major", note: "missing case" }]
+            : [],
+        dimensions: [
+          {
+            name: "spec-compliance",
+            spec_blind: false,
+            target_files: ["src/main.ts"],
+            findings: 0,
+          },
+          ...lenses.map((lens) => ({
+            ...lens,
+            target_files: ["src/main.ts"],
+            findings: 0,
+          })),
+        ],
+      });
+      expect(parsed.success).toBe(false);
     }
   });
 

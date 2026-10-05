@@ -27,6 +27,7 @@ import {
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
   CodeReviewRoundV1,
   codeReviewRoundProblems,
+  REVIEW_SECURITY_DIMENSION,
 } from "@colony/schemas";
 import type { z } from "zod";
 import { validateDecompositionEnvelope } from "./envelope-validation.js";
@@ -35,7 +36,7 @@ import type { CredentialBroker } from "./credential-broker.js";
 import { permissiveCredentialBroker } from "./credential-broker.js";
 import type { RunAuditSink } from "./audit-sink.js";
 import type { PiRunRequest } from "./pi-adapter.js";
-import type { SandboxEngine } from "@colony/sandbox";
+import { describeSandboxToolset, type SandboxEngine } from "@colony/sandbox";
 import type { WebToolsConfig } from "./web-tools.js";
 import {
   RunEvidenceCollector,
@@ -1244,7 +1245,7 @@ export function buildArchitectSystemPrompt(): string {
     "- objective and cheap to run (seconds, not minutes);",
     "- each tied to an observable outcome of the scope goal — not evidence that a single task landed;",
     "- the command must run from a fresh checkout of the default branch at HEAD (a fresh `git clone` + `npm ci` where that makes sense), and exit non-zero if the goal does not hold.",
-    "- commands run in the validation sandbox, a minimal Node container: assume node, npm, git, and bash exist and NOTHING else — no curl, wget, jq, or docker. HTTP checks use `node -e` with fetch.",
+    `- commands run in the validation sandbox: ${describeSandboxToolset()} HTTP checks use \`node -e\` with fetch.`,
     "- never wait for time, wait for conditions: a fixed `sleep N` before probing a started server is a plan failure — poll readiness in a bounded loop (the substrate is slower than your intuition).",
     "- background processes must be cleaned up and must not decide the exit code: capture the probe's exit status, kill the server, exit with the captured status.",
     "",
@@ -1413,6 +1414,23 @@ export function createImplementerSubmitTool(
 
 /** Hard cap on review dimensions; matches the envelope schema's maxItems. */
 const MAX_REVIEW_DIMENSIONS = 6;
+
+/**
+ * Colony's security baseline: what the mandatory `security` review dimension
+ * checks in every review. Project-specific items (a platform's tenancy model,
+ * its policy language) come from the project's operator-held checklist in the
+ * packet, never from the repository under review.
+ */
+const SECURITY_BASELINE = [
+  "Identity and tenancy come from the authenticated session or token, never from a path, query, body, or header the client controls, and every data access is scoped by them.",
+  "Authorization changes (policies, guards, middleware, route tables) re-verify the ownership or tenant predicate on every affected action; a removed or loosened check is a blocker.",
+  "No untrusted input reaches SQL, a shell, a file path, a template or HTML sink, a regex, or eval without parameterization, escaping, or validation.",
+  "Outbound requests to URLs or hosts that input can influence go through an allowlist (SSRF), redirects included.",
+  "Uploaded or fetched files are validated for type and size before parsing; parsers never execute content; archive extraction cannot escape its directory.",
+  "No credential, token, or key is hardcoded, logged, returned in a response, or persisted in error text.",
+  "New dependencies, install scripts, and CI or deploy configuration changes are justified by the task; anything that widens what runs with credentials is a finding.",
+  "Failure paths fail closed: missing configuration, failed verification, and unknown roles deny.",
+];
 
 /**
  * Everything one review dimension subagent needs in its prompt. The
@@ -1672,9 +1690,13 @@ export function buildReviewerSystemPrompt(): string {
     "## Phase 2 — PLAN DIMENSIONS (you do this yourself, once)",
     "Plan 2 to 6 review dimensions from the anatomy. Each dimension is one lens over the diff with its own target files.",
     "- EXACTLY ONE dimension is `spec_conformance` — it alone sees the task spec.",
+    `- EXACTLY ONE dimension is \`${REVIEW_SECURITY_DIMENSION}\`, spec-blind, on every review including ones that look harmless. It owns the diff's highest-risk files (authn/authz, tenancy, input parsing, outbound calls, data access, dependency manifests) and its prompt carries the Security baseline below plus the packet's project security checklist section verbatim, if there is one.`,
     "- Every other dimension is SPEC-BLIND: its prompt must contain NO spec text, no spec summary, and no paraphrase of a requirement. Spec-blind dimensions find the defects the spec's own framing hides.",
     "- More than 6 dimensions is a planning failure: clamp to the 6 highest-risk ones. Fewer than 2 is not a review.",
     "- Give each dimension the 2-4 target files it owns, plus the context files it needs to judge them. Target files MUST come from the diff.",
+    "",
+    "### Security baseline (the `security` dimension checks every item; each violation is a finding, a reachable one a blocker)",
+    ...SECURITY_BASELINE.map((item) => `- ${item}`),
     "",
     "## Phase 3 — DELEGATE DIMENSIONS (one `task` call per dimension, ALL IN ONE TURN)",
     "Issue one `task` call per dimension in a SINGLE turn — they run concurrently. Each prompt carries: the dimension's name, its spec-blind or spec-conformance mandate, its target and context files, the anatomy that applies to them, and the finding schema it must report in.",
@@ -1706,7 +1728,7 @@ export function buildReviewerSystemPrompt(): string {
     "# Completion contract",
     'Finish by calling submit_reviewer_verdict exactly once with verdict, findings (severity + note, file where applicable, owner "operator" on a blocker only the operator can settle), `previous_findings` (one status per open finding in the packet\'s review_round), `inspected` (every file you read for the verdict, each with the spec requirement you checked it against), and the exact head_sha you inspected (`git rev-parse HEAD`). An approve with an empty `inspected` list or a one-line summary is rejected: a verdict is a claim about the diff and must name what it rests on. Your run does not exist until that call — never finish with plain text. Never include secrets in the envelope.',
     "The envelope also carries the audit of how this review was run:",
-    "- `dimensions`: one entry per dimension you actually ran — `{name, spec_blind, target_files, findings}`. 2 to 6 entries, and at least one MUST have `spec_blind: true`. `target_files` are the files that dimension owned; `findings` is how many findings it returned.",
+    `- \`dimensions\`: one entry per dimension you actually ran — \`{name, spec_blind, target_files, findings}\`. 2 to 6 entries, exactly one of them named \`${REVIEW_SECURITY_DIMENSION}\` with \`spec_blind: true\`. \`target_files\` are the files that dimension owned; \`findings\` is how many findings it returned.`,
     "- `challenged`: `{reviewed, dropped}` — how many candidate findings the adversary reviewed and how many it falsified. `challenged.reviewed` MUST be >= the total number of findings you submit; a finding the adversary never saw does not go in the envelope.",
     "Findings dropped by the adversary are not submitted, so they are not counted in `findings` — but they ARE counted in `challenged`.",
   ].join("\n");
@@ -1749,7 +1771,7 @@ export function buildReviewerFinalizerPrompt(
     "- request_changes needs a blocker, a blocking open finding that is still open, or a new major while review_round.majors_block is true. Once majors_block is false, new majors approve and become a follow-up task.",
     "- approve carries no blocker and leaves no blocking finding open.",
     "- head_sha must be the exact 40-hex SHA you inspected (`git rev-parse HEAD`).",
-    "- dimensions has 2 to 6 entries, one per review dimension you actually ran: {name, spec_blind, target_files, findings}. At least one entry MUST have spec_blind: true — a review where every lens saw the spec is rejected.",
+    `- dimensions has 2 to 6 entries, one per review dimension you actually ran: {name, spec_blind, target_files, findings}. Exactly one entry is named "${REVIEW_SECURITY_DIMENSION}" with spec_blind: true — a review without the security lens is rejected.`,
     "- challenged is {reviewed, dropped}: how many candidate findings the adversary reviewed and how many it falsified. challenged.reviewed MUST be >= the number of findings you submit — a finding the adversary never saw is rejected.",
     "- Do not add wrapper keys such as envelope, arguments, or data. The tool arguments are the envelope object.",
     "",
@@ -1863,7 +1885,7 @@ export function createReviewerSubmitTool(
     name: "submit_reviewer_verdict",
     label: "Submit reviewer verdict",
     description:
-      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. previous_findings gives each open finding in the packet's review_round a status. request_changes needs a blocker, a blocking open finding still open, or a new major while majors_block holds; approve carries no blocker, requires `inspected` (the files you read, each with what you checked) and a summary of at least 80 chars. The envelope also carries the review audit: `dimensions` with 2 to 6 entries (one per dimension you ran, at least one with spec_blind: true) and `challenged` {reviewed, dropped} where reviewed >= the number of findings submitted. A rejected submission keeps the session open so you can correct and resubmit.",
+      "Final action. Submit exactly one schema-valid reviewer_verdict envelope with the SHA you inspected. previous_findings gives each open finding in the packet's review_round a status. request_changes needs a blocker, a blocking open finding still open, or a new major while majors_block holds; approve carries no blocker, requires `inspected` (the files you read, each with what you checked) and a summary of at least 80 chars. The envelope also carries the review audit: `dimensions` with 2 to 6 entries (one per dimension you ran, exactly one named `security` with spec_blind: true) and `challenged` {reviewed, dropped} where reviewed >= the number of findings submitted. A rejected submission keeps the session open so you can correct and resubmit.",
     parameters: reviewerVerdictEnvelopeTypeBox,
     execute: async (_toolCallId, rawParams) => {
       const params = parseEnvelopeArguments(reviewerVerdictV2Schema, rawParams);

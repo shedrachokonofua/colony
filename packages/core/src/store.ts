@@ -815,6 +815,29 @@ export class Store {
   }
 
   /**
+   * Operator-authored security checklist the code reviewer's security lens
+   * applies to every review in the project. colonyd holds it, not the repo,
+   * so the agent whose change it checks cannot edit it away. Audited writes
+   * go through the colonyd API.
+   */
+  getProjectSecurityChecklist(name: string): string | null {
+    const row = this.db
+      .prepare(`SELECT security_checklist FROM projects WHERE name = ?`)
+      .get(name) as { security_checklist: string | null } | undefined;
+    return row?.security_checklist ?? null;
+  }
+
+  setProjectSecurityChecklist(name: string, doc: string | null): string | null {
+    const result = this.db
+      .prepare(
+        `UPDATE projects SET security_checklist = ?, updated_at = ? WHERE name = ?`,
+      )
+      .run(doc?.trim() ? doc : null, nowIso(), name);
+    if (result.changes === 0) throw new Error(`unknown project: ${name}`);
+    return this.getProjectSecurityChecklist(name);
+  }
+
+  /**
    * Idempotent insert-or-read. An existing row is never touched, so its
    * `updated_at` stays the creation timestamp.
    */

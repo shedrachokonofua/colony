@@ -200,6 +200,41 @@ const reviewSchema = z
 
 export type ReviewMode = "off" | "required";
 
+/** Hosts the merge gate's dependency policy accepts when none are configured. */
+export const DEFAULT_REGISTRY_HOSTS: readonly string[] = [
+  "registry.npmjs.org",
+  "registry.yarnpkg.com",
+];
+
+const mergeGateSchema = z
+  .object({
+    /**
+     * Package registry hosts a dependency may resolve from. Any other host
+     * (lockfile entry, tarball spec, .npmrc/bunfig registry) fails the gate.
+     */
+    registry_hosts: z
+      .array(z.string().min(1))
+      .min(1)
+      .default([...DEFAULT_REGISTRY_HOSTS]),
+    /**
+     * Run the built-in diff-aware semgrep step in the gate sandbox. Needs the
+     * kubernetes sandbox image (it vendors semgrep and its rules).
+     */
+    sast: z.boolean().default(false),
+  })
+  .strict()
+  .default({ registry_hosts: [...DEFAULT_REGISTRY_HOSTS], sast: false });
+
+export interface MergeGateConfig {
+  readonly registryHosts: readonly string[];
+  readonly sast: boolean;
+}
+
+export const DEFAULT_MERGE_GATE: MergeGateConfig = {
+  registryHosts: DEFAULT_REGISTRY_HOSTS,
+  sast: false,
+};
+
 // ---------------------------------------------------------------------------
 // Artifact store backends.
 // ---------------------------------------------------------------------------
@@ -311,6 +346,7 @@ export const colonyConfigFileSchema = z
     allow_literal_keys: z.boolean().default(false),
     hitl: hitlSchema,
     review: reviewSchema,
+    merge_gate: mergeGateSchema,
     artifacts: artifactsSchema.optional(),
     notifications: notificationsSchema.optional(),
     /** Durable session root; defaults to `data/sessions`. */
@@ -417,6 +453,8 @@ export interface ColonyConfig {
   };
   readonly hitlMode: HitlMode;
   readonly reviewMode: ReviewMode;
+  /** Built-in merge gate checks colonyd enforces regardless of the repo. */
+  readonly mergeGate: MergeGateConfig;
   /** Where run artifacts live; absent section means local `data/artifacts`. */
   readonly artifacts: ResolvedArtifactsConfig;
   /** Durable per-run session JSONL root; default `data/sessions`. */
@@ -569,6 +607,12 @@ export function loadColonyConfig(
     },
     hitlMode: file.hitl.mode,
     reviewMode: file.review.mode,
+    mergeGate: {
+      registryHosts: file.merge_gate.registry_hosts.map((host) =>
+        host.toLowerCase(),
+      ),
+      sast: file.merge_gate.sast,
+    },
     artifacts,
     sessionsDir,
     notifications,

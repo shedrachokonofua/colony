@@ -189,7 +189,7 @@ async function createHarness(
           findings: 0,
         },
         {
-          name: "defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["src/code.ts"],
           findings: 0,

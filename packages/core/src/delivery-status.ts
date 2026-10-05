@@ -462,7 +462,12 @@ export function deriveDeliveryStatus(
         [latestGate.id],
       );
     }
-    if (reason === "command_failed" || reason === "secret_scan") {
+    if (
+      reason === "command_failed" ||
+      reason === "secret_scan" ||
+      reason === "dependency_policy" ||
+      reason === "sast"
+    ) {
       return status(
         "merge_gate_failed",
         when,

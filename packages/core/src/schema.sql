@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS projects (
   context_doc TEXT,                        -- operator-authored markdown (optional)
   archived_at TEXT,                        -- ISO timestamp string when archived, NULL while live
   skill_sources TEXT,                      -- JSON [{repo_path, ref, paths[]}] (project skills), NULL = none
+  security_checklist TEXT,                 -- operator-authored markdown the reviewer's security lens applies, NULL = baseline only
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

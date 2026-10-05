@@ -11,7 +11,7 @@ const VALID_DIMENSIONS = [
     findings: 0,
   },
   {
-    name: "defect-scan",
+    name: "security",
     spec_blind: true,
     target_files: ["src/http.ts"],
     findings: 0,
@@ -159,7 +159,7 @@ describe("reviewer submit tool", () => {
             findings: 0,
           },
           {
-            name: "adversarial-defect-scan",
+            name: "security",
             spec_blind: true,
             target_files: ["src/http.ts", "test/version.test.ts"],
             findings: 0,

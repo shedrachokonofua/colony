@@ -32,6 +32,8 @@ import {
 
 class InProcessSandboxHandle implements SandboxHandle {
   private destroyed = false;
+  /** Process groups of commands still running; destroy() kills them. */
+  private readonly running = new Set<number>();
 
   constructor(
     readonly sandboxId: string,
@@ -66,6 +68,15 @@ class InProcessSandboxHandle implements SandboxHandle {
     if (this.destroyed) return;
     this.destroyed = true;
     sandboxRegistry.delete(this.sandboxId);
+    // The contract: destroy releases every engine resource, processes
+    // included. A caller aborting mid-exec relies on this to stop the tree.
+    for (const pid of this.running) {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // Process group already gone.
+      }
+    }
     await rm(this.scratchDir, { recursive: true, force: true });
   }
 
@@ -116,6 +127,8 @@ class InProcessSandboxHandle implements SandboxHandle {
       shell: true,
       detached: true,
     }) as ChildProcessWithoutNullStreams;
+    const pid = child.pid;
+    if (pid !== undefined) this.running.add(pid);
 
     let seq = 0;
     let timedOut = false;
@@ -142,10 +155,12 @@ class InProcessSandboxHandle implements SandboxHandle {
     });
     child.on("error", (err) => {
       clearTimeout(timer);
+      if (pid !== undefined) this.running.delete(pid);
       reject(err);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      if (pid !== undefined) this.running.delete(pid);
       seq += 1;
       onEvent({ kind: "exit", seq, exitCode: code });
       resolveResult({ exitCode: code, timedOut });

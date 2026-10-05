@@ -153,7 +153,7 @@ describe("e2e: model invokes web_fetch against injected transport", () => {
           findings: 0,
         },
         {
-          name: "defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["src/main.ts"],
           findings: 0,

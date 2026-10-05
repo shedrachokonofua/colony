@@ -1,7 +1,9 @@
 # The colony sandbox image used by the kubernetes engine
 # (`sandbox.kubernetes.image`, default `registry.gitlab.home.shdr.ch/so/colony/sandbox:latest`).
-# Built by the `build:sandbox` GitLab CI job. Self-contained: the engine streams the
-# workspace in over `pods/exec` at runtime, so the image carries no colony code.
+# Built by the `build:sandbox` GitLab CI job from the repository root (it reads
+# the toolset manifest under packages/sandbox). Self-contained at runtime: the
+# engine streams the workspace in over `pods/exec`, so the image carries no
+# colony code.
 # Runs as the pre-existing `node` user (uid 1000) with workingDir `/workspace`.
 #
 # The image is the substrate contract for agent runs: anything every attempt
@@ -15,17 +17,37 @@
 # stripped - image tags only exist per major). Bump there.
 ARG BUN_VERSION=1.3.14
 ARG NODE_MAJOR=24
+# The merge gate's built-in SAST step (apps/colonyd merge-gate.ts) runs this
+# semgrep against the rules vendored below. Both are pinned so a gate verdict
+# never changes because a registry moved underneath it.
+ARG SEMGREP_VERSION=1.179.0
+ARG SEMGREP_RULES_COMMIT=a84ff9cc2453ca91d581380de4b8b3f272f6f4be
 
 FROM docker.io/library/node:${NODE_MAJOR}-bookworm-slim
 # Re-declared for stage scope: the global ARGs above are only visible to FROM.
 ARG BUN_VERSION
 ARG NODE_MAJOR
+ARG SEMGREP_VERSION
+ARG SEMGREP_RULES_COMMIT
 WORKDIR /workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates git tar \
     chromium fonts-liberation \
+    python3 python3-venv \
   && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/semgrep \
+  && /opt/semgrep/bin/pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" \
+  && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep
+# Only rule files: the upstream repository interleaves rules with their test
+# fixtures, and a fixture under --config is a parse error, not a rule.
+RUN git init -q /tmp/semgrep-rules \
+  && git -C /tmp/semgrep-rules fetch -q --depth 1 https://github.com/semgrep/semgrep-rules.git "${SEMGREP_RULES_COMMIT}" \
+  && git -C /tmp/semgrep-rules checkout -q FETCH_HEAD \
+  && mkdir -p /opt/semgrep-rules \
+  && cp -r /tmp/semgrep-rules/javascript /tmp/semgrep-rules/typescript /opt/semgrep-rules/ \
+  && find /opt/semgrep-rules -type f ! -name '*.yaml' ! -name '*.yml' -delete \
+  && rm -rf /tmp/semgrep-rules
 # Bun is the repo's runtime and test runner. PINNED via BUN_VERSION (default
 # from colony-versions.json) to the same version as the colonyd image and the
 # CI shell: an unpinned `npm install -g bun` drifted to 1.4.0 while everything
@@ -43,5 +65,10 @@ RUN git config --system --add safe.directory /workspace
 # executablePath here instead of downloading browsers per run.
 ENV COLONY_TEST_CHROMIUM_PATH=/usr/bin/chromium
 RUN mkdir -p /workspace && chown node:node /workspace
+# The toolset contract agents are told about (packages/sandbox image-tools):
+# the build fails when a declared tool is missing or an excluded one exists.
+COPY packages/sandbox/src/image-tools.json /etc/colony/sandbox-tools.json
+COPY docker/sandbox/verify-tools.mjs /etc/colony/verify-tools.mjs
 USER node
+RUN node /etc/colony/verify-tools.mjs /etc/colony/sandbox-tools.json
 CMD ["sleep", "infinity"]

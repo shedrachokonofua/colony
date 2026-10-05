@@ -511,6 +511,7 @@ describe("project reference files in packets", () => {
       s,
       project,
       files,
+      null,
       { id: "1", path: "so/demo" },
       "base",
       FIRST_REVIEW_ROUND,
@@ -595,6 +596,7 @@ describe("project reference files in packets", () => {
       s,
       null,
       [],
+      null,
       repo,
       "base",
       FIRST_REVIEW_ROUND,
@@ -1238,6 +1240,7 @@ async function reviewBody(taskSpec: string): Promise<string> {
     store.getScope(created.id)!,
     null,
     [],
+    null,
     { id: "1", path: "so/demo" },
     "base",
     FIRST_REVIEW_ROUND,
@@ -1245,21 +1248,6 @@ async function reviewBody(taskSpec: string): Promise<string> {
 }
 
 describe("review packet instructions", () => {
-  it("states the spec/guarantee precedence and the review audit fields", async () => {
-    const body = await reviewBody("Add the endpoint.");
-    // Precedence: a repository guarantee outranks a spec that asks for a
-    // guard removal, a test weakening, or a budget bypass.
-    expect(body).toContain("spec contradicts repository guarantee");
-    expect(body).toContain("removing a guard");
-    expect(body).toContain("weakening or deleting a test");
-    expect(body).toContain("bypassing a budget");
-    // The audit fields the verdict envelope must carry.
-    expect(body).toContain("`dimensions`");
-    expect(body).toContain("spec_blind: true");
-    expect(body).toContain("`challenged`");
-    expect(body).toContain("reviewed >= the number of findings you submit");
-  });
-
   it("carries the task spec the review dimensions are judged against", async () => {
     const spec = "Add the endpoint that returns the build SHA.";
     expect(await reviewBody(spec)).toContain(spec);

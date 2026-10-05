@@ -15,7 +15,7 @@ import {
   type Scope,
   type Task,
 } from "@colony/core";
-import type { ColonyConfig } from "@colony/config";
+import { DEFAULT_MERGE_GATE, type ColonyConfig } from "@colony/config";
 import { FakeProviderAdapter, type ProviderRepoRef } from "@colony/provider";
 import type { ImplementerCompletionV2 } from "@colony/schemas";
 import type { ImplementPacket } from "../src/runs/packets.js";
@@ -115,6 +115,7 @@ function testConfig(): ColonyConfig {
     },
     hitlMode: "yolo",
     reviewMode: "off",
+    mergeGate: DEFAULT_MERGE_GATE,
     artifacts: { kind: "local", local: { dir: "data/artifacts" } },
     sessionsDir: "data/sessions",
     notifications: { enabled: false },

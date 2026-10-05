@@ -35,6 +35,12 @@ hitl:
 review:
   mode: required
 
+# The home GitLab package registry serves @s30/* (Seven30 platform packages).
+merge_gate:
+  registry_hosts:
+    [registry.npmjs.org, registry.yarnpkg.com, gitlab.home.shdr.ch]
+  sast: true
+
 providers:
   openai_compatible:
     api: openai-completions

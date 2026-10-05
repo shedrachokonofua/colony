@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizeTrace } from "@colony/provider";
@@ -11,9 +11,13 @@ import {
   parseGateConfig,
 } from "@colony/schemas";
 import {
-  buildIsolatedCommandEnv,
-  VALIDATE_ENV_ALLOWLIST,
+  SANDBOX_SEMGREP_RULES_DIR,
+  buildSandboxLaunchProfile,
+  type SandboxEngine,
+  type SandboxHandle,
 } from "@colony/sandbox";
+import { inProcessEngine } from "@colony/sandbox-in-process";
+import { DEFAULT_MERGE_GATE, type MergeGateConfig } from "@colony/config";
 import type { Fault, Scope, Store, Task } from "@colony/core";
 import { retryBackoffMs } from "@colony/core";
 import { isPlatformFailure } from "../fault-budget.js";
@@ -31,6 +35,20 @@ import {
   buildMergeProvenanceLine,
   collectRunModelIds,
 } from "./model-provenance.js";
+import {
+  reviewDependencyChanges,
+  type DependencyChange,
+  type DependencyViolation,
+} from "./dependency-policy.js";
+import {
+  buildSastCommand,
+  parseSastOutput,
+  type SastFinding,
+} from "./gate-sast.js";
+import {
+  extractPassword,
+  scrubWorkspaceCredentials,
+} from "./workspace-credentials.js";
 
 const GATE_LEASE_MS = 30 * 60_000;
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -61,6 +79,14 @@ export interface GateExecutionInput {
   readonly targetBranch: string;
   readonly taskBranch: string;
   readonly headSha: string;
+  /**
+   * Where repository-authored gate commands and the SAST step run. The
+   * clone, scans, and prospective merge stay on the control plane (they need
+   * the provider token); everything that executes repository code runs in a
+   * credential-free sandbox on the scrubbed clone.
+   */
+  readonly engine: SandboxEngine;
+  readonly policy: MergeGateConfig;
   readonly signal?: AbortSignal;
 }
 
@@ -74,6 +100,8 @@ export interface GateFailure {
   readonly reason:
     | "merge_conflict"
     | "secret_scan"
+    | "dependency_policy"
+    | "sast"
     | "command_failed"
     | "workspace_failed"
     | "no_gate_config";
@@ -90,6 +118,10 @@ export interface GateFailure {
   readonly gate_config_changed?: boolean;
   readonly files?: readonly string[];
   readonly commands?: readonly GateCommandResult[];
+  readonly violations?: readonly DependencyViolation[];
+  /** `sast` only: how many findings the scan reported, and the first few. */
+  readonly sast_total?: number;
+  readonly sast_findings?: readonly SastFinding[];
 }
 
 /**
@@ -125,6 +157,8 @@ export type GateExecutor = (
 /** Files in the incoming diff (target...head), captured pre-merge. */
 export interface GateSuccess {
   readonly files_changed: readonly string[];
+  /** New or changed direct dependencies the gate admitted (evidence). */
+  readonly dependency_changes?: readonly DependencyChange[];
 }
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -262,6 +296,8 @@ async function executeMergeGate(
       targetBranch: scope.default_branch,
       taskBranch: task.branch ?? `colony/${task.id}`,
       headSha,
+      engine: ctx.commandEngine ?? inProcessEngine,
+      policy: ctx.config?.mergeGate ?? DEFAULT_MERGE_GATE,
       signal,
     });
     throwIfAborted(signal);
@@ -662,6 +698,45 @@ function claimGateFailureIntent(
   return { fingerprint, trigger };
 }
 
+/** Repair evidence for a dependency policy failure: each violation, then the
+ *  rule the implementer must satisfy. */
+function dependencyPolicyLines(
+  evidence: Record<string, unknown>,
+  ctx: ColonydContext,
+): string[] {
+  const violations = Array.isArray(evidence.violations)
+    ? (evidence.violations as DependencyViolation[])
+    : [];
+  const hosts = (ctx.config?.mergeGate ?? DEFAULT_MERGE_GATE).registryHosts;
+  return [
+    ...violations
+      .slice(0, MAX_TAIL_LINES)
+      .map(
+        (v) =>
+          `dependency policy: ${v.file}${v.package ? ` (${v.package})` : ""}: ${sanitizeTrace(v.detail)}`,
+      ),
+    `Depend only on published versions from these registries: ${hosts.join(", ")}. Git, URL, and out-of-repository path dependencies and new trustedDependencies are rejected; if one is truly required, stop and report it as an operator decision.`,
+  ];
+}
+
+/** Repair evidence for a SAST failure: each finding, then how to resolve. */
+function sastLines(evidence: Record<string, unknown>): string[] {
+  const findings = Array.isArray(evidence.sast_findings)
+    ? (evidence.sast_findings as SastFinding[])
+    : [];
+  const total =
+    typeof evidence.sast_total === "number"
+      ? evidence.sast_total
+      : findings.length;
+  return [
+    `static analysis (semgrep, high severity, new in this change): ${total} finding(s)`,
+    ...findings
+      .slice(0, MAX_TAIL_LINES)
+      .map((f) => `${f.path}:${f.line} ${f.rule}: ${sanitizeTrace(f.message)}`),
+    "Fix the code each finding points at. Suppression comments are ignored by the gate.",
+  ];
+}
+
 function requeueOrBlockAfterGateFailure(
   ctx: ColonydContext,
   scope: Scope,
@@ -692,6 +767,18 @@ function requeueOrBlockAfterGateFailure(
       `command failed: ${criterion}`,
       ...tail.slice(-MAX_TAIL_LINES).filter((line) => line.trim().length > 0),
     ]);
+  } else if (reason === "dependency_policy" || reason === "sast") {
+    const lines =
+      reason === "dependency_policy"
+        ? dependencyPolicyLines(evidence, ctx)
+        : sastLines(evidence);
+    gateIntent = claimGateFailureIntent(
+      ctx,
+      task,
+      headSha,
+      `${reason}:${createHash("sha256").update(lines.join("\n")).digest("hex")}`,
+      lines,
+    );
   } else if (reason === "no_gate_config" && gateConfigChanged) {
     gateIntent = claimGateFailureIntent(
       ctx,
@@ -925,6 +1012,29 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   );
   if (scan) return scan;
 
+  const dependencies = await atGateExecutionBoundary("repository", () =>
+    reviewDependencyChanges({
+      changedFiles,
+      registryHosts: input.policy.registryHosts,
+      readAt: (side, path) =>
+        fileAt(
+          input,
+          side === "target" ? input.targetBranch : input.headSha,
+          path,
+        ),
+    }),
+  );
+  if (dependencies.violations.length > 0) {
+    return { reason: "dependency_policy", violations: dependencies.violations };
+  }
+
+  // The SAST baseline: findings already on the target branch never block.
+  const targetSha = (
+    await atGateExecutionBoundary("repository", () =>
+      git(["rev-parse", "HEAD"], input.workspace, input),
+    )
+  ).trim();
+
   try {
     await git(
       ["merge", "--no-ff", "--no-edit", input.headSha],
@@ -951,42 +1061,150 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
     };
   }
 
-  const scratchDir = await atGateExecutionBoundary("workspace", () =>
-    mkdtemp(join(tmpdir(), "colonyd-gate-env-")),
+  // Everything below executes repository-authored code. It must never see
+  // the provider token, the daemon's filesystem, or its service account:
+  // scrub the clone, then hand it to a credential-free sandbox. A scrub that
+  // cannot be proven aborts the gate before any command runs.
+  await atGateExecutionBoundary("workspace", () =>
+    scrubWorkspaceCredentials(
+      input.workspace,
+      input.displayUrl,
+      extractPassword(input.cloneUrl),
+    ),
+  );
+  throwIfAborted(input.signal ?? NEVER_ABORTED);
+  const handle = await atGateExecutionBoundary("workspace", () =>
+    input.engine.provision(buildSandboxLaunchProfile("gate"), input.workspace),
   );
   try {
-    const commandEnv = await atGateExecutionBoundary("workspace", () =>
-      buildIsolatedCommandEnv(VALIDATE_ENV_ALLOWLIST, scratchDir, process.env, {
-        CI: "true",
-        NO_COLOR: "1",
-        FORCE_COLOR: "0",
-      }),
-    );
+    if (input.policy.sast) {
+      const sast = await runSast(handle, targetSha, input.signal);
+      if (sast) return sast;
+    }
     const results: GateCommandResult[] = [];
     for (const cmd of gateConfig.commands) {
-      const { exitCode, tail } = await atGateExecutionBoundary(
-        "gate_command",
-        () =>
-          runGateCommand(
-            input.workspace,
-            cmd,
-            gateConfig.timeoutSeconds,
-            commandEnv,
-            input.signal,
-          ),
+      const { exitCode, output } = await execInSandbox(
+        handle,
+        cmd,
+        gateConfig.timeoutSeconds * 1000,
+        input.signal,
       );
-      results.push({ cmd, exit_code: exitCode, tail });
+      results.push({ cmd, exit_code: exitCode, tail: lastLines(output, 200) });
       if (exitCode !== 0) {
         return { reason: "command_failed", commands: results };
       }
     }
-    return { files_changed: changedFiles };
+    return dependencies.changes.length > 0
+      ? {
+          files_changed: changedFiles,
+          dependency_changes: dependencies.changes,
+        }
+      : { files_changed: changedFiles };
   } finally {
-    await atGateExecutionBoundary("workspace", () =>
-      rm(scratchDir, { recursive: true, force: true }),
-    );
+    await handle.destroy().catch(() => {});
   }
 };
+
+/** Repository-authored command environment inside the gate sandbox. */
+const GATE_COMMAND_ENV = { CI: "true", NO_COLOR: "1", FORCE_COLOR: "0" };
+/** Output kept per command; the evidence tail is cut from this. */
+const MAX_CAPTURED_OUTPUT_CHARS = 256 * 1024;
+const SAST_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * One command in the gate sandbox. Abort destroys the sandbox (the engine
+ * contract: destroy stops every process it runs) and rejects at once; a
+ * timeout or a missing exit status is a failed command; a transport failure
+ * is a platform fault, never the change's.
+ */
+async function execInSandbox(
+  handle: SandboxHandle,
+  command: string,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<{ exitCode: number; output: string }> {
+  const abortSignal = signal ?? NEVER_ABORTED;
+  throwIfAborted(abortSignal);
+  let output = "";
+  const execution = handle.exec(
+    {
+      command,
+      timeoutMs: Math.max(1, Math.round(timeoutMs)),
+      env: GATE_COMMAND_ENV,
+    },
+    (event) => {
+      if (event.kind === "exit") return;
+      output += event.data;
+      if (output.length > 2 * MAX_CAPTURED_OUTPUT_CHARS) {
+        output = output.slice(-MAX_CAPTURED_OUTPUT_CHARS);
+      }
+    },
+  );
+  // The race loser must not surface as an unhandled rejection.
+  execution.catch(() => {});
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      void handle.destroy().catch(() => {});
+      const error = new Error("operation was aborted");
+      error.name = "AbortError";
+      reject(error);
+    };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+  });
+  aborted.catch(() => {});
+  try {
+    const result = await Promise.race([
+      atGateExecutionBoundary("workspace", () => execution),
+      aborted,
+    ]);
+    throwIfAborted(abortSignal);
+    const exitCode = result.timedOut ? 1 : (result.exitCode ?? 1);
+    return { exitCode, output };
+  } finally {
+    if (onAbort) abortSignal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function runSast(
+  handle: SandboxHandle,
+  baselineSha: string,
+  signal: AbortSignal | undefined,
+): Promise<GateFailure | null> {
+  const { output } = await execInSandbox(
+    handle,
+    buildSastCommand(baselineSha, SANDBOX_SEMGREP_RULES_DIR),
+    SAST_TIMEOUT_MS,
+    signal,
+  );
+  const outcome = parseSastOutput(output);
+  if (outcome.kind === "clean") return null;
+  if (outcome.kind === "tool_failed") {
+    throw new GateExecutionError(
+      "workspace",
+      new Error(`sast_unavailable: ${outcome.detail}`),
+    );
+  }
+  return {
+    reason: "sast",
+    sast_total: outcome.total,
+    sast_findings: outcome.findings,
+  };
+}
+
+/** A file's content at `ref`, or null when the path does not exist there. */
+async function fileAt(
+  input: GateExecutionInput,
+  ref: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    return await git(["show", `${ref}:${path}`], input.workspace, input);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err;
+    return null;
+  }
+}
 
 interface GateConfig {
   readonly commands: readonly string[];
@@ -1190,27 +1408,6 @@ async function secretScan(
   return null;
 }
 
-async function runGateCommand(
-  cwd: string,
-  cmd: string,
-  timeoutSeconds: number,
-  env: NodeJS.ProcessEnv,
-  signal?: AbortSignal,
-): Promise<{ exitCode: number; tail: readonly string[] }> {
-  const result = await runProcess("bash", ["-c", cmd], {
-    cwd,
-    timeoutMs: timeoutSeconds * 1000,
-    signal,
-    env,
-  });
-  throwIfAborted(signal ?? NEVER_ABORTED);
-  const output =
-    result.exitCode === 0
-      ? result.stdout
-      : [result.stderr, result.stdout].filter(Boolean).join("\n");
-  return { exitCode: result.exitCode, tail: lastLines(output, 200) };
-}
-
 function lastLines(text: string, max: number): string[] {
   const lines = text.split("\n");
   return lines.slice(Math.max(0, lines.length - max));
@@ -1252,13 +1449,4 @@ function sanitizeGitError(message: string, input: GateExecutionInput): string {
   return message
     .replaceAll(token, "[redacted]")
     .replaceAll(encodeURIComponent(token), "[redacted]");
-}
-
-function extractPassword(url: string): string | undefined {
-  try {
-    const parsed = new URL(url);
-    return parsed.password || undefined;
-  } catch {
-    return undefined;
-  }
 }

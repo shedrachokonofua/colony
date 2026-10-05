@@ -884,7 +884,7 @@ describe("fault emission from a real run", () => {
               findings: 0,
             },
             {
-              name: "defect-scan",
+              name: "security",
               spec_blind: true,
               target_files: ["src/main.ts"],
               findings: 0,

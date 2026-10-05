@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   provisionRepoWorkspace,
@@ -22,6 +21,10 @@ import { SERVICE_ACTOR } from "../context.js";
 import { mainPipelineValidationGate } from "../main-watch.js";
 import { trackRun } from "./registry.js";
 import { buildCloneUrl } from "./merge-gate.js";
+import {
+  extractPassword,
+  scrubWorkspaceCredentials,
+} from "./workspace-credentials.js";
 import type { ArchitectExtensionInput } from "./packets.js";
 
 const VALIDATE_LEASE_MS = 30 * 60_000;
@@ -379,7 +382,7 @@ async function executeValidate(
       acceptance,
       baseSha,
       scopeId: scope.id,
-      engine: ctx.validateEngine,
+      engine: ctx.commandEngine,
     });
   } catch (err) {
     // An unexpected throw (or unparseable acceptance criteria) is a colonyd
@@ -485,7 +488,7 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
     // exfiltrate provider tokens. Scrub both surfaces BEFORE the workspace
     // reaches the sandbox handle (k8s transfers the workspace tar inside
     // engine.provision, so a pre-provision leak would ship the token):
-    scrubWorkspaceCredentials(workspace, input.displayUrl);
+    scrubWorkspaceCredentials(workspace, input.displayUrl, token);
   } catch (err) {
     // Clean up a provisioned-but-unscrubbed workspace: it may still hold
     // credential artifacts and must never survive a scrub failure.
@@ -565,48 +568,6 @@ export const defaultValidateExecutor: ValidateExecutor = async (input) => {
 };
 
 /**
- * Remove credential-bearing artifacts from the workspace so acceptance
- * commands cannot exfiltrate tokens:
- * - Delete PACKET.json (contains credential-embedded URLs).
- * - Rewrite .git/config remote.origin.url to the display URL (no token).
- * - Delete .git/credentials or any credential helper cache files.
- */
-export function scrubWorkspaceCredentials(
-  workspace: string,
-  displayUrl: string,
-): void {
-  const packetPath = join(workspace, "PACKET.json");
-  if (existsSync(packetPath)) {
-    rmSync(packetPath, { force: true });
-  }
-
-  // Scrub the git remote URL: replace the credential-embedded origin URL
-  // with the display URL (no username/password). Using git remote set-url
-  // also updates the reflog/config cleanly.
-  try {
-    execFileSync("git", ["remote", "set-url", "origin", displayUrl], {
-      cwd: workspace,
-      stdio: "ignore",
-      timeout: 10_000,
-    });
-  } catch {
-    // If git is unavailable or the remote doesn't exist, fall through —
-    // the credential-free env sanitization is the primary barrier.
-  }
-
-  // Remove any credential store files git might have written.
-  const credPaths = [
-    join(workspace, ".git", "credentials"),
-    join(workspace, ".git", "credential"),
-  ];
-  for (const p of credPaths) {
-    if (existsSync(p)) {
-      rmSync(p, { force: true });
-    }
-  }
-}
-
-/**
  * Run one acceptance command through a provisioned SandboxHandle.
  *
  * Env cleanliness is by construction: the validate launch profile's
@@ -671,12 +632,4 @@ function failureLines(output: string): string[] {
     if (hits.length === MAX_FAILURE_LINES) break;
   }
   return hits;
-}
-
-function extractPassword(url: string): string | undefined {
-  try {
-    return new URL(url).password || undefined;
-  } catch {
-    return undefined;
-  }
 }

@@ -139,7 +139,7 @@ build:sandbox:
   variables:
     IMAGE: $CI_REGISTRY_IMAGE/sandbox
     DOCKERFILE: docker/sandbox/Dockerfile
-    CONTEXT: docker/sandbox
+    CONTEXT: .
 
 # Nightly model-harness + sandbox conformance against the live LiteLLM route
 # and the kubernetes engine. Scheduled on main only: it spends real provider

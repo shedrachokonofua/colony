@@ -528,6 +528,11 @@ export const MIGRATIONS: readonly Migration[] = [
     name: "run-served-model",
     apply: (db) => addColumn(db, "runs", "served_model_id", "TEXT"),
   },
+  {
+    version: 22,
+    name: "project-security-checklist",
+    apply: (db) => addColumn(db, "projects", "security_checklist", "TEXT"),
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;

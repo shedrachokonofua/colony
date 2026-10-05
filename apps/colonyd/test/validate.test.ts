@@ -17,10 +17,8 @@ import type {
   SandboxLaunchProfile,
 } from "@colony/sandbox";
 import { createInProcessEngine } from "@colony/sandbox-in-process";
-import {
-  defaultValidateExecutor,
-  scrubWorkspaceCredentials,
-} from "../src/runs/validate.js";
+import { defaultValidateExecutor } from "../src/runs/validate.js";
+import { scrubWorkspaceCredentials } from "../src/runs/workspace-credentials.js";
 
 const dirs: string[] = [];
 
@@ -165,7 +163,7 @@ describe("defaultValidateExecutor", () => {
       }),
     );
 
-    scrubWorkspaceCredentials(workspace, displayUrl);
+    scrubWorkspaceCredentials(workspace, displayUrl, token);
 
     expect(existsSync(join(workspace, "PACKET.json"))).toBe(false);
     expect(git(workspace, ["remote", "get-url", "origin"]).trim()).toBe(

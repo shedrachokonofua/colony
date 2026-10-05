@@ -30,7 +30,7 @@ function dimension(
 }
 
 const blindPrompt = buildSpecBlindDimensionPrompt({
-  name: "defect-scan",
+  name: "security",
   spec: SPEC,
   target_files: ["src/api.ts", "src/limit.ts"],
   context_files: ["src/context.ts"],

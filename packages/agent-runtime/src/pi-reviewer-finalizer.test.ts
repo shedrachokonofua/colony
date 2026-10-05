@@ -172,7 +172,7 @@ describe("pi reviewer per-leg finalizer", () => {
           findings: 0,
         },
         {
-          name: "defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["source.ts"],
           findings: 0,
@@ -470,7 +470,7 @@ describe("pi reviewer per-leg finalizer", () => {
           findings: 0,
         },
         {
-          name: "defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["source.ts"],
           findings: 0,

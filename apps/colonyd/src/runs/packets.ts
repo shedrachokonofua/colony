@@ -177,6 +177,19 @@ export function projectContextSection(
   return `## Operator-authored project background (project: ${project.name})\n\n${project.context_doc}\n`;
 }
 
+/**
+ * The project's operator-held security checklist, for the reviewer's
+ * mandatory `security` lens. Empty when the project has none; the lens then
+ * applies Colony's baseline alone.
+ */
+export function securityChecklistSection(
+  projectName: string | null,
+  checklist: string | null,
+): string {
+  if (!projectName || !checklist?.trim()) return "";
+  return `## Project security checklist (operator-held, project: ${projectName})\n\nThe \`security\` dimension applies every item below in addition to Colony's baseline. Pass this section to it verbatim.\n\n${checklist}\n`;
+}
+
 function packetProject(
   project: Project | null,
   files: readonly ProjectFile[],
@@ -623,6 +636,7 @@ export function buildReviewPacket(
   scope: Scope,
   project: Project | null,
   files: readonly ProjectFile[],
+  securityChecklist: string | null,
   _repo: ProviderRepoRef,
   headSha: string,
   round: CodeReviewRoundV1,
@@ -639,6 +653,7 @@ export function buildReviewPacket(
       buildReviewBody(task, scope.default_branch),
       reviewRoundSection(round),
       operatorDirectivesSection(scope, "reviewer"),
+      securityChecklistSection(project?.name ?? null, securityChecklist),
       projectContextSection(project),
       projectFilesSection(files),
     ]
@@ -880,6 +895,6 @@ function buildReviewBody(task: Task, defaultBranch: string): string {
     "Precedence when the spec and the repository's guarantees collide: if the spec demands removing a guard, weakening or deleting a test, or bypassing a budget, the repository guarantee wins. File that as a blocker with owner \"operator\" whose note begins 'spec contradicts repository guarantee:', and request_changes. Never remove a guard, weaken a test, or bypass a budget to satisfy the spec.",
     "Submit reviewer_verdict with the exact head SHA you inspected (`git rev-parse HEAD`).",
     'request_changes needs a blocker, a blocking finding the previous review left open that still holds, or a new major while this round lets majors block (see the review round section below). Minors never hold a change back. A blocker only the operator can settle carries owner "operator".',
-    "The envelope also carries the review audit: `dimensions` with 2 to 6 entries, one per review dimension you ran (at least one with spec_blind: true), and `challenged` {reviewed, dropped} where reviewed >= the number of findings you submit — a finding the adversary never saw does not go in the envelope.",
+    "The envelope also carries the review audit: `dimensions` with 2 to 6 entries, one per review dimension you ran, exactly one of them the spec-blind `security` lens, and `challenged` {reviewed, dropped} where reviewed >= the number of findings you submit — a finding the adversary never saw does not go in the envelope.",
   ].join("\n");
 }

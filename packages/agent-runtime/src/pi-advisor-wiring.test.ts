@@ -154,7 +154,7 @@ describe("Pi advisor wiring", () => {
           findings: 0,
         },
         {
-          name: "defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["src/main.ts"],
           findings: 0,
@@ -279,7 +279,7 @@ describe("Pi advisor wiring", () => {
           findings: 0,
         },
         {
-          name: "defect-scan",
+          name: "security",
           spec_blind: true,
           target_files: ["src/main.ts"],
           findings: 0,

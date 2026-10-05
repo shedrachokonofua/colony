@@ -7,6 +7,7 @@ import {
   ArchitectDecompositionV2 as architectDecompositionV2Schema,
   ImplementerCompletionV2 as implementerCompletionV2Schema,
   ReviewerVerdictV2 as reviewerVerdictV2Schema,
+  REVIEW_SECURITY_DIMENSION,
 } from "@colony/schemas";
 import {
   ArchitectExtensionEnvelope,
@@ -424,7 +425,7 @@ function defaultEnvelope(
       ],
       dimensions: [
         {
-          name: "fallback",
+          name: REVIEW_SECURITY_DIMENSION,
           spec_blind: true,
           target_files: ["src/main.ts"],
           findings: 0,

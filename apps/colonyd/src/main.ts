@@ -87,8 +87,8 @@ export interface BootOptions {
   readonly gateExecutor?: GateExecutor;
   /** Test seam: override the validation command runner. */
   readonly validateExecutor?: ColonydContext["validateExecutor"];
-  /** Test seam: override the sandbox engine used for scope validation. */
-  readonly validateEngine?: ColonydContext["validateEngine"];
+  /** Test seam: override the engine for validate and merge-gate commands. */
+  readonly commandEngine?: ColonydContext["commandEngine"];
   /** Test seam: override fetch implementation for notifications. */
   readonly notifierFetchImpl?: typeof fetch;
   /** Test seam: skip the HTTP server + interval timer. */
@@ -126,9 +126,9 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
   mkdirSync(config.sessionsDir, { recursive: true });
 
   // Provisioning is cheap and idempotent (in-process by default in fake
-  // mode), so the validate engine is always created at boot.
-  const validateEngine =
-    options.validateEngine ??
+  // mode), so the command engine (validate + merge gate) always exists.
+  const commandEngine =
+    options.commandEngine ??
     (await createEngine(config.sandbox.engine, config));
 
   // Cost flags mean what the architect's submit-time size gate means. That
@@ -449,7 +449,7 @@ export async function boot(options: BootOptions = {}): Promise<ColonydHandle> {
     logger,
     gateExecutor: options.gateExecutor,
     validateExecutor: options.validateExecutor,
-    validateEngine,
+    commandEngine,
     sandboxEngine: probeEngine,
     retryAdoptions: async () => {
       const claimed = await retryDeferredAdoptions(
@@ -907,6 +907,9 @@ function resumePacket(
       scope,
       project,
       files,
+      scope.project_name
+        ? store.getProjectSecurityChecklist(scope.project_name)
+        : null,
       { id: scope.provider_repo_id, path: scope.provider_repo_path },
       run.base_sha ?? run.head_sha ?? "",
       nextReviewRound(store, task.id).round,

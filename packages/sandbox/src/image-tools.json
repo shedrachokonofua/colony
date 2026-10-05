@@ -1,0 +1,19 @@
+{
+  "present": [
+    { "name": "bash", "check": ["bash", "--version"] },
+    { "name": "node", "check": ["node", "--version"] },
+    { "name": "npm", "check": ["npm", "--version"] },
+    { "name": "bun", "check": ["bun", "--version"] },
+    { "name": "git", "check": ["git", "--version"] },
+    { "name": "tar", "check": ["tar", "--version"] },
+    { "name": "python3", "check": ["python3", "--version"] },
+    { "name": "semgrep", "check": ["semgrep", "--version"] },
+    {
+      "name": "chromium",
+      "check": ["chromium", "--version"],
+      "note": "at $COLONY_TEST_CHROMIUM_PATH; never download browsers"
+    }
+  ],
+  "absent": ["curl", "wget", "jq", "docker"],
+  "semgrep_rules": "/opt/semgrep-rules"
+}

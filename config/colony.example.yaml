@@ -48,6 +48,16 @@ review:
 #   #   image: registry.gitlab.home.shdr.ch/so/colony/sandbox:latest
 #   #   api_version_override: v1beta1   # optional; otherwise discovered from the cluster
 
+# Checks colonyd adds to every merge gate, whatever colony.gate.yaml says.
+# registry_hosts: where dependencies may resolve from; anything else (and any
+#   git/URL dependency, out-of-repo path dependency, or new
+#   trustedDependencies entry) fails the gate.
+# sast: diff-aware semgrep in the gate sandbox. Needs the kubernetes sandbox
+#   image, which vendors semgrep and its rules.
+merge_gate:
+  registry_hosts: [registry.npmjs.org, registry.yarnpkg.com]
+  sast: false
+
 providers:
   # ── OpenAI-compatible gateway/provider ───────────────────────────────
   openai_compatible:

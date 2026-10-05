@@ -517,6 +517,21 @@ describe("merge gate ladder", () => {
     ).toBe(true);
   });
 
+  // A rejected change, not a pending re-gate: the implementer must act.
+  it.each(["secret_scan", "dependency_policy", "sast"])(
+    "a %s rejection is merge_gate_failed",
+    (reason) => {
+      const gate = run({
+        id: "run-gate",
+        status: "failed",
+        evidence_json: JSON.stringify({ reason }),
+      });
+      expect(derive({ runs: [gate], latestGate: gate }).stage).toBe(
+        "merge_gate_failed",
+      );
+    },
+  );
+
   it("a transient refusal is merge_gate_pending", () => {
     const gate = run({
       id: "run-gate",

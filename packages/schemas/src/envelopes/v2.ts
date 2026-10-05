@@ -207,6 +207,9 @@ const previousFindingStatus = z
 
 export type PreviousFindingStatus = z.infer<typeof previousFindingStatus>;
 
+/** The review dimension every code review must run (spec-blind). */
+export const REVIEW_SECURITY_DIMENSION = "security";
+
 export const ReviewerVerdictV2 = z
   .object({
     kind: z.literal("reviewer_verdict"),
@@ -235,6 +238,9 @@ export const ReviewerVerdictV2 = z
     // fallback approve below carries a single entry; human/model verdicts
     // carry 2..6. The schema admits 1..6 so the fallback parses; the lower
     // bound for real reviews is doctrine, enforced by the reviewer prompt.
+    // Every verdict carries exactly one spec-blind `security` dimension: the
+    // lens that applies Colony's security baseline and the project's
+    // operator-held checklist.
     dimensions: z
       .array(
         z
@@ -279,12 +285,17 @@ export const ReviewerVerdictV2 = z
       "approve requires a substantive summary (>= 80 chars): what the change does and why it satisfies the spec",
   })
   .refine(
-    (v) =>
-      v.verdict !== "approve" && v.verdict !== "request_changes"
-        ? true
-        : v.dimensions.some((d) => d.spec_blind),
+    (v) => {
+      if (v.verdict !== "approve" && v.verdict !== "request_changes") {
+        return true;
+      }
+      const security = v.dimensions.filter(
+        (d) => d.name === REVIEW_SECURITY_DIMENSION,
+      );
+      return security.length === 1 && security[0]!.spec_blind;
+    },
     {
-      message: "verdict requires at least one spec_blind review dimension",
+      message: `verdict requires exactly one spec_blind "${REVIEW_SECURITY_DIMENSION}" review dimension`,
     },
   )
   .refine(
