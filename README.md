@@ -191,7 +191,7 @@ flowchart LR
    private keys) and refuses `.env` or `PACKET.json`, and applies the
    dependency policy: every new or changed direct dependency is recorded in
    the gate evidence, and anything that resolves outside
-   `merge_gate.registry_hosts` (lockfile entries, tarball specs,
+   the `merge_gate.registry_urls` prefixes (lockfile entries, tarball specs,
    `.npmrc`/`bunfig.toml` registries), git or URL dependencies, path
    dependencies that leave the repository, and new `trustedDependencies`
    fail the gate. It then merges the candidate head, scrubs the provider

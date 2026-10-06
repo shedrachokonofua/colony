@@ -35,7 +35,7 @@ State machine, SQLite persistence, and backoff live in `packages/core`; run enve
 The merge gate clones the target branch fresh, scans the incoming diff for
 secrets/artifacts, applies the dependency policy
 (`apps/colonyd/src/runs/dependency-policy.ts`, hosts from
-`merge_gate.registry_hosts`), prospectively merges the task head, scrubs the
+`merge_gate.registry_urls`), prospectively merges the task head, scrubs the
 provider token from the clone (`runs/workspace-credentials.ts`), and runs
 everything that executes repository code in a `gate` sandbox from the
 configured engine: the optional diff-aware semgrep step (`runs/gate-sast.ts`,

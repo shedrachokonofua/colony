@@ -4,7 +4,10 @@ import {
   type ReadAtRef,
 } from "./dependency-policy.js";
 
-const HOSTS = ["registry.npmjs.org", "gitlab.home.shdr.ch"];
+const REGISTRIES = [
+  "https://registry.npmjs.org/",
+  "https://gitlab.home.shdr.ch/api/v4/projects/46/packages/npm/",
+];
 
 function sides(files: {
   target?: Record<string, string>;
@@ -20,12 +23,12 @@ function manifest(fields: Record<string, unknown>): string {
 
 async function review(
   files: { target?: Record<string, string>; head: Record<string, string> },
-  hosts: readonly string[] = HOSTS,
+  registries: readonly string[] = REGISTRIES,
 ) {
   return reviewDependencyChanges({
     changedFiles: Object.keys(files.head),
     readAt: sides(files),
-    registryHosts: hosts,
+    registryUrls: registries,
   });
 }
 
@@ -135,6 +138,26 @@ describe("reviewDependencyChanges lockfiles", () => {
     });
     expect(result.violations).toEqual([
       expect.objectContaining({ file: "bun.lock", package: "evil" }),
+    ]);
+  });
+
+  // The allowed registry is one project's path; the host serves every
+  // project's registry, including the agent's own repository.
+  it("rejects a package from another project's registry on an allowed host", async () => {
+    const result = await review({
+      target: { "bun.lock": bunLock({}) },
+      head: {
+        "bun.lock": bunLock({
+          "@s30/pad":
+            '["@s30/pad@1.0.0", "https://gitlab.home.shdr.ch/api/v4/projects/460/packages/npm/@s30/pad/-/@s30/pad-1.0.0.tgz", {}, "sha1-x"]',
+        }),
+        ".npmrc":
+          "@s30:registry=https://gitlab.home.shdr.ch/api/v4/projects/41/packages/npm/\n",
+      },
+    });
+    expect(result.violations).toEqual([
+      expect.objectContaining({ file: "bun.lock", package: "@s30/pad" }),
+      expect.objectContaining({ file: ".npmrc" }),
     ]);
   });
 

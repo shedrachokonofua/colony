@@ -7,7 +7,9 @@ import { posix } from "node:path";
  * attacker-chosen registry, and CI then installs it with deploy credentials
  * in reach. This pass reads the incoming diff (target vs head) and
  * - records every new or changed direct dependency (gate evidence), and
- * - rejects anything that resolves outside the configured registry hosts,
+ * - rejects anything that resolves outside the configured registry URL
+ *   prefixes (a prefix, not a host: one GitLab host serves every project's
+ *   package registry, including ones an agent can publish to),
  *   git/URL dependencies, path dependencies that leave the repository, and
  *   new `trustedDependencies` (they re-enable install scripts).
  */
@@ -54,9 +56,9 @@ const TEXT_LOCKFILES = new Set(["yarn.lock", "pnpm-lock.yaml"]);
 export async function reviewDependencyChanges(input: {
   readonly changedFiles: readonly string[];
   readonly readAt: ReadAtRef;
-  readonly registryHosts: readonly string[];
+  readonly registryUrls: readonly string[];
 }): Promise<DependencyReview> {
-  const allowed = new Set(input.registryHosts.map((h) => h.toLowerCase()));
+  const allowed = registryMatcher(input.registryUrls);
   const changes: DependencyChange[] = [];
   const violations: DependencyViolation[] = [];
 
@@ -70,7 +72,7 @@ export async function reviewDependencyChanges(input: {
     } else if (name === "package-lock.json") {
       await reviewNpmLock(file, input.readAt, allowed, violations);
     } else if (REGISTRY_CONFIG_FILES.has(name) || TEXT_LOCKFILES.has(name)) {
-      await reviewNewHosts(file, input.readAt, allowed, violations);
+      await reviewNewRegistryUrls(file, input.readAt, allowed, violations);
     }
   }
   return {
@@ -82,7 +84,7 @@ export async function reviewDependencyChanges(input: {
 async function reviewManifest(
   file: string,
   readAt: ReadAtRef,
-  allowed: ReadonlySet<string>,
+  allowed: RegistryMatcher,
   changes: DependencyChange[],
   violations: DependencyViolation[],
 ): Promise<void> {
@@ -125,7 +127,7 @@ async function reviewManifest(
 function specProblem(
   manifest: string,
   spec: string,
-  allowed: ReadonlySet<string>,
+  allowed: RegistryMatcher,
 ): string | null {
   const value = spec.trim();
   if (value.startsWith("workspace:")) return null;
@@ -140,10 +142,9 @@ function specProblem(
     return `git dependency ${value}; depend on a published registry version`;
   }
   if (/^https?:\/\//.test(value)) {
-    const host = hostOf(value);
-    return host && allowed.has(host)
+    return allowed.allows(value)
       ? null
-      : `tarball dependency from ${host ?? value}, which is not an allowed registry`;
+      : `tarball dependency from ${value}, which is not under an allowed registry URL`;
   }
   // `owner/repo` (optionally `#ref`) is npm's GitHub shorthand.
   if (/^[\w.-]+\/[\w.-]+(?:#.*)?$/.test(value)) {
@@ -161,7 +162,7 @@ function pathLeavesRepository(manifest: string, target: string): boolean {
 async function reviewBunLock(
   file: string,
   readAt: ReadAtRef,
-  allowed: ReadonlySet<string>,
+  allowed: RegistryMatcher,
   violations: DependencyViolation[],
 ): Promise<void> {
   const head = parseJsonObject(await readAt("head", file), true);
@@ -183,12 +184,11 @@ async function reviewBunLock(
     }
     const source = typeof entry[1] === "string" ? entry[1] : "";
     if (/^https?:\/\//.test(source)) {
-      const host = hostOf(source);
-      if (!host || !allowed.has(host)) {
+      if (!allowed.allows(source)) {
         violations.push({
           file,
           package: key,
-          detail: `resolves from ${host ?? source}, which is not an allowed registry`,
+          detail: `resolves from ${source}, which is not under an allowed registry URL`,
         });
       }
     }
@@ -198,17 +198,16 @@ async function reviewBunLock(
 /** Lockfile resolutions that never come from a registry. */
 function lockResolutionProblem(
   spec: string,
-  allowed: ReadonlySet<string>,
+  allowed: RegistryMatcher,
 ): string | null {
   if (spec.startsWith("workspace:")) return null;
   if (/^(?:git\+|git:|github:|gitlab:|bitbucket:)/.test(spec)) {
     return `git resolution ${spec}`;
   }
   if (/^https?:\/\//.test(spec)) {
-    const host = hostOf(spec);
-    return host && allowed.has(host)
+    return allowed.allows(spec)
       ? null
-      : `tarball resolution from ${host ?? spec}, which is not an allowed registry`;
+      : `tarball resolution from ${spec}, which is not under an allowed registry URL`;
   }
   return null;
 }
@@ -216,7 +215,7 @@ function lockResolutionProblem(
 async function reviewNpmLock(
   file: string,
   readAt: ReadAtRef,
-  allowed: ReadonlySet<string>,
+  allowed: RegistryMatcher,
   violations: DependencyViolation[],
 ): Promise<void> {
   const head = parseJsonObject(await readAt("head", file));
@@ -233,12 +232,11 @@ async function reviewNpmLock(
     if (typeof resolved !== "string") continue;
     if ((entry as { link?: unknown }).link === true) continue;
     if (/^https?:\/\//.test(resolved)) {
-      const host = hostOf(resolved);
-      if (!host || !allowed.has(host)) {
+      if (!allowed.allows(resolved)) {
         violations.push({
           file,
           package: key,
-          detail: `resolves from ${host ?? resolved}, which is not an allowed registry`,
+          detail: `resolves from ${resolved}, which is not under an allowed registry URL`,
         });
       }
     } else if (!resolved.startsWith("file:")) {
@@ -251,34 +249,74 @@ async function reviewNpmLock(
   }
 }
 
-/** Registry configuration and text lockfiles: any newly named host. */
-async function reviewNewHosts(
+/** Registry configuration and text lockfiles: any newly named registry URL. */
+async function reviewNewRegistryUrls(
   file: string,
   readAt: ReadAtRef,
-  allowed: ReadonlySet<string>,
+  allowed: RegistryMatcher,
   violations: DependencyViolation[],
 ): Promise<void> {
   const head = await readAt("head", file);
   if (head === null) return;
-  const before = new Set(hostsIn((await readAt("target", file)) ?? ""));
-  for (const host of new Set(hostsIn(head))) {
-    if (before.has(host) || allowed.has(host)) continue;
+  const before = new Set(urlsIn((await readAt("target", file)) ?? ""));
+  for (const url of new Set(urlsIn(head))) {
+    if (before.has(url) || allowed.allows(url)) continue;
     violations.push({
       file,
-      detail: `names registry host ${host}, which is not an allowed registry`,
+      detail: `names ${url}, which is not under an allowed registry URL`,
     });
   }
 }
 
-function hostsIn(text: string): string[] {
-  return [...text.matchAll(/(?:https?:)?\/\/([a-z0-9][a-z0-9.-]*[a-z0-9])/gi)]
-    .map((m) => m[1]!.toLowerCase())
-    .filter((host) => host.includes("."));
+/** URLs in a config or lockfile; `.npmrc` writes them scheme-less (`//host/path`). */
+function urlsIn(text: string): string[] {
+  return [
+    ...text.matchAll(
+      /(?:https?:)?\/\/[a-z0-9][a-z0-9.-]*[a-z0-9](?::\d+)?(?:\/[^\s"'`:;,)]*)?/gi,
+    ),
+  ]
+    .map((m) => (m[0].startsWith("//") ? `https:${m[0]}` : m[0]))
+    .filter((url) => (hostname(url) ?? "").includes("."));
 }
 
-function hostOf(url: string): string | null {
+interface RegistryMatcher {
+  allows(url: string): boolean;
+}
+
+/**
+ * Allowed registries are URL prefixes compared on scheme, host, and path
+ * segments: `https://host/api/v4/projects/46/packages/npm/` admits that
+ * project's packages and nothing else on the host.
+ */
+function registryMatcher(prefixes: readonly string[]): RegistryMatcher {
+  const normalized = prefixes
+    .map(normalizeUrl)
+    .filter((p): p is string => p !== null)
+    .map((p) => (p.endsWith("/") ? p : `${p}/`));
+  return {
+    allows(url) {
+      const candidate = normalizeUrl(url);
+      if (candidate === null) return false;
+      const withSlash = candidate.endsWith("/") ? candidate : `${candidate}/`;
+      return normalized.some((prefix) => withSlash.startsWith(prefix));
+    },
+  };
+}
+
+function normalizeUrl(url: string): string | null {
   try {
-    return new URL(url).hostname.toLowerCase() || null;
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
+      return null;
+    return `${parsed.protocol}//${parsed.host.toLowerCase()}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function hostname(url: string): string | null {
+  try {
+    return new URL(url).hostname;
   } catch {
     return null;
   }

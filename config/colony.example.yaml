@@ -49,13 +49,14 @@ review:
 #   #   api_version_override: v1beta1   # optional; otherwise discovered from the cluster
 
 # Checks colonyd adds to every merge gate, whatever colony.gate.yaml says.
-# registry_hosts: where dependencies may resolve from; anything else (and any
+# registry_urls: registry URL prefixes dependencies may resolve from (allow a
+#   project's registry path, not a whole GitLab host); anything else, and any
 #   git/URL dependency, out-of-repo path dependency, or new
-#   trustedDependencies entry) fails the gate.
+#   trustedDependencies entry, fails the gate.
 # sast: diff-aware semgrep in the gate sandbox. Needs the kubernetes sandbox
 #   image, which vendors semgrep and its rules.
 merge_gate:
-  registry_hosts: [registry.npmjs.org, registry.yarnpkg.com]
+  registry_urls: [https://registry.npmjs.org/, https://registry.yarnpkg.com/]
   sast: false
 
 providers:

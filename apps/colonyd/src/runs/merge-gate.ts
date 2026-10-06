@@ -707,7 +707,7 @@ function dependencyPolicyLines(
   const violations = Array.isArray(evidence.violations)
     ? (evidence.violations as DependencyViolation[])
     : [];
-  const hosts = (ctx.config?.mergeGate ?? DEFAULT_MERGE_GATE).registryHosts;
+  const registries = (ctx.config?.mergeGate ?? DEFAULT_MERGE_GATE).registryUrls;
   return [
     ...violations
       .slice(0, MAX_TAIL_LINES)
@@ -715,7 +715,7 @@ function dependencyPolicyLines(
         (v) =>
           `dependency policy: ${v.file}${v.package ? ` (${v.package})` : ""}: ${sanitizeTrace(v.detail)}`,
       ),
-    `Depend only on published versions from these registries: ${hosts.join(", ")}. Git, URL, and out-of-repository path dependencies and new trustedDependencies are rejected; if one is truly required, stop and report it as an operator decision.`,
+    `Depend only on published versions from these registries: ${registries.join(", ")}. Git, URL, and out-of-repository path dependencies and new trustedDependencies are rejected; if one is truly required, stop and report it as an operator decision.`,
   ];
 }
 
@@ -1015,7 +1015,7 @@ export const defaultGateExecutor: GateExecutor = async (input) => {
   const dependencies = await atGateExecutionBoundary("repository", () =>
     reviewDependencyChanges({
       changedFiles,
-      registryHosts: input.policy.registryHosts,
+      registryUrls: input.policy.registryUrls,
       readAt: (side, path) =>
         fileAt(
           input,

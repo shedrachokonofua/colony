@@ -35,10 +35,14 @@ hitl:
 review:
   mode: required
 
-# The home GitLab package registry serves @s30/* (Seven30 platform packages).
+# Registry URL prefixes, not hosts: gitlab.home.shdr.ch serves every
+# project's package registry, and an agent's token can publish to its own.
+# Project 46 (seven30/palisade) publishes the @s30/* platform packages.
 merge_gate:
-  registry_hosts:
-    [registry.npmjs.org, registry.yarnpkg.com, gitlab.home.shdr.ch]
+  registry_urls:
+    - https://registry.npmjs.org/
+    - https://registry.yarnpkg.com/
+    - https://gitlab.home.shdr.ch/api/v4/projects/46/packages/npm/
   sast: true
 
 providers:

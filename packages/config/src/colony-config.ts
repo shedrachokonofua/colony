@@ -200,22 +200,24 @@ const reviewSchema = z
 
 export type ReviewMode = "off" | "required";
 
-/** Hosts the merge gate's dependency policy accepts when none are configured. */
-export const DEFAULT_REGISTRY_HOSTS: readonly string[] = [
-  "registry.npmjs.org",
-  "registry.yarnpkg.com",
+/** Registries the merge gate's dependency policy accepts when none are configured. */
+export const DEFAULT_REGISTRY_URLS: readonly string[] = [
+  "https://registry.npmjs.org/",
+  "https://registry.yarnpkg.com/",
 ];
 
 const mergeGateSchema = z
   .object({
     /**
-     * Package registry hosts a dependency may resolve from. Any other host
-     * (lockfile entry, tarball spec, .npmrc/bunfig registry) fails the gate.
+     * Registry URL prefixes a dependency may resolve from (scheme, host, and
+     * path: a GitLab host serves every project's registry, so allow the one
+     * project, not the host). Anything else (lockfile entry, tarball spec,
+     * .npmrc/bunfig registry) fails the gate.
      */
-    registry_hosts: z
-      .array(z.string().min(1))
+    registry_urls: z
+      .array(z.string().url())
       .min(1)
-      .default([...DEFAULT_REGISTRY_HOSTS]),
+      .default([...DEFAULT_REGISTRY_URLS]),
     /**
      * Run the built-in diff-aware semgrep step in the gate sandbox. Needs the
      * kubernetes sandbox image (it vendors semgrep and its rules).
@@ -223,15 +225,15 @@ const mergeGateSchema = z
     sast: z.boolean().default(false),
   })
   .strict()
-  .default({ registry_hosts: [...DEFAULT_REGISTRY_HOSTS], sast: false });
+  .default({ registry_urls: [...DEFAULT_REGISTRY_URLS], sast: false });
 
 export interface MergeGateConfig {
-  readonly registryHosts: readonly string[];
+  readonly registryUrls: readonly string[];
   readonly sast: boolean;
 }
 
 export const DEFAULT_MERGE_GATE: MergeGateConfig = {
-  registryHosts: DEFAULT_REGISTRY_HOSTS,
+  registryUrls: DEFAULT_REGISTRY_URLS,
   sast: false,
 };
 
@@ -608,9 +610,7 @@ export function loadColonyConfig(
     hitlMode: file.hitl.mode,
     reviewMode: file.review.mode,
     mergeGate: {
-      registryHosts: file.merge_gate.registry_hosts.map((host) =>
-        host.toLowerCase(),
-      ),
+      registryUrls: file.merge_gate.registry_urls,
       sast: file.merge_gate.sast,
     },
     artifacts,
