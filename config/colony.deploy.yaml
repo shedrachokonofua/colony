@@ -194,20 +194,51 @@ providers:
         # turns went 20/20 on the Step Plan, no 429s.
         max_parallel_runs: 4
         cost: { input: 0, output: 0 }
-      # Moira's `strong` tier (AA 43-47): Moira picks the member with quota
-      # (MiMo on Xiaomi/Command Code/OpenCode Go, Muse Contributor, GLM 5.3,
-      # Kimi K3, Step 5, Qwen 3.8 Max) and pins each run to it via the run
-      # id Colony sends as prompt_cache_key. Until LiteLLM adapts requests
-      # per deployment, this entry must suit every member: the smallest
-      # window (Qwen 1,000,000), Step's output ceiling (65,536), and no
-      # forced tool_choice (MiMo and Step mishandle it; finalizers steer).
-      # Moira maps the requested effort to each member's closest in-band one.
+      # Moira tier aliases. Moira picks a tier member with quota and pins each
+      # run to it via the run id Colony sends as prompt_cache_key. Until
+      # LiteLLM adapts requests per deployment, each entry must suit every
+      # member of its tier (aether moira/tiers.yaml bands over moira's
+      # data/aa_scores.yaml; members as of 2026-10-14): the smallest window,
+      # the smallest output ceiling, and no forced tool_choice (Claude with
+      # reasoning, MiMo and Step mishandle it; finalizers steer). Moira maps
+      # the requested effort to each member's closest in-band one.
+      #
+      # frontier (AA 50+): GPT-6.1 Sol high-max, Claude Opus 5.5, Muse Wonder
+      # Full. Sol's subscription window bounds it (272,000). Sol and Opus share
+      # the operator's and household's subscriptions, so 2 runs at a time.
+      - id: moira/frontier
+        name: moira-frontier
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 272000
+        max_tokens: 65536
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
+      # strong (AA 44-49): MiMo V2.6 Pro, Muse Spark/Wonder Contributor,
+      # GLM 5.3, Kimi K3, Qwen 3.8 Max, Grok 4.7, Step 5 (free leg), and Sol
+      # at medium, whose 272,000 window bounds it; Step's output ceiling
+      # (65,536).
       - id: moira/strong
         name: moira-strong
         reasoning: true
         efforts: [minimal, low, medium, high, xhigh, max]
-        context_window: 1000000
+        context_window: 272000
         max_tokens: 65536
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 4
+        cost: { input: 0, output: 0 }
+      # flash (AA 36-43): GLM 5.3 Flash, MiMo V2.6 Flash, Hy4, Ling 3.1 Flash,
+      # Gemini 3.8 Flash, Haiku 5.5, GPT-6 Luna, Sol at low. Ling (OpenRouter)
+      # bounds both the window (262,144) and the output ceiling (32,768).
+      - id: moira/flash
+        name: moira-flash
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 262144
+        max_tokens: 32768
         compat:
           supportsForcedToolChoice: false
         max_parallel_runs: 4
@@ -234,70 +265,35 @@ agents:
   # step-5-preview as developer (1/2: never submitted), and
   # gemini-3.8-flash as architect (1/2: missed docs and SQL conventions).
   #
-  # developer: moira-strong (2026-10-03). A fixed lead stalls when its quota
-  # runs dry (Muse subscription exhausted until 2026-10-05; the Xiaomi MiMo
-  # plan at 62% of its yearly pool), so Moira chooses among strong-tier
-  # models with quota. No fallback: the whole tier exhausted at once is
-  # unlikely, Moira's tier_exhausted 429 requeues the task like any provider
-  # rate limit, and a Moira outage fails open to LiteLLM's moira/strong
-  # alias (Kimi K3). Earlier evidence: under one reviewer (grok-4.7) MiMo
-  # implementations were approved 21/43 against Muse's 21/75.
+  # 2026-10-14 (operator): every role runs on a Moira tier, so quota, not a
+  # fixed chain, picks the model: developer flash, reviewer strong, architect
+  # and plan reviewer frontier. No fallback chains: Moira's tier_exhausted 429
+  # requeues like any provider rate limit, and a Moira outage fails open to
+  # LiteLLM's moira/<tier> alias deployment. Architect and plan reviewer share
+  # a tier, so a plan can be reviewed by the model that wrote it.
   developer:
     provider: openai_compatible
-    model: moira-strong
-    # Moira maps max to each member's closest in-band effort (Muse xhigh,
-    # GLM 5.3 and K3 max, MiMo/Step/Qwen default).
+    model: moira-flash
     thinking_level: max
     # 3 h: two 90-minute runs (col-d6ca6aa2.2, col-7548de26.3) were killed
     # mid-repair on large tasks with work still unsubmitted.
     timeout_ms: 10800000
     max_turns: 400
-  # reviewer: grok-4.7 (AA 46; 2/2 in 31 s; honours a forced submit),
-  # kimi-k3 (best review record 71/20; AA-LCR 88.7%), glm-5.3 (22/27;
-  # honours a forced submit), mimo-v2.6-pro (AA 46), deepseek-v4-pro (8/2;
-  # 2/2 in 14 s), and muse-spark-1.3 last: muse-spark now writes the code.
   reviewer:
     provider: openai_compatible
-    model: grok-4.7
-    fallback_models:
-      - kimi-k3
-      - glm-5.3
-      - mimo-v2.6-pro
-      - deepseek-v4-pro
-      - muse-spark-1.3
+    model: moira-strong
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
-  # The plan reviewer must not be the plan's author: muse-spark leads the
-  # architect chain, so no muse model reviews plans. gpt-6.1-sol leads
-  # (replaced gpt-6-astra on 2026-09-30; same subscription route, streamed
-  # forced tool call verified through Colony's LiteLLM key).
-  # grok-4.7 is out: in the 2026-09-29 audit of 324 plan-review blockers it
-  # found the fewest real blockers per review (1.4, astra 3.5), raised the
-  # most wrong or questionable ones (23%), and made 14 of the 18 rejections
-  # that held no real blocker. Then kimi-k3 (12/0 plan
-  # reviews; AA-LCR 88.7%), glm-5.3, mimo-v2.6-pro (AA-LCR 86.3%), and
-  # step-5-preview (AA 44, AA-LCR 88.3%; 2/2 all 5 flaws; Step Plan pool).
   plan_reviewer:
     provider: openai_compatible
-    model: gpt-6.1-sol
-    fallback_models:
-      - kimi-k3
-      - glm-5.3
-      - mimo-v2.6-pro
-      - step-5-preview
+    model: moira-frontier
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
-  # architect: muse-spark leads (46/10 as architect; 2/2 in 90 s). Then
-  # glm-5.3 (30/48, mostly infra faults; honours a forced submit), grok-4.7
-  # (honours a forced submit; 2/2), kimi-k3 (AA-LCR 88.7%; forced with
-  # reasoning off), mimo-v2.6-pro (AA 46), deepseek-v4-pro (5/1; 2/2 in 48 s).
   architect:
     provider: openai_compatible
-    model: muse-spark
-    fallback_models:
-      [glm-5.3, grok-4.7, kimi-k3, mimo-v2.6-pro, deepseek-v4-pro]
+    model: moira-frontier
     thinking_level: xhigh
     timeout_ms: 2700000
     max_turns: 200
