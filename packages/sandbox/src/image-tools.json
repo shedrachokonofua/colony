@@ -12,6 +12,35 @@
       "name": "chromium",
       "check": ["chromium", "--version"],
       "note": "at $COLONY_TEST_CHROMIUM_PATH; never download browsers"
+    },
+    { "name": "cargo", "check": ["cargo", "--version"] },
+    { "name": "rustc", "check": ["rustc", "--version"] },
+    {
+      "name": "rustfmt",
+      "check": ["cargo", "fmt", "--version"],
+      "note": "cargo fmt"
+    },
+    {
+      "name": "clippy",
+      "check": ["cargo", "clippy", "--version"],
+      "note": "cargo clippy"
+    },
+    { "name": "wasmtime", "check": ["wasmtime", "--version"] },
+    {
+      "name": "wasi-sdk clang",
+      "check": ["/opt/wasi-sdk/bin/clang", "--version"],
+      "note": "at $WASI_SDK_PATH/bin/clang"
+    },
+    {
+      "name": "wasm32-wasip2",
+      "check": [
+        "rustc",
+        "--print",
+        "target-libdir",
+        "--target",
+        "wasm32-wasip2"
+      ],
+      "note": "rustc target wasm32-wasip2; cargo registry cache is $CARGO_HOME"
     }
   ],
   "absent": ["curl", "wget", "jq", "docker"],

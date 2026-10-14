@@ -486,7 +486,8 @@ the image build fails when a declared tool is missing, an excluded one
 (curl, wget, jq, docker) exists, or the vendored semgrep rules do not
 validate, and agent prompts describe the toolset from the same file. Today
 that is bash, Node 24, npm, Bun, git, tar, Python 3, semgrep with pinned
-JavaScript/TypeScript rules, and Chromium. Add your project's toolchain to
+JavaScript/TypeScript rules, Chromium, Rust (stable, with rustfmt, clippy,
+and the wasm32-wasip1 and wasm32-wasip2 targets), wasmtime, and wasi-sdk. Add your project's toolchain to
 the image and the manifest, and set `sandbox.kubernetes.image`.
 
 ## Install
