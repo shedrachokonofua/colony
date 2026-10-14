@@ -199,13 +199,17 @@ providers:
       # LiteLLM adapts requests per deployment, each entry must suit every
       # member of its tier (aether moira/tiers.yaml bands over moira's
       # data/aa_scores.yaml; members as of 2026-10-14): the smallest window,
-      # the smallest output ceiling, and no forced tool_choice (Claude with
-      # reasoning, MiMo and Step mishandle it; finalizers steer). Moira maps
-      # the requested effort to each member's closest in-band one.
+      # the smallest output ceiling, and forced tool_choice settings every
+      # member tolerates (strong and flash never force: MiMo and Step mishandle
+      # it; finalizers steer). Moira maps the requested effort to each
+      # member's closest in-band one.
       #
       # frontier (AA 50+): GPT-6.1 Sol high-max, Claude Opus 5.5, Muse Wonder
       # Full. Sol's subscription window bounds it (272,000). Sol and Opus share
       # the operator's and household's subscriptions, so 2 runs at a time.
+      # Forced submits drop reasoning: Anthropic refuses a forced tool_choice
+      # with thinking on, and without forcing the finalizer could only steer
+      # Opus, which let three architect runs time out (col-db8759e3).
       - id: moira/frontier
         name: moira-frontier
         reasoning: true
@@ -213,7 +217,7 @@ providers:
         context_window: 272000
         max_tokens: 65536
         compat:
-          supportsForcedToolChoice: false
+          disableReasoningOnForcedToolChoice: true
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
       # strong (AA 44-49): MiMo V2.6 Pro, Muse Spark/Wonder Contributor,
@@ -295,7 +299,10 @@ agents:
     provider: openai_compatible
     model: moira-frontier
     thinking_level: xhigh
-    timeout_ms: 2700000
+    # 90 min: on Opus 5.5 at xhigh (5-15 min turns, some hitting the 64k
+    # output cap) three col-db8759e3 architect runs were still working at
+    # the 45 min cap.
+    timeout_ms: 5400000
     max_turns: 200
   memory_consolidator:
     provider: openai_compatible
