@@ -210,6 +210,16 @@ export function buildRunTools(
 export class PiBaseAgentRunner implements PiRunner {
   readonly kind: PiRunner["kind"];
   private readonly activeRuns = new Map<string, ActivePiRun>();
+  /** Runs between run()/resume() entry and teardown. */
+  private readonly liveRunIds = new Set<string>();
+  /**
+   * Cancels that reached a live run before it registered its abort handle.
+   * Dropping one strands the caller: colonyd records the run canceled and
+   * waits on a run that keeps working (col-db8759e3.2, 2026-10-15: a pause
+   * seconds after dispatch hung pause, stop, and amend while the run worked
+   * on for 15 minutes).
+   */
+  private readonly pendingCancels = new Set<string>();
 
   constructor(
     private readonly profile: PiRoleProfile,
@@ -219,7 +229,7 @@ export class PiBaseAgentRunner implements PiRunner {
   }
 
   async run(request: PiRunRequest): Promise<PiRunResult> {
-    return this.executeRun(request);
+    return this.trackLive(request.runId, () => this.executeRun(request));
   }
 
   /**
@@ -228,13 +238,28 @@ export class PiBaseAgentRunner implements PiRunner {
    * machinery: same builder, same guards, same prompt loop.
    */
   async resume(request: PiRunResumeRequest): Promise<PiRunResult> {
-    return this.executeRun(request, {
-      handle: request.handle,
-      sessionManager: request.sessionManager,
-      steerPrompt: request.steerPrompt,
-      ...(request.onRunning ? { onRunning: request.onRunning } : {}),
-      ...(request.traceContext ? { traceContext: request.traceContext } : {}),
-    });
+    return this.trackLive(request.runId, () =>
+      this.executeRun(request, {
+        handle: request.handle,
+        sessionManager: request.sessionManager,
+        steerPrompt: request.steerPrompt,
+        ...(request.onRunning ? { onRunning: request.onRunning } : {}),
+        ...(request.traceContext ? { traceContext: request.traceContext } : {}),
+      }),
+    );
+  }
+
+  private async trackLive(
+    runId: string,
+    execute: () => Promise<PiRunResult>,
+  ): Promise<PiRunResult> {
+    this.liveRunIds.add(runId);
+    try {
+      return await execute();
+    } finally {
+      this.liveRunIds.delete(runId);
+      this.pendingCancels.delete(runId);
+    }
   }
 
   private async executeRun(
@@ -663,6 +688,7 @@ export class PiBaseAgentRunner implements PiRunner {
         Math.max(0, wallTimeoutMs - forcedSubmitMarginMs),
       );
       clearForcedSubmitTimer = () => clearTimeout(forcedSubmitTimer);
+      if (this.pendingCancels.delete(runId)) state.cancellationTriggered = true;
       this.activeRuns.set(runId, {
         abort: async () => {
           state.cancellationTriggered = true;
@@ -981,6 +1007,11 @@ export class PiBaseAgentRunner implements PiRunner {
           landedPromise: Promise<void>,
         ): Promise<boolean> => {
           try {
+            // A cancel that landed before the first prompt (setup, sandbox
+            // provisioning) had no session to abort: never start one.
+            if (state.cancellationTriggered) {
+              throw new Error("run canceled before its prompt");
+            }
             await waitAfterConnectionError();
             const promptPromise = inTraceContext(request.environment, () =>
               target.prompt(prompt, { expandPromptTemplates: false }),
@@ -2179,7 +2210,12 @@ export class PiBaseAgentRunner implements PiRunner {
   }
 
   async cancel(runId: string): Promise<void> {
-    await this.activeRuns.get(runId)?.abort();
+    const active = this.activeRuns.get(runId);
+    if (active) {
+      await active.abort();
+      return;
+    }
+    if (this.liveRunIds.has(runId)) this.pendingCancels.add(runId);
   }
 
   /**
