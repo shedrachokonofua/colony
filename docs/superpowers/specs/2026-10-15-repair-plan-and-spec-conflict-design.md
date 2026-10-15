@@ -233,7 +233,7 @@ Automated tests (bun:test, following the existing files):
   - leaving `blocked` by `unblock` clears the conflict.
 - **Migrations:** `runs.kind` accepts `repair_plan`; `tasks.spec_conflict_json` exists after migrating.
 
-Smoke run: a local colonyd with the in-process sandbox and scripted agent responses runs two cases end to end:
+Smoke run: the existing no-LLM daemon `apps/colonyd/e2e/fake-colonyd.ts` (`FakeProviderAdapter` plus `ScriptedAgentRuntimeAdapter`, scripted at runtime through `POST /control/script` on the control port) gains scripted `repair_planner` envelopes and an implementer `spec_conflict` knob. Driven over its HTTP API, it runs two cases end to end:
 
 - request_changes with a plan-flagged finding → `repair_plan` run → an implement packet that contains the plan;
 - implementer `spec_conflict` → blocked task in `colony_status` → `accept-amendment` → requeued task whose spec includes the amendment.
