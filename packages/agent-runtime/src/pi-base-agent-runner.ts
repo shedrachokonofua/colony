@@ -79,7 +79,7 @@ import {
   captureTranscript,
   quarantineTranscript,
 } from "./transcript-capture.js";
-import { captureWorkspace } from "./workspace-capture.js";
+import { autosaveWorkspace, captureWorkspace } from "./workspace-capture.js";
 import { buildSandboxTools } from "./sandbox-tools.js";
 import {
   buildPiSession,
@@ -359,11 +359,16 @@ export class PiBaseAgentRunner implements PiRunner {
      */
     let forcedSubmitTriggered = false;
     /**
+     * Set when the run enters the submit-only finalizer, whether the deadline
+     * forced it or the model spent its stop steers.
+     */
+    let finalizerEngaged = false;
+    /**
      * Bounded blocked_reason of an implementer envelope reported "blocked"
-     * once the deadline window opened: near the wall, "blocked" means
-     * "unfinished". It is not a success (colonyd parks a blocked task on the
-     * operator, while a timeout requeues and continues from the pushed
-     * branch), so the run takes the timeout's classification and carries the
+     * once the deadline window opened or the finalizer took over: at that
+     * point "blocked" means "unfinished". It is not a success (colonyd parks
+     * a blocked task on the operator, while a failed run requeues and
+     * continues from the pushed branch), so the run fails and carries the
      * reason into its fault detail.
      */
     let forcedBlockedReason: string | undefined;
@@ -418,19 +423,23 @@ export class PiBaseAgentRunner implements PiRunner {
     const sizeGate = this.options.architectSizeGate?.();
     const submitTool = this.profile.submitTool(
       (value) => {
-        // A blocked envelope inside the deadline window must not land as a
-        // success: colonyd treats a blocked implementer task as a hard
-        // operator block, while a timeout requeues and continues from the
-        // pushed branch. col-d6ca6aa2.3 (2026-09-26) reported "blocked", no
-        // reason, "Needs follow-up turn" 4 minutes into the window and sat
-        // blocked for 10.5 hours. A blocked report before the window keeps
-        // its meaning.
+        // A blocked envelope inside the deadline window or the finalizer
+        // must not land as a success: colonyd treats a blocked implementer
+        // task as a hard operator block, while a failed run requeues and
+        // continues from the pushed branch. col-d6ca6aa2.3 (2026-09-26)
+        // reported "blocked", "Needs follow-up turn" 4 minutes into the window
+        // and sat blocked for 10.5 hours; col-db8759e3.2 (2026-10-15) reported
+        // "blocked" from the finalizer after three stop steers, an hour before
+        // its deadline, and parked the scope. A blocked report before either
+        // keeps its meaning.
         const status =
           value !== null && typeof value === "object" && "status" in value
             ? value.status
             : undefined;
+        const deadline =
+          forcedSubmitTriggered || Date.now() >= deadlineWindowOpensAt;
         if (
-          (forcedSubmitTriggered || Date.now() >= deadlineWindowOpensAt) &&
+          (deadline || finalizerEngaged) &&
           this.profile.role === "developer" &&
           status === "blocked"
         ) {
@@ -449,12 +458,21 @@ export class PiBaseAgentRunner implements PiRunner {
             .replace(/\s+/g, " ")
             .trim()
             .slice(0, 160);
-          state.failureReason ??= "timeout_without_envelope";
-          state.failureFault ??= {
-            layer: "model",
-            code: "wall_timeout",
-            detail: `blocked submission at the deadline (blocked: ${forcedBlockedReason})`,
-          };
+          if (deadline) {
+            state.failureReason ??= "timeout_without_envelope";
+            state.failureFault ??= {
+              layer: "model",
+              code: "wall_timeout",
+              detail: `blocked submission at the deadline (blocked: ${forcedBlockedReason})`,
+            };
+          } else {
+            state.failureReason ??= "finalize_no_submission";
+            state.failureFault ??= {
+              layer: "model",
+              code: "finalize_no_submission",
+              detail: `unfinished work reported blocked at the finalizer (blocked: ${forcedBlockedReason})`,
+            };
+          }
           resolveCapturedEnvelope?.();
           return;
         }
@@ -1705,6 +1723,7 @@ export class PiBaseAgentRunner implements PiRunner {
                 let finalizerSubmitted = false;
                 let promptError: unknown;
                 try {
+                  finalizerEngaged = true;
                   await liveSession
                     .setActiveToolsByName([submitTool.name])
                     .catch(() => undefined);
@@ -2078,9 +2097,30 @@ export class PiBaseAgentRunner implements PiRunner {
           quarantineTranscript(runId, sessionFile);
         }
       }
+      const repoRef = packetRepo(request.packet);
+      // (1.4) Autosave: a developer run that ends without an accepted
+      // completion pushes its working tree to the task branch, so the next
+      // attempt continues from it instead of from the last pushed head. An
+      // operator abort keeps its own intent and saves nothing.
+      if (
+        this.profile.role === "developer" &&
+        capturedEnvelope === undefined &&
+        !state.cancellationTriggered &&
+        repoRef &&
+        handle
+      ) {
+        await autosaveWorkspace({
+          runId,
+          handle,
+          branch: repoRef.branch,
+          baseSha: repoRef.base_commit,
+          reason: state.failureReason ?? "finalize_no_submission",
+          secrets: runToken ? [runToken] : [],
+          ...(this.options.auditSink ? { sink: this.options.auditSink } : {}),
+        });
+      }
       // (1.5) Workspace capture: for developer and reviewer roles only (credential-carrying roles).
       // Architect and validate roles are skipped, as are scratch-mode runs (no repo / base_commit).
-      const repoRef = packetRepo(request.packet);
       if (
         (this.profile.role === "developer" ||
           this.profile.role === "reviewer") &&

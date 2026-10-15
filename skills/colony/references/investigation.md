@@ -79,6 +79,14 @@ For `finalize_no_submission`, answer these separately:
 3. Did the model stop normally without an envelope?
 4. Was a fallback model attempted?
 5. Did teardown fail only after the decision?
+6. Did the submit call report `blocked` from the finalizer? The fault detail
+   then reads `unfinished work reported blocked at the finalizer (blocked:
+…)`: the run failed and requeued instead of parking the task.
+
+A developer run that ends without an accepted completion pushes its working
+tree to the task branch as a `colony autosave` commit (CI skipped) and records
+a `workspace_autosave` event with `status` `pushed`, `skipped`, or `failed`.
+The next attempt continues from that commit.
 
 Download transcript artifacts only when event structure is insufficient.
 Decompress and parse locally, redact before display, report counts rather

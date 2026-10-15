@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { SandboxHandle } from "@colony/sandbox";
 import type { RunAuditSink } from "./audit-sink.js";
-import { captureWorkspace } from "./workspace-capture.js";
+import { autosaveWorkspace, captureWorkspace } from "./workspace-capture.js";
 
 /**
  * Every test below drives real git subprocesses (bare init, commits, push,
@@ -474,6 +474,226 @@ describe("captureWorkspace", () => {
           events.some((event) => event.event === "workspace_capture_failed"),
         ).toBe(true);
         expect(existsSync(repo.pushAttemptMarker)).toBe(false);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
+});
+
+describe("autosaveWorkspace", () => {
+  const branch = "colony/task-1";
+
+  it(
+    "pushes uncommitted edits and unpushed commits to the task branch, without generated trees",
+    async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "colony-autosave-push-"));
+      try {
+        const repo = createRepository(tempRoot, false);
+        const remoteDir = join(tempRoot, "remote.git");
+        git(repo.workspaceDir, ["checkout", "-q", "-b", branch]);
+        writeFileSync(
+          join(repo.workspaceDir, "local.txt"),
+          "committed, never pushed\n",
+        );
+        git(repo.workspaceDir, ["add", "local.txt"]);
+        git(repo.workspaceDir, ["commit", "-q", "-m", "local only"]);
+        writeFileSync(
+          join(repo.workspaceDir, "tracked.txt"),
+          "edited, uncommitted\n",
+        );
+        writeFileSync(join(repo.workspaceDir, "new.txt"), "untracked\n");
+        addGeneratedFiles(repo.workspaceDir);
+        const { sink, events } = createRecordingSink();
+
+        const outcome = await autosaveWorkspace({
+          runId: "run-autosave-1",
+          handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+          branch,
+          baseSha: repo.parentSha,
+          reason: "timeout_without_envelope",
+          secrets: [],
+          sink,
+        });
+
+        expect(outcome).toMatchObject({ status: "pushed", committed: true });
+        const remoteHead = git(remoteDir, [
+          "rev-parse",
+          `refs/heads/${branch}`,
+        ]);
+        expect(outcome).toMatchObject({ sha: remoteHead });
+        expect(git(remoteDir, ["log", "-1", "--format=%s", remoteHead])).toBe(
+          "colony autosave: unfinished work from run run-autosave-1",
+        );
+        expect(git(remoteDir, ["show", `${remoteHead}:local.txt`])).toBe(
+          "committed, never pushed",
+        );
+        expect(git(remoteDir, ["show", `${remoteHead}:tracked.txt`])).toBe(
+          "edited, uncommitted",
+        );
+        expect(git(remoteDir, ["show", `${remoteHead}:new.txt`])).toBe(
+          "untracked",
+        );
+        const tree = git(remoteDir, [
+          "ls-tree",
+          "-r",
+          "--name-only",
+          remoteHead,
+        ]);
+        expect(tree).not.toContain("node_modules");
+        expect(tree).not.toContain(".bun-cache");
+        expect(tree).not.toContain("dist");
+        expect(events.map((event) => event.event)).toEqual([
+          "workspace_autosave",
+        ]);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
+
+  it(
+    "reports nothing to save when the remote branch already holds the work",
+    async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "colony-autosave-clean-"));
+      try {
+        const repo = createRepository(tempRoot, false);
+        const remoteDir = join(tempRoot, "remote.git");
+        git(repo.workspaceDir, ["checkout", "-q", "-b", branch]);
+        writeFileSync(
+          join(repo.workspaceDir, "done.txt"),
+          "pushed by the run\n",
+        );
+        git(repo.workspaceDir, ["add", "done.txt"]);
+        git(repo.workspaceDir, ["commit", "-q", "-m", "pushed work"]);
+        git(repo.workspaceDir, ["push", "-q", "origin", branch]);
+        const before = git(remoteDir, ["rev-parse", `refs/heads/${branch}`]);
+
+        const outcome = await autosaveWorkspace({
+          runId: "run-autosave-clean",
+          handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+          branch,
+          baseSha: repo.parentSha,
+          reason: "finalize_no_submission",
+          secrets: [],
+        });
+
+        expect(outcome).toEqual({
+          status: "skipped",
+          reason: "nothing_to_save",
+        });
+        expect(git(remoteDir, ["rev-parse", `refs/heads/${branch}`])).toBe(
+          before,
+        );
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
+
+  it(
+    "creates no branch for a run that did no work",
+    async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "colony-autosave-idle-"));
+      try {
+        const repo = createRepository(tempRoot, false);
+        const remoteDir = join(tempRoot, "remote.git");
+        git(repo.workspaceDir, ["checkout", "-q", "-b", branch]);
+
+        const outcome = await autosaveWorkspace({
+          runId: "run-autosave-idle",
+          handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+          branch,
+          baseSha: repo.parentSha,
+          reason: "finalize_no_submission",
+          secrets: [],
+        });
+
+        expect(outcome).toEqual({
+          status: "skipped",
+          reason: "nothing_to_save",
+        });
+        expect(hasRef(remoteDir, `refs/heads/${branch}`)).toBe(false);
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
+
+  it(
+    "never rewrites a remote branch that moved on",
+    async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "colony-autosave-diverged-"));
+      try {
+        const repo = createRepository(tempRoot, false);
+        const remoteDir = join(tempRoot, "remote.git");
+        git(repo.workspaceDir, ["checkout", "-q", "-b", branch]);
+        git(repo.workspaceDir, ["push", "-q", "origin", branch]);
+        // Someone else lands a commit on the branch after this run's push.
+        git(repo.seedDir, ["fetch", "-q", "origin", branch]);
+        git(repo.seedDir, ["checkout", "-q", "-b", branch, `origin/${branch}`]);
+        writeFileSync(join(repo.seedDir, "theirs.txt"), "landed elsewhere\n");
+        git(repo.seedDir, ["add", "theirs.txt"]);
+        git(repo.seedDir, ["commit", "-q", "-m", "theirs"]);
+        git(repo.seedDir, ["push", "-q", "origin", branch]);
+        const theirs = git(remoteDir, ["rev-parse", `refs/heads/${branch}`]);
+        writeFileSync(join(repo.workspaceDir, "tracked.txt"), "mine\n");
+        const { sink, events } = createRecordingSink();
+
+        const outcome = await autosaveWorkspace({
+          runId: "run-autosave-diverged",
+          handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+          branch,
+          baseSha: repo.parentSha,
+          reason: "timeout_without_envelope",
+          secrets: [],
+          sink,
+        });
+
+        expect(outcome.status).toBe("failed");
+        expect(git(remoteDir, ["rev-parse", `refs/heads/${branch}`])).toBe(
+          theirs,
+        );
+        expect(events[0]?.detail).toMatchObject({ status: "failed", branch });
+      } finally {
+        rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_FIXTURE_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves a half-finished merge alone",
+    async () => {
+      const tempRoot = mkdtempSync(join(tmpdir(), "colony-autosave-merge-"));
+      try {
+        const repo = createRepository(tempRoot, false);
+        const remoteDir = join(tempRoot, "remote.git");
+        git(repo.workspaceDir, ["checkout", "-q", "-b", branch]);
+        writeFileSync(join(repo.workspaceDir, "tracked.txt"), "conflicted\n");
+        writeFileSync(
+          join(repo.workspaceDir, ".git", "MERGE_HEAD"),
+          `${repo.parentSha}\n`,
+        );
+
+        const outcome = await autosaveWorkspace({
+          runId: "run-autosave-merge",
+          handle: createWorkspaceSandboxHandle(repo.workspaceDir),
+          branch,
+          baseSha: repo.parentSha,
+          reason: "timeout_without_envelope",
+          secrets: [],
+        });
+
+        expect(outcome).toEqual({
+          status: "skipped",
+          reason: "git_operation_in_progress",
+        });
+        expect(hasRef(remoteDir, `refs/heads/${branch}`)).toBe(false);
       } finally {
         rmSync(tempRoot, { recursive: true, force: true });
       }

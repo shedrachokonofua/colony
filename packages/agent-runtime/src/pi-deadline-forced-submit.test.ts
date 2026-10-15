@@ -533,5 +533,114 @@ describe("deadline forced submission", () => {
     expect(result.envelope).toEqual({ ...blockedEnvelope, commands: [] });
     expect(result.reason).toBeUndefined();
     expect(result.fault).toBeUndefined();
+    // An accepted submission is the run's own word: nothing is autosaved.
+    expect(gitOut(origin, ["rev-parse", branch]).trim()).toBe(baseSha);
+  }, 120_000);
+});
+
+const gitOut = (cwd: string, args: string[]): string =>
+  execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+
+/** A prose stop that reports output tokens, as a live model's does. */
+const respondCountedProseStop = (
+  response: ServerResponse,
+  text: string,
+): void => {
+  const chunk = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+  const base = {
+    id: "c",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "m",
+  };
+  response.writeHead(200, SSE_HEADERS);
+  response.end(
+    chunk({
+      ...base,
+      choices: [
+        {
+          index: 0,
+          delta: { role: "assistant", content: text },
+          finish_reason: null,
+        },
+      ],
+    }) +
+      chunk({
+        ...base,
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 12, total_tokens: 112 },
+      }) +
+      "data: [DONE]\n\n",
+  );
+};
+
+describe("stop-steer finalizer", () => {
+  it("treats a blocked submission after the stop steers as unfinished and keeps the unpushed work", async () => {
+    const { origin, baseSha, branch } = seedOrigin("colony-steer-blocked-");
+    execFileSync("git", ["-C", origin, "branch", branch]);
+    // col-db8759e3.2 (2026-10-15): after compaction the model kept stopping in
+    // prose; three stop steers later the finalizer asked for a submission, the
+    // model reported "blocked", and colonyd parked the task on the operator
+    // with the run's edits never pushed.
+    const blockedEnvelope = {
+      kind: "implementer_completion",
+      status: "blocked",
+      summary: "Stopped before finishing.",
+      branch,
+      head_sha: baseSha,
+      blocked_reason: "Interrupted by instruction to stop and submit",
+    };
+    let workTurns = 0;
+    const { baseUrl } = await startGateway((body, response) => {
+      const tools = body.tools ?? [];
+      if (
+        tools.length === 1 &&
+        tools[0]?.function.name === "submit_implementer_completion"
+      ) {
+        respondToolCall(
+          response,
+          "submit_implementer_completion",
+          blockedEnvelope,
+        );
+        return;
+      }
+      workTurns += 1;
+      if (workTurns === 1) {
+        respondToolCall(response, "write", {
+          path: "wip.txt",
+          content: "half done\n",
+        });
+        return;
+      }
+      respondCountedProseStop(response, "I will continue in a later session.");
+    });
+    const runner = new PiBaseAgentRunner(DEVELOPER_ROLE_PROFILE, {
+      model: modelSpec(baseUrl),
+      fallbackModels: [],
+      engine: createInProcessEngine(),
+      broker: { resolve: () => "test-key" },
+      maxTurns: 5_000,
+      runTimeoutMs: 600_000,
+    });
+
+    const result = await runner.run({
+      runId: `steer-blocked-${Date.now()}`,
+      packet: packet(origin, branch, baseSha),
+      environment: { role: "developer" },
+    });
+
+    expect(result.envelope).toEqual({ __unfinished: true });
+    expect(result.reason).toBe("finalize_no_submission");
+    expect(result.fault).toMatchObject({
+      layer: "model",
+      code: "finalize_no_submission",
+    });
+    expect(result.fault?.detail).toContain(
+      "Interrupted by instruction to stop and submit",
+    );
+    expect(gitOut(origin, ["log", "-1", "--format=%s", branch])).toContain(
+      "colony autosave",
+    );
+    expect(gitOut(origin, ["show", `${branch}:wip.txt`])).toBe("half done\n");
   }, 120_000);
 });

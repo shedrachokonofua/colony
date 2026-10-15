@@ -26,6 +26,23 @@ function shellQuote(value: string): string {
 }
 
 /**
+ * Dependency and build trees never staged by capture or autosave. Glob
+ * exclusions are intentional: literal directory exclusions can make git add
+ * exit 1 for ignored directories.
+ */
+const WORKSPACE_PATHSPEC =
+  "-- . ':(exclude,glob)**/node_modules' ':(exclude,glob)**/node_modules/**' " +
+  "':(exclude,glob)**/.bun-cache' ':(exclude,glob)**/.bun-cache/**' " +
+  "':(exclude,glob)**/dist' ':(exclude,glob)**/dist/**'";
+
+/**
+ * Explicit identity keeps isolated sandbox environments independent of user
+ * Git configuration.
+ */
+const COLONY_GIT_IDENTITY =
+  'GIT_AUTHOR_NAME="colony" GIT_AUTHOR_EMAIL="colony@colony.local" GIT_COMMITTER_NAME="colony" GIT_COMMITTER_EMAIL="colony@colony.local"';
+
+/**
  * Execute a command against the sandbox handle capturing stdout and stderr.
  */
 async function execInSandbox(
@@ -125,14 +142,10 @@ export async function captureWorkspace(input: {
   };
 
   try {
-    // Stage into a temporary index. Glob exclusions are intentional: literal
-    // directory exclusions can make git add exit 1 for ignored directories.
+    // Stage into a temporary index.
     const addRes = await execInSandbox(
       input.handle,
-      `GIT_INDEX_FILE=${shellQuote(tmpIndex)} git add -A -- . ` +
-        "':(exclude,glob)**/node_modules' ':(exclude,glob)**/node_modules/**' " +
-        "':(exclude,glob)**/.bun-cache' ':(exclude,glob)**/.bun-cache/**' " +
-        "':(exclude,glob)**/dist' ':(exclude,glob)**/dist/**'",
+      `GIT_INDEX_FILE=${shellQuote(tmpIndex)} git add -A ${WORKSPACE_PATHSPEC}`,
       60_000,
     );
     if (addRes.exitCode !== 0) {
@@ -153,14 +166,10 @@ export async function captureWorkspace(input: {
     }
     const treeSha = writeTreeRes.stdout.trim();
 
-    // Explicit identity keeps isolated sandbox environments independent of
-    // user Git configuration.
-    const authorEnv =
-      'GIT_AUTHOR_NAME="colony" GIT_AUTHOR_EMAIL="colony@colony.local" GIT_COMMITTER_NAME="colony" GIT_COMMITTER_EMAIL="colony@colony.local"';
     const commitMsg = `colony audit: run ${input.runId}`;
     const commitTreeRes = await execInSandbox(
       input.handle,
-      `${authorEnv} git commit-tree ${shellQuote(treeSha)} -p ${shellQuote(input.parentSha)} -m ${shellQuote(commitMsg)}`,
+      `${COLONY_GIT_IDENTITY} git commit-tree ${shellQuote(treeSha)} -p ${shellQuote(input.parentSha)} -m ${shellQuote(commitMsg)}`,
       60_000,
     );
     if (commitTreeRes.exitCode !== 0 || !commitTreeRes.stdout.trim()) {
@@ -335,5 +344,158 @@ process.stdout.write(JSON.stringify({
     return fail(err instanceof Error ? err.message : String(err));
   } finally {
     await cleanup();
+  }
+}
+
+/** What `autosaveWorkspace` did with an unfinished run's work. */
+export type AutosaveOutcome =
+  | {
+      readonly status: "pushed";
+      readonly sha: string;
+      readonly committed: boolean;
+    }
+  | {
+      readonly status: "skipped";
+      readonly reason: "nothing_to_save" | "git_operation_in_progress";
+    }
+  | { readonly status: "failed"; readonly error: string };
+
+/**
+ * Push an unfinished developer run's work to its task branch, so the next
+ * attempt continues from it instead of from the last pushed head.
+ *
+ * The run ended without an accepted completion: whatever is uncommitted is
+ * committed as one `colony autosave` commit, and that commit plus any commits
+ * the run made but never pushed go to `origin/<branch>`. Non-forced: a remote
+ * that moved on keeps its history and the autosave reports `failed`. The push
+ * asks GitLab to skip CI (`-o ci.skip`): an autosave may not build, and no
+ * review or gate looks at it until a later run submits a completion.
+ *
+ * col-db8759e3.2 (2026-10-15): a 3 h run wrote the fix five minutes before
+ * its forced submit and never pushed it; the next run started from the old
+ * head and redid an hour of research.
+ *
+ * Non-throwing / best-effort: every outcome is recorded as a
+ * `workspace_autosave` event when a sink is given.
+ */
+export async function autosaveWorkspace(input: {
+  runId: string;
+  handle: SandboxHandle;
+  branch: string;
+  /** The packet's base commit: a run still sitting on it did no work. */
+  baseSha: string;
+  /** Why the run ended without a completion; goes into the commit message. */
+  reason: string;
+  secrets: readonly string[];
+  sink?: RunAuditSink;
+}): Promise<AutosaveOutcome> {
+  const record = (outcome: AutosaveOutcome): AutosaveOutcome => {
+    try {
+      input.sink?.appendEvent(input.runId, "workspace_autosave", {
+        branch: input.branch,
+        ...outcome,
+      });
+    } catch {
+      // appendEvent is contractually non-throwing; a foreign sink must not
+      // unwind teardown.
+    }
+    return outcome;
+  };
+  const fail = (step: string, detail: string): AutosaveOutcome =>
+    record({
+      status: "failed",
+      error: redactText(`${step}: ${detail}`, input.secrets).slice(0, 400),
+    });
+
+  try {
+    // A half-finished merge, rebase, or cherry-pick is not a state to commit.
+    const busy = await execInSandbox(
+      input.handle,
+      "test -e .git/MERGE_HEAD -o -e .git/CHERRY_PICK_HEAD -o -d .git/rebase-merge -o -d .git/rebase-apply",
+      5_000,
+    );
+    if (busy.exitCode === 0) {
+      return record({ status: "skipped", reason: "git_operation_in_progress" });
+    }
+
+    const add = await execInSandbox(
+      input.handle,
+      `git add -A ${WORKSPACE_PATHSPEC}`,
+      60_000,
+    );
+    if (add.exitCode !== 0) {
+      return fail(`git add (exit ${add.exitCode})`, add.stderr || add.stdout);
+    }
+    const staged = await execInSandbox(
+      input.handle,
+      "git diff --cached --quiet",
+      30_000,
+    );
+    if (staged.exitCode !== 0 && staged.exitCode !== 1) {
+      return fail(`git diff (exit ${staged.exitCode})`, staged.stderr);
+    }
+    const committed = staged.exitCode === 1;
+    if (committed) {
+      const message = [
+        `colony autosave: unfinished work from run ${input.runId}`,
+        "",
+        `The run ended without an accepted completion (${input.reason}).`,
+        "This commit may not build; the next attempt continues from it.",
+      ].join("\n");
+      const commit = await execInSandbox(
+        input.handle,
+        `${COLONY_GIT_IDENTITY} git commit --no-verify -q -m ${shellQuote(message)}`,
+        60_000,
+      );
+      if (commit.exitCode !== 0) {
+        return fail(
+          `git commit (exit ${commit.exitCode})`,
+          commit.stderr || commit.stdout,
+        );
+      }
+    }
+
+    const head = await execInSandbox(input.handle, "git rev-parse HEAD", 5_000);
+    const sha = head.stdout.trim();
+    if (head.exitCode !== 0 || !sha) {
+      return fail(`git rev-parse (exit ${head.exitCode})`, head.stderr);
+    }
+
+    const remoteRef = `refs/heads/${input.branch}`;
+    if (!committed) {
+      if (sha === input.baseSha) {
+        return record({ status: "skipped", reason: "nothing_to_save" });
+      }
+      const remote = await execInSandbox(
+        input.handle,
+        `git ls-remote origin ${shellQuote(remoteRef)}`,
+        60_000,
+      );
+      if (remote.exitCode === 0 && remote.stdout.split(/\s/)[0] === sha) {
+        return record({ status: "skipped", reason: "nothing_to_save" });
+      }
+    }
+
+    const target = shellQuote(`HEAD:${remoteRef}`);
+    let push = await execInSandbox(
+      input.handle,
+      `git push -o ci.skip origin ${target}`,
+      120_000,
+    );
+    // Remotes that do not advertise push options (anything but GitLab)
+    // refuse `-o`; the push itself is still wanted.
+    if (push.exitCode !== 0 && /push options/i.test(push.stderr)) {
+      push = await execInSandbox(
+        input.handle,
+        `git push origin ${target}`,
+        120_000,
+      );
+    }
+    if (push.exitCode !== 0) {
+      return fail(`git push (exit ${push.exitCode})`, push.stderr);
+    }
+    return record({ status: "pushed", sha, committed });
+  } catch (err) {
+    return fail("autosave", err instanceof Error ? err.message : String(err));
   }
 }

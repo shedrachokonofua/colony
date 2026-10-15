@@ -1305,7 +1305,7 @@ export function buildImplementerFinalizerPrompt(
     "",
     "Rules:",
     '- Keep kind exactly "implementer_completion".',
-    '- status is "complete" only when the spec is satisfied and verified; otherwise status is "blocked" with blocked_reason naming what remains.',
+    '- status is "complete" only when the spec is satisfied and verified. Otherwise use status "blocked" with blocked_reason naming exactly what remains: at this point Colony treats it as unfinished work, saves your working tree to the task branch, and requeues the task so the next run continues from it.',
     "- branch must be the work branch from packet.repo.branch.",
     "- head_sha must be the 40-hex commit SHA that origin/<branch> actually points at - your last pushed commit. The submit tool verifies it against the remote and refuses anything else; if its refusal names the remote head, resubmit with exactly that SHA.",
     "- commands lists each verification command you already ran with its exit code; omit it when blocked with nothing verified.",

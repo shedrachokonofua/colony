@@ -100,7 +100,10 @@ names the requirement; fix the precondition instead of retrying.
 `task.blocked_reason` / `scope.blocked_reason` is free text written at block
 time. Recurring shapes:
 
-- the agent reported `blocked` with its own reason (envelope `status=blocked`);
+- the agent reported `blocked` with its own reason (envelope `status=blocked`)
+  during normal work. A developer `blocked` sent inside the deadline window or
+  from the submit-only finalizer is not a block: the run fails
+  (`timeout_no_envelope` or `finalize_no_submission`) and the task requeues;
 - attempts exhausted after repeated run failures (reason includes the last
   failure);
 - repeated merge-gate failures on one head SHA;

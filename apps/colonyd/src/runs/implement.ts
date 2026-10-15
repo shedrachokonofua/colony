@@ -804,6 +804,7 @@ function interruptedAttempt(
         `The previous attempt ended${ran} (${last.error ?? last.status}) without an accepted completion.`,
         "It may already have pushed part of this task. BEFORE writing anything:",
         "- Inspect the remote task branch and its diff against packet.repo.base_commit to see what already landed.",
+        "- A `colony autosave` commit on the branch is the working tree that attempt left unfinished: it may not build. Finish it rather than redo it.",
         "- Continue from that state; never restart work that is already pushed.",
         "Then write the remaining change, push it early, and submit.",
       ].join("\n"),
