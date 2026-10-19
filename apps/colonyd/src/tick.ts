@@ -1450,8 +1450,90 @@ async function dispatchImplementers(
 // Phase 6 — scope closure.
 // ---------------------------------------------------------------------------
 
+/** Scope block reason written when nothing in the scope can run. */
+const NO_RUNNABLE_TASKS = "no runnable tasks";
+
+/**
+ * Whether anything in a scope can run. Nothing can when every unfinished task
+ * is blocked, or is queued behind a task that is (transitively). A queued task
+ * in retry backoff with a live dependency chain still counts as
+ * runnable-later (readyTasks requires the scope active, so blocking would
+ * stall its self-heal).
+ */
+export function scopeRunnability(
+  store: ColonydContext["store"],
+  scopeId: string,
+): { readonly nothingRunnable: boolean; readonly blockedIds: string[] } {
+  const unfinished = store
+    .listTasks(scopeId)
+    .filter((t) => !TERMINAL_TASK_STATES.has(t.state));
+  const blocked = unfinished.filter((t) => t.state === "blocked");
+  const stuck = new Set(blocked.map((t) => t.id));
+  for (let grew = true; grew; ) {
+    grew = false;
+    // A main-pipeline repair holds every other queued task in the scope;
+    // when the repair itself cannot run, the tasks it holds cannot either.
+    if (
+      unfinished.some(
+        (t) => stuck.has(t.id) && mainPipelineRepairOf(t) !== null,
+      )
+    ) {
+      for (const t of unfinished) {
+        if (
+          t.state === "queued" &&
+          mainPipelineRepairOf(t) === null &&
+          !stuck.has(t.id)
+        ) {
+          stuck.add(t.id);
+          grew = true;
+        }
+      }
+    }
+    for (const t of unfinished) {
+      if (stuck.has(t.id) || t.state !== "queued") continue;
+      if (store.taskDeps(t.id).some((dep) => stuck.has(dep))) {
+        stuck.add(t.id);
+        grew = true;
+      }
+    }
+  }
+  return {
+    nothingRunnable:
+      unfinished.length > 0 && unfinished.every((t) => stuck.has(t.id)),
+    blockedIds: blocked.map((t) => t.id),
+  };
+}
+
+/**
+ * Return a scope parked on "no runnable tasks" to active once something in it
+ * can run again, whatever made it runnable (an unblock, an amendment, a
+ * cancel). Before this only unblocking the LAST blocked task reactivated it:
+ * col-db8759e3 (2026-10-16) sat parked with runnable tasks four times because
+ * other tasks were still blocked.
+ */
+export function reactivateRunnableScope(
+  store: ColonydContext["store"],
+  scope: Scope,
+  actor: string,
+): boolean {
+  if (
+    scope.status !== "blocked" ||
+    !scope.blocked_reason?.startsWith(NO_RUNNABLE_TASKS)
+  ) {
+    return false;
+  }
+  const tasks = store.listTasks(scope.id);
+  if (tasks.every((t) => TERMINAL_TASK_STATES.has(t.state))) return false;
+  if (scopeRunnability(store, scope.id).nothingRunnable) return false;
+  store.setScopeStatus(scope.id, "active", actor, {
+    note: "a task became runnable",
+  });
+  return true;
+}
+
 async function closeScopes(ctx: ColonydContext): Promise<void> {
   for (const scope of ctx.store.listScopes()) {
+    if (reactivateRunnableScope(ctx.store, scope, SERVICE_ACTOR)) continue;
     if (scope.status !== "active") continue;
     const tasks = ctx.store.listTasks(scope.id);
     if (tasks.length === 0) continue;
@@ -1471,52 +1553,20 @@ async function closeScopes(ctx: ColonydContext): Promise<void> {
       continue;
     }
 
-    const unfinished = tasks.filter((t) => !TERMINAL_TASK_STATES.has(t.state));
-    // Block when nothing can run: every unfinished task is blocked, or is
-    // queued behind a task that is (transitively). A queued task in retry
-    // backoff with a live dependency chain still counts as runnable-later
-    // (readyTasks requires the scope active, so blocking would stall its
-    // self-heal). Before this, a scope with one blocked task and one queued
-    // descendant read `active` forever with nothing to do (col-c8f58a57).
-    const blocked = unfinished.filter((t) => t.state === "blocked");
-    if (blocked.length === 0) continue;
-    const stuck = new Set(blocked.map((t) => t.id));
-    for (let grew = true; grew; ) {
-      grew = false;
-      // A main-pipeline repair holds every other queued task in the scope;
-      // when the repair itself cannot run, the tasks it holds cannot either.
-      if (
-        unfinished.some(
-          (t) => stuck.has(t.id) && mainPipelineRepairOf(t) !== null,
-        )
-      ) {
-        for (const t of unfinished) {
-          if (
-            t.state === "queued" &&
-            mainPipelineRepairOf(t) === null &&
-            !stuck.has(t.id)
-          ) {
-            stuck.add(t.id);
-            grew = true;
-          }
-        }
-      }
-      for (const t of unfinished) {
-        if (stuck.has(t.id) || t.state !== "queued") continue;
-        if (ctx.store.taskDeps(t.id).some((dep) => stuck.has(dep))) {
-          stuck.add(t.id);
-          grew = true;
-        }
-      }
-    }
-    const nothingRunnable = unfinished.every((t) => stuck.has(t.id));
+    // Block when nothing can run. Before this, a scope with one blocked task
+    // and one queued descendant read `active` forever with nothing to do
+    // (col-c8f58a57).
+    const { nothingRunnable, blockedIds } = scopeRunnability(
+      ctx.store,
+      scope.id,
+    );
+    if (blockedIds.length === 0) continue;
     const anyActiveRun = ctx.store
       .activeRuns()
       .some((r) => r.scope_id === scope.id);
     if (nothingRunnable && !anyActiveRun) {
-      const blockedIds = blocked.map((t) => t.id);
       ctx.store.setScopeStatus(scope.id, "blocked", SERVICE_ACTOR, {
-        blocked_reason: `no runnable tasks; blocked: ${blockedIds.join(", ")}`,
+        blocked_reason: `${NO_RUNNABLE_TASKS}; blocked: ${blockedIds.join(", ")}`,
       });
     }
   }

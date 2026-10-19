@@ -38,6 +38,7 @@ import {
 } from "./mcp.js";
 import { createOidcVerifier } from "./oidc.js";
 import { retryOrFailTaskWithBudget } from "./fault-budget.js";
+import { reactivateRunnableScope } from "./tick.js";
 import { abortRuns, abortRunsAndWait } from "./runs/registry.js";
 import { runValidation } from "./runs/validate.js";
 import {
@@ -1572,17 +1573,10 @@ export function buildApp(ctx: ColonydContext): Hono<Env> {
         c.get("actor"),
         { attempt: 0, next_retry_at: null },
       );
-      // Unblocking the last blocked task reactivates a scope that parked
-      // itself on "no runnable tasks".
+      // A scope parked on "no runnable tasks" reactivates as soon as this
+      // task can run, even while other tasks stay blocked.
       const scope = ctx.store.getScope(task.scope_id);
-      if (
-        scope?.status === "blocked" &&
-        !ctx.store.listTasks(scope.id).some((t) => t.state === "blocked")
-      ) {
-        ctx.store.setScopeStatus(scope.id, "active", c.get("actor"), {
-          note: "last blocked task unblocked",
-        });
-      }
+      if (scope) reactivateRunnableScope(ctx.store, scope, c.get("actor"));
       ctx.requestTick();
       return c.json(updated);
     } catch (err) {

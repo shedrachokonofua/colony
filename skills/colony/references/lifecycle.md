@@ -60,7 +60,9 @@ What moves a scope:
 - `active`: tasks are executing.
 - `validating`: all tasks landed; acceptance checks run as a validate run.
 - `blocked`: no runnable work remains (architect attempts spent, plan-review
-  budget spent, or everything terminal but validation failed).
+  budget spent, every unfinished task blocked or queued behind a blocked one,
+  or everything terminal but validation failed). A scope blocked for "no
+  runnable tasks" returns to `active` by itself as soon as any task can run.
 - `paused`: operator hold; live runs aborted and their tasks requeued. The
   status it left is remembered and returned by resume.
 

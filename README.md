@@ -170,8 +170,9 @@ flowchart LR
    block. The task blocks and asks you when a blocker needs your decision
    (a capability outside the repository, or a spec that contradicts a
    repository guarantee), when a blocking finding stays open for three
-   reviews, or after ten rejections in a row. Unblocking starts a new
-   epoch: the stall clock and the rejection count restart.
+   reviews, or after ten rejections in a row. Unblocking a task the review
+   loop blocked starts a new epoch: the stall clock and the rejection count
+   restart. Answering an implementer's own block does not.
    Each task has at most one active review. Independent tasks in the same
    scope can review concurrently, subject to per-model limits.
    Every review runs a spec-blind `security` lens (verdicts without it are

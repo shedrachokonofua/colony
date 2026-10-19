@@ -1296,6 +1296,33 @@ describe("colonyd fake end-to-end loop", () => {
     expect(handle.ctx.store.getTask(taskAId)!.state).toBe("queued");
   }, 30_000);
 
+  it("a parked scope reactivates on the tick once a task becomes runnable by any path", async () => {
+    const scopeId = await createScope("reactivate parked scope");
+    const taskAId = `${scopeId}.1`;
+    script.implementerFailures.set(taskAId, 99);
+    await tickAndSettle(); // draft -> planning
+    await tickAndSettle(); // planning -> active; dispatch A (fails)
+    for (let failure = 0; failure < 3; failure += 1) {
+      handle.ctx.store.clearRetryDelay(taskAId);
+      await tickAndSettle();
+      await tickAndSettle();
+    }
+    expect(handle.ctx.store.getTask(taskAId)!.state).toBe("blocked");
+    await tickAndSettle();
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("blocked");
+
+    // Not through POST /unblock: any path that makes A runnable (an accepted
+    // amendment, a store repair) must reactivate the scope on the tick.
+    script.implementerFailures.set(taskAId, 0);
+    const a = handle.ctx.store.getTask(taskAId)!;
+    handle.ctx.store.transitionTask(a.id, a.state_version, "queued", ACTOR, {
+      attempt: 0,
+      next_retry_at: null,
+    });
+    await tickAndSettle();
+    expect(handle.ctx.store.getScope(scopeId)!.status).toBe("active");
+  }, 30_000);
+
   it("gate fail: requeued with evidence, then merged on the second pass", async () => {
     const scopeId = await createScope("gate fail path");
     await tickAndSettle(); // draft -> planning

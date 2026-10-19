@@ -6,7 +6,6 @@ import {
 import { retryBackoffMs, type Run, type Store, type Task } from "@colony/core";
 import { z } from "zod";
 import { SERVICE_ACTOR } from "../context.js";
-import { retryResetAt } from "../fault-budget.js";
 
 /**
  * The code review loop's policy: what each review must account for, what a
@@ -130,13 +129,74 @@ function reviewVerdicts(
   return records;
 }
 
-/** The first round of the current epoch: after the latest operator reset. */
+const TaskTransitionDetail = z.object({
+  from: z.string(),
+  to: z.string(),
+});
+
+/**
+ * When the review epoch last restarted: the latest operator requeue of a
+ * blocked or canceled task, EXCEPT one clearing a block entered from
+ * `running`. That block came from the implementer side (its question, or a
+ * spent failure budget) and says nothing about the review bar; restarting the
+ * epoch there let new majors block again after every operator decision
+ * (col-db8759e3, 2026-10-16/17). Clearing a block the review loop set (entered
+ * from `mr_open`) or restoring a canceled task still restarts it.
+ */
+function reviewEpochResetAt(
+  store: Pick<Store, "listAudit">,
+  taskId: string,
+): string | undefined {
+  let reset: string | undefined;
+  let beforeId: number | undefined;
+  for (;;) {
+    const page = store.listAudit({
+      task_id: taskId,
+      ...(beforeId === undefined ? {} : { before_id: beforeId }),
+      limit: 200,
+    });
+    for (let index = page.events.length - 1; index >= 0; index -= 1) {
+      const row = page.events[index]!;
+      if (row.action !== "task.transition") continue;
+      let detail: z.infer<typeof TaskTransitionDetail>;
+      try {
+        const parsed = TaskTransitionDetail.safeParse(
+          JSON.parse(row.detail_json),
+        );
+        if (!parsed.success) continue;
+        detail = parsed.data;
+      } catch {
+        // Malformed historical detail cannot establish a reset boundary.
+        continue;
+      }
+      if (reset === undefined) {
+        if (
+          row.actor !== SERVICE_ACTOR &&
+          (detail.from === "blocked" || detail.from === "canceled") &&
+          detail.to === "queued"
+        ) {
+          reset = row.at;
+        }
+        continue;
+      }
+      // The transition into the state that reset cleared.
+      if (detail.to !== "blocked" && detail.to !== "canceled") continue;
+      if (detail.to === "canceled" || detail.from !== "running") return reset;
+      reset = undefined;
+    }
+    // A reset whose block fell off recorded history keeps its old meaning.
+    if (!page.has_more || page.oldest_id === null) return reset;
+    beforeId = page.oldest_id;
+  }
+}
+
+/** The first round of the current epoch: after the latest review-side reset. */
 function epochStartRound(
   store: Pick<Store, "listAudit">,
   taskId: string,
   records: readonly ReviewVerdictRecord[],
 ): number {
-  const since = retryResetAt(store, "task", taskId);
+  const since = reviewEpochResetAt(store, taskId);
   if (since === undefined) return 1;
   const first = records.find((record) => record.run.started_at > since);
   return first ? first.round : records.length + 1;

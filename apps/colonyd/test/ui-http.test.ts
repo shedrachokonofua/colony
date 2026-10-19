@@ -554,6 +554,92 @@ describe("operator controls", () => {
     expect(store.getScope(scope.id)!.status).toBe("active");
   });
 
+  /** Three tasks: 0 and 1 independent, 2 depends on 0. Every one blocked. */
+  function parkedScope(store: Store) {
+    const scope = store.createScope({
+      goal: "goal",
+      title: "goal",
+      approvals: "auto",
+      provider_repo_id: "1",
+      provider_repo_path: "so/colony",
+    });
+    store.setScopeStatus(scope.id, "planning", "svc:test");
+    const task = (title: string, depends_on: number[]) => ({
+      title,
+      spec: "original spec",
+      depends_on,
+      files: [`src/${title}.ts`],
+      evidence: ["true"],
+    });
+    const tasks = store.materializePlan(
+      scope.id,
+      {
+        kind: "architect_decomposition",
+        summary: "three",
+        requirements: [{ id: "R1", text: "goal", tasks: [0, 1, 2] }],
+        journey: [{ after_task: 2, working_state: "goal" }],
+        acceptance: [{ description: "goal", command: "true" }],
+        tasks: [task("a", []), task("b", []), task("c", [0])],
+      },
+      "svc:test",
+    );
+    for (const t of tasks) {
+      const running = store.transitionTask(
+        t.id,
+        t.state_version,
+        "running",
+        "svc:test",
+      );
+      store.transitionTask(
+        running.id,
+        running.state_version,
+        "blocked",
+        "svc:test",
+        {
+          blocked_reason: "needs an operator decision",
+        },
+      );
+    }
+    store.setScopeStatus(scope.id, "blocked", "svc:test", {
+      blocked_reason: `no runnable tasks; blocked: ${tasks.map((t) => t.id).join(", ")}`,
+    });
+    return { scope, tasks };
+  }
+
+  // col-db8759e3 (2026-10-16): unblocking one of several blocked tasks left
+  // the scope parked on "no runnable tasks", so nothing dispatched until an
+  // operator also unblocked the scope - four times in two days.
+  it("unblocking one of several blocked tasks reactivates the scope when that task can run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const { scope, tasks } = parkedScope(store);
+
+    const res = await app.request(`/tasks/${tasks[1]!.id}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(res.status).toBe(200);
+    expect(store.getScope(scope.id)!.status).toBe("active");
+  });
+
+  it("unblocking a task still queued behind a blocked dependency keeps the scope parked", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
+    dirs.push(dir);
+    const store = new Store(join(dir, "test.db"));
+    const app = buildApp(fakeCtx(store));
+    const { scope, tasks } = parkedScope(store);
+
+    const res = await app.request(`/tasks/${tasks[2]!.id}/unblock`, {
+      method: "POST",
+      headers: { "X-Actor-Id": "human:op-1" },
+    });
+    expect(res.status).toBe(200);
+    expect(store.getTask(tasks[2]!.id)!.state).toBe("queued");
+    expect(store.getScope(scope.id)!.status).toBe("blocked");
+  });
+
   it("amend-spec appends an authoritative section and requeues open MRs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "colonyd-ui-"));
     dirs.push(dir);

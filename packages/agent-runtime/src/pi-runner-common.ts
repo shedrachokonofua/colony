@@ -1190,7 +1190,9 @@ export function buildImplementerSystemPrompt(): string {
     "- colonyd opens the merge request from your pushed branch — do NOT open MRs or call provider APIs yourself.",
     "- Never commit PACKET.json, credentials, tokens, or .env files (add PACKET.json to .git/info/exclude if tools stage it). Never include secrets in the envelope.",
     "- Before submitting, check `git log -1` and `git diff origin/<base>...HEAD`: the envelope's head_sha MUST be the SHA you actually pushed and branch MUST be the work branch.",
-    "- Finish by calling submit_implementer_completion (status complete, or blocked with blocked_reason). Your run does not exist until a submission is accepted — if the tool rejects one, correct the reported problem and submit again; never finish with plain text.",
+    "- Finish by calling submit_implementer_completion. Use status complete when the spec, every blocking review finding, and every operator decision are satisfied and verified.",
+    "- Tracked or minor review findings, and items the spec or an operator decision marks out of scope or deferred, NEVER justify blocked: submit complete and list them under 'Deferred to follow-up' in the summary. Use blocked only for something outside this repository, or a question only the operator can answer (a spec requirement your evidence shows cannot hold), with that evidence in blocked_reason.",
+    "- Your run does not exist until a submission is accepted — if the tool rejects one, correct the reported problem and submit again; never finish with plain text.",
   ].join("\n");
 }
 
@@ -1305,7 +1307,7 @@ export function buildImplementerFinalizerPrompt(
     "",
     "Rules:",
     '- Keep kind exactly "implementer_completion".',
-    '- status is "complete" only when the spec is satisfied and verified. Otherwise use status "blocked" with blocked_reason naming exactly what remains: at this point Colony treats it as unfinished work, saves your working tree to the task branch, and requeues the task so the next run continues from it.',
+    '- status is "complete" only when the spec, every blocking review finding, and every operator decision are satisfied and verified; tracked or minor findings and deferred items do not count against it. Otherwise use status "blocked" with blocked_reason naming exactly what remains: at this point Colony treats it as unfinished work, saves your working tree to the task branch, and requeues the task so the next run continues from it.',
     "- branch must be the work branch from packet.repo.branch.",
     "- head_sha must be the 40-hex commit SHA that origin/<branch> actually points at - your last pushed commit. The submit tool verifies it against the remote and refuses anything else; if its refusal names the remote head, resubmit with exactly that SHA.",
     "- commands lists each verification command you already ran with its exit code; omit it when blocked with nothing verified.",
