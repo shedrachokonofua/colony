@@ -156,11 +156,18 @@ flowchart LR
    once and within per-model limits. The developer pushes, runs the spec's
    evidence commands, and reports the branch and head SHA. Colony confirms
    the branch and commit exist on the Git host before opening the merge
-   request.
+   request. When the spec, a pin or an operator decision cannot hold as
+   written, the developer does not stop: it takes the closest workable
+   option and records it under "Deviations" in its report, with the
+   evidence. A review finding it judges wrong goes under "Rebuttals". It
+   blocks only for something outside the repository and its CI, or a
+   product choice the spec leaves open.
 5. **Review the code.** With `review.mode: required`, a reviewer reads the
    exact merge request head and approves or requests changes with findings.
    Changes requested requeue the developer with the findings; approvals are
-   tied to the SHA, so a new push is re-reviewed.
+   tied to the SHA, so a new push is re-reviewed. The reviewer receives the
+   developer's report for the head and accepts or rejects each deviation and
+   rebuttal on its evidence.
    Each review first marks every finding the previous one left open
    resolved or open. A blocker always sends the change back, and so does an
    open finding that was blocking when raised; a new major does only in the

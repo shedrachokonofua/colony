@@ -4,7 +4,7 @@ import type {
   PlanChanges,
   RepairIntentV1,
 } from "@colony/schemas";
-import type { Project, ProjectFile, Scope, Task } from "@colony/core";
+import type { Project, ProjectFile, Run, Scope, Task } from "@colony/core";
 import type { ProviderRepoRef } from "@colony/provider";
 import { formatPlanReviewFinding } from "@colony/agent-runtime";
 import type { PreviousPlanReview, RevisionHistoryEntry } from "./plan-loop.js";
@@ -631,6 +631,57 @@ function legacyHistoricalEvidence(
   return entries;
 }
 
+/** The implementer's own account of the head under review. */
+export interface ImplementerReport {
+  readonly run_id: string;
+  readonly summary: string;
+}
+
+/**
+ * The summary of the newest succeeded implement run that produced `headSha`.
+ * Matches the run row's head, which is the provenance-amended commit the MR
+ * shows, not the envelope's pre-amend SHA. Null when no implement run
+ * produced this head (e.g. a head pushed outside Colony): an older round's
+ * report would describe different code.
+ */
+export function implementerReportFor(
+  runs: readonly Run[],
+  headSha: string,
+): ImplementerReport | null {
+  let newest: Run | undefined;
+  for (const run of runs) {
+    if (run.kind !== "implement" || run.status !== "succeeded") continue;
+    if (run.head_sha !== headSha || !run.envelope_json) continue;
+    if (!newest || run.started_at > newest.started_at) newest = run;
+  }
+  if (!newest?.envelope_json) return null;
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(newest.envelope_json);
+  } catch {
+    return null;
+  }
+  const summary =
+    envelope && typeof envelope === "object" && "summary" in envelope
+      ? envelope.summary
+      : undefined;
+  return typeof summary === "string" && summary.trim()
+    ? { run_id: newest.id, summary }
+    : null;
+}
+
+function implementerReportSection(report: ImplementerReport | null): string {
+  if (!report) return "";
+  return [
+    "",
+    `## Implementer report for this head (implement run ${report.run_id})`,
+    "Check each item the report lists under 'Deviations' and 'Rebuttals' against its evidence. Accept one whose evidence holds: an accepted deviation is not a spec-compliance finding, and an accepted rebuttal resolves that finding. Reject one whose evidence fails: keep or raise the finding and say in it why the evidence fails. Everything else in the report is the implementer's claim, not evidence.",
+    "<implementer-report>",
+    report.summary,
+    "</implementer-report>",
+  ].join("\n");
+}
+
 export function buildReviewPacket(
   task: Task,
   scope: Scope,
@@ -640,6 +691,7 @@ export function buildReviewPacket(
   _repo: ProviderRepoRef,
   headSha: string,
   round: CodeReviewRoundV1,
+  implementerReport: ImplementerReport | null = null,
 ): ReviewPacket {
   return {
     kind: "review_task",
@@ -652,6 +704,7 @@ export function buildReviewPacket(
     body: [
       buildReviewBody(task, scope.default_branch),
       reviewRoundSection(round),
+      implementerReportSection(implementerReport),
       operatorDirectivesSection(scope, "reviewer"),
       securityChecklistSection(project?.name ?? null, securityChecklist),
       projectContextSection(project),
@@ -729,7 +782,7 @@ function buildImplementBody(
     execution.current_objective,
     `Mode: ${execution.mode}. Inspect current repository and provider facts before editing.`,
     "Do not re-derive or reimplement a completed feature. Do not blindly repeat an old CI fix; verify the current failure and the current diff first.",
-    "Resolve and verify every unresolved review finding that applies to the current head.",
+    "Resolve and verify every unresolved review finding that applies to the current head, or rebut it with evidence under 'Rebuttals' in your summary.",
     "",
     "## Current provider facts",
     `Task branch: \`${execution.branch}\`; target branch: \`${execution.target_branch}\`; target/base HEAD: \`${execution.target_head_sha}\`.`,

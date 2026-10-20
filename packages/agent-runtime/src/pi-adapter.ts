@@ -461,10 +461,11 @@ export class PiAgentRuntimeAdapter implements AgentRuntimeAdapter {
     if (!run || run.status !== "running") {
       return { delivered: false, reason: "not_running" };
     }
-    const steer = this.runner.steer;
-    if (!steer) return { delivered: false, reason: "unsupported" };
+    if (!this.runner.steer) return { delivered: false, reason: "unsupported" };
     try {
-      const queued = await steer(runId, message);
+      // Call through the runner: production runners are classes whose
+      // steer() reads `this`; a detached reference threw on every call.
+      const queued = await this.runner.steer(runId, message);
       return queued
         ? { delivered: true }
         : { delivered: false, reason: "not_running" };

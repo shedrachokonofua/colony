@@ -178,7 +178,7 @@ export const ImplementerCompletionV2 = z
     (v) => v.status !== "blocked" || (v.blocked_reason ?? "").trim() !== "",
     {
       message:
-        "blocked requires blocked_reason: what outside this repository stops the task, or a question only the operator can answer. Unfinished work, tracked or minor review findings, and deferred items are not blocked - push and submit complete, or keep working",
+        "blocked requires blocked_reason: what outside this repository and its CI stops the task, or a product choice only the operator can make. A requirement or review finding your evidence shows cannot hold or is wrong belongs under Deviations or Rebuttals in a complete submission; unfinished work is not blocked - push and keep working",
     },
   );
 

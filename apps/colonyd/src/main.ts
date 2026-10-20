@@ -68,6 +68,7 @@ import {
   buildArchitectPacket,
   buildImplementPacket,
   buildReviewPacket,
+  implementerReportFor,
 } from "./runs/packets.js";
 import {
   buildMergeProvenanceLine,
@@ -902,6 +903,7 @@ function resumePacket(
     const files = scope.project_name
       ? store.listProjectFiles(scope.project_name)
       : [];
+    const headSha = run.base_sha ?? run.head_sha ?? "";
     const { repo: packetRepo, ...packet } = buildReviewPacket(
       task,
       scope,
@@ -911,8 +913,9 @@ function resumePacket(
         ? store.getProjectSecurityChecklist(scope.project_name)
         : null,
       { id: scope.provider_repo_id, path: scope.provider_repo_path },
-      run.base_sha ?? run.head_sha ?? "",
+      headSha,
       nextReviewRound(store, task.id).round,
+      implementerReportFor(store.runsForTask(task.id), headSha),
     );
     return {
       ...packet,

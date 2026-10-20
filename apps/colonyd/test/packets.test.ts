@@ -13,6 +13,7 @@ import {
   buildPlanReviewPacket,
   buildImplementPacket,
   buildReviewPacket,
+  implementerReportFor,
   projectContextSection,
 } from "../src/runs/packets.js";
 
@@ -1251,5 +1252,58 @@ describe("review packet instructions", () => {
   it("carries the task spec the review dimensions are judged against", async () => {
     const spec = "Add the endpoint that returns the build SHA.";
     expect(await reviewBody(spec)).toContain(spec);
+  });
+});
+
+describe("implementer report for the reviewed head", () => {
+  const head = "b".repeat(40);
+  const preAmendHead = "a".repeat(40);
+  function run(fields: Partial<Run> & { summary?: string }): Run {
+    const { summary, ...rest } = fields;
+    return {
+      id: "run",
+      kind: "implement",
+      status: "succeeded",
+      head_sha: null,
+      envelope_json:
+        summary === undefined
+          ? null
+          : JSON.stringify({ kind: "implementer_completion", summary }),
+      started_at: "2026-10-20T00:00:00.000Z",
+      ...rest,
+    } as Run;
+  }
+
+  it("takes the run whose provenance-amended head is under review, not its envelope's pre-amend head", () => {
+    const runs = [
+      run({
+        id: "older",
+        head_sha: "c".repeat(40),
+        summary: "earlier round",
+        started_at: "2026-10-19T00:00:00.000Z",
+      }),
+      run({
+        id: "produced-head",
+        head_sha: head,
+        envelope_json: JSON.stringify({
+          kind: "implementer_completion",
+          head_sha: preAmendHead,
+          summary: "Rebuttals: finding 2 is out of scope",
+        }),
+      }),
+    ];
+    expect(implementerReportFor(runs, head)).toEqual({
+      run_id: "produced-head",
+      summary: "Rebuttals: finding 2 is out of scope",
+    });
+    expect(implementerReportFor(runs, preAmendHead)).toBeNull();
+  });
+
+  it("ignores failed implement runs and other run kinds at the head", () => {
+    const runs = [
+      run({ id: "failed", status: "failed", head_sha: head, summary: "x" }),
+      run({ id: "review", kind: "review", head_sha: head, summary: "y" }),
+    ];
+    expect(implementerReportFor(runs, head)).toBeNull();
   });
 });

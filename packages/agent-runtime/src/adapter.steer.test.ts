@@ -13,6 +13,7 @@ import {
 import {
   PiAgentRuntimeAdapter,
   type PiRunResult,
+  type PiRunRequest,
   type PiRunner,
 } from "./pi-adapter.js";
 
@@ -95,6 +96,37 @@ describe("PiAgentRuntimeAdapter.steerRun", () => {
     ).toEqual({ delivered: true });
     expect(steered).toEqual([["run-1", "operator amended the spec"]]);
     stalled.resolve(completedRun("sandbox-1"));
+    await running;
+  });
+
+  it("delivers through a runner whose steer is a class method that reads `this`", async () => {
+    // The production runners are classes: steer() looks up this.activeRuns.
+    class LiveRunner implements PiRunner {
+      readonly kind = "pi-coding-agent" as const;
+      readonly stalled = Promise.withResolvers<PiRunResult>();
+      readonly live = new Set<string>();
+      readonly steered: string[] = [];
+      run(request: PiRunRequest) {
+        this.live.add(request.runId);
+        return this.stalled.promise;
+      }
+      steer(runId: string, message: string): boolean {
+        if (!this.live.has(runId)) return false;
+        this.steered.push(message);
+        return true;
+      }
+    }
+    const runner = new LiveRunner();
+    const adapter = new PiAgentRuntimeAdapter(runner);
+    const running = adapter.startRun(PACKET, {
+      role: "developer",
+      runId: "run-1",
+    });
+    expect(await adapter.steerRun("run-1", "amendment")).toEqual({
+      delivered: true,
+    });
+    expect(runner.steered).toEqual(["amendment"]);
+    runner.stalled.resolve(completedRun("sandbox-1"));
     await running;
   });
 

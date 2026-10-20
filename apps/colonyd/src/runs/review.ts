@@ -18,7 +18,7 @@ import { startColonyRunSpan, type ColonyRunSpan } from "@colony/observability";
 import type { ColonydContext } from "../context.js";
 import { SERVICE_ACTOR } from "../context.js";
 import { trackRun } from "./registry.js";
-import { buildReviewPacket } from "./packets.js";
+import { buildReviewPacket, implementerReportFor } from "./packets.js";
 import { nextReviewRound, recordReviewVerdict } from "./review-loop.js";
 import { mintRunToken, revokeRunToken, type MintedToken } from "./tokens.js";
 import { getCurrentMrTask } from "./mr-admission.js";
@@ -187,6 +187,7 @@ async function executeReview(
       repo,
       headSha,
       position.round,
+      implementerReportFor(ctx.store.runsForTask(task.id), headSha),
     );
     const full = {
       ...packet,
