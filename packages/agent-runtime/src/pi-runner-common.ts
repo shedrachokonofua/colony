@@ -207,13 +207,16 @@ export interface PiRunGuardOptions extends PiRunnerBaseOptions {
    * boundaries), the way Temporal's heartbeat_timeout polices activities:
    * a run that emits nothing for this long is hung in some remote await
    * (LLM fetch, exec socket) that its own cancellation path failed to bound.
-   * Tool executions are exempt while in flight until TOOL_WEDGE_TIMEOUT_MS;
-   * each exec carries its own engine-enforced deadline, and a missing end
-   * event is treated as a dead transport once that cap expires.
+   * Tool executions are exempt while in flight until the wedge cap: the
+   * larger of TOOL_WEDGE_TIMEOUT_MS and the tool's own requested timeout
+   * plus TOOL_WEDGE_GRACE_MS. Each exec carries its own engine-enforced
+   * deadline, and a missing end event past the cap is a dead transport.
    */
   readonly livenessTimeoutMs?: number;
   /** In-flight tool wedge cap override; tests shrink it. Default {@link TOOL_WEDGE_TIMEOUT_MS}. */
   readonly toolWedgeTimeoutMs?: number;
+  /** Slack past a tool's requested timeout; tests shrink it. Default {@link TOOL_WEDGE_GRACE_MS}. */
+  readonly toolWedgeGraceMs?: number;
 }
 
 export interface ActivePiRun {
@@ -714,11 +717,16 @@ export function createSandboxId(prefix: string): string {
 export const DEFAULT_LIVENESS_TIMEOUT_MS = 12 * 60_000;
 
 /**
- * Maximum wall clock for a tool execution that has not produced its end event.
- * The engine-side exec deadline is 900s; no legitimate exec outlives that, so
- * a 20-minute in-flight "tool" is a dead transport rather than a long command.
+ * Wedge cap for an in-flight tool that requested no timeout of its own. Such
+ * an exec runs under the engine's default deadline (10 min), so a 20-minute
+ * in-flight tool is a dead transport rather than a long command. A tool that
+ * requests a timeout (bash `timeout`, seconds) gets that deadline plus
+ * TOOL_WEDGE_GRACE_MS instead: the engine honors it, so the watchdog must.
  */
 export const TOOL_WEDGE_TIMEOUT_MS = 20 * 60_000;
+
+/** Slack past a tool's requested timeout for the engine to report its end. */
+export const TOOL_WEDGE_GRACE_MS = 5 * 60_000;
 
 export const LIVENESS_FAILURE_REASON = "liveness_watchdog_no_progress";
 export const TOOL_WEDGE_FAILURE_REASON = "liveness_watchdog_tool_wedge";
@@ -868,6 +876,16 @@ export function installRunGuards(
     options.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS;
   const toolWedgeTimeoutMs =
     options.toolWedgeTimeoutMs ?? TOOL_WEDGE_TIMEOUT_MS;
+  const toolWedgeGraceMs = options.toolWedgeGraceMs ?? TOOL_WEDGE_GRACE_MS;
+  // Requested exec deadlines of the tools in flight, by tool call id.
+  const requestedToolMs = new Map<string, number>();
+  const flightWedgeCapMs = (): number => {
+    let cap = toolWedgeTimeoutMs;
+    for (const ms of requestedToolMs.values()) {
+      cap = Math.max(cap, ms + toolWedgeGraceMs);
+    }
+    return cap;
+  };
   let inFlightTools = 0;
   let toolFlightStartedAt: number | undefined;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -884,7 +902,7 @@ export function installRunGuards(
       inFlightTools > 0 && toolFlightStartedAt !== undefined
         ? Math.min(
             livenessTimeoutMs,
-            Math.max(1, toolWedgeTimeoutMs - toolInFlightMs),
+            Math.max(1, flightWedgeCapMs() - toolInFlightMs),
           )
         : livenessTimeoutMs;
     watchdog = setTimeout(() => {
@@ -894,7 +912,7 @@ export function installRunGuards(
           0,
           performance.now() - toolFlightStartedAt,
         );
-        if (toolInFlightMs >= toolWedgeTimeoutMs) {
+        if (toolInFlightMs >= flightWedgeCapMs()) {
           options.logger?.warn?.(
             {
               runId,
@@ -956,6 +974,16 @@ export function installRunGuards(
     if (event.type === "tool_execution_start") {
       if (inFlightTools === 0) toolFlightStartedAt = performance.now();
       inFlightTools += 1;
+      const args: unknown = event.args;
+      if (
+        args &&
+        typeof args === "object" &&
+        "timeout" in args &&
+        typeof args.timeout === "number" &&
+        args.timeout > 0
+      ) {
+        requestedToolMs.set(String(event.toolCallId), args.timeout * 1000);
+      }
       zeroOutputTurns = 0;
       options.evidence?.toolStart(event.toolCallId, event.args, event.intent);
       options.logger?.info?.(
@@ -970,6 +998,7 @@ export function installRunGuards(
     }
     if (event.type === "tool_execution_end") {
       inFlightTools = Math.max(0, inFlightTools - 1);
+      requestedToolMs.delete(String(event.toolCallId));
       if (inFlightTools === 0) toolFlightStartedAt = undefined;
       if (inFlightTools === 0) {
         options.logger?.info?.(

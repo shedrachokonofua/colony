@@ -117,6 +117,43 @@ describe("liveness watchdog", () => {
     }
   });
 
+  it("lets a tool run its requested timeout before calling it wedged", async () => {
+    // col-db8759e3.6: `bash` calls with timeout 1800-3600 s (the full test
+    // suite takes ~23 min) were killed at the fixed 20 min cap, five runs
+    // in a row, while the engine was still honoring their deadline.
+    const agent = fakeAgent();
+    const failures: string[] = [];
+    const unsubscribe = installRunGuards(agent as never, "run-long-tool", {
+      abort: () => agent.abort(),
+      livenessTimeoutMs: 10_000,
+      toolWedgeTimeoutMs: 100,
+      toolWedgeGraceMs: 100,
+      onFailure: (reason) => failures.push(reason),
+    });
+    try {
+      agent.emit({
+        type: "tool_execution_start",
+        toolCallId: "suite",
+        toolName: "bash",
+        args: { command: "cargo test --workspace", timeout: 0.4 },
+      });
+      // Past the default cap, inside the requested 400 ms.
+      await sleep(300);
+      expect(failures).toEqual([]);
+      expect(agent.aborted).toBe(0);
+      // A transport that never reports the end is still caught after the
+      // requested deadline plus grace.
+      const deadline = Date.now() + 5_000;
+      while (failures.length === 0 && Date.now() < deadline) {
+        await sleep(25);
+      }
+      expect(failures).toEqual([TOOL_WEDGE_FAILURE_REASON]);
+      expect(agent.aborted).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("stops policing once unsubscribed", async () => {
     const agent = fakeAgent();
     const failures: string[] = [];
