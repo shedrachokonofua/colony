@@ -298,9 +298,13 @@ agents:
   architect:
     provider: openai_compatible
     model: moira-frontier
-    thinking_level: xhigh
-    # 90 min: on Opus 5.5 at xhigh (5-15 min turns, some hitting the 64k
-    # output cap) three col-db8759e3 architect runs were still working at
+    # high, not xhigh: at xhigh Opus 5.5 spent whole turns thinking until the
+    # 64k output cap (reasoning_tokens 64000, stop length, no tool call), and
+    # each capped turn's work was lost: col-82145cfe run ec61d328 had 4 of its
+    # 4 long turns capped (~10 min each) in its first hour, and col-db8759e3's
+    # architect runs hit the same cap.
+    thinking_level: high
+    # 90 min: three col-db8759e3 architect runs at xhigh were still working at
     # the 45 min cap.
     timeout_ms: 5400000
     max_turns: 200
