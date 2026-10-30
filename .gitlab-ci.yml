@@ -1,9 +1,9 @@
 # Colony CI pipeline.
 #
 # Colony packages a container image; the aether repo owns every cluster
-# object (tofu/home/kubernetes/colony.tf) and Keel force-polls :latest,
-# so a green main branch redeploys itself. Image builds run on Aether's
-# `gitlab-runner-k8s` (tagged `buildah`).
+# object and pins colonyd's immutable digest. Keel is disabled: a green
+# build publishes an artifact, not a deployment. Image builds run on
+# Aether's `gitlab-runner-k8s` (tagged `buildah`).
 
 stages:
   - prepare

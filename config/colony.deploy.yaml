@@ -194,19 +194,12 @@ providers:
         # turns went 20/20 on the Step Plan, no 429s.
         max_parallel_runs: 4
         cost: { input: 0, output: 0 }
-      # Moira tier aliases. Moira picks a tier member with quota and pins each
-      # run to it via the run id Colony sends as prompt_cache_key. Until
-      # LiteLLM adapts requests per deployment, each entry must suit every
-      # member of its tier (aether moira/tiers.yaml bands over moira's
-      # data/aa_scores.yaml; members as of 2026-10-14): the smallest window,
-      # the smallest output ceiling, and forced tool_choice settings every
-      # member tolerates (strong and flash never force: MiMo and Step mishandle
-      # it; finalizers steer). Moira maps the requested effort to each
-      # member's closest in-band one.
-      #
-      # frontier (AA 50+): GPT-6.1 Sol high-max, Claude Opus 5.5, Muse Wonder
-      # Full. Sol's subscription window bounds it (272,000). Sol and Opus share
-      # the operator's and household's subscriptions, so 2 runs at a time.
+      # Moira AA v5 tiers pin one model/effort per shared provider pool.
+      # Runs stay pinned via prompt_cache_key. Catalog limits are conservative
+      # operating caps, not claims about every provider's native capabilities.
+      # Configured tier member efforts take precedence over requested effort.
+      # frontier (AA 50+): Opus 5.5, GPT-6.1 Sol, Muse Wonder Full.
+      # Sol and Opus share interactive subscriptions; keep two runs at a time.
       # Forced submits drop reasoning: Anthropic refuses a forced tool_choice
       # with thinking on, and without forcing the finalizer could only steer
       # Opus, which let three architect runs time out (col-db8759e3).
@@ -220,10 +213,8 @@ providers:
           disableReasoningOnForcedToolChoice: true
         max_parallel_runs: 2
         cost: { input: 0, output: 0 }
-      # strong (AA 44-49): MiMo V2.6 Pro, Muse Spark/Wonder Contributor,
-      # GLM 5.3, Kimi K3, Qwen 3.8 Max, Grok 4.7, Step 5 (free leg), and Sol
-      # at medium, whose 272,000 window bounds it; Step's output ceiling
-      # (65,536).
+      # strong (AA 40-49): Kimi K3.1 Pro, GPT-6.1 Terra, Muse Wonder
+      # Contributor, Sonnet 5.5. Keep steer-only finalizers for pooled routes.
       - id: moira/strong
         name: moira-strong
         reasoning: true
@@ -234,9 +225,21 @@ providers:
           supportsForcedToolChoice: false
         max_parallel_runs: 4
         cost: { input: 0, output: 0 }
-      # flash (AA 36-43): GLM 5.3 Flash, MiMo V2.6 Flash, Hy4, Ling 3.1 Flash,
-      # Gemini 3.8 Flash, Haiku 5.5, GPT-6 Luna, Sol at low. Ling (OpenRouter)
-      # bounds both the window (262,144) and the output ceiling (32,768).
+      # balanced (AA 30-39): Grok 4.7, Haiku 5.5, Qwen 3.8 Max, DeepSeek
+      # V4.1 Flash, GLM 5.3, Gemini 3.8 Flash and MiMo V2.6 Pro. MiMo uses
+      # separate Xiaomi, Command Code and OpenCode Go quota pools.
+      - id: moira/balanced
+        name: moira-balanced
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 262144
+        max_tokens: 32768
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 4
+        cost: { input: 0, output: 0 }
+      # flash (AA 25-29): GLM 5.3 Flash, GPT-6 Luna and MiMo V2.6 Flash.
+      # GLM Flash has an official AA v5 score of 28.
       - id: moira/flash
         name: moira-flash
         reasoning: true
@@ -269,15 +272,15 @@ agents:
   # step-5-preview as developer (1/2: never submitted), and
   # gemini-3.8-flash as architect (1/2: missed docs and SQL conventions).
   #
-  # 2026-10-14 (operator): every role runs on a Moira tier, so quota, not a
-  # fixed chain, picks the model: developer flash, reviewer strong, architect
-  # and plan reviewer frontier. No fallback chains: Moira's tier_exhausted 429
+  # AA v5: developer and memory consolidation balanced; review and merge
+  # quality gates strong; architect and plan reviewer frontier.
+  # No fallback chains: Moira's tier_exhausted 429
   # requeues like any provider rate limit, and a Moira outage fails open to
   # LiteLLM's moira/<tier> alias deployment. Architect and plan reviewer share
   # a tier, so a plan can be reviewed by the model that wrote it.
   developer:
     provider: openai_compatible
-    model: moira-flash
+    model: moira-balanced
     thinking_level: max
     # 3 h: two 90-minute runs (col-d6ca6aa2.2, col-7548de26.3) were killed
     # mid-repair on large tasks with work still unsubmitted.
@@ -310,5 +313,5 @@ agents:
     max_turns: 200
   memory_consolidator:
     provider: openai_compatible
-    model: muse-spark
+    model: moira-balanced
     thinking_level: low

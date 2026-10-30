@@ -68,6 +68,48 @@ providers:
       kind: api_key
       value: COLONY_OPENAI_COMPATIBLE_API_KEY
     models:
+      # AA v5 aliases; caps are conservative operating limits. Moira pins
+      # member efforts and shares quota globally across tiers.
+      - id: moira/frontier
+        name: moira-frontier
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 272000
+        max_tokens: 65536
+        compat:
+          disableReasoningOnForcedToolChoice: true
+        max_parallel_runs: 2
+        cost: { input: 0, output: 0 }
+      - id: moira/strong
+        name: moira-strong
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 272000
+        max_tokens: 65536
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 4
+        cost: { input: 0, output: 0 }
+      - id: moira/balanced
+        name: moira-balanced
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 262144
+        max_tokens: 32768
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 4
+        cost: { input: 0, output: 0 }
+      - id: moira/flash
+        name: moira-flash
+        reasoning: true
+        efforts: [minimal, low, medium, high, xhigh, max]
+        context_window: 262144
+        max_tokens: 32768
+        compat:
+          supportsForcedToolChoice: false
+        max_parallel_runs: 4
+        cost: { input: 0, output: 0 }
       - id: router/glm-5.3
         name: glm-5.3
         reasoning: true
@@ -132,13 +174,11 @@ providers:
         name: sonnet-4-via-pro
 
 agents:
-  # Developer on Qwen 3.8 Max, architect on GLM 5.3, reviewer on Kimi K3.
-  # All route through the LiteLLM gateway.
+  # Developer and memory consolidation balanced; code review strong;
+  # architect and plan reviewer frontier. Moira owns quota fallback.
   developer:
     provider: openai_compatible
-    model: qwen3.8-max
-    # Coding fallback order within the same Pi session and colonyd attempt.
-    fallback_models: [deepseek-v4-pro, qwen3.8-27b]
+    model: moira-balanced
     thinking_level: high
     # For subscription-backed Codex instead:
     # provider: openai_codex
@@ -148,17 +188,22 @@ agents:
     max_turns: 250
   reviewer:
     provider: openai_compatible
-    model: kimi-k3
-    # Tried in order within the same Pi session and colonyd attempt.
-    fallback_models: [qwen3.8-max, glm-5.3, deepseek-v4-pro, qwen3.8-27b]
+    model: moira-strong
+    thinking_level: xhigh
+    timeout_ms: 1800000
+    max_turns: 200
+  plan_reviewer:
+    provider: openai_compatible
+    model: moira-frontier
     thinking_level: xhigh
     timeout_ms: 1800000
     max_turns: 200
   architect:
     provider: openai_compatible
-    model: glm-5.3
+    model: moira-frontier
+    thinking_level: high
     timeout_ms: 1800000
     max_turns: 200
   memory_consolidator:
     provider: openai_compatible
-    model: glm-5.3
+    model: moira-balanced

@@ -316,31 +316,49 @@ providers:
     base_url: https://litellm.example.com/v1
     auth: { kind: api_key, value: LITELLM_API_KEY } # env var name
     models:
-      - id: qwen-cloud/qwen3.8-max
-        name: qwen3.8-max
-        context_window: 1000000
-        max_tokens: 131072
-      - id: router/glm-5.3
-        name: glm-5.3
-        max_parallel_runs: 2 # cap concurrent runs on this model
-      - id: kimi/k3
-        name: kimi-k3
+      - id: moira/frontier
+        name: moira-frontier
+      - id: moira/strong
+        name: moira-strong
+      - id: moira/balanced
+        name: moira-balanced
+      - id: moira/flash
+        name: moira-flash
 
 agents:
-  architect: { provider: gateway, model: glm-5.3 }
-  plan_reviewer: { provider: gateway, model: kimi-k3 }
+  architect: { provider: gateway, model: moira-frontier }
+  plan_reviewer: { provider: gateway, model: moira-frontier }
   developer:
     provider: gateway
-    model: qwen3.8-max
-    fallback_models: [glm-5.3, kimi-k3]
+    model: moira-balanced
     thinking_level: high
     timeout_ms: 1800000
     max_turns: 250
-  reviewer:
-    provider: gateway
-    model: kimi-k3
-    fallback_models: [glm-5.3]
+  reviewer: { provider: gateway, model: moira-strong }
+  memory_consolidator: { provider: gateway, model: moira-balanced }
 ```
+
+The shipped catalogs use AA Intelligence Index v5 tiers: frontier 50+,
+strong 40-49, balanced 30-39, flash 25-29. Moira pins one model/effort per
+actual provider quota pool within each tier; requested thinking levels do
+not override those pins. A pool's quota remains shared across tiers. GLM
+Flash's official AA v5 score is 28. See `config/colony.example.yaml` for
+conservative operating caps and forced-tool compatibility settings, not
+assumed native capabilities. Narrow smoke-only agents can use flash.
+
+Developer and memory consolidation use balanced, code reviewers use strong,
+and architects and plan reviewers use frontier. If `plan_reviewer` is
+omitted, it inherits `architect`, not the code reviewer. The merge gate is
+deterministic (tests, policy and SAST), not an LLM role; its required code
+review runs on strong. Tier aliases have no per-role fallback chain:
+Moira handles quota selection, and tier exhaustion requeues the run.
+
+Production config is baked into `/workspace/config/colony.deploy.yaml`.
+Changing it requires a new `build:colonyd` image from GitLab CI (immutable
+commit-SHA tag), then an Aether digest update through the normal saved-plan
+IaC rollout after quiescing active work. A build alone does not deploy.
+Preserve the running image's sandbox identity, timeouts and safety controls
+when selecting the release baseline; do not roll back to stale defaults.
 
 Fallbacks work at three points:
 
